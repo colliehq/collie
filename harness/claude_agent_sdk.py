@@ -46,6 +46,11 @@ _MAX_MULTIMODAL_REQUEST_BYTES = 12 * 1024 * 1024
 # mode rejects 3/4 outright, so it can never silently answer in plain mode while
 # the parent believes a provider-enforced schema was in force.
 _STRUCTURED_FORMAT = "structured"
+# The worker's stable category for "the provider's formatter refused this
+# response against Collie's schema".  It is a response-contract miss, not a
+# transport fault, and is deliberately the only worker failure that keeps its
+# measured usage and stays eligible for the host's one corrective turn.
+_FORMATTER_REFUSED = "formatter_refused_response"
 _STRUCTURED_SYSTEM_SUFFIX = (
     "\n\nCollie response transport: the executor tool names in the conversation "
     "are actions for the Collie host, not SDK tools. Your only SDK tool is "
@@ -84,6 +89,23 @@ class _ProviderRejected(RuntimeError):
     def __init__(self, category: str, usage, api_key_source: str):
         super().__init__("provider rejected the request: " + category)
         self.category = category
+        self.usage = usage
+        self.api_key_source = api_key_source
+
+
+class _StructuredContractRejected(RuntimeError):
+    """A physically issued response the provider's own formatter refused.
+
+    Structured mode's schema is validated by the provider, so a response which
+    does not match it never reaches this transport as text.  That is the same
+    event plain mode reports when an envelope cannot be bridged -- a completed
+    model response which misses Collie's contract -- and it is reported as the
+    same stable 422 rather than as a transport fault, so the host may spend its
+    one corrective turn instead of losing the run.
+    """
+
+    def __init__(self, usage, api_key_source: str):
+        super().__init__("the structured formatter refused the model response")
         self.usage = usage
         self.api_key_source = api_key_source
 
@@ -328,6 +350,38 @@ def _provider_rejection(payload: dict):
     return _ProviderRejected(category, usage, "none")
 
 
+def _formatter_refusal(payload: dict):
+    """A validated formatter refusal, or ``None`` to stay on the generic path.
+
+    The worker's category is re-checked here exactly as a provider rejection is:
+    a payload that claims success, omits the reviewed auth attestation, names a
+    provider error too, or carries any assistant content is not a refusal this
+    transport will classify, and stays a fail-closed worker failure.
+    """
+    if payload.get("structured_error") != _FORMATTER_REFUSED:
+        return None
+    if payload.get("ok") is True:
+        raise RuntimeError(
+            "Claude Agent SDK worker reported both success and a refused response")
+    if payload.get("ok") is not False:
+        raise RuntimeError("Claude Agent SDK refusal has an invalid success flag")
+    if payload.get("api_key_source") != "none":
+        raise RuntimeError(
+            "Claude Agent SDK refusal is missing its reviewed auth attestation")
+    if "text" in payload or "tool_calls" in payload or "provider_error" in payload:
+        raise RuntimeError("Claude Agent SDK refusal carried assistant content")
+    usage_data = payload.get("usage")
+    if not isinstance(usage_data, dict):
+        raise RuntimeError("Claude Agent SDK refusal has invalid usage")
+    usage = Usage(
+        input_tokens=_usage_counter(usage_data, "input_tokens"),
+        output_tokens=_usage_counter(usage_data, "output_tokens"),
+        cache_read=_usage_counter(usage_data, "cache_read_input_tokens"),
+        cache_creation=_usage_counter(usage_data, "cache_creation_input_tokens"),
+    )
+    return _StructuredContractRejected(usage, "none")
+
+
 def _sanitized_worker_env(source=None) -> dict[str, str]:
     """Minimal process environment; credentials/config overrides never cross.
 
@@ -374,14 +428,16 @@ class ClaudeAgentSdkProvider(ModelProvider):
 
     def __init__(self, model: str | None = None, timeout: int = 180,
                  effort: str | None = None, subscription_only: bool = False,
-                 structured_output: bool = True):
+                 structured_output: bool = False):
         model = model or provider_default_model(self.name)
         self.model = "claude-agent-sdk:" + model
         self._model = model
         self.timeout = int(timeout)
         self.effort = effort or "default"
         self.subscription_only = bool(subscription_only)
-        # Tool-bearing calls ask the provider to enforce Collie's {tool|answer}
+        # Structured formatting remains opt-in: coding trials found formatter
+        # refusals even after a host repair. The default uses the host-validated
+        # text envelope. Opt-in tool-bearing calls enforce Collie's {tool|answer}
         # envelope as a response schema.  The opt-out exists only for controlled
         # legacy comparison: it restores the free-text envelope which sometimes
         # arrived with extra keys and cost a whole corrective turn.
@@ -782,6 +838,9 @@ class ClaudeAgentSdkProvider(ModelProvider):
                     rejection = _provider_rejection(failed)
                     if rejection is not None:
                         raise rejection
+                    refusal = _formatter_refusal(failed)
+                    if refusal is not None:
+                        raise refusal
                     detail = failed.get("error") or detail
             raise RuntimeError("Claude Agent SDK worker exited %d%s" % (
                 proc.returncode, (": " + _safe_failure(detail)) if detail else ""))
@@ -800,6 +859,11 @@ class ClaudeAgentSdkProvider(ModelProvider):
             # payload which also names a provider error is forged.
             raise RuntimeError(
                 "Claude Agent SDK worker reported both success and a provider error")
+        if result.get("structured_error") is not None:
+            # Likewise for a refused response: the formatter cannot both refuse
+            # a response and hand one back.
+            raise RuntimeError(
+                "Claude Agent SDK worker reported both success and a refused response")
         return result
 
     def complete(self, system, messages, tool_schemas, on_text=None):
@@ -819,6 +883,7 @@ class ClaudeAgentSdkProvider(ModelProvider):
         registration = self._register_pending(cancel_scope)
         request_id = ""
         status = "error"
+        structured_tools = None
         try:
             if callable(request_gate):
                 try:
@@ -939,6 +1004,32 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 text="ERROR(claude-agent-sdk): " + detail, usage=exc.usage,
                 stop_reason="error", error_status=error_status,
                 error_code="provider_" + exc.category, error_detail=detail,
+                request_count=1)
+            completion.api_key_source = exc.api_key_source
+            return completion
+        except _StructuredContractRejected as exc:
+            # One physically issued model response, refused by the provider's
+            # own formatter against the schema this call requested.  Report the
+            # same stable error the in-band envelope miss above reports, so
+            # Harness spends at most one separately-authorized corrective turn
+            # instead of losing the run to an unclassifiable worker exit.
+            # The refused response is never streamed, returned, or quoted; only
+            # the usage measured before the SDK's hidden repair turn could start
+            # survives, and its response side is reported as unmeasured.
+            if structured_tools is None:
+                detail = ("worker refused a structured response for a call that "
+                          "requested no schema")
+                return Completion(text="ERROR(claude-agent-sdk): " + detail,
+                                  stop_reason="error", error_detail=detail,
+                                  request_count=1)
+            status = "completed"
+            completion = Completion(
+                text="ERROR(claude-agent-sdk): response contract error",
+                usage=exc.usage, stop_reason="error", error_status=422,
+                error_code="response_contract_error",
+                error_detail=("response_contract_error: the provider's structured "
+                              "formatter refused the assistant response against "
+                              "Collie's tool/answer schema"),
                 request_count=1)
             completion.api_key_source = exc.api_key_source
             return completion

@@ -122,19 +122,19 @@ def assert_no_base64_in_prose(request, *blocks):
 # --------------------------------------------------------------------------- #
 #  Text-only regression: the string protocol must not move at all.
 # --------------------------------------------------------------------------- #
-def test_text_only_conversation_keeps_string_payload_with_formatter_contract():
-    provider = _Provider()
+@pytest.mark.parametrize("structured", [False, True])
+def test_text_only_conversation_keeps_string_payload(structured):
+    provider = _Provider(structured_output=structured)
     messages = [{"role": "user", "content": "fix it"}]
 
     completion = provider.complete("COLLIE SYSTEM", messages, TOOLS)
 
     assert completion.stop_reason == "end_turn"
-    # Text stays a prompt string; only the response format moved (1 -> 3).
-    assert provider.request["protocol"] == 3
-    assert provider.request["response_tools"] == ["grep"]
+    assert provider.request["protocol"] == (3 if structured else 1)
+    assert provider.request.get("response_tools") == (["grep"] if structured else None)
     assert "content" not in provider.request
     assert provider.request["prompt"] == ClaudeCliProvider._prompt(
-        provider, messages, TOOLS, structured_response=True, tool_result_limit=None)
+        provider, messages, TOOLS, structured_response=structured, tool_result_limit=None)
 
 
 def test_plain_text_only_prompt_is_unchanged_and_never_stringifies_blocks():
@@ -190,8 +190,10 @@ def test_plain_caller_keeps_the_image_next_to_the_text_it_belongs_to():
     assert_no_base64_in_prose(provider.request, block)
 
 
-def test_harness_tool_protocol_survives_multimodal_transport():
-    provider = _Provider(text='{"tool":"grep","args":{"pattern":"x"}}')
+@pytest.mark.parametrize("structured", [False, True])
+def test_harness_tool_protocol_survives_multimodal_transport(structured):
+    provider = _Provider(text='{"tool":"grep","args":{"pattern":"x"}}',
+                         structured_output=structured)
     block = image_block()
 
     completion = provider.complete("COLLIE SYSTEM", [
@@ -200,12 +202,14 @@ def test_harness_tool_protocol_survives_multimodal_transport():
     assert completion.stop_reason == "tool_use"
     assert completion.tool_calls[0].name == "grep"
     assert completion.request_count == 1
-    # Image + structured response: protocol 4, with the pixels still in blocks.
-    assert provider.request["protocol"] == 4
-    assert provider.request["response_tools"] == ["grep"]
+    assert provider.request["protocol"] == (4 if structured else 2)
+    assert provider.request.get("response_tools") == (["grep"] if structured else None)
     assert images(provider.request) == [block]
-    assert provider.request["system_prompt"].startswith("COLLIE SYSTEM\n\n")
-    assert "Your only SDK tool is StructuredOutput" in provider.request["system_prompt"]
+    if structured:
+        assert provider.request["system_prompt"].startswith("COLLIE SYSTEM\n\n")
+        assert "Your only SDK tool is StructuredOutput" in provider.request["system_prompt"]
+    else:
+        assert provider.request["system_prompt"] == "COLLIE SYSTEM"
     trailer = provider.request["content"][-1]["text"]
     assert "# Tools the executor can run:" in trailer
     assert "# RESPONSE FORMAT (strict):" in trailer
@@ -398,7 +402,7 @@ def test_attachments_never_reach_a_temporary_file(monkeypatch):
 
     provider.complete("S", [user("look", image_block())], TOOLS)
 
-    assert provider.request["protocol"] == 4
+    assert provider.request["protocol"] == 2
 
 
 # --------------------------------------------------------------------------- #

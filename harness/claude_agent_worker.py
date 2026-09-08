@@ -35,6 +35,14 @@ _STRUCTURED_FORMAT = "structured"
 _FORMATTER_TOOL = "StructuredOutput"
 _FORMATTER_RECEIPT = "Structured output provided successfully"
 
+# The formatter validates the model's response against the requested schema and
+# receipts a failed tool result when it does not match.  That is the structured
+# form of a response-contract miss -- the model answered, in Collie's own
+# envelope, with something the schema refuses -- so it is reported upward under
+# this stable, content-free category instead of collapsing into a generic worker
+# failure the host can only treat as fatal.
+_FORMATTER_REFUSED = "formatter_refused_response"
+
 _SDK_ENV = {
     "CLAUDE_CODE_MAX_RETRIES": "0",
     "ENABLE_TOOL_SEARCH": "false",
@@ -62,6 +70,24 @@ _PROVIDER_ERRORS = ("authentication_failed", "billing_error", "invalid_request",
 # may be absorbed, and only once a rejection and its terminal result are both
 # validated; every other exception still propagates.
 _SDK_POST_RESULT_ERROR = "Claude Code returned an error result:"
+
+
+class _StructuredContractRejected(Exception):
+    """The formatter refused the one model response it was given.
+
+    Exactly one raw model response was physically issued, and the provider's own
+    formatter validated it against Collie's schema and refused it.  Nothing
+    about the transport failed, so the stable category and the usage measured
+    before the stream was stopped travel upward, and the host can spend its one
+    corrective turn exactly as it does for an unparseable plain-mode envelope.
+    Neither the refused response nor the formatter's report crosses this
+    boundary: the classification is the whole payload.
+    """
+
+    def __init__(self, usage: dict, api_key_source: str):
+        super().__init__("SDK structured formatter refused the model response")
+        self.usage = usage
+        self.api_key_source = api_key_source
 
 
 def _parent_death_args(argv) -> tuple[int, int]:
@@ -292,6 +318,11 @@ def _build_options(sdk, request: dict):
     if effort not in ("", "default", "auto", "provider-default"):
         kwargs["effort"] = effort
     if request.get("response_format") == _STRUCTURED_FORMAT:
+        # A consumer stopping at a failed formatter receipt cannot prevent the
+        # CLI from already starting its next request. Disable that native retry
+        # path explicitly; only Collie's separately reserved repair may run.
+        # Documented CLI env control, verified with CLI 2.1.221 / SDK 0.2.136.
+        kwargs["env"]["MAX_STRUCTURED_OUTPUT_RETRIES"] = "0"
         # Structured mode only.  The tool-less planner keeps a byte-identical
         # plain configuration, because its own action contract is not this
         # envelope and a schema would turn a valid plan into a failure.
@@ -482,8 +513,16 @@ def _formatter_call(message, seen_id: str, seen_input):
     return seen_id, seen_input
 
 
-def _formatter_receipt(message) -> str:
-    """The tool-use id receipted by exactly one successful formatter result."""
+def _formatter_receipt(message):
+    """``(receipted tool-use id, refused)`` for exactly one formatter result.
+
+    ``refused`` is the formatter's own verdict that the response did not match
+    the requested schema.  Only the literal ``True`` flag carries it: a flag
+    which is neither boolean nor absent says nothing this transport can
+    classify, so it still fails closed rather than being coerced either way.
+    The formatter's report is deliberately not read -- the refusal is the fact,
+    and its prose quotes the response Collie is refusing to accept.
+    """
     content = _field(message, "content", []) or []
     if not isinstance(content, list) or len(content) != 1:
         raise RuntimeError("SDK structured formatter receipt is not a single tool result")
@@ -492,14 +531,16 @@ def _formatter_receipt(message) -> str:
     if "tool_result" not in kind and "toolresult" not in kind:
         raise RuntimeError("SDK emitted a foreign message during structured formatting")
     is_error = _field(block, "is_error", None)
-    if is_error is not None and is_error is not False:
-        raise RuntimeError("SDK structured formatter reported a failed tool result")
-    if _field(block, "content", None) != _FORMATTER_RECEIPT:
-        raise RuntimeError("SDK structured formatter receipt was not recognised")
+    refused = is_error is True
+    if not refused:
+        if is_error is not None and is_error is not False:
+            raise RuntimeError("SDK structured formatter reported a failed tool result")
+        if _field(block, "content", None) != _FORMATTER_RECEIPT:
+            raise RuntimeError("SDK structured formatter receipt was not recognised")
     tool_use_id = _field(block, "tool_use_id", "")
     if not isinstance(tool_use_id, str) or not tool_use_id.strip():
         raise RuntimeError("SDK structured formatter receipt is missing its tool id")
-    return tool_use_id.strip()
+    return tool_use_id.strip(), refused
 
 
 def _canonical_structured(value, allowed) -> str:
@@ -532,6 +573,25 @@ def _canonical_structured(value, allowed) -> str:
         return json.dumps(canonical, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError, RecursionError) as exc:
         raise RuntimeError("SDK structured response is not finite JSON") from exc
+
+
+def _request_side_usage(value) -> dict:
+    """The usage measured when the one model response started.
+
+    ``message_start`` reports the request side in full -- it is the number the
+    provider bills for the prompt, and it does not change afterwards.  Its
+    ``output_tokens`` is a placeholder which the provider revises in a later
+    stream event; on the refusal path that event only arrives once the SDK has
+    already begun a repair turn, so the response side is reported as unmeasured
+    rather than guessed from a placeholder or from the refused response itself.
+    """
+    value = value if isinstance(value, dict) else {}
+    return _usage_dict({
+        "input_tokens": value.get("input_tokens", 0),
+        "output_tokens": 0,
+        "cache_read_input_tokens": value.get("cache_read_input_tokens", 0),
+        "cache_creation_input_tokens": value.get("cache_creation_input_tokens", 0),
+    })
 
 
 def _usage_dict(value) -> dict:
@@ -577,6 +637,7 @@ async def _query(request: dict, sdk) -> dict:
     receipts = 0
     model_responses = 0
     model_response_id = ""
+    start_usage = {}
     structured_output = None
 
     try:
@@ -599,19 +660,36 @@ async def _query(request: dict, sdk) -> dict:
                     model_response_id = _field(raw_message, "id")
                     if not isinstance(model_response_id, str) or not model_response_id.strip():
                         raise RuntimeError("SDK model response is missing its id")
+                    start_usage = _field(raw_message, "usage", {})
             elif structured and kind == "user":
                 if not init_seen:
                     raise RuntimeError("SDK emitted a tool result before validated init")
                 if not formatter_id:
                     raise RuntimeError(
                         "SDK emitted a tool result before the structured formatter call")
-                if _formatter_receipt(message) != formatter_id:
+                receipt_id, refused = _formatter_receipt(message)
+                if receipt_id != formatter_id:
                     raise RuntimeError(
                         "SDK structured formatter receipt did not match its call id")
                 receipts += 1
                 if receipts > 1:
                     raise RuntimeError(
                         "SDK emitted more than one structured formatter receipt")
+                if refused:
+                    # The provider refused this response against Collie's own
+                    # schema.  Stop the stream here rather than reading on: the
+                    # SDK's next act is a hidden repair turn, and letting it
+                    # start would spend a second model response that no request
+                    # budget authorized and that this worker may not return.
+                    # The terminal result never arrives on this path, so the
+                    # one-response contract is proved from the raw stream.
+                    if model_responses != 1:
+                        raise RuntimeError("SDK did not emit exactly one model response")
+                    if model_response_id != assistant_id:
+                        raise RuntimeError(
+                            "SDK model response id did not match its Assistant message")
+                    raise _StructuredContractRejected(
+                        _request_side_usage(start_usage), api_key_source)
             elif kind == "system" and str(_field(message, "subtype", "")).lower() == "init":
                 if init_seen:
                     raise RuntimeError("SDK emitted more than one init message")
@@ -795,6 +873,15 @@ def main() -> int:
                        if os.path.normcase(os.path.abspath(entry or os.getcwd())) != worker_dir]
         import claude_agent_sdk as sdk  # optional dependency: worker-only lazy import
         result = asyncio.run(_query(request, sdk))
+    except _StructuredContractRejected as exc:
+        # A response the provider refused against Collie's schema, reported as a
+        # classified failure so the parent can tell it apart from a broken
+        # transport.  The exit code stays non-zero: this call produced no
+        # answer, and only the category, the measured usage and the reviewed
+        # auth attestation cross the boundary.
+        result = {"ok": False, "structured_error": _FORMATTER_REFUSED,
+                  "error": "the structured formatter refused the model response",
+                  "usage": exc.usage, "api_key_source": exc.api_key_source}
     except Exception as exc:
         # Parent applies Collie's secret redactor before surfacing this bounded text.
         result = {"ok": False, "error": "%s: %s" % (type(exc).__name__, str(exc)[:1000])}

@@ -157,6 +157,7 @@ def test_structured_options_carry_the_nested_wrapper_schema_and_one_message_star
     assert all(variant["additionalProperties"] is False for variant in variants)
     assert options.include_partial_messages is True
     assert options.max_turns == 1
+    assert options.env["MAX_STRUCTURED_OUTPUT_RETRIES"] == "0"
 
 
 def test_planner_plain_mode_options_stay_byte_identical():
@@ -167,6 +168,7 @@ def test_planner_plain_mode_options_stay_byte_identical():
     assert not hasattr(options, "include_partial_messages")
     assert vars(options) == vars(_build_options(_Sdk, dict(plain)))
     assert options.tools == [] and options.max_turns == 1
+    assert "MAX_STRUCTURED_OUTPUT_RETRIES" not in options.env
 
 
 def test_plain_stream_is_unaffected_by_structured_validation():
@@ -247,8 +249,6 @@ def _tool_result_before_call():
      "receipt did not match its call id"),
     (_stream({"response": {"answer": "ok"}}, receipt="Tool ran"),
      "receipt was not recognised"),
-    (_stream({"response": {"answer": "ok"}}, is_error=True),
-     "failed tool result"),
     (_stream({"response": {"answer": "ok"}}, num_turns=3), "one-turn limit"),
     (_stream({"response": {"answer": "ok"}}, result_error=True), "reported an error"),
     (_stream({"response": {"answer": "ok"}}, structured_output=None),
@@ -357,6 +357,7 @@ def test_worker_refuses_an_invalid_response_tool_allowlist(tools, match, monkeyp
 
 class _Provider(ClaudeAgentSdkProvider):
     def __init__(self, response, **kwargs):
+        kwargs.setdefault("structured_output", True)
         super().__init__(**kwargs)
         self.response = response
         self.request = None
@@ -383,7 +384,7 @@ def _worker(text, **overrides):
     return build
 
 
-def test_tool_bearing_calls_are_structured_by_default_end_to_end():
+def test_opt_in_tool_bearing_calls_are_structured_end_to_end():
     provider = _Provider(_worker('{"tool": "grep", "args": {"pattern": "x"}}'))
 
     completion = provider.complete("SYS", [{"role": "user", "content": "fix"}], TOOLS)
@@ -504,6 +505,12 @@ def test_structured_init_requires_exact_formatter_attestation(tools):
 
 @pytest.mark.parametrize("flag", [0, 1, "false"])
 def test_formatter_receipt_error_flag_is_not_coerced(flag):
+    """Only the literal ``True`` flag is the formatter's refusal verdict.
+
+    A refused response is a repairable response-contract miss
+    (test_claude_agent_sdk_formatter_refusal.py).  A flag that is neither
+    boolean nor absent classifies nothing, so it still fails closed here.
+    """
     with pytest.raises(RuntimeError, match="failed tool result"):
         _run(_stream({"response": {"answer": "ok"}}, is_error=flag))
 

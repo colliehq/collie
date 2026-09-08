@@ -280,13 +280,12 @@ def test_provider_uses_collie_prompt_and_parses_tool_protocol():
     assert completion.request_count == 1
     assert completion.tool_calls[0].name == "grep"
     assert completion.api_key_source == "none"
-    assert provider.request["system_prompt"].startswith("COLLIE SYSTEM\n\n")
-    assert "Your only SDK tool is StructuredOutput" in provider.request["system_prompt"]
+    assert provider.request["system_prompt"] == "COLLIE SYSTEM"
     assert "# Tools the executor can run:" in provider.request["prompt"]
-    # Tool-bearing calls are structured by default and name the real allowlist.
-    assert provider.request["protocol"] == 3
-    assert provider.request["response_format"] == "structured"
-    assert provider.request["response_tools"] == ["grep"]
+    # The tested default uses the host validator without native formatting.
+    assert provider.request["protocol"] == 1
+    assert "response_format" not in provider.request
+    assert "response_tools" not in provider.request
 
 
 def test_provider_rejects_invalid_worker_usage_before_accounting():
