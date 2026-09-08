@@ -227,6 +227,11 @@ class _Fixture(BaseHTTPRequestHandler):
     queue_seen = threading.Event()
     queue_deliver = threading.Event()
     queue_fail_once = False
+    queue_fail_all = False               # every save refused, for two-failure races
+    upload_delay = 0.0                   # hold the pre-stream upload phase open
+    upload_fail_once = False
+    busy_delay = 0.0                     # hold the refusal open, so a race is observable
+    start_delay = 0.0                    # hold an ACCEPTED start open, the same way
     queue_active = False
     queue_status_extra = {}
     lang = "en"                          # what /api/settings reports, so t() can be exercised
@@ -270,18 +275,23 @@ class _Fixture(BaseHTTPRequestHandler):
             _Fixture.route_requests.append(path)
             return self._json({"kind": "chat"})
         if path == "/api/upload":
+            time.sleep(_Fixture.upload_delay)
             _Fixture.uploads.append(body)
+            if _Fixture.upload_fail_once:
+                _Fixture.upload_fail_once = False
+                return self._json({"error": "upload unavailable"}, 503)
             return self._json({"id": "upload-%d" % len(_Fixture.uploads)})
         if path == "/api/task-inbox":
             _Fixture.queue_posts.append(body)
             key = body["id"]
-            entry = _Fixture.queue_entries.setdefault(key, dict(body, seq=len(_Fixture.queue_entries)+1,
-                state="pending", digest="v1", metadata={}))
             _Fixture.queue_seen.set()
             _Fixture.queue_ack.wait(15)
-            if _Fixture.queue_fail_once:
+            if _Fixture.queue_fail_once or _Fixture.queue_fail_all:
+                # A refused save records nothing, so a listing cannot show it as queued.
                 _Fixture.queue_fail_once = False
                 return self._json({"error": "temporary response failure"}, 503)
+            entry = _Fixture.queue_entries.setdefault(key, dict(body, seq=len(_Fixture.queue_entries)+1,
+                state="pending", digest="v1", metadata={}))
             return self._json({"accepted": True, "entry": entry, "session": body["session"]})
         if path in ("/api/task-inbox/edit", "/api/task-inbox/cancel"):
             entry = _Fixture.queue_entries[body["id"]]
@@ -359,6 +369,38 @@ class _Fixture(BaseHTTPRequestHandler):
                 self._sse("done", dict(DONE_BASE, session="s-read", run="queue-run", answer="Partial work",
                     canceled=True, error="", stop_reason="canceled", completed=False))
                 return
+            if text.startswith("Accepted fixture"):
+                # An accepted start that takes its time: the answer is `start`, not `busy`.
+                sid = (query.get("session") or [""])[0] or "s-read"
+                time.sleep(_Fixture.start_delay)
+                self._sse("start", {"session": sid, "run": "slow-run", "model": "mock",
+                                    "prior_turns": 0, "worker_capabilities": {"steer": True}})
+                self._sse("done", dict(DONE_BASE, session=sid, run="slow-run", answer="Done."))
+                return
+            if text.startswith("Malformed fixture"):
+                # A terminal frame this page cannot parse, before any `start`. Not an
+                # acceptance, and not proof of anything else either.
+                time.sleep(_Fixture.busy_delay)
+                self.wfile.write(b"event: done\ndata: {not json at all\n\n")
+                self.wfile.flush()
+                return
+            if text.startswith("Prestart error fixture"):
+                # An error emitted before the run exists: web_tasks answers this the same
+                # way it answers a bad lease, without a `start`.
+                sid = (query.get("session") or [""])[0] or "s-read"
+                time.sleep(_Fixture.busy_delay)
+                self._sse("done", {"session": sid, "answer": "", "error": "workspace is gone"})
+                return
+            if text.startswith("Busy fixture"):
+                # What web_tasks.serve_managed_stream answers when the session's
+                # execution lease is already held: refused before the journal is
+                # read, so there is no run row, no start frame and nothing sent.
+                sid = (query.get("session") or [""])[0] or "s-read"
+                time.sleep(_Fixture.busy_delay)
+                self._sse("done", {"session": sid, "answer": "", "busy": True,
+                                   "error": "this session already has an active run",
+                                   "owner": "collie web on this machine"})
+                return
             for kind, payload in _script(text):
                 if kind == "done":
                     time.sleep(0.25)     # a beat of real "running", so live state is observable
@@ -431,6 +473,10 @@ def ui(server, browser):
     _Fixture.queue_ack.set(); _Fixture.queue_seen = threading.Event()
     _Fixture.queue_deliver = threading.Event()
     _Fixture.queue_fail_once = False; _Fixture.queue_active = False
+    _Fixture.queue_fail_all = False; _Fixture.upload_delay = 0.0
+    _Fixture.upload_fail_once = False
+    _Fixture.busy_delay = 0.0
+    _Fixture.start_delay = 0.0
     _Fixture.queue_status_extra = {}
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()

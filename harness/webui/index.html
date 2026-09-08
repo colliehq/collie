@@ -2174,6 +2174,7 @@
   .task-queue-meta {display:flex;align-items:center;gap:7px;color:var(--muted,#69736b);margin-bottom:4px;}
   .task-queue-text {white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
   .task-queue-actions {display:flex;gap:6px;justify-content:flex-end;margin-top:5px;}
+  .task-queue-row.retained {background:color-mix(in srgb, var(--warn,#b8860b) 8%, transparent);}
   .task-queue textarea {box-sizing:border-box;width:100%;min-height:68px;max-height:160px;resize:vertical;background:transparent;color:inherit;border:1px solid var(--line,#dedfd9);border-radius:6px;padding:6px;font:inherit;}
   .task-queue-notice {padding:0 12px 9px;color:var(--muted,#69736b);overflow-wrap:anywhere;}
   @media(max-width:640px) {.task-queue-list {max-height:140px;}}
@@ -2718,6 +2719,7 @@
         </div>
         <textarea id="input" rows="1" aria-label="Message Collie" data-i18n-aria-label="Message Collie" data-i18n-placeholder="Describe the outcome you want…" placeholder="Describe the outcome you want…"></textarea>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
+        <input type="file" id="retainFileInput" accept="image/*" multiple hidden>
         <button class="attach" id="attachBtn" title="Attach image (or paste / drop one)" aria-label="Attach image" data-i18n-title="Attach image (or paste / drop one)" data-i18n-aria-label="Attach image">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
@@ -3411,6 +3413,21 @@
     "Next task": "后续任务",
     "Delivering…": "正在送达…",
     "Waiting": "等待执行",
+    "Not confirmed — never acknowledged": "未确认 — 服务器没有回应",
+    "Save not confirmed — still here": "保存尚未确认 — 仍然保留在这里",
+    "Send it again or discard it": "可以重新发送或丢弃",
+    "Attachments not restored — reattach before sending": "附件未恢复 — 重新发送前请再次添加",
+    "Not sent — nothing reached Collie": "未发出 — 没有到达 Collie",
+    "Put it back in the composer or discard it": "可以放回输入框或丢弃",
+    "Put in composer": "放回输入框",
+    "Reattach files": "重新添加附件",
+    "Send without attachments": "不带附件发送",
+    "Sent without its attachments": "已不带附件发送",
+    "Kept in this window only — a reload will not bring it back": "仅保留在本窗口 — 刷新后不会恢复",
+    "Finish or clear the message in the composer first.": "请先处理或清空输入框里的内容。",
+    "Send again": "重新发送",
+    "Sending…": "发送中…",
+    "Discard": "丢弃",
     "Attachments saved": "附件已保存",
     "Edit pending request": "编辑待执行要求",
     "Saving request…": "正在保存要求…",
@@ -3421,6 +3438,11 @@
     "Request save was not confirmed": "未确认保存成功",
     "No pending request was started": "没有开始待执行要求",
     "Request was not confirmed. Your draft is kept; try again.": "尚未确认保存。输入内容已保留，可以重试。",
+    "Edit": "编辑",
+    "This request was not saved. Your newer draft was left alone.": "这条要求没有保存成功，你新写的内容没有被改动。",
+    "already running": "任务已在运行",
+    "This task was already running, so your message was saved as a pending request instead of starting a second run.":
+      "这项任务已在运行，你的消息已保存为待执行要求，不会另外启动一次运行。",
     "Add a message to queue these attachments.": "请输入一条要求，再将附件加入队列。",
     "The check was interrupted; this run has no completed verification result.": "检查已中断，本次任务没有完整的验证结果。",
     "Running project check": "正在运行项目检查",
@@ -3753,6 +3775,21 @@
     "Next task": "後續任務",
     "Delivering…": "正在送達…",
     "Waiting": "等待執行",
+    "Not confirmed — never acknowledged": "未確認 — 伺服器沒有回應",
+    "Save not confirmed — still here": "儲存尚未確認 — 仍然保留在這裡",
+    "Send it again or discard it": "可以重新傳送或捨棄",
+    "Attachments not restored — reattach before sending": "附件未還原 — 重新傳送前請再次加入",
+    "Not sent — nothing reached Collie": "未傳出 — 沒有到達 Collie",
+    "Put it back in the composer or discard it": "可以放回輸入框或捨棄",
+    "Put in composer": "放回輸入框",
+    "Reattach files": "重新加入附件",
+    "Send without attachments": "不帶附件傳送",
+    "Sent without its attachments": "已不帶附件傳送",
+    "Kept in this window only — a reload will not bring it back": "僅保留在本視窗 — 重新整理後不會復原",
+    "Finish or clear the message in the composer first.": "請先處理或清空輸入框裡的內容。",
+    "Send again": "重新傳送",
+    "Sending…": "傳送中…",
+    "Discard": "捨棄",
     "Attachments saved": "附件已儲存",
     "Edit pending request": "編輯待執行要求",
     "Saving request…": "正在儲存要求…",
@@ -3763,6 +3800,11 @@
     "Request save was not confirmed": "未確認儲存成功",
     "No pending request was started": "沒有開始待執行要求",
     "Request was not confirmed. Your draft is kept; try again.": "尚未確認儲存。輸入內容已保留，可以重試。",
+    "Edit": "編輯",
+    "This request was not saved. Your newer draft was left alone.": "這條要求沒有儲存成功，你新寫的內容沒有被更動。",
+    "already running": "任務已在執行",
+    "This task was already running, so your message was saved as a pending request instead of starting a second run.":
+      "這項任務已在執行，你的訊息已儲存為待執行要求，不會另外啟動一次執行。",
     "Add a message to queue these attachments.": "請輸入一條要求，再將附件加入佇列。",
     "The check was interrupted; this run has no completed verification result.": "檢查已中斷，本次任務沒有完整的驗證結果。",
     "Running project check": "正在執行專案檢查",
@@ -5395,6 +5437,22 @@
   var es = null, running = false, runCanSteer = false, shownRunPlan = "",
       runStart = 0, tlCount = 0, diffCount = 0, streamRAF = 0;
   var streamLaunchToken = 0, routePending = false, routeToken = 0;
+  // The launch whose stream has not been answered yet, and the streams that outlived their
+  // window because they were still unanswered when the person navigated away.
+  var unackedSend = null, detachedSends = [], retainedSends = {}, pendingQueueSaves = [];
+  // A reload with a send still unanswered must not close its way out of the words. Anything
+  // without a verdict — detached, or still the one this window is watching — is retained as
+  // unknown first. Retained, never auto-resent: it may already have been accepted.
+  window.addEventListener("pagehide", function () {
+    detachedSends.slice().forEach(function (handle) { handle.retainUnknown(); });
+    if (unackedSend) { unackedSend.retainUnknown(); unackedSend = null; }
+    pendingQueueSaves.forEach(function (save) {
+      save.abandoned = true;
+      retainSubmission(save.sid, save.text, save.contexts, save.images, save.config,
+        save.posted ? "unknown" : "unsent",
+        {submission:save.id, requestId:save.requestId, mode:save.mode});
+    });
+  });
 
   // ---- gate -------------------------------------------------------------
   var GATE = {
@@ -5519,7 +5577,11 @@
     edit:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>',
     ok:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>',
     bad:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-    flag:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4h11l-1.5 4L15 12H4"/></svg>'
+    flag:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4h11l-1.5 4L15 12H4"/></svg>',
+    // "Running project check" and "Request saved" already asked for a clock and got the
+    // string "undefined" rendered into the row's icon slot, because the map had no such
+    // key. The icon is the only part of those rows that was ever wrong.
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>'
   };
   function clearTimeline() {
     tlCount = 0; diffCount = 0;
@@ -8500,7 +8562,10 @@
   function detachRun() {
     sessionLoadPending = null;
     routeToken++; routePending = false; streamLaunchToken++;
-    if (es) { try { es.close(); } catch (e) {} es = null; }
+    // A submission the server has not answered yet keeps its own listener across this move;
+    // closing it here would lose the words with it. See runStream's detachHandle.
+    var kept = !!(unackedSend && unackedSend.detach());
+    if (es) { if (!kept) { try { es.close(); } catch (e) {} } es = null; }
     if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = 0; }
     curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
     finishRunUI();                       // this window goes idle; the run does not
@@ -9476,16 +9541,21 @@
       $("input").focus();
     }
   });
+  function readImageFile(file) {          // -> Promise<image | null>, same limits as the composer
+    if (!file || !/^image\//.test(file.type)) return Promise.resolve(null);
+    if (file.size > 15 * 1024 * 1024) { addErr("image too large (>15MB)"); return Promise.resolve(null); }
+    return new Promise(function (resolve) {
+      var r = new FileReader();
+      r.onload = function () {
+        var s = String(r.result), c = s.indexOf(",");
+        resolve({ media_type: file.type || "image/png", data: s.slice(c + 1) });
+      };
+      r.onerror = function () { resolve(null); };
+      r.readAsDataURL(file);
+    });
+  }
   function addFile(file) {
-    if (!file || !/^image\//.test(file.type)) return;
-    if (file.size > 15 * 1024 * 1024) { addErr("image too large (>15MB)"); return; }
-    var r = new FileReader();
-    r.onload = function () {
-      var s = String(r.result), c = s.indexOf(",");
-      attached.push({ media_type: file.type || "image/png", data: s.slice(c + 1) });
-      renderAttached();
-    };
-    r.readAsDataURL(file);
+    readImageFile(file).then(function (image) { if (image) { attached.push(image); renderAttached(); } });
   }
   function uploadImg(im) {
     return fetch("/api/upload?token=" + encodeURIComponent(CT), {
@@ -9621,13 +9691,17 @@
   }
   function queueNotice(message, sid) {
     if (currentSession !== sid) return;
-    queueState().notice = message; renderTaskQueue();
+    var state = queueState();
+    state.notice = message; renderTaskQueue();
   }
   function renderTaskQueue() {
     var state = queueState(), panel = $("taskQueue"), list = $("taskQueueList");
     if (!panel || !list) return;
     var entries = state.entries.filter(function (entry) { return entry.state === "pending" || entry.state === "claimed"; });
-    panel.hidden = !currentSession || (!entries.length && !state.notice);
+    var retained = retainedFor(currentSession);
+    // A retained row is shown even with no thread open: a submission made before any session
+    // existed still belongs to the person, and is put back through the composer.
+    panel.hidden = !retained.length && (!currentSession || (!entries.length && !state.notice));
     $("taskQueueTitle").textContent = t("Pending requests") + (entries.length ? " · " + entries.length : "");
     $("taskQueueNotice").hidden = !state.notice;
     $("taskQueueNotice").textContent = state.notice;
@@ -9673,6 +9747,37 @@
       }
       list.appendChild(row);
     });
+    retained.forEach(function (held) {
+      var row = document.createElement("div"); row.className = "task-queue-row retained";
+      row.dataset.retained = held.id;
+      var meta = document.createElement("div"); meta.className = "task-queue-meta";
+      meta.textContent = t(held.reason === "unknown" ? "Not confirmed — never acknowledged"
+                           : held.reason === "unsent" ? "Not sent — nothing reached Collie"
+                           : "Save not confirmed — still here") + " · " +
+                         t(currentSession ? "Send it again or discard it" : "Put it back in the composer or discard it");
+      if (held.lostImages) meta.textContent += " · " + t("Attachments not restored — reattach before sending");
+      else if (held.omittedImages) meta.textContent += " · " + t("Sent without its attachments");
+      else if ((held.images || []).length) meta.textContent += " · " + t("Attachments saved");
+      if (held.unstored) meta.textContent += " · " + t("Kept in this window only — a reload will not bring it back");
+      row.appendChild(meta);
+      var content = document.createElement("div"); content.className = "task-queue-text";
+      content.textContent = held.text; row.appendChild(content);
+      var actions = document.createElement("div"); actions.className = "task-queue-actions";
+      function held_button(label, action, blocked) {
+        var button = document.createElement("button"); button.type = "button"; button.textContent = t(label);
+        button.disabled = !!held.sending || !!blocked; button.onclick = action; actions.appendChild(button);
+      }
+      // Sending is blocked, not silently stripped: the row promised the files were coming.
+      held_button(held.sending ? "Sending…" : (currentSession ? "Send again" : "Put in composer"),
+                  function () { resendRetained(currentSession, held.id); }, !!held.lostImages);
+      if (held.lostImages) {
+        held_button("Reattach files", function () { reattachRetained(currentSession, held.id); });
+        held_button("Send without attachments", function () { omitRetainedAttachments(currentSession, held.id); });
+      }
+      held_button("Discard", function () { discardRetained(currentSession, held.id); });
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
   }
   function loadTaskQueue() {
     var state = queueState(), sid = state.session;
@@ -9699,6 +9804,15 @@
           state.serverNotice = serverNotice; changed = true;
         }
         state.entries = data.entries; state.active = active;
+        // The save response may have been lost during a reload. The durable inbox is
+        // positive evidence of acceptance: retire that exact request without resending it.
+        var held = retainedFor(sid), removed = false;
+        for (var i = held.length - 1; i >= 0; i--) {
+          if (held[i].requestId && state.entries.some(function (entry) { return entry.id === held[i].requestId; })) {
+            held.splice(i, 1); removed = true;
+          }
+        }
+        if (removed) { storeRetainedSends(sid); changed = true; }
         if (state.active) {
           state.starting = false;
           if (state.notice === t("Starting the next request…")) { state.notice = ""; changed = true; }
@@ -9759,24 +9873,54 @@
     for (var i=0; i<text.length; i++) { a = Math.imul(a ^ text.charCodeAt(i), 16777619); b = Math.imul(b,33) ^ text.charCodeAt(i); }
     return Promise.resolve((a>>>0).toString(16) + ":" + (b>>>0).toString(16) + ":" + text.length);
   }
-  function queueInput(q, contexts, imgs, mode) {
-    var sid = currentSession; if (!sid || !q.trim()) return Promise.resolve();
-    var config = readRunConfig(); if (!validateRunConfig(config)) return Promise.resolve();
-    var originalDraft = $("input").value, originalManual = JSON.stringify(ideManualContexts);
-    var originalRevision = queueDraftRevision;
+  // opts lets a caller queue a request it captured earlier — a start the server refused,
+  // say — instead of one being typed right now. Then the thread, the run settings and the
+  // draft this text came out of are all facts about the moment of submission, and re-reading
+  // them here would attach the request to whatever the person switched to while waiting.
+  //   opts.session / opts.config : the submission's own identity and settings
+  //   opts.draft                 : which composer draft these words were taken from, or null
+  //                                for "they came from nowhere visible — clear nothing"
+  function queueInput(q, contexts, imgs, mode, opts) {
+    opts = opts || {};
+    var sid = opts.session || currentSession; if (!sid || !q.trim()) return Promise.resolve({ok:false});
+    var config = opts.config || readRunConfig();
+    if (!opts.config && !validateRunConfig(config)) return Promise.resolve({ok:false});
+    // A null draft must match nothing: no text, no revision and no context set can equal these.
+    var draft = "draft" in opts ? (opts.draft || {text:null, revision:-1, manual:null})
+                                : {text:$("input").value, revision:queueDraftRevision,
+                                   manual:JSON.stringify(ideManualContexts)};
+    var originalDraft = draft.text, originalManual = draft.manual;
+    var originalRevision = draft.revision;
     var value = {session:sid, text:q, mode:mode, config:config, contexts:contexts || [], images:imgs || []};
+    var save = {sid:sid, text:q, contexts:contexts || [], images:imgs || [], config:config,
+      mode:mode, id:opts.submission || (window.crypto && window.crypto.randomUUID
+        ? window.crypto.randomUUID() : "save-" + Date.now() + "-" + Math.random().toString(36).slice(2)),
+      requestId:opts.requestId || "", posted:false, abandoned:false};
+    pendingQueueSaves.push(save);
     queueNotice(t("Saving request…"), sid);
     return requestFingerprint(value).then(function (fingerprint) {
-      var key = "collie.queue.retry." + sid + "." + fingerprint;
+      var key = "collie.queue.retry." + sid + "." + fingerprint +
+                (opts.requestId ? "." + opts.requestId : "");
       var request = taskQueueRequests[key];
-      if (request && request.promise) return request.promise;
+      if (request && request.promise) {
+        save.requestId = request.id; save.posted = true;
+        return request.promise;
+      }
       if (!request) {
         var id; try { id = sessionStorage.getItem(key); } catch (_) {}
-        id = id || (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : "web-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+        // opts.requestId is the identity a retained record already carries: a resend whose
+        // payload changed (attachments restored, or deliberately omitted) still has to be the
+        // same inbox request, or an accepted-but-unreported save becomes a second entry.
+        id = opts.requestId || id ||
+             (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : "web-" + Date.now() + "-" + Math.random().toString(36).slice(2));
         request = {id:id}; taskQueueRequests[key] = request;
         try { sessionStorage.setItem(key, id); } catch (_) {}
       }
+      save.requestId = request.id;
       request.promise = Promise.all((imgs || []).map(uploadImg)).then(function (images) {
+        // pagehide kept this request. Do not start a new effect from an abandoned page.
+        if (save.abandoned) throw new Error(t("Request save was not confirmed"));
+        save.posted = true;
         return queuePost("/api/task-inbox", {session:sid, id:request.id, text:q, mode:mode,
           config:config, contexts:contexts || [], images:images, client:"web"});
       }).then(function (data) {
@@ -9784,7 +9928,8 @@
         try { sessionStorage.removeItem(key); } catch (_) {}
         delete taskQueueRequests[key];
         if (currentSession !== sid) {
-          acknowledgeDetachedDraft(sid, originalDraft, originalRevision, imgs, originalManual); return;
+          acknowledgeDetachedDraft(sid, originalDraft, originalRevision, imgs, originalManual);
+          return {ok:true, entry:data.entry, requestId:request.id};
         }
         var state = queueState();
         state.entries = state.entries.filter(function (entry) { return entry.id !== data.entry.id; }).concat([data.entry]);
@@ -9795,14 +9940,183 @@
         if (JSON.stringify(ideManualContexts) === originalManual) clearManualIdeContexts();
         addEvent("meta", "clock", t("Request saved"), q.length > 140 ? q.slice(0,140) + "…" : q);
         renderTaskQueue(); loadTaskQueue();
+        return {ok:true, entry:data.entry, requestId:request.id};
       }).catch(function (error) {
         request.promise = null;
         queueNotice(t("Request was not confirmed. Your draft is kept; try again.") + " " + error.message, sid);
+        return {ok:false, error:error, requestId:request.id};
       });
       return request.promise;
-    }).catch(function (error) { queueNotice(error.message, sid); });
+    }).catch(function (error) { queueNotice(error.message, sid); return {ok:false, error:error}; })
+      .then(function (result) {
+        pendingQueueSaves = pendingQueueSaves.filter(function (item) { return item !== save; });
+        if (result && result.ok) {
+          // A late acknowledgement after pagehide also retires the saved copy in a bfcache page.
+          var rows = retainedFor(sid);
+          for (var at = rows.length - 1; at >= 0; at--) {
+            if (rows[at].submission === save.id) rows.splice(at, 1);
+          }
+          storeRetainedSends(sid);
+          if (currentSession === sid) renderTaskQueue();
+        } else if (save.abandoned || currentSession !== sid ||
+                   $("input").value !== originalDraft || queueDraftRevision !== originalRevision) {
+          retainSubmission(sid, q, contexts, imgs, config, save.posted ? "unsaved" : "unsent",
+            {submission:save.id, requestId:save.requestId, mode:mode});
+        }
+        return result;
+      });
   }
-  function queueFollowUp(q, contexts, imgs) { return queueInput(q, contexts, imgs, "follow_up"); }
+  // Put refused words back in front of the person — but never on top of a draft they
+  // typed while the refusal was in flight, and never into a different thread's composer.
+  // Returns the draft identity it created, or null for "the composer was not free".
+  function restoreRefusedComposer(sid, q, imgs, contexts, allowNew) {
+    if (!sid && !allowNew) return null;
+    if (currentSession !== (sid || null)) return null;
+    var input = $("input");
+    if (input.value.trim() || attached.length || ideManualContexts.length) return null;
+    input.value = q; input.style.height = "auto";
+    try { input.dispatchEvent(new Event("input", {bubbles:true})); } catch (_) {}
+    attached = (imgs || []).slice(); renderAttached(); restoreIdeContexts(contexts);
+    return {text:input.value, revision:queueDraftRevision, manual:JSON.stringify(ideManualContexts)};
+  }
+  // The queue would not take it and the composer was not free to hold it — or the server never
+  // answered at all. Either way the request itself is kept: the words, the run settings it was
+  // made under and its attachments, filed under the thread it was made for, with an identity of
+  // its own so a resend cannot become a second copy. It is shown as a row, not as a notice that
+  // the next message overwrites, and it is never resent on its own — an unanswered send may
+  // already have been accepted, and only the person can decide to say it again.
+  function retainedKey(sid) { return "collie.retained.v1:" + (sid || "new"); }
+  function retainedFor(sid) {
+    var key = draftKey(sid);
+    if (!retainedSends[key]) {
+      var rows = [];
+      try { rows = JSON.parse(sessionStorage.getItem(retainedKey(sid)) || "[]"); } catch (_) {}
+      retainedSends[key] = (Array.isArray(rows) ? rows : []).filter(function (row) {
+        return row && typeof row === "object" && typeof row.id === "string" &&
+          typeof row.text === "string" && row.config && typeof row.config === "object" &&
+          Array.isArray(row.images) && Array.isArray(row.contexts);
+      }).map(function (row) { row.sending = false; return row; });
+    }
+    return retainedSends[key];
+  }
+  function storeRetainedSends(sid) {
+    var rows = retainedFor(sid);
+    function write(value) { sessionStorage.setItem(retainedKey(sid), JSON.stringify(value)); }
+    try {
+      if (!rows.length) sessionStorage.removeItem(retainedKey(sid)); else write(rows);
+    } catch (_) {
+      // Attachments can outgrow the storage quota. The request, its settings and the fact that
+      // it had files still have to survive a reload — the files themselves may not, and the row
+      // says so rather than sending without them.
+      try {
+        write(rows.map(function (row) {
+          return {id:row.id, submission:row.submission, requestId:row.requestId, text:row.text,
+                  mode:row.mode, config:row.config, contexts:row.contexts, images:[],
+                  lostImages:row.lostImages || (row.images || []).length,
+                  omittedImages:row.omittedImages || 0, reason:row.reason, at:row.at};
+        }));
+      } catch (_) {
+        // No storage at all (private mode, disabled, still over quota). Say so; do not imply a
+        // reload will bring this back.
+        rows.forEach(function (row) { row.unstored = true; });
+      }
+    }
+  }
+  // Two sends can carry the same words and be different requests — different attachments,
+  // different run settings, or simply said twice on purpose. Only the submission that
+  // produced this record may update it: identity first, and failing that the whole captured
+  // payload. Matching on text alone silently merged two people's-worth of work into one.
+  function submissionPayload(row) {
+    return JSON.stringify([row.text, row.mode || "follow_up", row.config || null,
+                           row.contexts || [], row.images || [], row.lostImages || 0]);
+  }
+  function retainSubmission(sid, q, contexts, imgs, config, reason, opts) {
+    if (!q) return null;
+    opts = opts || {};
+    var rows = retainedFor(sid), fresh = {
+      id:(window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID()
+          : "retain-" + Date.now() + "-" + Math.random().toString(36).slice(2)),
+      submission:opts.submission || "", requestId:opts.requestId || "",
+      text:q, mode:opts.mode || "follow_up", config:config, contexts:contexts || [], images:imgs || [],
+      lostImages:0, reason:reason, at:Date.now()};
+    var row = rows.filter(function (r) {
+      return fresh.submission ? r.submission === fresh.submission
+                              : (!r.submission && submissionPayload(r) === submissionPayload(fresh));
+    })[0];
+    if (!row) { rows.push(row = fresh); }
+    else {
+      row.reason = reason;                       // same submission, later verdict
+      if (opts.requestId) row.requestId = opts.requestId;
+    }
+    storeRetainedSends(sid);
+    if (currentSession === (sid || null)) renderTaskQueue();
+    return row;
+  }
+  // Attachments the storage could not keep are not silently dropped from a resend: the row
+  // says so and holds the send until they are back, or until the person says to go without.
+  function reattachRetained(sid, id) {
+    var row = retainedFor(sid).filter(function (r) { return r.id === id; })[0];
+    if (!row) return;
+    retainPickerTarget = {sid:sid, id:id};
+    var picker = $("retainFileInput"); if (!picker) return;
+    picker.value = ""; picker.click();
+  }
+  function omitRetainedAttachments(sid, id) {
+    var row = retainedFor(sid).filter(function (r) { return r.id === id; })[0];
+    if (!row) return;
+    row.omittedImages = (row.omittedImages || 0) + row.lostImages;
+    row.lostImages = 0; row.images = row.images || [];
+    storeRetainedSends(sid); renderTaskQueue();
+    resendRetained(sid, id);
+  }
+  var retainPickerTarget = null;
+  (function () {
+    var picker = $("retainFileInput"); if (!picker) return;
+    picker.onchange = function () {
+      var target = retainPickerTarget; retainPickerTarget = null;
+      var files = Array.prototype.slice.call(picker.files || []); picker.value = "";
+      if (!target) return;
+      Promise.all(files.map(readImageFile)).then(function (images) {
+        var row = retainedFor(target.sid).filter(function (r) { return r.id === target.id; })[0];
+        if (!row) return;
+        images = images.filter(Boolean);
+        row.images = (row.images || []).concat(images);
+        row.lostImages = Math.max(0, (row.lostImages || 0) - images.length);
+        storeRetainedSends(target.sid); renderTaskQueue();
+      });
+    };
+  })();
+  function discardRetained(sid, id) {
+    var rows = retainedFor(sid), at = rows.map(function (r) { return r.id; }).indexOf(id);
+    if (at >= 0) rows.splice(at, 1);
+    storeRetainedSends(sid); renderTaskQueue();
+  }
+  function resendRetained(sid, id) {
+    var row = retainedFor(sid).filter(function (r) { return r.id === id; })[0];
+    if (!row || row.sending || row.lostImages) return;   // files first, or an explicit omission
+    if (!sid) { restoreRetainedToComposer(sid, id); return; }
+    row.sending = true; renderTaskQueue();
+    queueInput(row.text, row.contexts, row.images, row.mode || "follow_up",
+                  {session:sid, config:row.config, draft:null, requestId:row.requestId,
+                   submission:row.submission || row.id}).then(function (result) {
+      row.sending = false;
+      if (result && result.requestId) { row.requestId = result.requestId; storeRetainedSends(sid); }
+      if (result && result.ok) discardRetained(sid, row.id); else renderTaskQueue();
+    });
+  }
+  // A submission made before any thread existed has no inbox to go to. The words go back to
+  // the composer they came from — and only if it is free, so nothing newer is overwritten.
+  function restoreRetainedToComposer(sid, id) {
+    var row = retainedFor(sid).filter(function (r) { return r.id === id; })[0];
+    if (!row) return;
+    var restored = restoreRefusedComposer(sid, row.text, row.images, row.contexts, true);
+    if (restored) {
+      if (window.restoreSubmissionSetup) window.restoreSubmissionSetup(row.config);
+      discardRetained(sid, row.id);
+    }
+    else queueNotice(t("Finish or clear the message in the composer first."), currentSession);
+  }
+  function queueFollowUp(q, contexts, imgs, opts) { return queueInput(q, contexts, imgs, "follow_up", opts); }
   function steer(q) { return queueInput(q, [], [], "steer"); }
   setInterval(function () { if (currentSession && document.visibilityState !== "hidden") loadTaskQueue(); }, 2500);
 
@@ -10050,6 +10364,24 @@
     setRunState("running", true);
     running = true; runCanSteer = false; shownRunPlan = ""; currentRun = null; runStart = Date.now();
     var thisLaunch = ++streamLaunchToken;
+    // One identity for this submission, from before the upload until its verdict. It is what
+    // keeps two sends of the same words from being filed as one, and what lets a later verdict
+    // update the record the earlier phase wrote instead of adding a second row.
+    var submissionId = (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID()
+                        : "sub-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    // Attachments upload before the EventSession opens, so until `launch()` runs this
+    // submission is *definitely* unsent — nothing reached the server. A navigation or a reload
+    // in that window used to drop it silently (and, with no session yet, drop it twice over).
+    var preLaunchSettled = false;
+    function retainUnsent() {
+      if (preLaunchSettled) return;
+      preLaunchSettled = true;
+      if (unackedSend === preLaunchHandle) unackedSend = null;
+      retainSubmission(runSession, q, contexts, imgs, runConfig, "unsent", {submission:submissionId});
+    }
+    var preLaunchHandle = {close: function () {}, retainUnknown: retainUnsent,
+                           detach: function () { retainUnsent(); return false; }};
+    unackedSend = preLaunchHandle;
     if (window.setRunSetupLocked) window.setRunSetupLocked(true);
     var b = $("send"); b.classList.add("stop"); b.disabled = false;
     b.title = "Stop run"; b.setAttribute("aria-label", "Stop run");
@@ -10059,7 +10391,10 @@
     // Upload binary and IDE context attachments before opening the EventSource. Source text stays
     // out of the URL; only short-lived opaque ids cross the stream request.
     var launch = function (imgIds, contextIds) {
-    if (thisLaunch !== streamLaunchToken || !running) return;
+    // The upload outlived the window's interest in it: the person navigated, or stopped. The
+    // stream is not opened, so the words are still only here — keep them.
+    if (thisLaunch !== streamLaunchToken || !running) { retainUnsent(); return; }
+    preLaunchSettled = true;                     // handed over to the stream's own handle
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false,
         packCardEl = null, packRows = [];
     settleCanceledGate = function () {
@@ -10098,12 +10433,92 @@
     var verificationSource = es;
     watchVerificationProgress(verificationSource, function () { return es === verificationSource; });
 
-    es.addEventListener("token", function (e) {
+    // Until the server answers with `start` or `done`, this submission exists nowhere else:
+    // no run row, nothing in the journal, and send() has already emptied the composer. So if
+    // the person leaves the thread while it is unanswered, the stream is kept open but cut
+    // loose from this window: every UI callback below is suppressed, and only the answer is
+    // consumed — a refusal routes the captured request to its own thread's queue, an accepted
+    // start just closes the listener and leaves the run alone.
+    // `detached` never goes back to false: once this launch has stopped owning the window,
+    // none of its callbacks may touch what the person is looking at now.
+    var stream = es, detached = false, answered = false, settled = false, detachTimer = 0,
+        sawStart = false;
+    function on(name, fn) { stream.addEventListener(name, function (e) {
+      if (detached) return;
+      if (name === "done") {
+        var terminal; try { terminal = JSON.parse(e.data); } catch (_) { return; }
+        if (!terminal || typeof terminal !== "object" || Array.isArray(terminal)) return;
+      }
+      fn(e);
+    }); }
+    function releaseDetached() {
+      clearTimeout(detachTimer); detachTimer = 0;
+      var at = detachedSends.indexOf(detachHandle); if (at >= 0) detachedSends.splice(at, 1);
+      try { stream.close(); } catch (_) {}
+    }
+    var detachHandle = {
+      close: releaseDetached,
+      // A page that is going away closes every stream — but closing an unanswered one throws
+      // the words away with it, so what could not be confirmed is retained first.
+      retainUnknown: function () {
+        if (answered || settled) { releaseDetached(); return; }
+        settled = true; releaseDetached();
+        retainSubmission(runSession, q, contexts, imgs, runConfig, "unknown", {submission:submissionId});
+      },
+      detach: function () {
+        if (answered || detached || stream !== es) return false;
+        detached = true; detachedSends.push(detachHandle);
+        // Bounded: an answer that never comes must not leave a stream or a request hanging.
+        detachTimer = setTimeout(function () { settleDetached(null); }, 30000);
+        return true;
+      }
+    };
+    // `d` is the parsed terminal frame, or null for "no usable answer" — a dead stream, a
+    // timeout, or a `done` this page could not parse. Only a `start` proves the server took
+    // the submission; a terminal frame that arrives instead of one is a pre-start refusal or
+    // error, which is not acceptance and not a licence to throw the request away.
+    function settleDetached(d) {
+      if (!detached || settled) return;
+      settled = true; releaseDetached();
+      if (d && d.busy) {
+        queueFollowUp(q, contexts, imgs, {session:runSession, config:runConfig, draft:null, submission:submissionId})
+          .then(function (result) {
+            if (result && result.ok) { if (currentSession === runSession) { loadSessions(); loadTaskQueue(); } }
+            else retainSubmission(runSession, q, contexts, imgs, runConfig, "unsaved",
+                                  {submission:submissionId, requestId:result && result.requestId});
+          });
+        return;
+      }
+      if (sawStart) return;                       // it started: that run owns the request now
+      retainSubmission(runSession, q, contexts, imgs, runConfig, "unknown", {submission:submissionId});
+    }
+    unackedSend = detachHandle;
+    function answeredHere() {
+      answered = true;
+      if (unackedSend === detachHandle) unackedSend = null;
+    }
+    stream.addEventListener("start", function () {
+      sawStart = true; answeredHere();
+      // The run is live and server-owned. Stop listening; do not restart anything.
+      if (detached && !settled) { settled = true; releaseDetached(); }
+    });
+    stream.addEventListener("done", function (e) {
+      var d = null; try { d = JSON.parse(e.data); } catch (_) {}
+      if (!d || typeof d !== "object" || Array.isArray(d)) d = null;
+      if (!detached && !sawStart && !(d && d.busy)) {
+        retainSubmission(runSession, q, contexts, imgs, runConfig, "unknown", {submission:submissionId});
+      }
+      answeredHere();
+      if (!detached) { if (!d) finishStreamUI(); return; }
+      settleDetached(d);
+    });
+
+    on("token", function (e) {
       // stream text into the current flow segment (interleaved with tool steps in event order)
       flowText(JSON.parse(e.data).t || "");
     });
 
-    es.addEventListener("start", function (e) {
+    on("start", function (e) {
       var d = JSON.parse(e.data);
       adoptComposerDraft(d.session);
       if (window.adoptTaskSetup) window.adoptTaskSetup(d.session);
@@ -10126,13 +10541,13 @@
         (d.speed || "standard") + " · " + d.prior_turns + " prior turns");
     });
 
-    es.addEventListener("steer", function (e) {
+    on("steer", function (e) {
       // the loop picked up a queued steer and injected it as a user turn — confirm delivery
       var d = JSON.parse(e.data);
       deliveredSteer(d);
     });
 
-    es.addEventListener("runner", function (e) {
+    on("runner", function (e) {
       var d = JSON.parse(e.data), kind = d.event || "worker", detail = "";
       if (kind === "native") {
         detail = (d.type || "event") + (d.cursor == null ? "" : " · #" + d.cursor);
@@ -10146,7 +10561,7 @@
                kind === "fallback" ? "bad" : "");
     });
 
-    es.addEventListener("tool", function (e) {
+    on("tool", function (e) {
       var d = JSON.parse(e.data);
       addEvent("tool", d.ok ? "tool" : "bad", d.name, shortArgs(d.name, d.args), d.ok ? "" : "bad");
       var lab = ccLabel(d.name, d.args);
@@ -10167,7 +10582,7 @@
                                                       // event) — what's pending now is the next completion
     });
 
-    es.addEventListener("permission", function (e) {
+    on("permission", function (e) {
       // The run is suspended on this until somebody answers it — here, on a phone, or at
       // the machine. Nothing proceeds meanwhile, so it is not a notification to scroll past.
       var d = JSON.parse(e.data);
@@ -10175,7 +10590,7 @@
       pstat("waiting for you…");
     });
 
-    es.addEventListener("edit", function (e) {
+    on("edit", function (e) {
       var d = JSON.parse(e.data);
       sawEdit = true;
       addEvent("edit", "edit", "edit " + (d.path || ""), null);
@@ -10188,7 +10603,7 @@
 
     // The run reports whether it managed to snapshot the tree. Surfacing the FAILURE is the point:
     // a user who thinks a rewind exists will let the agent do things they would not otherwise.
-    es.addEventListener("checkpoint", function (e) {
+    on("checkpoint", function (e) {
       var d = JSON.parse(e.data);
       if (d.ok) {
         addEvent("checkpoint", "ok", "snapshot taken — this run can be rewound", d.ref || "", "ok");
@@ -10199,7 +10614,7 @@
       }
     });
 
-    es.addEventListener("repro", function (e) {
+    on("repro", function (e) {
       var d = JSON.parse(e.data);
       sawRepro = true; lastReproPass = !!d.passed;
       addEvent("repro", d.passed ? "ok" : "bad",
@@ -10217,7 +10632,7 @@
     // A child run is real work the user is waiting on, and it used to be a silent gap in the middle
     // of a task. What is shown is that it is happening and how far along it is — never the child's
     // transcript, which belongs to the parent's reasoning and not to this conversation.
-    es.addEventListener("delegate_start", function (e) {
+    on("delegate_start", function (e) {
       var d = JSON.parse(e.data);
       delegateEl = liveStep("◇", t("Investigating"), (d.task || "").slice(0, 120),
                             t("starting…"));
@@ -10228,7 +10643,7 @@
       NOW.act("◇", t("Investigating"), (d.task || "").slice(0, 60), "search");
     });
 
-    es.addEventListener("delegate_progress", function (e) {
+    on("delegate_progress", function (e) {
       var d = JSON.parse(e.data);
       if (!delegateEl) return;                       // progress without a start frame: nothing to fill
       if (d.event === "tool") delegateActs++;
@@ -10242,7 +10657,7 @@
       pstat(t("investigating…"));
     });
 
-    es.addEventListener("delegate_done", function (e) {
+    on("delegate_done", function (e) {
       var d = JSON.parse(e.data);
       var status = d.status || "completed", ok = status === "completed";
       var counts = [(d.turns || 0) + " " + t(d.turns === 1 ? "turn" : "turns"),
@@ -10260,7 +10675,7 @@
     // ---- context compaction ---------------------------------------------------------------
     // Compaction is housekeeping the run does to keep going. It is worth seeing while it happens,
     // and its FAILURE is not the task's failure — the run simply carries on with the full history.
-    es.addEventListener("compaction", function (e) {
+    on("compaction", function (e) {
       var d = JSON.parse(e.data), status = d.status || "started";
       var detail = compactionDetail(d);
       if (status === "started") {
@@ -10281,7 +10696,7 @@
       compactEl = null; pstat("thinking…");
     });
 
-    es.addEventListener("receipt", function (e) {
+    on("receipt", function (e) {
       var d = JSON.parse(e.data);
       if (d.runner && d.native_session) {
         addEvent("meta", d.settled ? "ok" : "bad", d.runner,
@@ -10335,11 +10750,11 @@
       pstat(t("attempt {n} done…").replace("{n}", Number(d.idx) + 1));
     }
 
-    es.addEventListener("pack_start", function (e) {
+    on("pack_start", function (e) {
       drawPackStart(JSON.parse(e.data));
     });
 
-    es.addEventListener("verification_evidence", function (e) {
+    on("verification_evidence", function (e) {
       var payload = JSON.parse(e.data), d = payload.evidence || payload;
       if (d.cancelled && d.executed !== false) {
         runVerified = false;
@@ -10359,11 +10774,11 @@
       setGate(d.passed ? "pass" : "fail", d.command || undefined);
     });
 
-    es.addEventListener("pack_attempt", function (e) {
+    on("pack_attempt", function (e) {
       drawPackAttempt(JSON.parse(e.data));
     });
 
-    es.addEventListener("done", function (e) {
+    on("done", function (e) {
       var d = JSON.parse(e.data);
       if(currentRun&&d.run&&d.run!==currentRun)return;
       currentSession = d.session;
@@ -10371,6 +10786,52 @@
       clearTimeout(cancelPollTimer);cancelPollTimer=0;
       setReceipt(d);
       pendStop();
+      // The stream was refused because this conversation's execution lease is held.
+      // Nothing was read, transmitted or written: serve_managed_stream answers this
+      // BEFORE it touches the journal, so there is no effect to replay and no run to
+      // duplicate. What there IS is a message the person just typed, which send()
+      // had already taken out of the composer.
+      //
+      // This window simply did not know a run was live — a fresh tab before its first
+      // /api/runs poll, another window or phone on the same thread, or the gap after a
+      // dropped stream, where the page had just been told "reconnected — Collie is
+      // still working…" while its composer went back to Send. Answering that with an
+      // error and an emptied composer loses the words: the optimistic bubble is wiped
+      // by the next re-render of the real transcript, and nothing durable holds them.
+      // So put the composer back exactly as it was, then hand the request to the
+      // durable queue — where the same keystroke would have gone one second later.
+      if (d.busy) {
+        if (statusEl) { statusEl.remove(); statusEl = null; }
+        if (curMsg && curMsg.parentNode) curMsg.remove();
+        if (userMsgEl && userMsgEl.isConnected) userMsgEl.remove();
+        pstatEl = curTextEl = null; curMsg = flowEl = null;
+        setGate("idle");
+        finishStreamUI();
+        // The refusal can arrive seconds later. By then the person may have typed a new
+        // draft, attached something else, or switched threads and settings entirely. The
+        // words we are holding belong to runSession under runConfig; put them back in the
+        // composer only if that composer is still theirs and still empty, and tell the
+        // queue exactly which draft they came from so a slow ACK clears that one and
+        // nothing newer.
+        var restored = restoreRefusedComposer(runSession, q, imgs, contexts);
+        queueFollowUp(q, contexts, imgs,
+                      {session:runSession, config:runConfig, draft:restored, submission:submissionId}).then(function (result) {
+          // Never claim a save before the queue accepted it.
+          if (result && result.ok) {
+            addEvent("meta", "clock", t("already running"),
+                     t("This task was already running, so your message was saved as a pending request instead of starting a second run."));
+            loadSessions(); loadTaskQueue();
+          } else if (!restored) {
+            // Nowhere visible holds these words: the composer had a newer draft, or has
+            // moved to another thread. Keep the whole request where it can be seen and resent.
+            retainSubmission(runSession, q, contexts, imgs, runConfig, "unsaved",
+                             {submission:submissionId, requestId:result && result.requestId});
+          }
+          // A save that was not confirmed is not refetched into a row: an unconfirmed
+          // request must not be shown as queued.
+        });
+        return;
+      }
       if (d.pack) {                                           // best-of-N summary + winner highlight
         var attempts = Array.isArray(d.attempts) ? d.attempts : [];
         /* A mirror reconnect can deliver only the terminal event. Rebuild its candidate rows from
@@ -10483,7 +10944,12 @@
       window.setTimeout(loadTaskQueue, 0);
     });
 
-    es.onerror = function () {
+    stream.onerror = function () {
+      // A detached stream died before it said anything. Whether the server took the submission
+      // cannot be known from here, so it is neither replayed nor written off: it is kept for the
+      // person to look at and resend.
+      if (detached) { settleDetached(null); return; }
+      if (!answered && !sawStart) detachHandle.retainUnknown();
       // EventSource fires onerror both on network loss and on normal stream close.
       if (running && cancelPending) {
         try{es.close();}catch(_){}es=null;
@@ -10507,13 +10973,17 @@
     Promise.all([Promise.all(imgs.map(uploadImg)), uploadIdeContexts(contexts)])
       .then(function (uploaded) { launch(uploaded[0], uploaded[1] ? [uploaded[1]] : []); })
       .catch(function (err) {
-        if (thisLaunch !== streamLaunchToken || !running) return;
+        // Same fact as above, reached the other way: nothing was sent. If this window has moved
+        // on there is no composer to put it back into, so it is retained instead of dropped.
+        if (thisLaunch !== streamLaunchToken || !running) { retainUnsent(); return; }
+        preLaunchSettled = true;
+        if (unackedSend === preLaunchHandle) unackedSend = null;
         if (curMsg) curMsg.remove();
         if (userMsgEl && userMsgEl.isConnected) userMsgEl.remove();
         curMsg = flowEl = statusEl = pstatEl = curTextEl = null;
-        input.value = q; input.style.height = "auto";
-        try { input.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
-        attached = imgs.slice(); renderAttached(); restoreIdeContexts(contexts);
+        if (!restoreRefusedComposer(runSession, q, imgs, contexts, true)) {
+          retainSubmission(runSession, q, contexts, imgs, runConfig, "unsent", {submission:submissionId});
+        }
         addErr("Attachment upload failed — no run was started." +
                (err && err.message ? " " + err.message : ""));
         setGate("idle", "Attachment upload failed — no run was started.");
@@ -10887,9 +11357,11 @@
         check:packCheck.value, checkSource:packCheck.dataset.source || "", n:$("packN").value}));
       } catch (_) {}
     }
-    function restoreSetup(sid) {
-      var saved = null;
-      try { saved = JSON.parse(sessionStorage.getItem(storageKey(sid)) || "null"); } catch (_) {}
+    function restoreSetup(sid, captured) {
+      var saved = captured || null;
+      if (!captured) {
+        try { saved = JSON.parse(sessionStorage.getItem(storageKey(sid)) || "null"); } catch (_) {}
+      }
       if (!saved || saved.version !== 1) saved = {};
       window.runExplicitAxes = {};
       Object.keys(fields).forEach(function (axis) {
@@ -10913,6 +11385,14 @@
       [verifyCommand, packCheck, $("packN")].forEach(function (el) { el.setCustomValidity(""); });
       paint();
     }
+    window.restoreSubmissionSetup = function (config) {
+      var explicit = {};
+      (config.explicit_axes || "").split(",").forEach(function (axis) { explicit[axis] = true; });
+      restoreSetup(setupSession, {version:1, values:config, explicit:explicit, cwd:config.cwd,
+        verify:config.verify_command, verifySource:config.verify_source,
+        check:config.check, checkSource:"user", n:config.n});
+      saveSetup();
+    };
     window.switchTaskSetup = function (sid) {
       sid = sid || null;
       if (setupSession !== sid) { saveSetup(); setupSession = sid; restoreSetup(sid); }
