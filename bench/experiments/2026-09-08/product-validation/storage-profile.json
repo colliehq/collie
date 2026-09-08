@@ -1,0 +1,233 @@
+{
+  "python": "3.14.4",
+  "platform": "win32",
+  "bounded": [
+    {
+      "updates": 20,
+      "ms_median": 7.3922500014305115,
+      "ms_total": 154.77540000574663,
+      "bytes_written": 179576,
+      "file_bytes": 9528,
+      "profile": "lean",
+      "messages": 100,
+      "bytes_per_message": 95.28
+    },
+    {
+      "updates": 20,
+      "ms_median": 10.157349985092878,
+      "ms_total": 205.30199981294572,
+      "bytes_written": 1660094,
+      "file_bytes": 83555,
+      "profile": "lean",
+      "messages": 1000,
+      "bytes_per_message": 83.555
+    },
+    {
+      "updates": 20,
+      "ms_median": 15.710299980128184,
+      "ms_total": 314.96720004361123,
+      "bytes_written": 8320096,
+      "file_bytes": 416555,
+      "profile": "lean",
+      "messages": 5000,
+      "bytes_per_message": 83.311
+    },
+    {
+      "updates": 20,
+      "ms_median": 10.94235002528876,
+      "ms_total": 217.15739998035133,
+      "bytes_written": 1725473,
+      "file_bytes": 86824,
+      "profile": "rich",
+      "messages": 100,
+      "bytes_per_message": 868.24
+    },
+    {
+      "updates": 20,
+      "ms_median": 15.303349995519966,
+      "ms_total": 300.4486000863835,
+      "bytes_written": 17124499,
+      "file_bytes": 856774,
+      "profile": "rich",
+      "messages": 1000,
+      "bytes_per_message": 856.774
+    },
+    {
+      "updates": 20,
+      "ms_median": 43.2481000025291,
+      "ms_total": 877.058699959889,
+      "bytes_written": 85664498,
+      "file_bytes": 4283774,
+      "profile": "rich",
+      "messages": 5000,
+      "bytes_per_message": 856.7548
+    }
+  ],
+  "phases": [
+    {
+      "parse_ms": 3.9420399931259453,
+      "validate_ms": 0.012820004485547543,
+      "merge_ms": 0.021720014046877623,
+      "serialize_ms": 0.05883999401703477,
+      "atomic_write_ms": 2.9483399935998023,
+      "total_ms": 6.9837599992752075,
+      "profile": "lean",
+      "messages": 100
+    },
+    {
+      "parse_ms": 5.846279999241233,
+      "validate_ms": 0.04026001552119851,
+      "merge_ms": 0.2012199955061078,
+      "serialize_ms": 0.46777999959886074,
+      "atomic_write_ms": 3.356300003360957,
+      "total_ms": 9.911840013228357,
+      "profile": "lean",
+      "messages": 1000
+    },
+    {
+      "parse_ms": 9.325639996677637,
+      "validate_ms": 0.19198001828044653,
+      "merge_ms": 1.2024400057271123,
+      "serialize_ms": 1.9487000070512295,
+      "atomic_write_ms": 5.457219993695617,
+      "total_ms": 18.125980021432042,
+      "profile": "lean",
+      "messages": 5000
+    },
+    {
+      "parse_ms": 6.488659989554435,
+      "validate_ms": 0.0148200080730021,
+      "merge_ms": 0.04471999127417803,
+      "serialize_ms": 0.2609199960716069,
+      "atomic_write_ms": 2.8153999941423535,
+      "total_ms": 9.624519979115576,
+      "profile": "rich",
+      "messages": 100
+    },
+    {
+      "parse_ms": 6.767559994477779,
+      "validate_ms": 0.0538600143045187,
+      "merge_ms": 0.5241400096565485,
+      "serialize_ms": 2.15689999749884,
+      "atomic_write_ms": 6.493079999927431,
+      "total_ms": 15.995540015865117,
+      "profile": "rich",
+      "messages": 1000
+    },
+    {
+      "parse_ms": 17.056660004891455,
+      "validate_ms": 0.16353998798877,
+      "merge_ms": 2.6745200157165527,
+      "serialize_ms": 13.944780023302883,
+      "atomic_write_ms": 19.955599994864315,
+      "total_ms": 53.795100026763976,
+      "profile": "rich",
+      "messages": 5000
+    }
+  ],
+  "growth": [
+    {
+      "messages": 200,
+      "wall_s": 1.8645957999979146,
+      "checkpoints": 200,
+      "bytes_written": 17146192,
+      "file_bytes": 171171
+    },
+    {
+      "messages": 1000,
+      "wall_s": 11.995430000009947,
+      "checkpoints": 1000,
+      "bytes_written": 427907550,
+      "file_bytes": 855572
+    }
+  ],
+  "ab": [
+    {
+      "profile": "lean",
+      "messages": 100,
+      "file_bytes": 8204,
+      "old_ms": 2.449000021442771,
+      "new_ms": 2.2610999876633286,
+      "identical_bytes": true
+    },
+    {
+      "profile": "lean",
+      "messages": 1000,
+      "file_bytes": 82229,
+      "old_ms": 3.9748999988660216,
+      "new_ms": 2.6010999572463334,
+      "identical_bytes": true
+    },
+    {
+      "profile": "lean",
+      "messages": 5000,
+      "file_bytes": 415229,
+      "old_ms": 10.66159998299554,
+      "new_ms": 5.059399991296232,
+      "identical_bytes": true
+    },
+    {
+      "profile": "rich",
+      "messages": 100,
+      "file_bytes": 85499,
+      "old_ms": 3.2580000115558505,
+      "new_ms": 2.1177000016905367,
+      "identical_bytes": true
+    },
+    {
+      "profile": "rich",
+      "messages": 1000,
+      "file_bytes": 855449,
+      "old_ms": 7.647100021131337,
+      "new_ms": 5.2358999964781106,
+      "identical_bytes": true
+    },
+    {
+      "profile": "rich",
+      "messages": 5000,
+      "file_bytes": 4282449,
+      "old_ms": 31.183800019789487,
+      "new_ms": 17.85609999205917,
+      "identical_bytes": true
+    }
+  ],
+  "ab_checkpoint": [
+    {
+      "profile": "lean",
+      "messages": 100,
+      "old_ms": 7.415200001560152,
+      "new_ms": 7.033400004729629
+    },
+    {
+      "profile": "lean",
+      "messages": 1000,
+      "old_ms": 12.792500026989728,
+      "new_ms": 10.295999993104488
+    },
+    {
+      "profile": "lean",
+      "messages": 5000,
+      "old_ms": 22.423800022806972,
+      "new_ms": 14.26490000449121
+    },
+    {
+      "profile": "rich",
+      "messages": 100,
+      "old_ms": 10.063599969726056,
+      "new_ms": 10.16980002168566
+    },
+    {
+      "profile": "rich",
+      "messages": 1000,
+      "old_ms": 18.14670005114749,
+      "new_ms": 14.612800034228712
+    },
+    {
+      "profile": "rich",
+      "messages": 5000,
+      "old_ms": 60.47490000491962,
+      "new_ms": 42.719900025986135
+    }
+  ],
+  "elapsed_s": 22.86875343322754
+}

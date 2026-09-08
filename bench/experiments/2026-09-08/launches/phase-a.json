@@ -1,0 +1,24 @@
+{
+  "phase": "a",
+  "results": [
+    {
+      "name": "native-session2-session-default",
+      "exit": 0,
+      "started_at": "2026-09-08T05:30:18.179465+00:00",
+      "seconds": 293.613
+    },
+    {
+      "name": "native-session2-product",
+      "exit": 0,
+      "started_at": "2026-09-08T05:30:06.198593+00:00",
+      "seconds": 404.545
+    },
+    {
+      "name": "native-session2-stateless-default",
+      "exit": 0,
+      "started_at": "2026-09-08T05:30:18.179616+00:00",
+      "seconds": 490.484
+    }
+  ],
+  "finished_at": "2026-09-08T05:38:28.664668+00:00"
+}

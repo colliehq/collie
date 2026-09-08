@@ -1,0 +1,14 @@
+{
+  "source_commit": "fd35828b8b28288fa2b694977b50933f579befae",
+  "tracked_diff_sha256": "c789c9076a6e94f49007908843765eddcce9d1150db712bd5ec207c5ebe18381",
+  "tests": [
+    "tests/test_web_busy_send_ui.py",
+    "tests/test_web_ui_run_status.py",
+    "tests/test_web_workspace_drafts_ui.py",
+    "tests/test_web_task_continuity_ui.py"
+  ],
+  "exit": 0,
+  "seconds": 119.448,
+  "finished_at": "2026-09-08T07:09:25.035096+00:00",
+  "model_calls": 0
+}

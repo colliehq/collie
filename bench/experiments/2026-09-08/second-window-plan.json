@@ -1,0 +1,108 @@
+{
+  "schema_version": 2,
+  "registered_at_utc": "2026-09-08T03:41:33Z",
+  "status": "registered_before_second_window_model_calls",
+  "not_before_utc": "2026-09-08T05:30:05Z",
+  "authorization": "Second of at most two authorized subscription windows; no paid overage or API billing.",
+  "model": "claude-opus-5",
+  "effort": "high",
+  "runtime": {
+    "sdk_package": "0.2.136",
+    "native_and_sdk_cli": "2.1.228"
+  },
+  "held_out_tasks": [
+    {
+      "id": "ordered-pathrule-priority-engine",
+      "sha256": "c6a829dacd2cca391cedbbd536ebb58752b78c36ecf6ae370fb0ac9d3a9047ee"
+    },
+    {
+      "id": "capacity-ledger-reservation-audit",
+      "sha256": "1d14b64a725e5421fe714a7bf969053a021a740a11061e0f253ccd87ce80f795"
+    }
+  ],
+  "prerequisite": "Actual three-turn persistent-worker smoke must attest one native session, physical request accounting and completed cleanup before the persistent coding treatment starts.",
+  "cohorts": [
+    {
+      "name": "product-native",
+      "source_commit": "5eae2cff216ac551b4261c5c3aa2c942eb381417",
+      "tasks": 2,
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "attempts": 12,
+      "concurrency": 6,
+      "context_mode": "default"
+    },
+    {
+      "name": "session-control",
+      "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+      "tasks": 2,
+      "arms": [
+        "experimental-session-enabled",
+        "same-provider-session-disabled"
+      ],
+      "repetitions": 3,
+      "attempts": 12,
+      "concurrency": 6,
+      "context_mode": "default"
+    },
+    {
+      "name": "session-context-ablation",
+      "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+      "tasks": 2,
+      "arms": [
+        "experimental-session-enabled",
+        "same-provider-session-disabled"
+      ],
+      "repetitions": 3,
+      "attempts": 12,
+      "concurrency": 6,
+      "context_mode": "full-tool-history"
+    },
+    {
+      "name": "normalized",
+      "source_commit": "5eae2cff216ac551b4261c5c3aa2c942eb381417",
+      "tasks": 2,
+      "arms": [
+        "collie",
+        "pi",
+        "hermes",
+        "prime"
+      ],
+      "repetitions": 2,
+      "attempts": 16,
+      "concurrency": 4,
+      "context_mode": "default"
+    }
+  ],
+  "global_concurrency": "Phase A: product/native 6, default-context session enabled 3 and disabled 3. Phase B: full-tool-history session enabled 3 and disabled 3, normalized 4. Use at most two additional independent review workers in phase B, keeping the global peak at 12.",
+  "outcomes": [
+    "independent patch correctness",
+    "clean execution",
+    "request/turn budget stops",
+    "protocol errors",
+    "provider capacity errors",
+    "physical request count",
+    "cache read/write counters",
+    "wall time",
+    "persistent session reuse and cleanup"
+  ],
+  "comparison_rules": [
+    "Do not combine native and normalized tracks into one rank.",
+    "Treat protocol and request-budget failures as outcomes even when their patches pass.",
+    "Keep provider-capacity and infrastructure failures visible; an offline correct artifact does not repair trial eligibility.",
+    "Compare session enabled/disabled on identical source, tasks, prompts and response mode; context rewrites may legitimately reset native sessions.",
+    "Cache counters and API-equivalent token valuation are not actual subscription billing.",
+    "Any source repair or extra experiment after observing second-window results gets its own source pin and cohort. Preserve the original attempts.",
+    "Native CLI max-turns 48 is a turn cap, not an attestation of 48 physical requests. Collie and the normalized shared sidecar enforce their explicit physical request accounting.",
+    "The new context ablation removes only normal sliding tool-output elision; semantic compaction, image policy and forced overflow recovery remain host-controlled.",
+    "No held-out coding task has been sent to a model before this revision. The additional ablation follows a zero-model, scripted-context mechanism diagnosis."
+  ],
+  "additional_work": "Use remaining subscription capacity for independent Claude Code reviews and real Collie workflow checks driven by confirmed findings. Label additional comparisons exploratory rather than altering these planned cohorts.",
+  "revised_at_utc": "2026-09-08T04:09:14.954332+00:00",
+  "previous_registration": "second-window-plan-v1.json",
+  "planned_coding_attempts": 52,
+  "http_retry_override": 0
+}

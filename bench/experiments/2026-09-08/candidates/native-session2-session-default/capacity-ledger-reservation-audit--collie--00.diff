@@ -1,0 +1,156 @@
+diff --git a/ledger_errors.py b/ledger_errors.py
+index 6e07a4a..63262df 100644
+--- a/ledger_errors.py
++++ b/ledger_errors.py
+@@ -1,24 +1,25 @@
+-"""Exception hierarchy for the capacity reservation ledger.
+-
+-TODO: the hierarchy below is incomplete and partly wrong.
+-"""
+-
+-
+-class LedgerError(Exception):
+-    """Base class for every error raised by the ledger package."""
+-
+-
+-class ValidationError(LedgerError):
+-    """Raised when an argument is malformed or out of range."""
+-
+-
+-class UnknownResourceError(LedgerError):
+-    """Raised when a well formed resource id is not registered."""
+-
+-
+-class UnknownReservationError(UnknownResourceError):
+-    """Raised when a well formed request id is not known to the ledger."""
+-
+-
+-class ConflictError(LedgerError):
+-    """Raised when an operation contradicts the recorded state."""
++"""Exception hierarchy for the capacity reservation ledger."""
++
++
++class LedgerError(Exception):
++    """Base class for every error raised by the ledger package."""
++
++
++class ValidationError(LedgerError):
++    """Raised when an argument is malformed or out of range."""
++
++
++class UnknownResourceError(LedgerError):
++    """Raised when a well formed resource id is not registered."""
++
++
++class UnknownReservationError(LedgerError):
++    """Raised when a well formed request id is not known to the ledger."""
++
++
++class ConflictError(LedgerError):
++    """Raised when an operation contradicts the recorded state."""
++
++
++class CapacityError(LedgerError):
++    """Raised when an operation would exceed a resource's capacity limit."""
+diff --git a/ledger_ids.py b/ledger_ids.py
+index 0feb60b..d0a55d6 100644
+--- a/ledger_ids.py
++++ b/ledger_ids.py
+@@ -1,46 +1,51 @@
+-"""Validation and normalization helpers shared by the ledger modules.
+-
+-TODO: normalization and the range checks are not finished.
+-"""
+-
+-import re
+-
+-from ledger_errors import ValidationError
+-
+-MAX_UNITS = 1000000
+-
+-_RESOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+-
+-
+-def normalize_resource_id(value):
+-    """Return the canonical form of a resource id."""
+-    if not isinstance(value, str):
+-        raise ValidationError("resource id must be a str")
+-    if _RESOURCE_RE.match(value) is None:
+-        raise ValidationError("malformed resource id: %r" % (value,))
+-    return value
+-
+-
+-def normalize_request_id(value):
+-    """Return the canonical (case sensitive) form of a request id."""
+-    if not isinstance(value, str):
+-        raise ValidationError("request id must be a str")
+-    if not value:
+-        raise ValidationError("request id must not be empty")
+-    return value
+-
+-
+-def normalize_units(value):
+-    """Return a validated reservation size in whole units."""
+-    if not isinstance(value, int):
+-        raise ValidationError("units must be an int")
+-    if value < 0:
+-        raise ValidationError("units must not be negative")
+-    return value
+-
+-
+-def normalize_capacity(value):
+-    """Return a validated capacity limit in whole units."""
+-    if not isinstance(value, int):
+-        raise ValidationError("capacity must be an int")
+-    return value
++"""Validation and normalization helpers shared by the ledger modules."""
++
++import re
++
++from ledger_errors import ValidationError
++
++MAX_UNITS = 1000000
++MAX_CAPACITY = 1000000000
++
++_STRIP_CHARS = " \t\n\r\f\v"
++
++_RESOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
++_REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
++
++
++def normalize_resource_id(value):
++    """Return the canonical form of a resource id."""
++    if not isinstance(value, str) or isinstance(value, bool):
++        raise ValidationError("resource id must be a str")
++    text = str(value).strip(_STRIP_CHARS).lower()
++    if _RESOURCE_RE.match(text) is None:
++        raise ValidationError("malformed resource id: %r" % (value,))
++    return str(text)
++
++
++def normalize_request_id(value):
++    """Return the canonical (case sensitive) form of a request id."""
++    if not isinstance(value, str):
++        raise ValidationError("request id must be a str")
++    text = str(value).strip(_STRIP_CHARS)
++    if _REQUEST_RE.match(text) is None:
++        raise ValidationError("malformed request id: %r" % (value,))
++    return str(text)
++
++
++def normalize_units(value):
++    """Return a validated reservation size in whole units."""
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise ValidationError("units must be an int")
++    if not 1 <= value <= MAX_UNITS:
++        raise ValidationError("units out of range: %r" % (value,))
++    return int(value)
++
++
++def normalize_capacity(value):
++    """Return a validated capacity limit in whole units."""
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise ValidationError("capacity must be an int")
++    if not 0 <= value <= MAX_CAPACITY:
++        raise ValidationError("capacity out of range: %r" % (value,))
++    return int(value)

@@ -1,0 +1,94 @@
+{
+  "mode": "session",
+  "rep": 2,
+  "steps": 6,
+  "completed": 6,
+  "seconds": 75.765,
+  "turns": [
+    {
+      "turn": 0,
+      "seconds": 16.482,
+      "ok": true,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 1333,
+        "cache_read_input_tokens": 9351,
+        "cache_creation_input_tokens": 0
+      },
+      "sdk_num_turns": 1,
+      "assistant_ids": 1,
+      "sent_bytes": 24206
+    },
+    {
+      "turn": 1,
+      "seconds": 9.07,
+      "ok": true,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 677,
+        "cache_read_input_tokens": 9351,
+        "cache_creation_input_tokens": 1417
+      },
+      "sdk_num_turns": 1,
+      "assistant_ids": 1,
+      "sent_bytes": 248
+    },
+    {
+      "turn": 2,
+      "seconds": 10.296,
+      "ok": true,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 950,
+        "cache_read_input_tokens": 10768,
+        "cache_creation_input_tokens": 746
+      },
+      "sdk_num_turns": 1,
+      "assistant_ids": 1,
+      "sent_bytes": 223
+    },
+    {
+      "turn": 3,
+      "seconds": 13.132,
+      "ok": true,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 1088,
+        "cache_read_input_tokens": 11514,
+        "cache_creation_input_tokens": 1028
+      },
+      "sdk_num_turns": 1,
+      "assistant_ids": 1,
+      "sent_bytes": 239
+    },
+    {
+      "turn": 4,
+      "seconds": 15.021,
+      "ok": true,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 1121,
+        "cache_read_input_tokens": 12542,
+        "cache_creation_input_tokens": 1159
+      },
+      "sdk_num_turns": 1,
+      "assistant_ids": 1,
+      "sent_bytes": 240
+    },
+    {
+      "turn": 5,
+      "seconds": 10.533,
+      "ok": true,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 713,
+        "cache_read_input_tokens": 13701,
+        "cache_creation_input_tokens": 1204
+      },
+      "sdk_num_turns": 1,
+      "assistant_ids": 1,
+      "sent_bytes": 250
+    }
+  ],
+  "claim": "Public-code review transport diagnostic, not benchmark task success; no executor or hidden grader."
+}

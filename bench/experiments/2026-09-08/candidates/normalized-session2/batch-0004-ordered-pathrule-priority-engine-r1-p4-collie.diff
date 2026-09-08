@@ -1,0 +1,579 @@
+diff --git a/pathnorm.py b/pathnorm.py
+index eec4ee4..d7d27f4 100644
+--- a/pathnorm.py
++++ b/pathnorm.py
+@@ -1,22 +1,27 @@
+ """Normalisation of slash separated logical paths."""
+ 
+-from ruleerrors import PathTraversalError
++from ruleerrors import PathTraversalError, RuleError
+ 
+ SEPARATOR = "/"
++NUL = "\x00"
++CURRENT = "."
++PARENT = ".."
+ 
+ 
+ def split_path(path):
+-    """Return the normalised segments of path."""
++    """Return the normalised segments of path as a tuple of str."""
++    if not isinstance(path, str):
++        raise TypeError("path must be a str, not %r" % (type(path).__name__,))
++    if NUL in path:
++        raise RuleError("path contains a NUL character")
+     segments = []
+-    for raw in path.replace("\\", "/").split(SEPARATOR):
+-        if raw == "" or raw == ".":
+-            continue
+-        if raw == "..":
+-            if segments:
+-                segments.pop()
++    for raw in path.split(SEPARATOR):
++        if raw == "" or raw == CURRENT:
+             continue
++        if raw == PARENT:
++            raise PathTraversalError("path contains a '..' segment")
+         segments.append(raw)
+-    return segments
++    return tuple(segments)
+ 
+ 
+ def normalize_path(path):
+diff --git a/patternmatch.py b/patternmatch.py
+index 10e3ffb..d77c1c1 100644
+--- a/patternmatch.py
++++ b/patternmatch.py
+@@ -1,47 +1,182 @@
+ """Compilation and matching of ordered path patterns."""
+ 
+ from pathnorm import SEPARATOR, split_path
++from ruleerrors import PathTraversalError, PatternError
+ 
+ STAR = "*"
+ DOUBLE_STAR = "**"
++ESCAPE = "\\"
++NUL = "\x00"
++CURRENT = "."
++PARENT = ".."
+ 
++_LITERAL = "literal"
++_STAR = "star"
+ 
+-def _match_segment(pattern, text):
+-    if STAR not in pattern:
+-        return pattern == text
+-    head, _, tail = pattern.partition(STAR)
+-    return text.startswith(head) and text.endswith(tail)
+ 
++def _parse_segment(segment):
++    """Return the token list for one raw pattern segment.
+ 
+-def _match_all(compiled, segments, pattern_index, path_index):
+-    if pattern_index == len(compiled):
+-        return path_index == len(segments)
+-    current = compiled[pattern_index]
+-    if current == DOUBLE_STAR:
+-        for nxt in range(path_index + 1, len(segments) + 1):
+-            if _match_all(compiled, segments, pattern_index + 1, nxt):
+-                return True
+-        return False
+-    if path_index >= len(segments):
+-        return False
+-    if not _match_segment(current, segments[path_index]):
+-        return False
+-    return _match_all(compiled, segments, pattern_index + 1, path_index + 1)
++    Tokens are ``(_LITERAL, character)`` or ``(_STAR, None)``.
++    """
++    tokens = []
++    index = 0
++    length = len(segment)
++    while index < length:
++        char = segment[index]
++        if char == ESCAPE:
++            if index + 1 >= length:
++                raise PatternError(
++                    "dangling escape at end of segment %r" % (segment,))
++            following = segment[index + 1]
++            if following not in (STAR, ESCAPE):
++                raise PatternError(
++                    "invalid escape %r in segment %r"
++                    % (ESCAPE + following, segment))
++            tokens.append((_LITERAL, following))
++            index += 2
++            continue
++        if char == STAR:
++            tokens.append((_STAR, None))
++            index += 1
++            continue
++        tokens.append((_LITERAL, char))
++        index += 1
++    return tokens
++
++
++def _validate_tokens(segment, tokens):
++    """Reject adjacent unescaped stars outside of a plain '**' segment."""
++    if segment == DOUBLE_STAR:
++        return
++    previous_star = False
++    for kind, _ in tokens:
++        if kind == _STAR:
++            if previous_star:
++                raise PatternError(
++                    "consecutive '*' are only allowed as a whole '**' segment,"
++                    " got %r" % (segment,))
++            previous_star = True
++        else:
++            previous_star = False
++
++
++def _has_star(tokens):
++    return any(kind == _STAR for kind, _ in tokens)
++
++
++def _match_segment(tokens, text):
++    """Match one path segment against the token list of a pattern segment."""
++    token_count = len(tokens)
++    text_length = len(text)
++    # table[j] is True when tokens[i:] can match text[j:]
++    reachable = [False] * (text_length + 1)
++    reachable[text_length] = True
++    for i in range(token_count - 1, -1, -1):
++        kind, value = tokens[i]
++        updated = [False] * (text_length + 1)
++        if kind == _STAR:
++            possible = False
++            for j in range(text_length, -1, -1):
++                possible = possible or reachable[j]
++                updated[j] = possible
++        else:
++            for j in range(text_length):
++                if text[j] == value and reachable[j + 1]:
++                    updated[j] = True
++            updated[text_length] = False
++        reachable = updated
++    return reachable[0]
++
++
++def _match_all(compiled, segments):
++    """Match the compiled segments (with '**' entries) against path segments."""
++    pattern_count = len(compiled)
++    path_count = len(segments)
++    memo = {}
++
++    def go(pattern_index, path_index):
++        key = (pattern_index, path_index)
++        cached = memo.get(key)
++        if cached is not None:
++            return cached
++        if pattern_index == pattern_count:
++            result = path_index == path_count
++        else:
++            entry = compiled[pattern_index]
++            if entry is None:  # '**'
++                result = False
++                for next_index in range(path_index, path_count + 1):
++                    if go(pattern_index + 1, next_index):
++                        result = True
++                        break
++            elif path_index >= path_count:
++                result = False
++            elif not _match_segment(entry, segments[path_index]):
++                result = False
++            else:
++                result = go(pattern_index + 1, path_index + 1)
++        memo[key] = result
++        return result
++
++    return go(0, 0)
+ 
+ 
+ class Pattern(object):
+-    """A compiled pattern."""
++    """An immutable compiled pattern."""
++
++    __slots__ = ("source", "segments", "specificity", "_compiled")
++
++    def __init__(self, source, segments, compiled, specificity):
++        object.__setattr__(self, "source", source)
++        object.__setattr__(self, "segments", tuple(segments))
++        object.__setattr__(self, "_compiled", tuple(compiled))
++        object.__setattr__(self, "specificity", specificity)
+ 
+-    def __init__(self, source, segments):
+-        self.source = source
+-        self.segments = segments
+-        self.specificity = len(segments)
++    def __setattr__(self, name, value):
++        raise AttributeError("Pattern instances are immutable")
++
++    def __delattr__(self, name):
++        raise AttributeError("Pattern instances are immutable")
+ 
+     def match(self, path):
+-        return _match_all(self.segments, split_path(path), 0, 0)
++        """Return True when path matches this pattern."""
++        return bool(_match_all(self._compiled, split_path(path)))
++
++    def __repr__(self):
++        return "Pattern(%r)" % (self.source,)
+ 
+ 
+ def compile_pattern(pattern):
+-    """Compile pattern into a Pattern."""
+-    segments = [raw for raw in pattern.split(SEPARATOR) if raw not in ("", ".")]
+-    return Pattern(pattern, segments)
++    """Compile pattern into a Pattern object."""
++    if not isinstance(pattern, str):
++        raise TypeError(
++            "pattern must be a str, not %r" % (type(pattern).__name__,))
++    if NUL in pattern:
++        raise PatternError("pattern contains a NUL character")
++    raw_segments = []
++    for raw in pattern.split(SEPARATOR):
++        if raw == "" or raw == CURRENT:
++            continue
++        if raw == PARENT:
++            raise PathTraversalError("pattern contains a '..' segment")
++        raw_segments.append(raw)
++
++    compiled = []
++    literal_count = 0
++    star_count = 0
++    deep_count = 0
++    for raw in raw_segments:
++        tokens = _parse_segment(raw)
++        _validate_tokens(raw, tokens)
++        if raw == DOUBLE_STAR:
++            compiled.append(None)
++            deep_count += 1
++        elif _has_star(tokens):
++            compiled.append(tokens)
++            star_count += 1
++        else:
++            compiled.append(tokens)
++            literal_count += 1
++    specificity = 100 * literal_count + 10 * star_count + deep_count
++    return Pattern(pattern, raw_segments, compiled, specificity)
+diff --git a/ruleengine.py b/ruleengine.py
+index b3a9651..4fe637c 100644
+--- a/ruleengine.py
++++ b/ruleengine.py
+@@ -3,22 +3,72 @@
+ from pathnorm import normalize_path
+ from patternmatch import compile_pattern
+ 
++INCLUDE = "include"
++EXCLUDE = "exclude"
++ACTIONS = (INCLUDE, EXCLUDE)
++
++
++def _check_action(action, what="action"):
++    if not isinstance(action, str):
++        raise TypeError("%s must be a str, not %r" % (what, type(action).__name__))
++    if action not in ACTIONS:
++        raise ValueError("%s must be 'include' or 'exclude', got %r" % (what, action))
++    return action
++
++
++def _iterate(items, what):
++    if isinstance(items, (str, bytes, bytearray)):
++        raise TypeError("%s must be an iterable of items, not a string" % (what,))
++    try:
++        iterator = iter(items)
++    except TypeError:
++        raise TypeError("%s must be iterable" % (what,)) from None
++    return iterator
++
++
+ class Rule(object):
++    """An immutable single include/exclude rule."""
++
++    __slots__ = ("pattern", "action", "priority", "label", "compiled")
++
+     def __init__(self, pattern, action, priority=0, label=None):
+-        self.pattern = pattern
+-        self.action = action
+-        self.priority = priority
+-        self.label = label
+-        self.compiled = compile_pattern(pattern)
++        compiled = compile_pattern(pattern)
++        _check_action(action)
++        if isinstance(priority, bool) or not isinstance(priority, int):
++            raise TypeError(
++                "priority must be an int, not %r" % (type(priority).__name__,))
++        if label is not None and not isinstance(label, str):
++            raise TypeError(
++                "label must be None or a str, not %r" % (type(label).__name__,))
++        object.__setattr__(self, "pattern", pattern)
++        object.__setattr__(self, "action", action)
++        object.__setattr__(self, "priority", priority)
++        object.__setattr__(self, "label", label)
++        object.__setattr__(self, "compiled", compiled)
++
++    def __setattr__(self, name, value):
++        raise AttributeError("Rule instances are immutable")
++
++    def __delattr__(self, name):
++        raise AttributeError("Rule instances are immutable")
+ 
+     def matches(self, path):
++        """Return True when path matches this rule's pattern."""
+         return self.compiled.match(path)
+ 
++    def __repr__(self):
++        return "Rule(%r, %r, priority=%r, label=%r)" % (
++            self.pattern, self.action, self.priority, self.label)
++
+ 
+ class RuleSet(object):
+-    def __init__(self, rules=(), default_action="exclude"):
++    """An ordered collection of rules with a default action."""
++
++    def __init__(self, rules=(), default_action=EXCLUDE):
++        _check_action(default_action, "default_action")
+         self._default_action = default_action
+-        self._rules = rules if isinstance(rules, list) else list(rules)
++        self._rules = []
++        self.extend(rules)
+ 
+     @property
+     def default_action(self):
+@@ -26,47 +76,99 @@ class RuleSet(object):
+ 
+     @property
+     def rules(self):
+-        return self._rules
++        return tuple(self._rules)
+ 
+     def __len__(self):
+         return len(self._rules)
+ 
+     def add(self, rule):
++        """Append rule at the end and return this RuleSet."""
++        if not isinstance(rule, Rule):
++            raise TypeError("rule must be a Rule, not %r" % (type(rule).__name__,))
+         self._rules.append(rule)
+         return self
+ 
+     def extend(self, rules):
+-        for rule in rules:
+-            self.add(rule)
++        """Append every rule atomically and return this RuleSet."""
++        iterator = _iterate(rules, "rules")
++        collected = []
++        for rule in iterator:
++            if not isinstance(rule, Rule):
++                raise TypeError(
++                    "rules must contain Rule instances, got %r"
++                    % (type(rule).__name__,))
++            collected.append(rule)
++        self._rules.extend(collected)
+         return self
+ 
+     def explain(self, path):
++        """Return a fresh dict describing the decision for path."""
+         normalized = normalize_path(path)
++        matched = []
+         winner = None
++        winner_index = None
+         for index, rule in enumerate(self._rules):
+             if rule.compiled.match(normalized):
+-                winner = rule
+-                break
+-        action = winner.action if winner is not None else self._default_action
++                matched.append(index)
++                if winner is None or rule.priority >= winner.priority:
++                    winner = rule
++                    winner_index = index
++        if winner is None:
++            action = self._default_action
++            return {
++                "path": normalized,
++                "allowed": bool(action == INCLUDE),
++                "action": action,
++                "rule_index": None,
++                "label": None,
++                "pattern": None,
++                "priority": None,
++                "specificity": None,
++                "matched": (),
++                "default_used": True,
++            }
+         return {
+             "path": normalized,
+-            "allowed": action == "include",
+-            "action": action,
+-            "rule_index": index if winner is not None else None,
+-            "label": winner.label if winner is not None else None,
+-            "pattern": winner.pattern if winner is not None else None,
+-            "priority": winner.priority if winner is not None else None,
++            "allowed": bool(winner.action == INCLUDE),
++            "action": winner.action,
++            "rule_index": winner_index,
++            "label": winner.label,
++            "pattern": winner.pattern,
++            "priority": winner.priority,
++            "specificity": winner.compiled.specificity,
++            "matched": tuple(matched),
++            "default_used": False,
+         }
+ 
+     def allows(self, path):
+-        return self.explain(path)["allowed"]
++        """Return True when path is allowed by this rule set."""
++        return bool(self.explain(path)["allowed"])
+ 
+     def filter(self, paths):
+-        return [normalize_path(item) for item in paths if self.allows(item)]
++        """Return the tuple of normalised allowed paths, de-duplicated."""
++        iterator = _iterate(paths, "paths")
++        seen = set()
++        kept = []
++        for item in iterator:
++            normalized = normalize_path(item)
++            if normalized in seen:
++                continue
++            seen.add(normalized)
++            if self.allows(normalized):
++                kept.append(normalized)
++        return tuple(kept)
++
++    def __repr__(self):
++        return "RuleSet(%d rules, default_action=%r)" % (
++            len(self._rules), self._default_action)
+ 
+ 
+ class DecisionLog(object):
++    """A log of rule set decisions stamped with a clock."""
++
+     def __init__(self, clock):
++        if not callable(clock):
++            raise TypeError("clock must be callable")
+         self._clock = clock
+         self._entries = []
+ 
+@@ -74,16 +176,24 @@ class DecisionLog(object):
+         return len(self._entries)
+ 
+     def record(self, ruleset, path):
++        """Record the decision of ruleset for path and return a copy of it."""
++        if not isinstance(ruleset, RuleSet):
++            raise TypeError(
++                "ruleset must be a RuleSet, not %r" % (type(ruleset).__name__,))
+         explanation = ruleset.explain(path)
+         explanation["at"] = self._clock()
+         self._entries.append(explanation)
+-        return explanation
++        return dict(explanation)
+ 
+     def entries(self):
+-        return self._entries
++        """Return a tuple of fresh copies of the recorded entries."""
++        return tuple(dict(entry) for entry in self._entries)
+ 
+     def summary(self):
+-        counts = {"include": 0, "exclude": 0}
++        """Return the counts of recorded include/exclude decisions."""
++        counts = {"include": 0, "exclude": 0, "total": len(self._entries)}
+         for entry in self._entries:
+-            counts[entry["action"]] += 1
++            action = entry["action"]
++            if action in counts:
++                counts[action] += 1
+         return counts
+diff --git a/ruleerrors.py b/ruleerrors.py
+index db5b9dd..96d2d17 100644
+--- a/ruleerrors.py
++++ b/ruleerrors.py
+@@ -1,7 +1,7 @@
+ """Exception types shared by the path-rule engine."""
+ 
+ 
+-class RuleError(Exception):
++class RuleError(ValueError):
+     """Base class for engine errors."""
+ 
+ 
+@@ -15,3 +15,8 @@ class PatternError(RuleError):
+ 
+ class RuleSyntaxError(RuleError):
+     """Raised for an unparsable rule line."""
++
++    def __init__(self, message, line_number):
++        super().__init__("line %d: %s" % (int(line_number), message))
++        self.message = message
++        self.line_number = int(line_number)
+diff --git a/ruleloader.py b/ruleloader.py
+index b444bb9..edd162e 100644
+--- a/ruleloader.py
++++ b/ruleloader.py
+@@ -1,29 +1,58 @@
+ """Parsing of the textual rule format into Rule objects."""
+ 
+ from ruleengine import Rule
+-from ruleerrors import RuleSyntaxError
++from ruleerrors import RuleError, RuleSyntaxError
+ 
+ COMMENT = "#"
+ FIELD_SEPARATOR = ":"
++STRIP_CHARS = " \t"
++DIGITS = "0123456789"
++ACTIONS = ("include", "exclude")
++
++
++def _parse_priority(text, line_number):
++    if text == "":
++        return 0
++    body = text
++    if body[0] in "+-":
++        body = body[1:]
++    if body == "" or any(char not in DIGITS for char in body):
++        raise RuleSyntaxError("invalid priority %r" % (text,), line_number)
++    return int(text)
+ 
+ 
+ def parse_rules(text):
+     """Parse rule text and return the rules in file order."""
++    if not isinstance(text, str):
++        raise TypeError("text must be a str, not %r" % (type(text).__name__,))
+     rules = []
+-    for line in text.splitlines():
+-        if line == "" or line.startswith(COMMENT):
++    for line_number, line in enumerate(text.splitlines(), 1):
++        stripped = line.strip(STRIP_CHARS)
++        if stripped == "" or stripped.startswith(COMMENT):
+             continue
+-        fields = line.split(FIELD_SEPARATOR)
++        fields = stripped.split(FIELD_SEPARATOR, 3)
+         if len(fields) < 4:
+-            raise RuleSyntaxError("expected 4 fields")
+-        action, priority_text, label_text, pattern = fields[:4]
+-        priority = int(priority_text) if priority_text else 0
+-        label = label_text or None
+-        rules.append(Rule(pattern, action, priority, label))
+-    return rules
++            raise RuleSyntaxError(
++                "expected 4 fields separated by ':'", line_number)
++        action = fields[0].strip(STRIP_CHARS)
++        priority_text = fields[1].strip(STRIP_CHARS)
++        label_text = fields[2].strip(STRIP_CHARS)
++        pattern = fields[3]
++        if action not in ACTIONS:
++            raise RuleSyntaxError("invalid action %r" % (action,), line_number)
++        priority = _parse_priority(priority_text, line_number)
++        label = label_text if label_text != "" else None
++        try:
++            rule = Rule(pattern, action, priority, label)
++        except RuleError as error:
++            raise RuleSyntaxError(str(error), line_number) from error
++        rules.append(rule)
++    return tuple(rules)
+ 
+ 
+ def load_rules(path):
+     """Read rule text from path and return the rules."""
+-    with open(path) as handle:
++    if not isinstance(path, str):
++        raise TypeError("path must be a str, not %r" % (type(path).__name__,))
++    with open(path, "r", encoding="utf-8") as handle:
+         return parse_rules(handle.read())

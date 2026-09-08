@@ -1,0 +1,81 @@
+{
+  "source_commit": "5eae2cff216ac551b4261c5c3aa2c942eb381417",
+  "track": "native",
+  "command": [
+    "C:\\Users\\Sining Xu\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+    "C:\\workspace\\collie-benchmark-2026-09-07-evening\\native-session2-product\\native_batch.py",
+    "--name",
+    "native-replay",
+    "--tasks",
+    "C:\\workspace\\collie-benchmark-2026-09-07-evening\\native-session2-product\\tasks.json",
+    "--repetitions",
+    "3",
+    "--concurrency",
+    "6"
+  ],
+  "path_and_deadline_changes": [
+    {
+      "file": "analyze.py",
+      "source_sha256": "2ad2af49e5c16389c2522ac3a79de72a9380d02d4ea86a1fab0da7b05313f772",
+      "replay_sha256": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "changed": false
+    },
+    {
+      "file": "native_attempt.py",
+      "source_sha256": "f0a0ffa6b29be833fa512b7571a6f7705ab2d212694efd990bb02bfbda6f8828",
+      "replay_sha256": "9b8574d07ab06b047b0911cb541f8c78033b663bd8b1e8cc46ac7f417f1f7bdc",
+      "changed": true
+    },
+    {
+      "file": "native_batch.py",
+      "source_sha256": "d598a8cd2cd9750c979f87558e92e60f2aca767b57df30374b943b235603664f",
+      "replay_sha256": "6a68b9e68e3233161b90b0b10b7a75088fb0713ae497c19b09097d97b1d0683b",
+      "changed": true
+    },
+    {
+      "file": "native_jobs.py",
+      "source_sha256": "814a3e6dd91fa4b0d0ea075f9f76f8a1e9fc2d2db95e515b230c17cd442f4e62",
+      "replay_sha256": "c6547018842959631ff8238b97e5a71fbb0381b7121effdf280c94c0caef5195",
+      "changed": true
+    },
+    {
+      "file": "normalized_batch.py",
+      "source_sha256": "edf73a0da5bde7e220e48ee1f0d55d7bb7e021e54079464b74fb12f60dd08076",
+      "replay_sha256": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "changed": false
+    },
+    {
+      "file": "regrade_initial.py",
+      "source_sha256": "60c87fa4fe8bc02f3e034cca652c3111882449369edf353fb712baff94a8763e",
+      "replay_sha256": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "changed": false
+    },
+    {
+      "file": "regrade_patch.py",
+      "source_sha256": "30d10e0e274b1593171d8d11dff227bd0130cd8ce70a6fac850df8b6c359914c",
+      "replay_sha256": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "changed": false
+    },
+    {
+      "file": "run_normalized.py",
+      "source_sha256": "5ebff1b8250cd895b942e6c677d72d8beaf0c7247646390c2e7d9e05c9debf72",
+      "replay_sha256": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "changed": false
+    },
+    {
+      "file": "workflow_attempt.py",
+      "source_sha256": "23962d559592d71b7b9c8e6ab3be7dd20ada78dc892f88f24dcd7285829a5af6",
+      "replay_sha256": "f5554be4b4cf35bf8dcb2c3afcab7571b43c7aaab52dcbfcbbcf2eaa4d7cdd2a",
+      "changed": true
+    },
+    {
+      "file": "workflow_batch.py",
+      "source_sha256": "32e8e507a9a759058ce7449e31698ec5955ba54c81f7cefb0a10b948932ff1c1",
+      "replay_sha256": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d",
+      "changed": true
+    }
+  ],
+  "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+  "web_controller_fixed_design": false,
+  "experiment_manifest": "experiment.json"
+}

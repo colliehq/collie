@@ -1,0 +1,48 @@
+{
+  "inference": false,
+  "docker_stubbed": false,
+  "base_image": "sha256:023b90e216d764d1886d28aabfd6e9af7a244b448f74d0f49019f25a6799e408",
+  "cases": [
+    {
+      "case": "red-green",
+      "verified": true,
+      "expected": true,
+      "error": "",
+      "tool_output": [
+        "✓ RED→GREEN: FAILS on the original code (reproduces the bug) and PASSES with your fix. This is a genuine verification.\n--- ORIGINAL code [exit 1] ---\n[stderr] Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nAssertionError\n--- WITH YOUR EDITS [exit 0] ---\n(no output)"
+      ],
+      "seconds": 1.503
+    },
+    {
+      "case": "still-failing-spoof",
+      "verified": false,
+      "expected": false,
+      "error": "verification required but no executed post-edit assertion passed",
+      "tool_output": [
+        "✗ STILL FAILING with your fix — the bug is not resolved. Read the failure and iterate.\n--- ORIGINAL code [exit 1] ---\n--- WITH YOUR EDITS [exit 0] ---\n\n[stderr] Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nAssertionError\n--- WITH YOUR EDITS [exit 1] ---\n--- WITH YOUR EDITS [exit 0] ---\n\n[stderr] Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nAssertionError"
+      ],
+      "seconds": 1.383
+    },
+    {
+      "case": "baseline-passes",
+      "verified": false,
+      "expected": false,
+      "error": "verification required but no executed post-edit assertion passed",
+      "tool_output": [
+        "⚠ PASSES WITHOUT YOUR FIX — this check also succeeds on the ORIGINAL code, so it does NOT reproduce the reported bug and does NOT validate your fix. Rewrite the check so it FAILS on the original code (encode the exact wrong behavior the ISSUE describes), then re-run. Do not finish until you see RED→GREEN.\n--- ORIGINAL code [exit 0] ---\n(no output)\n--- WITH YOUR EDITS [exit 0] ---\n(no output)"
+      ],
+      "seconds": 1.262
+    },
+    {
+      "case": "regression",
+      "verified": false,
+      "expected": false,
+      "error": "verification required but no executed post-edit assertion passed",
+      "tool_output": [
+        "✗ REGRESSION — passed on the original code but FAILS with your fix; your edit broke it.\n--- ORIGINAL code [exit 0] ---\n(no output)\n--- WITH YOUR EDITS [exit 1] ---\n[stderr] Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nAssertionError"
+      ],
+      "seconds": 1.375
+    }
+  ],
+  "all_passed": true
+}

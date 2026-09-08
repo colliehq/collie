@@ -1,0 +1,19 @@
+{
+  "observed_at_utc": "2026-09-08T02:51:54.840110+00:00",
+  "sdk_package": "0.2.136",
+  "sdk_cli": {
+    "filename": "claude.exe",
+    "version": "2.1.228 (Claude Code)",
+    "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+    "bytes": 296308896,
+    "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+  },
+  "native_cli": {
+    "filename": "claude.exe",
+    "version": "2.1.221 (Claude Code)",
+    "sha256": "0f73196359a07f9ad435a8c83ca7c741b9f2adbc0ad9b05f71a0c2f4aabe906a",
+    "bytes": 278279328,
+    "modified_utc": "2026-08-04T18:24:46.039628+00:00"
+  },
+  "interpretation": "First-window native CLI and SDK use different installations. This is an inventory made after those runs, not a per-call runtime attestation. Historical manifests labelled only the native CLI version."
+}

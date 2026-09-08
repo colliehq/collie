@@ -1,0 +1,104 @@
+{
+  "source_commit": "5d037ea34d842e62d8283b82a23025e56172a837",
+  "rows": [
+    {
+      "language": "en",
+      "theme": "light",
+      "width": 320,
+      "summary": "CURRENT\nprovider quota exhausted; resume after its reset\nCOMPLETED\nNothing verified yet\nNEXT\nCollie will continue checking at the scheduled time.\nNEXT CHECK\nSep 7, 2026, 10:30 PM PDT",
+      "horizontal_overflow": false,
+      "screenshot": "en-light-320.png"
+    },
+    {
+      "language": "en",
+      "theme": "light",
+      "width": 1280,
+      "summary": "CURRENT\nprovider quota exhausted; resume after its reset\nCOMPLETED\nNothing verified yet\nNEXT\nCollie will continue checking at the scheduled time.\nNEXT CHECK\nSep 7, 2026, 10:30 PM PDT",
+      "horizontal_overflow": false,
+      "screenshot": "en-light-1280.png"
+    },
+    {
+      "language": "en",
+      "theme": "dark",
+      "width": 320,
+      "summary": "CURRENT\nprovider quota exhausted; resume after its reset\nCOMPLETED\nNothing verified yet\nNEXT\nCollie will continue checking at the scheduled time.\nNEXT CHECK\nSep 7, 2026, 10:30 PM PDT",
+      "horizontal_overflow": false,
+      "screenshot": "en-dark-320.png"
+    },
+    {
+      "language": "en",
+      "theme": "dark",
+      "width": 1280,
+      "summary": "CURRENT\nprovider quota exhausted; resume after its reset\nCOMPLETED\nNothing verified yet\nNEXT\nCollie will continue checking at the scheduled time.\nNEXT CHECK\nSep 7, 2026, 10:30 PM PDT",
+      "horizontal_overflow": false,
+      "screenshot": "en-dark-1280.png"
+    },
+    {
+      "language": "zh",
+      "theme": "light",
+      "width": 320,
+      "summary": "当前\n模型额度已用完，将在重置后自动继续。\n已完成\n尚无已验证步骤\n下一步\nCollie 会在预定时间自动继续检查。\n下次检查\n2026年9月7日 GMT-7 22:30",
+      "horizontal_overflow": false,
+      "screenshot": "zh-light-320.png"
+    },
+    {
+      "language": "zh",
+      "theme": "light",
+      "width": 1280,
+      "summary": "当前\n模型额度已用完，将在重置后自动继续。\n已完成\n尚无已验证步骤\n下一步\nCollie 会在预定时间自动继续检查。\n下次检查\n2026年9月7日 GMT-7 22:30",
+      "horizontal_overflow": false,
+      "screenshot": "zh-light-1280.png"
+    },
+    {
+      "language": "zh",
+      "theme": "dark",
+      "width": 320,
+      "summary": "当前\n模型额度已用完，将在重置后自动继续。\n已完成\n尚无已验证步骤\n下一步\nCollie 会在预定时间自动继续检查。\n下次检查\n2026年9月7日 GMT-7 22:30",
+      "horizontal_overflow": false,
+      "screenshot": "zh-dark-320.png"
+    },
+    {
+      "language": "zh",
+      "theme": "dark",
+      "width": 1280,
+      "summary": "当前\n模型额度已用完，将在重置后自动继续。\n已完成\n尚无已验证步骤\n下一步\nCollie 会在预定时间自动继续检查。\n下次检查\n2026年9月7日 GMT-7 22:30",
+      "horizontal_overflow": false,
+      "screenshot": "zh-dark-1280.png"
+    },
+    {
+      "language": "zh-tw",
+      "theme": "light",
+      "width": 320,
+      "summary": "目前\n模型額度已用完，將在重設後自動繼續。\n已完成\n尚無已驗證步驟\n下一步\nCollie 會在預定時間自動繼續檢查。\n下次檢查\n2026年9月7日 下午10:30 [PDT]",
+      "horizontal_overflow": false,
+      "screenshot": "zh-tw-light-320.png"
+    },
+    {
+      "language": "zh-tw",
+      "theme": "light",
+      "width": 1280,
+      "summary": "目前\n模型額度已用完，將在重設後自動繼續。\n已完成\n尚無已驗證步驟\n下一步\nCollie 會在預定時間自動繼續檢查。\n下次檢查\n2026年9月7日 下午10:30 [PDT]",
+      "horizontal_overflow": false,
+      "screenshot": "zh-tw-light-1280.png"
+    },
+    {
+      "language": "zh-tw",
+      "theme": "dark",
+      "width": 320,
+      "summary": "目前\n模型額度已用完，將在重設後自動繼續。\n已完成\n尚無已驗證步驟\n下一步\nCollie 會在預定時間自動繼續檢查。\n下次檢查\n2026年9月7日 下午10:30 [PDT]",
+      "horizontal_overflow": false,
+      "screenshot": "zh-tw-dark-320.png"
+    },
+    {
+      "language": "zh-tw",
+      "theme": "dark",
+      "width": 1280,
+      "summary": "目前\n模型額度已用完，將在重設後自動繼續。\n已完成\n尚無已驗證步驟\n下一步\nCollie 會在預定時間自動繼續檢查。\n下次檢查\n2026年9月7日 下午10:30 [PDT]",
+      "horizontal_overflow": false,
+      "screenshot": "zh-tw-dark-1280.png"
+    }
+  ],
+  "page_errors": [],
+  "model_calls": 0,
+  "claim": "Actual UI assets with synthetic Mission status and an isolated browser."
+}

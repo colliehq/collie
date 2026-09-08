@@ -1,0 +1,18 @@
+{
+  "source_commit": "4eaad5f6b3b6777866863c4deccf86c322ec2a43",
+  "exit": 1,
+  "started_at": "2026-09-08T07:10:11.963275+00:00",
+  "finished_at": "2026-09-08T07:25:29.128167+00:00",
+  "seconds": 917.165,
+  "network_skipped": true,
+  "log_sha256": "649148cadda7a015983fd5ee7ebcc85bfa3db0dc614492e434b36e69e634e124",
+  "suite_summaries": [
+    "== CORE: 38/38 passed ==",
+    "== RENDERER: 29/29 passed == \u2014 ALL GREEN",
+    "== browser extension (page-side): 130/130 passed ==",
+    "== VS Code entrance: 12 passed ==",
+    "== GUI: 63/63 passed ==",
+    "== SURFACES: 41/41 passed ==",
+    "3/3 tasks passed \u00b7 memory facts=1"
+  ]
+}

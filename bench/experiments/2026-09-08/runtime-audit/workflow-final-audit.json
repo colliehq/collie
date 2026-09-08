@@ -1,0 +1,9 @@
+{
+  "filename": "claude.exe",
+  "version": "2.1.228 (Claude Code)",
+  "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+  "bytes": 296308896,
+  "modified_utc": "2026-08-12T17:37:13.834319+00:00",
+  "source_commit": "4eaad5f6b3b6777866863c4deccf86c322ec2a43",
+  "source_dirty_at_start": false
+}

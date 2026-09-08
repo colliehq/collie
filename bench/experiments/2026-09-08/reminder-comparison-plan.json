@@ -1,0 +1,35 @@
+{
+  "registered_at": "2026-09-08T06:02:42.406914+00:00",
+  "not_before_utc": "2026-09-08T05:30:05Z",
+  "classification": "Exploratory follow-up after the original and recovery cohorts; do not pool versions.",
+  "source_commit": "310a3418647c652410b5bd88f5c0297600bfd1dc",
+  "model": "claude-opus-5",
+  "effort": "high",
+  "response_mode": "plain",
+  "context_mode": "full-tool-history",
+  "repetitions": 3,
+  "tasks": [
+    "ordered-pathrule-priority-engine",
+    "capacity-ledger-reservation-audit"
+  ],
+  "arms": [
+    "stateless",
+    "session",
+    "session-with-response-reminder"
+  ],
+  "attempts": 18,
+  "concurrency_per_arm": 3,
+  "global_peak": 12,
+  "hypothesis": "The initial flat prompt repeats the response contract, while persistent deltas carry only new observations. Restating the same contract after plain deltas may reduce multiple-object replies, format repairs and session resets.",
+  "intervention": "Only add the fixed response-format reminder to existing plain persistent deltas. First turns and reset prompts are unchanged; host histories and compaction remain authoritative.",
+  "outcomes": [
+    "independent artifact correctness",
+    "clean completion",
+    "protocol repairs and failures",
+    "physical requests",
+    "cache counters",
+    "session reuse and cleanup",
+    "wall time"
+  ],
+  "claim_limit": "The native conversation format differs from stateless flattening; not a cache-only treatment. Small task set and concurrent source reviews do not establish a general latency ranking."
+}

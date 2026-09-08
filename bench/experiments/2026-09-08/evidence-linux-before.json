@@ -1,0 +1,14 @@
+{
+  "exit": 1,
+  "seconds": 6.907,
+  "at": "2026-09-08T07:33:51.099270+00:00",
+  "image": "sha256:11d1850eb36480389102c7693693077e15be64c342bf12255aa8a29796aef0d2",
+  "source_stage": "reviewed-evidence-stage4",
+  "source_manifest_sha256": "080a93bbf895ef0c8501add4615c0ee620b84e3220130ac5a4314c192dce07bf",
+  "results_sha256": "2e914459344cc7b295b671df7b39855ccae1f14f50a6340a068452ff10da3905",
+  "verifier_sha256": "eec64b714420e083dd40dcd4545750febb76cbd8d5f468ee7370c5e2f276258e",
+  "checks": null,
+  "network_disabled": true,
+  "model_calls": 0,
+  "claim": "Cross-platform check of the unchanged candidate set and source patches. Later product-validation files are not in this older stage."
+}

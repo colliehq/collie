@@ -1,0 +1,405 @@
+{
+  "source_commit": "5a5c495e5b8ac451b265e038addad3ddea05b5bb",
+  "model_calls": 0,
+  "scripted_turns": 60,
+  "rows": [
+    {
+      "projection": "production_elision",
+      "turns": [
+        {
+          "turn": 1,
+          "sessions_opened": 1,
+          "elide_from": -13,
+          "native_user_prompt_chars": 1004
+        },
+        {
+          "turn": 2,
+          "sessions_opened": 1,
+          "elide_from": -11,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 3,
+          "sessions_opened": 1,
+          "elide_from": -9,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 4,
+          "sessions_opened": 1,
+          "elide_from": -7,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 5,
+          "sessions_opened": 1,
+          "elide_from": -5,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 6,
+          "sessions_opened": 1,
+          "elide_from": -3,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 7,
+          "sessions_opened": 1,
+          "elide_from": -1,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 8,
+          "sessions_opened": 1,
+          "elide_from": 1,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 9,
+          "sessions_opened": 2,
+          "elide_from": 3,
+          "native_user_prompt_chars": 29912
+        },
+        {
+          "turn": 10,
+          "sessions_opened": 3,
+          "elide_from": 5,
+          "native_user_prompt_chars": 30253
+        },
+        {
+          "turn": 11,
+          "sessions_opened": 4,
+          "elide_from": 7,
+          "native_user_prompt_chars": 30594
+        },
+        {
+          "turn": 12,
+          "sessions_opened": 5,
+          "elide_from": 9,
+          "native_user_prompt_chars": 30935
+        },
+        {
+          "turn": 13,
+          "sessions_opened": 6,
+          "elide_from": 11,
+          "native_user_prompt_chars": 31276
+        },
+        {
+          "turn": 14,
+          "sessions_opened": 7,
+          "elide_from": 13,
+          "native_user_prompt_chars": 31617
+        },
+        {
+          "turn": 15,
+          "sessions_opened": 8,
+          "elide_from": 15,
+          "native_user_prompt_chars": 31958
+        },
+        {
+          "turn": 16,
+          "sessions_opened": 9,
+          "elide_from": 17,
+          "native_user_prompt_chars": 32299
+        },
+        {
+          "turn": 17,
+          "sessions_opened": 10,
+          "elide_from": 19,
+          "native_user_prompt_chars": 32640
+        },
+        {
+          "turn": 18,
+          "sessions_opened": 11,
+          "elide_from": 21,
+          "native_user_prompt_chars": 32981
+        },
+        {
+          "turn": 19,
+          "sessions_opened": 12,
+          "elide_from": 23,
+          "native_user_prompt_chars": 33322
+        },
+        {
+          "turn": 20,
+          "sessions_opened": 13,
+          "elide_from": 25,
+          "native_user_prompt_chars": 33663
+        },
+        {
+          "turn": 21,
+          "sessions_opened": 14,
+          "elide_from": 27,
+          "native_user_prompt_chars": 34004
+        },
+        {
+          "turn": 22,
+          "sessions_opened": 15,
+          "elide_from": 29,
+          "native_user_prompt_chars": 34345
+        },
+        {
+          "turn": 23,
+          "sessions_opened": 16,
+          "elide_from": 31,
+          "native_user_prompt_chars": 34686
+        },
+        {
+          "turn": 24,
+          "sessions_opened": 17,
+          "elide_from": 33,
+          "native_user_prompt_chars": 35027
+        },
+        {
+          "turn": 25,
+          "sessions_opened": 18,
+          "elide_from": 35,
+          "native_user_prompt_chars": 35368
+        },
+        {
+          "turn": 26,
+          "sessions_opened": 19,
+          "elide_from": 37,
+          "native_user_prompt_chars": 35709
+        },
+        {
+          "turn": 27,
+          "sessions_opened": 20,
+          "elide_from": 39,
+          "native_user_prompt_chars": 36050
+        },
+        {
+          "turn": 28,
+          "sessions_opened": 21,
+          "elide_from": 41,
+          "native_user_prompt_chars": 36391
+        },
+        {
+          "turn": 29,
+          "sessions_opened": 22,
+          "elide_from": 43,
+          "native_user_prompt_chars": 36732
+        },
+        {
+          "turn": 30,
+          "sessions_opened": 23,
+          "elide_from": 45,
+          "native_user_prompt_chars": 37073
+        }
+      ],
+      "session_evidence": {
+        "sessions_opened": 23,
+        "session_turns": 30,
+        "stateless_turns": 0,
+        "longest_session_turns": 8,
+        "resets": {
+          "history_rewritten": 22,
+          "diagnostic_finished": 1
+        },
+        "fallbacks": {},
+        "unresolved_cleanups": 0,
+        "cleanup_retries_confirmed": 0
+      },
+      "native_user_prompt_chars": 766042
+    },
+    {
+      "projection": "unelided_mechanism_control",
+      "turns": [
+        {
+          "turn": 1,
+          "sessions_opened": 1,
+          "elide_from": -13,
+          "native_user_prompt_chars": 1004
+        },
+        {
+          "turn": 2,
+          "sessions_opened": 1,
+          "elide_from": -11,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 3,
+          "sessions_opened": 1,
+          "elide_from": -9,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 4,
+          "sessions_opened": 1,
+          "elide_from": -7,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 5,
+          "sessions_opened": 1,
+          "elide_from": -5,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 6,
+          "sessions_opened": 1,
+          "elide_from": -3,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 7,
+          "sessions_opened": 1,
+          "elide_from": -1,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 8,
+          "sessions_opened": 1,
+          "elide_from": 1,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 9,
+          "sessions_opened": 1,
+          "elide_from": 3,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 10,
+          "sessions_opened": 1,
+          "elide_from": 5,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 11,
+          "sessions_opened": 1,
+          "elide_from": 7,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 12,
+          "sessions_opened": 1,
+          "elide_from": 9,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 13,
+          "sessions_opened": 1,
+          "elide_from": 11,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 14,
+          "sessions_opened": 1,
+          "elide_from": 13,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 15,
+          "sessions_opened": 1,
+          "elide_from": 15,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 16,
+          "sessions_opened": 1,
+          "elide_from": 17,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 17,
+          "sessions_opened": 1,
+          "elide_from": 19,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 18,
+          "sessions_opened": 1,
+          "elide_from": 21,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 19,
+          "sessions_opened": 1,
+          "elide_from": 23,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 20,
+          "sessions_opened": 1,
+          "elide_from": 25,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 21,
+          "sessions_opened": 1,
+          "elide_from": 27,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 22,
+          "sessions_opened": 1,
+          "elide_from": 29,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 23,
+          "sessions_opened": 1,
+          "elide_from": 31,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 24,
+          "sessions_opened": 1,
+          "elide_from": 33,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 25,
+          "sessions_opened": 1,
+          "elide_from": 35,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 26,
+          "sessions_opened": 1,
+          "elide_from": 37,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 27,
+          "sessions_opened": 1,
+          "elide_from": 39,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 28,
+          "sessions_opened": 1,
+          "elide_from": 41,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 29,
+          "sessions_opened": 1,
+          "elide_from": 43,
+          "native_user_prompt_chars": 4029
+        },
+        {
+          "turn": 30,
+          "sessions_opened": 1,
+          "elide_from": 45,
+          "native_user_prompt_chars": 4029
+        }
+      ],
+      "session_evidence": {
+        "sessions_opened": 1,
+        "session_turns": 30,
+        "stateless_turns": 0,
+        "longest_session_turns": 30,
+        "resets": {
+          "diagnostic_finished": 1
+        },
+        "fallbacks": {},
+        "unresolved_cleanups": 0,
+        "cleanup_retries_confirmed": 0
+      },
+      "native_user_prompt_chars": 117845
+    }
+  ],
+  "claim": "Mechanism diagnostic only. Real ContextComposer and session adapter; scripted worker replies. Prompt characters are host-to-native-client input, not API bytes, billed tokens or coding quality. The unelided control deliberately omits production context elision and is not a product mode."
+}

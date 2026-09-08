@@ -1,0 +1,47 @@
+diff --git a/ruleerrors.py b/ruleerrors.py
+index db5b9dd..2a2e341 100644
+--- a/ruleerrors.py
++++ b/ruleerrors.py
+@@ -1,17 +1,25 @@
+-"""Exception types shared by the path-rule engine."""
+-
+-
+-class RuleError(Exception):
+-    """Base class for engine errors."""
+-
+-
+-class PathTraversalError(RuleError):
+-    """Raised for a '..' segment."""
+-
+-
+-class PatternError(RuleError):
+-    """Raised for an invalid pattern."""
+-
+-
+-class RuleSyntaxError(RuleError):
+-    """Raised for an unparsable rule line."""
++"""Exception types shared by the path-rule engine."""
++
++
++class RuleError(ValueError):
++    """Base class for engine errors."""
++
++
++class PathTraversalError(RuleError):
++    """Raised for a '..' segment."""
++
++
++class PatternError(RuleError):
++    """Raised for an invalid pattern."""
++
++
++class RuleSyntaxError(RuleError):
++    """Raised for an unparsable rule line."""
++
++    def __init__(self, message, line_number):
++        super(RuleSyntaxError, self).__init__(message)
++        self.message = message
++        self.line_number = int(line_number)
++
++    def __str__(self):
++        return "line %d: %s" % (self.line_number, self.message)

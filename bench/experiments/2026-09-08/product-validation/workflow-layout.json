@@ -1,0 +1,59 @@
+{
+  "source_commit": "1a0f548a775c9d4d146d3abac976751c4632deb7",
+  "ui_sha256": "db02668ef81627e172d0b3123ea49b96a5531ef1fc0e380c2cffb5fe847731d8",
+  "method": "Real UI resources, synthetic local server refusal; isolated Playwright browser, no model calls.",
+  "checks": [
+    {
+      "width": 1280,
+      "overflow": false,
+      "rows": [
+        {
+          "text": "Save not confirmed — still here · Send it again or discard it · Attachments saved\nBusy fixture — use the tests directory, not the whole tree\nSend again\nDiscard",
+          "overflow": false,
+          "bounds": {
+            "x": 262,
+            "y": 659,
+            "width": 1000,
+            "height": 92,
+            "top": 659,
+            "right": 1262,
+            "bottom": 751,
+            "left": 262
+          }
+        }
+      ],
+      "composer": "Actually — check the installer instead.",
+      "lang": "en",
+      "errors": [],
+      "screenshot": "retained-1280-en.png",
+      "screenshot_sha256": "4cb081b8b0bc23551bf7b86d7ac48f4cccc90f73457ffe69c2cb6abb7ef51794"
+    },
+    {
+      "width": 390,
+      "overflow": false,
+      "rows": [
+        {
+          "text": "保存尚未确认 — 仍然保留在这里 · 可以重新发送或丢弃 · 附件已保存\nBusy fixture — 请检查安装流程，并保留这张附件。\n重新发送\n丢弃",
+          "overflow": false,
+          "bounds": {
+            "x": 18,
+            "y": 597,
+            "width": 354,
+            "height": 110,
+            "top": 597,
+            "right": 372,
+            "bottom": 707,
+            "left": 18
+          }
+        }
+      ],
+      "composer": "下一条草稿：先检查 Windows 安装。",
+      "lang": "zh",
+      "errors": [],
+      "screenshot": "retained-390-zh.png",
+      "screenshot_sha256": "7522134e6c89d010dd0ac7339a0fd36955ab6a6f6f77560cbb419bda738854b5"
+    }
+  ],
+  "passed": true,
+  "model_calls": 0
+}

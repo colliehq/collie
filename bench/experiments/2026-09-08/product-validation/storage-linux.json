@@ -1,0 +1,12 @@
+{
+  "source_commit": "aad4afe6fd3793f7598742e9b65a1778101d1530",
+  "runtime": "Python 3.12.11 Linux",
+  "passed": 52,
+  "skipped": 0,
+  "seconds": 5.44,
+  "network_disabled": true,
+  "source_mount": "read-only",
+  "original_log_sha256": "7f703398d77136839fd61c0a0fe1144edc28c27ff0cda843843e4e515e79bf04",
+  "export_log_sha256": "94343bbcb28c9048f0d489adf9cf7f550925704599739a9938060d1740b9edf6",
+  "model_calls": 0
+}

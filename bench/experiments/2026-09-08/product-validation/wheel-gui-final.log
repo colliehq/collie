@@ -1,0 +1,65 @@
+  PASS collie.localhost loads
+  PASS Today dashboard shown
+  PASS first run offers a companion name
+  PASS naming starts from a calm editable default
+  PASS onboarding appears when no provider is authed
+  PASS onboarding dismisses and stops blocking the page
+  PASS chosen name updates the task identity live
+  PASS renamed avatar uses a versioned transparent endpoint
+  PASS CSRF token injected
+  PASS slash opens a command palette
+  PASS slash palette keyboard selection fills without sending
+  PASS run setup has intent/effort/verify/workspace/strategy axes
+  PASS worker radio arrow selects and moves the roving tab stop
+  PASS radio arrow selects and moves the roving tab stop
+  PASS radio End key selects the last effort option
+  PASS failed image upload restores the draft and starts no text-only run
+  PASS single Required verification still needs a command
+  PASS desktop rejects out-of-range Pack attempts before launch
+  PASS desktop Pack uses its own check without a duplicate required field
+  PASS Pack still requires its own executed check
+  PASS status rail removed
+  PASS model trigger present in toolbar
+  PASS run details collapsed by default
+  PASS secondary toolbar actions open from More tools
+  PASS model picker opens with catalog
+  PASS model picker keyboard switch persists
+  PASS model picker shortcut opens and closes
+  PASS theme toggles
+  PASS theme persists across reload
+  PASS sidebar collapses
+  PASS collapsed sidebar has ~0 width
+  PASS sidebar state persists
+  PASS sidebar expands back
+  PASS session delete (token'd) works
+  PASS deleted session file gone
+  PASS CSRF: unauth delete -> 403
+  PASS settings modal opens w/ rows
+  PASS My Collie keeps a permanent rename control
+  PASS Settings rename propagates without a reload
+  PASS Settings rename busts the previous avatar URL
+  PASS save closes the settings panel
+  PASS settings persisted to disk
+  PASS settings GET reflects save
+  PASS MCP pane draws a configured server
+  PASS and names it
+  PASS with the one-press catalog beside it
+  PASS settings ESC closes
+  PASS settings CSRF: unauth POST -> 403
+  PASS mobile: no horizontal overflow
+  PASS 390px: run setup popup stays inside viewport
+  PASS 320px: topbar and document do not overflow
+  PASS 320px: run setup popup stays inside viewport
+  PASS phone closed drawer is inert and declared modal
+  PASS phone drawer traps keyboard focus
+  PASS phone drawer closes inert and returns focus
+  PASS phone run setup shows all five axes without overflow
+  PASS phone Plan resets and locks incompatible execution choices
+  PASS phone Pack owns isolation and requires a check
+  PASS phone Pack uses its own check without a duplicate required field
+  PASS phone rejects out-of-range Pack attempts before launch
+  PASS phone sends every selected axis and Pack check
+  PASS 320px phone controls stay in viewport
+  PASS no uncaught page errors
+
+== GUI: 63/63 passed ==

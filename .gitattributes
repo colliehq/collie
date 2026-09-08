@@ -1,3 +1,4 @@
 *.sh text eol=lf
 # Preserve frozen benchmark bytes across Windows/Linux checkouts for SHA-256 verification.
 /bench/experiments/2026-09-07/** -text
+/bench/experiments/2026-09-08/** -text

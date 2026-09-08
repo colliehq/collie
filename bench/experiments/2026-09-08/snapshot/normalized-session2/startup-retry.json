@@ -1,0 +1,7 @@
+{
+  "initial_launch": "second-window-launches/normalized-session2.log",
+  "initial_failure": "billing_or_routing_override_present",
+  "model_requests_before_rejection": 0,
+  "change": "Remove the outer CLAUDE_CODE_MAX_RETRIES environment override only. The normalized guard is unchanged; the frozen SDK worker configures its own retries.",
+  "tasks_source_grader_and_deadline_unchanged": true
+}

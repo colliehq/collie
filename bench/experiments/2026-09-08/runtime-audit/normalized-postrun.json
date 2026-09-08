@@ -1,0 +1,8 @@
+{
+  "observed_at": "2026-09-08T06:37:39.314255+00:00",
+  "sdk": "0.2.136",
+  "cli": "2.1.228 (Claude Code)",
+  "binary_sha256": "d535985e6941a3eb00179ccd7f52ceb0c6623a0305a518ebc4e6514f84a94c99",
+  "image": "collie-normalized-sidecar:v1",
+  "claim": "Post-run inventory of the frozen normalized sidecar image; not per-call attestation. Network disabled; no credentials mounted."
+}

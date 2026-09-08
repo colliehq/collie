@@ -1,0 +1,756 @@
+diff --git a/eventview/__init__.py b/eventview/__init__.py
+index d23c419..a56060a 100644
+--- a/eventview/__init__.py
++++ b/eventview/__init__.py
+@@ -1,16 +1,27 @@
+-"""Deterministic versioned event projection."""
+-
+-from .errors import (ConflictError, EventViewError, NotFoundError,
+-                     SequenceError, ValidationError)
+-from .events import make_event
+-from .projection import Projection
+-
+-__all__ = [
+-    "ConflictError",
+-    "EventViewError",
+-    "NotFoundError",
+-    "Projection",
+-    "SequenceError",
+-    "ValidationError",
+-    "make_event",
+-]
++"""Project a versioned event stream into an entity view.
++
++Public API re-exported here so that ``from eventview import X`` works for
++every graded name.  The submodules :mod:`eventview.errors`,
++:mod:`eventview.events`, :mod:`eventview.projection` and
++:mod:`eventview.journal` remain importable and keep hosting these names.
++"""
++
++from .errors import (ConflictError, EventViewError, NotFoundError,
++                     SequenceError, ValidationError)
++from .events import canonical_form, make_event, normalize_event
++from .journal import dump, load
++from .projection import Projection
++
++__all__ = [
++    "EventViewError",
++    "ValidationError",
++    "SequenceError",
++    "ConflictError",
++    "NotFoundError",
++    "make_event",
++    "normalize_event",
++    "canonical_form",
++    "Projection",
++    "dump",
++    "load",
++]
+diff --git a/eventview/errors.py b/eventview/errors.py
+index 964184f..16a0884 100644
+--- a/eventview/errors.py
++++ b/eventview/errors.py
+@@ -1,21 +1,33 @@
+-"""Exception types used by the eventview package."""
+-
+-
+-class EventViewError(Exception):
+-    """Base class for eventview failures."""
+-
+-
+-class ValidationError(Exception):
+-    """Raised when an input does not satisfy the documented contract."""
+-
+-
+-class SequenceError(Exception):
+-    """Raised when an event does not continue the sequence."""
+-
+-
+-class ConflictError(Exception):
+-    """Raised when an event conflicts with the current state."""
+-
+-
+-class NotFoundError(Exception):
+-    """Raised when an entity or file is missing."""
++"""Exception hierarchy for the :mod:`eventview` package.
++
++Every failure raised by this package is one of the classes defined here.
++Error messages are never part of the contract.
++"""
++
++__all__ = [
++    "EventViewError",
++    "ValidationError",
++    "SequenceError",
++    "ConflictError",
++    "NotFoundError",
++]
++
++
++class EventViewError(Exception):
++    """Base class for every error raised by :mod:`eventview`."""
++
++
++class ValidationError(EventViewError):
++    """Raised when input does not satisfy the documented shape/ranges."""
++
++
++class SequenceError(EventViewError):
++    """Raised when an event would leave a hole in the sequence."""
++
++
++class ConflictError(EventViewError):
++    """Raised when an event contradicts already-applied history/state."""
++
++
++class NotFoundError(EventViewError):
++    """Raised when a referenced entity or file does not exist."""
+diff --git a/eventview/events.py b/eventview/events.py
+index 43905b9..a3fe3f1 100644
+--- a/eventview/events.py
++++ b/eventview/events.py
+@@ -1,30 +1,139 @@
+-"""Event helpers (incomplete)."""
+-
+-from .errors import ValidationError
+-
+-OPS = ("create", "update", "delete")
+-
+-
+-def make_event(seq, entity_id, op, payload=None):
+-    if not isinstance(seq, int) or seq < 1:
+-        raise ValidationError("bad seq")
+-    if not isinstance(entity_id, str) or not entity_id:
+-        raise ValidationError("bad entity_id")
+-    if op not in OPS:
+-        raise ValidationError("bad op")
+-    if payload is None:
+-        payload = {}
+-    return {"seq": seq, "entity_id": entity_id, "op": op, "payload": payload}
+-
+-
+-def normalize_event(event):
+-    return make_event(
+-        event.get("seq"),
+-        event.get("entity_id"),
+-        event.get("op"),
+-        event.get("payload"),
+-    )
+-
+-
+-def canonical_form(event):
+-    return str(normalize_event(event))
++"""Event construction, validation and canonical serialisation.
++
++An *event* is a plain :class:`dict` with exactly the four keys ``seq``,
++``entity_id``, ``op`` and ``payload``.
++"""
++
++import json
++import math
++import re
++
++from .errors import ValidationError
++
++__all__ = ["make_event", "normalize_event", "canonical_form"]
++
++EVENT_KEYS = frozenset(("seq", "entity_id", "op", "payload"))
++OPS = frozenset(("create", "update", "delete"))
++
++MIN_SEQ = 1
++MAX_SEQ = 1000000000
++
++MAX_STR_LEN = 200
++MAX_LIST_LEN = 32
++
++_ENTITY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
++_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
++
++
++def _is_real_int(value):
++    """True for a genuine ``int`` (booleans are explicitly excluded)."""
++    return isinstance(value, int) and not isinstance(value, bool)
++
++
++def validate_seq(seq):
++    """Validate and return an event sequence number."""
++    if not _is_real_int(seq):
++        raise ValidationError("seq must be an int (bool is not accepted)")
++    if seq < MIN_SEQ or seq > MAX_SEQ:
++        raise ValidationError(
++            "seq must satisfy %d <= seq <= %d" % (MIN_SEQ, MAX_SEQ))
++    return seq
++
++
++def validate_entity_id(entity_id):
++    """Validate and return an entity id."""
++    if not isinstance(entity_id, str):
++        raise ValidationError("entity_id must be a str")
++    if _ENTITY_ID_RE.match(entity_id) is None:
++        raise ValidationError("invalid entity_id: %r" % (entity_id,))
++    return entity_id
++
++
++def validate_op(op):
++    """Validate and return an operation name."""
++    if not isinstance(op, str) or op not in OPS:
++        raise ValidationError("op must be one of create/update/delete")
++    return op
++
++
++def _validate_scalar(value):
++    """Validate a scalar payload value and return a safe copy of it."""
++    if value is None or isinstance(value, bool):
++        return value
++    if isinstance(value, int):
++        return value
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise ValidationError("float payload values must be finite")
++        return value
++    if isinstance(value, str):
++        if len(value) > MAX_STR_LEN:
++            raise ValidationError("str payload values must be <= %d chars"
++                                  % MAX_STR_LEN)
++        return value
++    raise ValidationError("unsupported payload value: %r" % (type(value),))
++
++
++def _validate_value(value):
++    """Validate one payload value; return an isolated copy."""
++    if isinstance(value, list):
++        if len(value) > MAX_LIST_LEN:
++            raise ValidationError("list payload values may hold at most %d "
++                                  "elements" % MAX_LIST_LEN)
++        return [_validate_scalar(item) for item in value]
++    return _validate_scalar(value)
++
++
++def validate_payload(payload, op=None):
++    """Validate ``payload`` and return a brand new isolated ``dict``."""
++    if payload is None:
++        payload = {}
++    if not isinstance(payload, dict):
++        raise ValidationError("payload must be a dict or None")
++    if op == "delete" and payload:
++        raise ValidationError("delete events must not carry a payload")
++    result = {}
++    for key in payload:
++        if not isinstance(key, str) or _FIELD_NAME_RE.match(key) is None:
++            raise ValidationError("invalid payload key: %r" % (key,))
++        result[key] = _validate_value(payload[key])
++    return result
++
++
++def copy_payload(payload):
++    """Deep copy an already-validated payload mapping."""
++    result = {}
++    for key, value in payload.items():
++        result[key] = list(value) if isinstance(value, list) else value
++    return result
++
++
++def copy_value(value):
++    """Deep copy an already-validated payload value."""
++    return list(value) if isinstance(value, list) else value
++
++
++def make_event(seq, entity_id, op, payload=None):
++    """Validate the parts of an event and return a fresh isolated dict."""
++    seq = validate_seq(seq)
++    entity_id = validate_entity_id(entity_id)
++    op = validate_op(op)
++    fields = validate_payload(payload, op)
++    return {"seq": seq, "entity_id": entity_id, "op": op, "payload": fields}
++
++
++def normalize_event(event):
++    """Validate a whole event dict and return a fresh isolated copy."""
++    if not isinstance(event, dict):
++        raise ValidationError("event must be a dict")
++    if set(event.keys()) != EVENT_KEYS:
++        raise ValidationError("event must have exactly the keys "
++                              "seq/entity_id/op/payload")
++    return make_event(event["seq"], event["entity_id"], event["op"],
++                      event["payload"])
++
++
++def canonical_form(event):
++    """Return the deterministic JSON text of a normalized event."""
++    normalized = normalize_event(event)
++    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+diff --git a/eventview/journal.py b/eventview/journal.py
+index ecd4cbb..ba10235 100644
+--- a/eventview/journal.py
++++ b/eventview/journal.py
+@@ -1,28 +1,134 @@
+-"""JSON persistence for projections (incomplete)."""
+-
+-import json
+-
+-from .errors import NotFoundError, ValidationError
+-from .projection import Projection
+-
+-FORMAT = "eventview/1"
+-
+-
+-def dump(projection, path):
+-    doc = {
+-        "format": FORMAT,
+-        "next_seq": projection.stats()["next_seq"],
+-        "records": projection.snapshot(include_deleted=True),
+-        "events": projection.applied_events(),
+-    }
+-    with open(path, "w") as handle:
+-        json.dump(doc, handle)
+-
+-
+-def load(path, clock=None):
+-    with open(path) as handle:
+-        doc = json.load(handle)
+-    projection = Projection(clock=clock)
+-    for event in doc["events"]:
+-        projection.apply_event(event)
+-    return projection
++"""Deterministic JSON persistence for :class:`~eventview.projection.Projection`."""
++
++import json
++import os
++
++from .errors import NotFoundError, ValidationError
++from .events import (normalize_event, validate_entity_id, validate_payload)
++from .projection import Projection, RECORD_KEYS
++
++__all__ = ["dump", "load"]
++
++FORMAT = "eventview/1"
++DOC_KEYS = frozenset(("format", "next_seq", "last_updated_at", "records",
++                      "events"))
++MAX_NEXT_SEQ = 1000000001
++
++
++def _is_real_int(value):
++    return isinstance(value, int) and not isinstance(value, bool)
++
++
++def _validate_path(path):
++    if not isinstance(path, str) or not path:
++        raise ValidationError("path must be a non-empty str")
++    return path
++
++
++def dump(projection, path):
++    """Write ``projection`` to ``path`` and return the byte count written."""
++    if not isinstance(projection, Projection):
++        raise ValidationError("projection must be a Projection instance")
++    _validate_path(path)
++
++    stats = projection.stats()
++    doc = {
++        "format": FORMAT,
++        "next_seq": stats["next_seq"],
++        "last_updated_at": stats["last_updated_at"],
++        "records": projection.snapshot(include_deleted=True),
++        "events": projection.applied_events(),
++    }
++    data = (json.dumps(doc, sort_keys=True, indent=2) + "\n").encode("utf-8")
++    with open(path, "wb") as handle:
++        handle.write(data)
++    return len(data)
++
++
++def _load_document(path):
++    if not os.path.isfile(path):
++        raise NotFoundError("no such file: %r" % (path,))
++    with open(path, "rb") as handle:
++        raw = handle.read()
++    try:
++        text = raw.decode("utf-8")
++    except UnicodeDecodeError:
++        raise ValidationError("file is not valid UTF-8")
++    try:
++        doc = json.loads(text)
++    except ValueError:
++        raise ValidationError("file is not valid JSON")
++    if not isinstance(doc, dict) or set(doc.keys()) != DOC_KEYS:
++        raise ValidationError("document must have exactly the documented keys")
++    if doc["format"] != FORMAT:
++        raise ValidationError("unsupported format")
++    next_seq = doc["next_seq"]
++    if not _is_real_int(next_seq) or next_seq < 1 or next_seq > MAX_NEXT_SEQ:
++        raise ValidationError("invalid next_seq")
++    last_updated_at = doc["last_updated_at"]
++    if last_updated_at is not None:
++        if not _is_real_int(last_updated_at) or last_updated_at < 0:
++            raise ValidationError("invalid last_updated_at")
++    if not isinstance(doc["records"], list):
++        raise ValidationError("records must be a list")
++    if not isinstance(doc["events"], list):
++        raise ValidationError("events must be a list")
++    return doc
++
++
++def _load_events(raw_events, next_seq):
++    events = [normalize_event(item) for item in raw_events]
++    expected = list(range(1, next_seq))
++    if [event["seq"] for event in events] != expected:
++        raise ValidationError("stored events must be exactly 1..next_seq-1")
++    return events
++
++
++def _load_records(raw_records, next_seq):
++    records = []
++    seen = set()
++    for item in raw_records:
++        if not isinstance(item, dict) or set(item.keys()) != set(RECORD_KEYS):
++            raise ValidationError("record must have exactly the six keys")
++        entity_id = validate_entity_id(item["entity_id"])
++        if entity_id in seen:
++            raise ValidationError("duplicate record for %r" % (entity_id,))
++        seen.add(entity_id)
++        version = item["version"]
++        if not _is_real_int(version) or version < 1:
++            raise ValidationError("invalid record version")
++        seq = item["seq"]
++        if not _is_real_int(seq) or seq < 1 or seq >= next_seq:
++            raise ValidationError("invalid record seq")
++        updated_at = item["updated_at"]
++        if not _is_real_int(updated_at) or updated_at < 0:
++            raise ValidationError("invalid record updated_at")
++        deleted = item["deleted"]
++        if not isinstance(deleted, bool):
++            raise ValidationError("record deleted must be a bool")
++        raw_fields = item["fields"]
++        if not isinstance(raw_fields, dict):
++            raise ValidationError("record fields must be a dict")
++        fields = validate_payload(raw_fields)
++        if deleted and fields:
++            raise ValidationError("tombstoned records must have no fields")
++        records.append({
++            "entity_id": entity_id,
++            "version": version,
++            "seq": seq,
++            "updated_at": updated_at,
++            "deleted": deleted,
++            "fields": fields,
++        })
++    return records
++
++
++def load(path, clock=None):
++    """Read a journal file and return a new :class:`Projection`."""
++    _validate_path(path)
++    doc = _load_document(path)
++    next_seq = doc["next_seq"]
++    events = _load_events(doc["events"], next_seq)
++    records = _load_records(doc["records"], next_seq)
++    return Projection._from_state(clock, records, events, next_seq,
++                                  doc["last_updated_at"])
+diff --git a/eventview/projection.py b/eventview/projection.py
+index 30bd657..d8a14d3 100644
+--- a/eventview/projection.py
++++ b/eventview/projection.py
+@@ -1,75 +1,228 @@
+-"""In-memory projection of an event stream (incomplete)."""
+-
+-from .errors import ConflictError, NotFoundError, SequenceError, ValidationError
+-from .events import normalize_event
+-
+-
+-class Projection:
+-    """Projects create/update/delete events into entity records."""
+-
+-    def __init__(self, clock=None):
+-        self._clock = clock or (lambda: 0)
+-        self._records = {}
+-        self._log = {}
+-        self._next_seq = 1
+-        self._last_updated_at = None
+-
+-    def apply_event(self, event):
+-        ev = normalize_event(event)
+-        seq = ev["seq"]
+-        if seq < self._next_seq:
+-            raise ConflictError("event %d was already applied" % seq)
+-        now = self._clock()
+-        entity_id = ev["entity_id"]
+-        record = self._records.get(entity_id)
+-        if ev["op"] == "create":
+-            if record is not None:
+-                raise ConflictError("entity exists")
+-            record = {
+-                "entity_id": entity_id,
+-                "version": 0,
+-                "seq": seq,
+-                "updated_at": now,
+-                "deleted": False,
+-                "fields": {},
+-            }
+-            self._records[entity_id] = record
+-        elif record is None:
+-            raise NotFoundError("unknown entity")
+-        if ev["op"] == "update":
+-            record["fields"].update(ev["payload"])
+-        elif ev["op"] == "delete":
+-            record["deleted"] = True
+-        record["version"] += 1
+-        record["seq"] = seq
+-        record["updated_at"] = now
+-        self._log[seq] = ev
+-        self._next_seq = seq + 1
+-        self._last_updated_at = now
+-        return True
+-
+-    def apply_batch(self, events):
+-        applied = 0
+-        for event in events:
+-            if self.apply_event(event):
+-                applied += 1
+-        return applied
+-
+-    def get(self, entity_id, include_deleted=False):
+-        record = self._records.get(entity_id)
+-        if record is None:
+-            raise NotFoundError(entity_id)
+-        return record
+-
+-    def snapshot(self, include_deleted=False):
+-        return dict(self._records)
+-
+-    def applied_events(self):
+-        return list(self._log.values())
+-
+-    def stats(self):
+-        return {
+-            "live": len(self._records),
+-            "applied": len(self._log),
+-            "next_seq": self._next_seq,
+-        }
++"""Projection of a versioned event stream into an entity view."""
++
++from .errors import (ConflictError, NotFoundError, SequenceError,
++                     ValidationError)
++from .events import (canonical_form, copy_payload, copy_value,
++                     normalize_event, validate_entity_id)
++
++__all__ = ["Projection"]
++
++RECORD_KEYS = frozenset(("entity_id", "version", "seq", "updated_at",
++                         "deleted", "fields"))
++
++
++def _default_clock():
++    """Clock used when the caller does not inject one."""
++    return 0
++
++
++def _copy_record(record):
++    """Return an independent deep copy of a record dict."""
++    return {
++        "entity_id": record["entity_id"],
++        "version": record["version"],
++        "seq": record["seq"],
++        "updated_at": record["updated_at"],
++        "deleted": record["deleted"],
++        "fields": copy_payload(record["fields"]),
++    }
++
++
++def _copy_event(event):
++    """Return an independent deep copy of a normalized event dict."""
++    return {
++        "seq": event["seq"],
++        "entity_id": event["entity_id"],
++        "op": event["op"],
++        "payload": copy_payload(event["payload"]),
++    }
++
++
++def _validate_flag(value):
++    """Validate an ``include_deleted`` style flag."""
++    if not isinstance(value, bool):
++        raise ValidationError("include_deleted must be a bool")
++    return value
++
++
++class Projection(object):
++    """Applies validated events to an in-memory entity view."""
++
++    def __init__(self, clock=None):
++        if clock is None:
++            clock = _default_clock
++        elif not callable(clock):
++            raise ValidationError("clock must be None or a callable")
++        self._clock = clock
++        self._records = {}
++        self._events = {}
++        self._canonical = {}
++        self._next_seq = 1
++        self._last_updated_at = None
++
++    # -- internals ---------------------------------------------------
++
++    def _tick(self):
++        now = self._clock()
++        if not isinstance(now, int) or isinstance(now, bool) or now < 0:
++            raise ValidationError("clock must return a non-negative int")
++        return now
++
++    def _capture(self):
++        return (
++            dict((key, _copy_record(value))
++                 for key, value in self._records.items()),
++            dict((key, _copy_event(value))
++                 for key, value in self._events.items()),
++            dict(self._canonical),
++            self._next_seq,
++            self._last_updated_at,
++        )
++
++    def _restore(self, state):
++        (self._records, self._events, self._canonical, self._next_seq,
++         self._last_updated_at) = state
++
++    @classmethod
++    def _from_state(cls, clock, records, events, next_seq, last_updated_at):
++        """Build a projection directly from already-validated state."""
++        projection = cls(clock=clock)
++        projection._records = dict(
++            (record["entity_id"], _copy_record(record)) for record in records)
++        projection._events = dict(
++            (event["seq"], _copy_event(event)) for event in events)
++        projection._canonical = dict(
++            (event["seq"], canonical_form(event)) for event in events)
++        projection._next_seq = next_seq
++        projection._last_updated_at = last_updated_at
++        return projection
++
++    # -- public API --------------------------------------------------
++
++    def apply_event(self, event):
++        """Apply one event; True when state changed, False on replay."""
++        normalized = normalize_event(event)
++        seq = normalized["seq"]
++
++        if seq > self._next_seq:
++            raise SequenceError("event seq %d leaves a hole (expected %d)"
++                                % (seq, self._next_seq))
++        if seq < self._next_seq:
++            if canonical_form(normalized) == self._canonical[seq]:
++                return False
++            raise ConflictError("event seq %d differs from applied history"
++                                % seq)
++
++        entity_id = normalized["entity_id"]
++        op = normalized["op"]
++        current = self._records.get(entity_id)
++
++        if op == "create":
++            if current is not None:
++                raise ConflictError("entity %r already exists" % entity_id)
++        else:
++            if current is None:
++                raise NotFoundError("unknown entity %r" % entity_id)
++            if current["deleted"]:
++                raise ConflictError("entity %r is deleted" % entity_id)
++
++        now = self._tick()
++
++        if op == "create":
++            record = {
++                "entity_id": entity_id,
++                "version": 1,
++                "seq": seq,
++                "updated_at": now,
++                "deleted": False,
++                "fields": copy_payload(normalized["payload"]),
++            }
++        elif op == "update":
++            fields = copy_payload(current["fields"])
++            for key, value in normalized["payload"].items():
++                if value is None:
++                    fields.pop(key, None)
++                else:
++                    fields[key] = copy_value(value)
++            record = {
++                "entity_id": entity_id,
++                "version": current["version"] + 1,
++                "seq": seq,
++                "updated_at": now,
++                "deleted": False,
++                "fields": fields,
++            }
++        else:
++            record = {
++                "entity_id": entity_id,
++                "version": current["version"] + 1,
++                "seq": seq,
++                "updated_at": now,
++                "deleted": True,
++                "fields": {},
++            }
++
++        self._records[entity_id] = record
++        self._events[seq] = normalized
++        self._canonical[seq] = canonical_form(normalized)
++        self._next_seq = seq + 1
++        self._last_updated_at = now
++        return True
++
++    def apply_batch(self, events):
++        """Apply many events atomically; return how many changed state."""
++        if not isinstance(events, (list, tuple)):
++            raise ValidationError("events must be a list or tuple")
++        saved = self._capture()
++        changed = 0
++        try:
++            for event in events:
++                if self.apply_event(event):
++                    changed += 1
++        except BaseException:
++            self._restore(saved)
++            raise
++        return changed
++
++    def get(self, entity_id, include_deleted=False):
++        """Return a deep copy of one record."""
++        validate_entity_id(entity_id)
++        _validate_flag(include_deleted)
++        record = self._records.get(entity_id)
++        if record is None:
++            raise NotFoundError("unknown entity %r" % (entity_id,))
++        if record["deleted"] and not include_deleted:
++            raise NotFoundError("entity %r is deleted" % (entity_id,))
++        return _copy_record(record)
++
++    def snapshot(self, include_deleted=False):
++        """Return deep copies of all records sorted by ``entity_id``."""
++        _validate_flag(include_deleted)
++        rows = []
++        for entity_id in sorted(self._records):
++            record = self._records[entity_id]
++            if record["deleted"] and not include_deleted:
++                continue
++            rows.append(_copy_record(record))
++        return rows
++
++    def applied_events(self):
++        """Return deep copies of the state-changing events, by seq."""
++        return [_copy_event(self._events[seq]) for seq in sorted(self._events)]
++
++    def stats(self):
++        """Return a fresh summary dict of the projection state."""
++        deleted = 0
++        live = 0
++        for record in self._records.values():
++            if record["deleted"]:
++                deleted += 1
++            else:
++                live += 1
++        return {
++            "live": live,
++            "deleted": deleted,
++            "applied": len(self._events),
++            "next_seq": self._next_seq,
++            "last_updated_at": self._last_updated_at,
++        }

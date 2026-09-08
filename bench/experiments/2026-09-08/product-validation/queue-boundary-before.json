@@ -1,0 +1,12 @@
+{
+  "source_commit": "fd35828b8b28288fa2b694977b50933f579befae",
+  "tracked_diff_sha256": "6be31667baf362e14755a9aaf4a4ff87f35a5f1b01ecfdce10e849dd571f7f33",
+  "tests": [
+    "tests/test_web_busy_send_ui.py::test_reload_during_queue_save_keeps_original_payload_and_retry_identity",
+    "tests/test_web_busy_send_ui.py::test_save_failure_after_a_newer_draft_keeps_the_original_request"
+  ],
+  "exit": 1,
+  "seconds": 13.555,
+  "finished_at": "2026-09-08T06:59:08.918362+00:00",
+  "model_calls": 0
+}

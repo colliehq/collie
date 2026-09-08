@@ -1,0 +1,2984 @@
+diff --git a/bench/session_transport/README.md b/bench/session_transport/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b5c68f57978efa9ff358747713df50102b8a4d2
+--- /dev/null
++++ b/bench/session_transport/README.md
+@@ -0,0 +1,40 @@
++# Persistent SDK transport experiment
++
++This checkout adds the persistent transport to product commit `5eae2cff`, so
++stateless and persistent trials share the 0.26 loop, request accounting,
++verification receipts, and quota waits. The product provider factory does not
++select this implementation. The benchmark explicitly overrides that factory.
++
++The product's later local-time wait UI and scoped generation-limit repair are
++also present. Product files match that commit; experimental modules and this
++smoke are the only additional source.
++
++Use `ExperimentalSessionSdkProvider(session_enabled=True)` for the treatment
++and the same class with `session_enabled=False` for its control. Both use the
++plain response protocol by default. SDK-native structured formatting remains
++an explicit, separate option.
++
++The session reuses only a strict append to the caller's selected history.
++Compaction, context elision, changed tools/system/model/effort, or an unknown
++assistant turn starts a new session. Images and simultaneous requests use the
++production stateless path. A provider or formatting error poisons its session.
++Unresolved process cleanup prevents starting another worker until extinction
++is confirmed.
++
++The earlier public code-review dialogue showed cache reuse, but it executed no
++host tools and does not establish a coding improvement. Unit tests and
++zero-model connection checks also do not prove a real multi-turn task works.
++The second subscription window must validate the actual worker, then compare
++fresh coding tasks against the stateless control. Preserve unsuccessful and
++budget-limited attempts in the results.
++
++For the bounded process smoke:
++
++```powershell
++python bench/session_transport/smoke_session_transport.py --out <new-directory> --turns 3 --model claude-opus-5 --effort high --i-will-spend
++```
++
++This smoke sends fixed observations and executes no host tools. Its outcome is
++transport evidence only. Coding comparisons use the frozen SWE evaluator and
++the independent grader; cleanup receipts are recorded separately from patch
++correctness.
+diff --git a/bench/session_transport/smoke_session_transport.py b/bench/session_transport/smoke_session_transport.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..263d7e9a33e5ab5f5c315ee4c6d7e7b626708dd8
+--- /dev/null
++++ b/bench/session_transport/smoke_session_transport.py
+@@ -0,0 +1,218 @@
++"""EXPERIMENTAL transport smoke for the persistent native SDK session.
++
++The unit suite scripts the worker channel and the SDK client, so it proves the
++protocol and the reset rules but never proves the *process* works.  This script
++issues a small, bounded number of real model requests through the actual
++subprocess: spawn, ownership, line protocol, one connected ``ClaudeSDKClient``,
++Collie's ``{tool|answer}`` contract, and the native-session
++attestation.
++
++It is a transport check, not a coding benchmark, and it deliberately executes
++**no** host tool. Tool schemas use the same names as the coding benchmark;
++every "tool result" fed back is a fixed string in this file, so nothing on disk
++is read or written, and no result is evidence about any repository. Plain mode
++is the default; ``--structured-output`` explicitly selects native formatting.
++
++    python bench/session_transport/smoke_session_transport.py \
++        --out results/smoke --turns 3 --i-will-spend
++"""
++from __future__ import annotations
++
++import argparse
++import json
++from pathlib import Path
++import sys
++import time
++
++
++ROOT = Path(__file__).resolve().parents[2]
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++from harness.experimental_session_sdk import \
++    ExperimentalSessionSdkProvider                                  # noqa: E402
++
++
++# A realistic-shape Collie system prompt, kept short.  Its only job is to be
++# long enough that the provider's cache accounting is meaningful and stable
++# across turns, and identical on every turn so a session can be re-used.
++SYSTEM = (
++    "You are Collie, a coding agent in a frozen transport smoke test.\n"
++    "MODE: Act — use tools to gather facts before answering.\n"
++    "TOOLS (always-on): read_file, write_file, edit_file, grep, glob\n"
++    "WORKING DIRECTORY: /smoke\n"
++    "This is a transport check. No workspace exists and no tool you request will "
++    "actually run; the host replies with a fixed placeholder observation. Do not "
++    "claim to have edited files or run tests. Keep every answer under 60 words."
++)
++# Exactly the frozen benchmark's five tools.  The names matter: Collie's own
++# prompt tells the model to "inspect the workspace with grep, glob, or
++# read_file", and the provider enforces this list as a schema enum — so a
++# smoke that declared a SHORTER list would push the model toward a name the
++# enum rejects, and the resulting formatter error would look like a transport
++# fault rather than the tool-list mismatch it actually is.
++_PATH = {"type": "object", "properties": {"path": {"type": "string"}},
++         "required": ["path"]}
++SCHEMAS = [
++    {"name": "read_file", "description": "read a file", "input_schema": _PATH},
++    {"name": "write_file", "description": "write a file",
++     "input_schema": {"type": "object",
++                      "properties": {"path": {"type": "string"},
++                                     "content": {"type": "string"}},
++                      "required": ["path", "content"]}},
++    {"name": "edit_file", "description": "replace a string in a file",
++     "input_schema": {"type": "object",
++                      "properties": {"path": {"type": "string"},
++                                     "old_string": {"type": "string"},
++                                     "new_string": {"type": "string"}},
++                      "required": ["path", "old_string", "new_string"]}},
++    {"name": "grep", "description": "search the repository",
++     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}},
++                      "required": ["pattern"]}},
++    {"name": "glob", "description": "list files matching a pattern",
++     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}},
++                      "required": ["pattern"]}},
++]
++TASK = ("A module `pager.py` is reported to mis-order its validation checks. "
++        "Start by requesting the file with the read_file tool.")
++# Fixed, host-authored observations. Nothing here comes from the filesystem.
++OBSERVATIONS = [
++    "def encode(version, rank, key):\n"
++    "    if not isinstance(version, int):\n"
++    "        raise TypeError('version')\n"
++    "    return '%s.%s.%s' % (version, rank, key)\n",
++    "PLACEHOLDER: this transport smoke does not execute host tools, so this "
++    "observation carries no repository content.",
++]
++FOLLOWUPS = [
++    "Name the single most important missing validation, in one sentence.",
++    "State one remaining limitation of this review, in one sentence.",
++]
++
++
++class _Ledger:
++    """One reservation per physical model request, journalled in memory."""
++
++    def __init__(self):
++        self.rows = []
++
++    def reserve(self, purpose):
++        self.rows.append({"purpose": purpose, "outcome": None})
++        return str(len(self.rows))
++
++    def settle(self, request_id, outcome="completed"):
++        row = self.rows[int(request_id) - 1]
++        if row["outcome"] is not None:
++            raise RuntimeError("request is already settled")
++        row["outcome"] = outcome
++
++
++def _turn_record(index, completion, seconds, provider):
++    usage = completion.usage
++    return {
++        "turn": index,
++        "seconds": round(seconds, 3),
++        "stop_reason": completion.stop_reason,
++        "request_count": completion.request_count,
++        "tool": completion.tool_calls[0].name if completion.tool_calls else None,
++        "answer_chars": len(completion.text or ""),
++        "error_detail": (completion.error_detail or "")[:200],
++        "usage": {"input_tokens": usage.input_tokens,
++                  "output_tokens": usage.output_tokens,
++                  "cache_read": usage.cache_read,
++                  "cache_creation": usage.cache_creation},
++        "sessions_opened": provider.session_evidence["sessions_opened"],
++    }
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True, help="fresh output directory")
++    parser.add_argument("--turns", type=int, default=3,
++                        help="physical model requests to issue (hard cap 4)")
++    parser.add_argument("--model", default="claude-opus-5")
++    parser.add_argument("--effort", default="default")
++    parser.add_argument("--structured-output", action="store_true")
++    parser.add_argument("--i-will-spend", action="store_true")
++    args = parser.parse_args(argv)
++    if not 1 <= args.turns <= 4:
++        parser.error("--turns must be between 1 and 4")
++    out = Path(args.out)
++    out.mkdir(parents=True, exist_ok=True)
++    if any(out.iterdir()):
++        parser.error("--out must be a fresh directory")
++    if not args.i_will_spend:
++        parser.error("this smoke issues real model requests; pass --i-will-spend")
++
++    provider = ExperimentalSessionSdkProvider(
++        model=args.model, effort=args.effort, subscription_only=True, timeout=180,
++        structured_output=args.structured_output)
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": TASK}]
++    turns = []
++    try:
++        with provider.request_authority(ledger.reserve, ledger.settle,
++                                        request_scope="smoke"):
++            for index in range(args.turns):
++                started = time.monotonic()
++                completion = provider.complete(SYSTEM, list(messages), SCHEMAS)
++                turns.append(_turn_record(index, completion,
++                                          time.monotonic() - started, provider))
++                if completion.stop_reason == "error":
++                    break
++                if completion.tool_calls:
++                    messages.append({"role": "assistant", "content": completion.text,
++                                     "tool_calls": completion.tool_calls,
++                                     "thinking_blocks": completion.thinking_blocks})
++                    call = completion.tool_calls[0]
++                    messages.append({
++                        "role": "tool", "tool_call_id": call.id, "name": call.name,
++                        "content": OBSERVATIONS[min(index, len(OBSERVATIONS) - 1)]})
++                else:
++                    messages.append({"role": "assistant", "content": completion.text})
++                    messages.append({"role": "user",
++                                     "content": FOLLOWUPS[min(index,
++                                                              len(FOLLOWUPS) - 1)]})
++    finally:
++        close_reported = provider.close_session("smoke_finished")
++        if provider._unresolved:
++            provider.cancel_current()
++
++    receipt = {
++        "schema_version": 1,
++        "claim": ("Transport smoke only: one persistent native SDK session serving "
++                  "Collie's response contract. No host tool ran, no repository was "
++                  "read, and this says nothing about coding task success."),
++        "model": args.model,
++        "effort": args.effort,
++        "structured_output": args.structured_output,
++        "requested_turns": args.turns,
++        "turns": turns,
++        "reservations": ledger.rows,
++        "session_evidence": provider.session_evidence,
++        "ownership": {
++            "close_reported": close_reported,
++            "unresolved_workers": len(provider._unresolved),
++            "active_registrations": len(provider._active_runs),
++            "session_retired": provider._session is None,
++        },
++        "one_reservation_per_request": (
++            len(ledger.rows) == sum(row["request_count"] for row in turns)),
++        "single_session": provider.session_evidence["sessions_opened"] == 1,
++        "cache_read_on_followups": [row["usage"]["cache_read"] for row in turns[1:]],
++    }
++    receipt['passed'] = bool(
++        len(turns) == args.turns and all(row['stop_reason'] != 'error' for row in turns)
++        and receipt['one_reservation_per_request'] and receipt['single_session']
++        and provider.session_evidence['longest_session_turns'] == args.turns
++        and receipt['ownership']['session_retired']
++        and not receipt['ownership']['unresolved_workers']
++        and not receipt['ownership']['active_registrations'])
++    (out / "smoke.json").write_text(
++        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps(receipt, indent=2, sort_keys=True))
++    return 0 if receipt['passed'] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/harness/experimental_session_sdk.py b/harness/experimental_session_sdk.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb68e60b6887b66945d8c5325fa8fa46a2b73c20
+--- /dev/null
++++ b/harness/experimental_session_sdk.py
+@@ -0,0 +1,1063 @@
++"""EXPERIMENTAL persistent native-session transport for Collie's coding loop.
++
++Nothing in the product selects this provider.  It is opt-in, off by default, and
++exists so a controlled benchmark can measure whether a *native* SDK conversation
++beats the shipped stateless transport on Collie's real
++``complete(system, messages, tool_schemas)`` contract.
++
++Why it might.  ``ClaudeAgentSdkProvider`` opens a fresh ``sdk.query()`` per
++logical turn and flattens the whole conversation into one user prompt.  Measured
++on a six-turn public code review (``cache-real-dialogue``, 3 repetitions), that
++path hit the prompt cache on **0 of 15** follow-ups, while one long-lived
++``ClaudeSDKClient`` fed the same turns as appended user messages hit it on
++**15 of 15**.  No coding-benchmark claim is made here: see
++``bench/session_transport/README.md``.
++
++What this module owns.  The caller's history stays authoritative.  A session is
++re-used only when the new request is a strict *append* to what that session has
++already seen AND the system prompt, model, effort, response contract, and tool
++schemas are unchanged.  Anything else — compaction, tool-result elision, a
++rewritten prefix, a changed system prompt, a narrowed tool list, an assistant
++message this session never produced — resets to a fresh session that re-sends
++the full production prompt.  Removed context is never silently carried forward.
++
++What it deliberately does not own.  Model-facing validation is delegated to the
++reviewed production code and is not re-implemented here:
++
++* ``ClaudeAgentSdkProvider.complete`` (inherited unchanged) still performs the
++  reservation, auth attestation, structured-format attestation, envelope
++  parsing, usage validation, and provider-rejection classification;
++* ``claude_agent_worker._build_options`` / ``_query`` still build the options
++  and validate every stream message inside the worker.
++
++Only two seams are overridden: ``_payload`` plans the append-only delta, and
++``_run_worker`` routes that one turn through the persistent worker instead of a
++fresh one.  Images, a concurrent second call on the same provider instance, and
++an explicitly disabled session all fall back to the *unmodified* stateless
++transport rather than degrading any guarantee.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import queue
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++import uuid
++
++from .claude_agent_sdk import (_FORMATTER_REFUSED, _STRUCTURED_FORMAT,
++                               ClaudeAgentSdkProvider, _RequestRefused,
++                               _formatter_refusal, _provider_rejection,
++                               _safe_failure, _sanitized_worker_env,
++                               _terminate_worker_tree)
++from .providers import (Completion, _parse_response_envelope, _tc_fields,
++                        content_text)
++
++
++_SESSION_PROTOCOL = 10
++_MAX_FRAME_BYTES = 4 * 1024 * 1024
++_MAX_STDERR = 64 * 1024
++_READY_TIMEOUT = 60.0
++_CLOSE_GRACE = 1.0
++
++
++class ResetRequired(Exception):
++    """This session cannot continue incrementally; a fresh one must be opened.
++
++    Divergence has to be loud.  A session that quietly keeps history the caller
++    deleted is worse than a restarted one: the model would answer from context
++    the host believes is gone.
++    """
++
++    def __init__(self, reason: str, detail: str = ""):
++        super().__init__(detail or reason)
++        self.reason = reason
++        self.detail = detail or reason
++
++
++def _canonical(value) -> str:
++    return json.dumps(value, ensure_ascii=False, sort_keys=True,
++                      separators=(",", ":"), allow_nan=False)
++
++
++def _reject_constant(value):
++    raise ValueError("non-finite JSON number is forbidden: %s" % value)
++
++
++def session_key(open_request: dict, tool_schemas) -> str:
++    """The identity of one re-usable session.
++
++    Everything that changes what the model was told, or what it is allowed to
++    answer with, is inside this digest: the exact system prompt (including the
++    structured transport suffix), the model route, the effort, the response
++    format and its tool allowlist, and the full tool schemas.  A change to any
++    of them produces a different key, and a different key is a new session.
++    """
++    try:
++        return hashlib.sha256(_canonical({
++            "transport": _SESSION_PROTOCOL,
++            "request": open_request,
++            "tool_schemas": tool_schemas or [],
++        }).encode("utf-8")).hexdigest()
++    except (TypeError, ValueError, RecursionError) as exc:
++        raise _RequestRefused("this request cannot be keyed for session re-use") from exc
++
++
++def is_text_only(messages) -> bool:
++    """Whether every message is plain text this transport can append verbatim."""
++    for message in messages or []:
++        content = message.get("content") if isinstance(message, dict) else None
++        if isinstance(content, list):
++            for block in content:
++                if not isinstance(block, dict) or block.get("type") != "text":
++                    return False
++    return True
++
++
++# --------------------------------------------------------------------------- #
++#  Host history -> one append-only user turn
++# --------------------------------------------------------------------------- #
++class _Reply:
++    """The canonical response this session produced, awaiting the host's copy."""
++
++    __slots__ = ("kind", "text", "name", "args")
++
++    def __init__(self, kind: str, text: str = "", name: str = "", args: str = ""):
++        self.kind = kind          # "tool" | "answer" | "text" | "unparsed"
++        self.text = text
++        self.name = name
++        self.args = args
++
++    def __eq__(self, other):
++        return (isinstance(other, _Reply) and self.kind == other.kind
++                and self.text == other.text and self.name == other.name
++                and self.args == other.args)
++
++    def __repr__(self):
++        return "_Reply(%r, name=%r)" % (self.kind, self.name)
++
++
++class _Entry:
++    """One host message, reduced to its digest and its model-facing rendering."""
++
++    __slots__ = ("role", "digest", "render", "text", "calls")
++
++    def __init__(self, role, digest, render, text, calls):
++        self.role = role
++        self.digest = digest
++        self.render = render
++        self.text = text
++        self.calls = calls
++
++    def matches(self, reply: _Reply) -> bool:
++        """Whether this host assistant message IS the reply we produced.
++
++        The native conversation already holds the model's own turn.  The host's
++        canonical envelope is a different representation of the same answer, so
++        it is reconciled rather than re-sent — and a mismatch is a reset, never a
++        fabricated assistant message.
++        """
++        if reply.kind == "tool":
++            return (len(self.calls) == 1 and self.calls[0][0] == reply.name
++                    and self.calls[0][1] == reply.args and not self.text)
++        if reply.kind in ("answer", "text"):
++            return not self.calls and self.text == reply.text
++        # "unparsed": the model answered but the host could not record a
++        # canonical envelope for it, so no host message can be proven equivalent.
++        return False
++
++
++def _entry(message, tool_bearing: bool) -> _Entry:
++    """Digest + delta rendering for one host message.
++
++    The rendering mirrors the production serializer exactly — ``User:`` /
++    ``Result of <tool>:`` for tool-bearing calls (``ClaudeCliProvider._prompt``
++    with ``tool_result_limit=None``) and ``<Role>: `` for the tool-less planner
++    (``ClaudeAgentSdkProvider._plain_prompt``) — so a delta introduces no new
++    model-facing wording of its own.
++    """
++    if not isinstance(message, dict):
++        raise ResetRequired("unsupported_message", "history entry is not an object")
++    role = str(message.get("role") or "")
++    content = message.get("content", "")
++    if isinstance(content, list):
++        for block in content:
++            if not isinstance(block, dict) or block.get("type") != "text":
++                raise ResetRequired("unsupported_content",
++                                    "non-text content cannot be appended to a session")
++    calls = []
++    if role == "user":
++        # Both production serializers label a user turn "User: ".
++        text = content_text(content)
++        render = "User: " + text
++    elif role == "assistant":
++        text = content_text(content)
++        for call in message.get("tool_calls") or []:
++            _identifier, name, args = _tc_fields(call)
++            try:
++                calls.append((str(name or ""), _canonical(args or {})))
++            except (TypeError, ValueError, RecursionError) as exc:
++                raise ResetRequired("unsupported_content",
++                                    "tool arguments are not canonical JSON") from exc
++        render = ""      # never re-sent: the native history is the authority
++    elif role == "tool":
++        text = str(message.get("content", ""))
++        name = str(message.get("name") or "")
++        render = ("Result of %s: %s" % (name, text) if tool_bearing
++                  else "Tool: " + text)
++        calls = [(name, "")]
++    else:
++        raise ResetRequired("unsupported_role", "unsupported role: %s" % (role or "empty"))
++    digest = hashlib.sha256(_canonical([role, text, calls]).encode("utf-8")).hexdigest()[:32]
++    return _Entry(role, digest, render, text, calls)
++
++
++class TurnPlan:
++    """What this call will send, decided before any request is issued."""
++
++    __slots__ = ("first", "delta", "digests")
++
++    def __init__(self, first: bool, delta: str, digests):
++        self.first = first
++        self.delta = delta
++        self.digests = digests
++
++
++class SessionHistoryAdapter:
++    """Successive immutable host histories -> append-only session turns."""
++
++    def __init__(self, key: str, tool_bearing: bool):
++        self.key = key
++        self.tool_bearing = bool(tool_bearing)
++        self.turns = 0
++        self._prefix: list[str] = []
++        self._pending: _Reply | None = None
++        self._closed = False
++
++    def plan(self, key: str, messages) -> TurnPlan:
++        """One append-only turn, or :class:`ResetRequired`."""
++        if self._closed:
++            raise ResetRequired("session_closed", "this adapter was already reset")
++        if key != self.key:
++            self._closed = True
++            raise ResetRequired("config_changed",
++                                "system prompt, model, effort, or tool schemas changed")
++        entries = [_entry(message, self.tool_bearing) for message in messages or []]
++        digests = [entry.digest for entry in entries]
++        if not entries:
++            raise ResetRequired("empty_history", "a session turn needs a conversation")
++        if self.turns == 0:
++            # A fresh session re-sends the complete production prompt, so nothing
++            # in the caller's history needs reconciling yet.
++            return TurnPlan(True, "", digests)
++        if len(digests) < len(self._prefix):
++            self._closed = True
++            raise ResetRequired("history_shrank",
++                                "history is shorter than what this session was sent "
++                                "(compaction)")
++        for index, digest in enumerate(self._prefix):
++            if digests[index] != digest:
++                self._closed = True
++                raise ResetRequired(
++                    "history_rewritten",
++                    "already-sent message %d changed (edit, tool-result elision, "
++                    "or compaction)" % index)
++        pending = self._pending
++        lines = []
++        for entry in entries[len(self._prefix):]:
++            if entry.role == "assistant":
++                if pending is None:
++                    self._closed = True
++                    raise ResetRequired(
++                        "assistant_not_from_session",
++                        "host appended an assistant turn this session never produced")
++                if not entry.matches(pending):
++                    self._closed = True
++                    raise ResetRequired(
++                        "assistant_history_diverged",
++                        "host assistant message differs from this session's own reply")
++                pending = None
++                continue
++            lines.append(entry.render)
++        if pending is not None:
++            # The SDK still holds a reply the host dropped; a delta would answer
++            # against history the caller cannot see.
++            self._closed = True
++            raise ResetRequired("assistant_reply_missing",
++                                "host history omits a reply this session produced")
++        if not lines:
++            self._closed = True
++            raise ResetRequired("no_new_host_content",
++                                "nothing new to append since the last turn")
++        return TurnPlan(False, "\n".join(lines), digests)
++
++    def commit(self, plan: TurnPlan, reply: _Reply) -> None:
++        """Account one delivered turn and the reply awaiting the host's copy."""
++        self._prefix = list(plan.digests)
++        self._pending = reply
++        self.turns += 1
++
++    def close(self) -> None:
++        self._closed = True
++
++
++def reply_for(text: str, tool_bearing: bool, allowed_tools) -> _Reply:
++    """The canonical envelope the host will record for this response.
++
++    Read with the *same* parser ``complete()`` uses, so the reconciliation on the
++    next turn compares like with like.  An unparsable tool-bearing response is a
++    response-contract error: the host records no assistant message for it, so the
++    session is deliberately left holding a reply that can never match — which
++    forces a reset instead of a silent divergence.
++    """
++    if not tool_bearing:
++        return _Reply("text", text=text)
++    parsed = _parse_response_envelope(text, allowed_tools=allowed_tools)
++    if parsed is None:
++        return _Reply("unparsed")
++    if parsed[0] == "tool":
++        call = parsed[1]
++        return _Reply("tool", name=call.name, args=_canonical(call.args))
++    return _Reply("answer", text=parsed[1])
++
++
++# --------------------------------------------------------------------------- #
++#  Transport channel to the persistent worker
++# --------------------------------------------------------------------------- #
++class _UnresolvedStartup(RuntimeError):
++    def __init__(self, channel):
++        super().__init__("session worker startup failed and process-tree extinction "
++                         "could not be confirmed")
++        self.channel = channel
++
++
++class SubprocessChannel:
++    """A line-framed pipe to one owned, kernel-reaped session worker process."""
++
++    def __init__(self, proc, owner, stderr_file, death_write):
++        self.proc = proc
++        self._owner = owner
++        self._stderr = stderr_file
++        self._death_write = death_write
++        self._closed = False
++        self._close_lock = threading.RLock()
++        # Tri-state on purpose.  ``None`` means termination has not been proven
++        # yet, and it is never allowed to decay into ``True`` by the mere fact
++        # that close() was called before.
++        self._extinct = None
++        self._lines: queue.Queue = queue.Queue()
++        reader = threading.Thread(target=self._drain, name="collie-session-reader",
++                                  daemon=True)
++        reader.start()
++
++    @classmethod
++    def spawn(cls, worker_path: str) -> "SubprocessChannel":
++        """Start the worker under the same ownership contract as production."""
++        from . import plat
++
++        # Isolated mode keeps the target workspace, PYTHON* variables, and
++        # user-site startup hooks out of the trusted transport worker.
++        cmd = [sys.executable, "-I", worker_path]
++        popen_kw = {}
++        popen_kw.update(plat.new_group_kwargs())
++        popen_kw.update(plat.no_window_kwargs())
++        death_read = death_write = None
++        proc = owner = None
++        stderr_file = tempfile.TemporaryFile()
++        try:
++            if not plat.is_windows():
++                if popen_kw.get("start_new_session"):
++                    death_read, death_write = os.pipe()
++                    cmd += ["--collie-parent-death-fd", str(death_read),
++                            "--collie-parent-pid", str(os.getpid())]
++                    popen_kw["pass_fds"] = (death_read,)
++                else:
++                    # Nested Mission workers inherit the outer durable PGID owner.
++                    cmd += ["--collie-external-process-owner"]
++            try:
++                # The worker blocks on stdin.  It cannot import the SDK, open a
++                # socket, or spawn its runtime before the open frame is released.
++                proc = subprocess.Popen(
++                    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                    stderr=stderr_file, env=_sanitized_worker_env(), cwd=os.getcwd(),
++                    text=True, encoding="utf-8", errors="replace", **popen_kw)
++            finally:
++                if death_read is not None:
++                    read_fd, death_read = death_read, None
++                    try:
++                        os.close(read_fd)
++                    except Exception as exc:
++                        raise RuntimeError(
++                            "session parent-death descriptor cleanup failed") from exc
++            proc._collie_tree_lock = threading.RLock()
++            if not plat.is_windows() and popen_kw.get("start_new_session"):
++                proc._collie_process_group = int(proc.pid)
++            owner = plat.attach_kill_on_close_job(proc)
++            if plat.is_windows() and owner is None:
++                raise RuntimeError("Windows Job Object was not created")
++            if owner is not None:
++                proc._collie_kill_job = owner
++            channel = cls(proc, owner, stderr_file, death_write)
++        except BaseException as exc:
++            # Preserve ownership even if setup failed before the handshake.
++            # No task prompt crossed this boundary.
++            if proc is not None:
++                channel = cls(proc, owner, stderr_file, death_write)
++                if not channel.close():
++                    raise _UnresolvedStartup(channel) from exc
++                death_write = None
++                owner = None
++            for descriptor in (death_read, death_write):
++                if descriptor is not None:
++                    try:
++                        os.close(descriptor)
++                    except Exception:
++                        pass
++            if owner is not None:
++                try:
++                    owner.close()
++                except Exception:
++                    pass
++            stderr_file.close()
++            raise
++        return channel
++
++    # -- framing ---------------------------------------------------------
++    def _drain(self) -> None:
++        try:
++            for line in self.proc.stdout:
++                self._lines.put(line)
++        except Exception:
++            pass
++        finally:
++            self._lines.put(None)
++
++    def alive(self) -> bool:
++        return not self._closed and self.proc.poll() is None
++
++    def send(self, frame: dict) -> None:
++        payload = json.dumps(frame, ensure_ascii=False, allow_nan=False,
++                             separators=(",", ":")) + "\n"
++        if len(payload.encode("utf-8")) > _MAX_FRAME_BYTES:
++            raise _RequestRefused("session frame exceeds the transport limit")
++        try:
++            self.proc.stdin.write(payload)
++            self.proc.stdin.flush()
++        except Exception as exc:
++            raise RuntimeError("session worker is not accepting frames: "
++                               + _safe_failure(exc)) from exc
++
++    def recv(self, deadline: float) -> dict:
++        try:
++            line = self._lines.get(timeout=max(0.0, deadline - time.monotonic()))
++        except queue.Empty:
++            raise TimeoutError("session worker timed out")
++        if line is None:
++            raise RuntimeError("session worker exited%s" % self.diagnostic())
++        if len(line.encode("utf-8")) > _MAX_FRAME_BYTES:
++            raise RuntimeError("session worker frame exceeded the safety limit")
++        try:
++            frame = json.loads(line, parse_constant=_reject_constant)
++        except Exception as exc:
++            raise RuntimeError("session worker returned invalid JSON") from exc
++        if not isinstance(frame, dict):
++            raise RuntimeError("session worker returned an invalid frame")
++        if frame.get("type") == "error":
++            raise RuntimeError("session worker failed: "
++                               + _safe_failure(frame.get("error")))
++        return frame
++
++    def exchange(self, frame: dict, timeout: float) -> dict:
++        self.send(frame)
++        return self.recv(time.monotonic() + float(timeout))
++
++    def diagnostic(self) -> str:
++        try:
++            self._stderr.seek(0)
++            raw = self._stderr.read(_MAX_STDERR)
++        except Exception:
++            return ""
++        text = _safe_failure(raw.decode("utf-8", "replace")
++                             if isinstance(raw, bytes) else raw)
++        return (": " + text) if text else ""
++
++    def unresolved(self) -> bool:
++        """Closing was attempted and the owned tree is still unaccounted for."""
++        return self._closed and self._extinct is not True
++
++    def close(self) -> bool:
++        with self._close_lock:
++            return self._close_locked()
++
++    def _close_locked(self) -> bool:
++        """Terminate the owned tree; True only once it is *proven* extinct.
++
++        A failed termination does not close this channel, it leaves it
++        **unresolved**: the process handle and the kernel ownership handle are
++        retained so a later call retries the real cleanup, and every call keeps
++        answering False until a retry actually confirms extinction.  Returning
++        True because ``close()`` ran once before would hand the caller a
++        cancellation, or a free replacement worker, that never happened.
++        """
++        if self._extinct is True:
++            return True
++        graceful = not self._closed
++        self._closed = True
++        if graceful:
++            # Only the first attempt asks politely; afterwards stdin is gone and
++            # the worker has already been told to stop.
++            try:
++                if self.proc.poll() is None:
++                    self.proc.stdin.write('{"type":"close"}\n')
++                    self.proc.stdin.flush()
++                    deadline = time.monotonic() + _CLOSE_GRACE
++                    while self.proc.poll() is None and time.monotonic() < deadline:
++                        time.sleep(0.02)
++            except Exception:
++                pass
++        extinct = bool(_terminate_worker_tree(self.proc))
++        for stream in (self.proc.stdin, self.proc.stdout):
++            try:
++                if stream is not None:
++                    stream.close()
++            except Exception:
++                pass
++        if self._death_write is not None:
++            # Closing the parent end only helps the child die; it is not a retry
++            # handle, so it is retired on the first attempt either way.
++            try:
++                os.close(self._death_write)
++            except Exception:
++                pass
++            finally:
++                self._death_write = None
++        if self._owner is not None:
++            try:
++                self._owner.close()
++            except Exception:
++                # The job object still owns the tree, so nothing is extinct and
++                # the handle is kept for the retry.
++                extinct = False
++            else:
++                self._owner = None
++        if extinct:
++            # Diagnostics stay readable while the tree is unaccounted for.
++            try:
++                self._stderr.close()
++            except Exception:
++                pass
++        self._extinct = extinct
++        return extinct
++
++
++class NativeSession:
++    """One persistent conversation: its adapter, its worker, its identity."""
++
++    def __init__(self, key: str, adapter: SessionHistoryAdapter):
++        self.key = key
++        self.adapter = adapter
++        self.channel = None
++        self.scope = ""
++        self.queries = 0
++        self.identity = ""
++
++    def usable(self) -> bool:
++        return self.channel is None or self.channel.alive()
++
++    def ensure(self, provider, open_request: dict):
++        if self.channel is not None:
++            if not self.channel.alive():
++                raise RuntimeError("session worker is no longer alive")
++            return self.channel
++        self.channel = provider._open_channel(self.key, open_request)
++        return self.channel
++
++    def turn(self, request: dict, timeout: float) -> dict:
++        sequence = self.queries + 1
++        frame = self.channel.exchange({
++            "type": "turn", "protocol": _SESSION_PROTOCOL, "seq": sequence,
++            "session_key": self.key, "request": request}, timeout)
++        if frame.get("type") != "turn" or frame.get("seq") != sequence:
++            raise RuntimeError("session worker returned an out-of-sequence frame")
++        info = frame.get("session")
++        if not isinstance(info, dict) or info.get("queries") != sequence:
++            raise RuntimeError("session worker returned an invalid session attestation")
++        identity = info.get("id_sha256")
++        if not isinstance(identity, str) or len(identity) != 64:
++            raise RuntimeError("session worker did not attest a native session identity")
++        if self.identity and identity != self.identity:
++            # The SDK re-announces init on every query, so continuity is proven
++            # by a stable native session id, never by the absence of an init.
++            raise RuntimeError("session worker reported a different native session")
++        inits = info.get("inits")
++        if not isinstance(inits, int) or isinstance(inits, bool) or inits < sequence:
++            raise RuntimeError("session worker did not attest this turn's init")
++        payload = frame.get("payload")
++        if not isinstance(payload, dict):
++            raise RuntimeError("session worker returned an invalid payload")
++        self.identity = identity
++        self.queries = sequence
++        return payload
++
++
++# --------------------------------------------------------------------------- #
++#  Provider
++# --------------------------------------------------------------------------- #
++class ExperimentalSessionSdkProvider(ClaudeAgentSdkProvider):
++    """EXPERIMENTAL: ``ClaudeAgentSdkProvider`` over one persistent session.
++
++    Everything except the two overridden seams is the shipped provider's own
++    behaviour, including the request reservation, the cancellation registry, and
++    the whole response-interpretation path.
++    """
++
++    name = "claude-agent-sdk-session"
++
++    def __init__(self, model: str | None = None, timeout: int = 180,
++                 effort: str | None = None, subscription_only: bool = False,
++                 structured_output: bool = False, session_enabled: bool = True):
++        super().__init__(model=model, timeout=timeout, effort=effort,
++                         subscription_only=subscription_only,
++                         structured_output=structured_output)
++        self.session_enabled = bool(session_enabled)
++        self._session_lock = threading.RLock()
++        self._session: NativeSession | None = None
++        # One conversation per provider instance.  A second concurrent call
++        # (a critic or summary sharing this provider) takes the stateless path
++        # instead of interleaving into someone else's session.
++        self._busy = threading.Lock()
++        self._route = threading.local()
++        # Workers whose termination was attempted and could not be confirmed.
++        # Each entry keeps the real ownership handle so cleanup can be retried,
++        # and its presence fences this provider: no replacement worker may be
++        # started while a previous one is unaccounted for.
++        self._unresolved: list[dict] = []
++        self.session_evidence = {
++            "sessions_opened": 0, "session_turns": 0, "stateless_turns": 0,
++            "longest_session_turns": 0, "resets": {}, "fallbacks": {},
++            "unresolved_cleanups": 0, "cleanup_retries_confirmed": 0,
++        }
++
++    # -- evidence --------------------------------------------------------
++    def _note(self, bucket: str, reason: str) -> None:
++        counters = self.session_evidence[bucket]
++        counters[reason] = counters.get(reason, 0) + 1
++
++    # -- session lifecycle ----------------------------------------------
++    def _worker_path(self) -> str:
++        return os.path.join(os.path.dirname(__file__), "experimental_session_worker.py")
++
++    # -- unaccounted ownership -------------------------------------------
++    def _fence_locked(self, channel, scope: str, reason: str) -> None:
++        """Retain a worker whose termination could not be confirmed."""
++        entry = {"channel": channel, "scope": str(scope or ""),
++                 "reason": str(reason or "unspecified")}
++        self._unresolved.append(entry)
++        self.session_evidence["unresolved_cleanups"] += 1
++
++    def _resolve_locked(self, scope=None) -> bool:
++        """Retry every fenced cleanup; True when nothing in scope is left.
++
++        Cleanup is retried rather than assumed: the retained process and job
++        handles are exactly what the failed attempt held, so a transient failure
++        can still be resolved honestly instead of being declared away.
++        """
++        remaining = []
++        for entry in self._unresolved:
++            if scope is not None and entry["scope"] != scope:
++                remaining.append(entry)
++                continue
++            if entry["channel"].close():
++                self.session_evidence["cleanup_retries_confirmed"] += 1
++                self._retired_channel_locked(entry["channel"])
++            else:
++                remaining.append(entry)
++        self._unresolved = remaining
++        return not any(scope is None or entry["scope"] == scope
++                       for entry in remaining)
++
++    def _retired_channel_locked(self, channel):
++        with self._process_condition:
++            for invocation, state in list(self._active_runs.items()):
++                if state["proc"] is channel.proc:
++                    state["tree_extinct"] = True
++                    if state["done"]:
++                        self._active_runs.pop(invocation, None)
++            self._process_condition.notify_all()
++
++    def _retire_pending(self, registration):
++        with self._process_condition:
++            invocation, state = registration
++            if (self._active_runs.get(invocation) is state and state["proc"] is not None
++                    and not state["tree_extinct"]):
++                state["done"] = True
++                self._process_condition.notify_all()
++                return
++        super()._retire_pending(registration)
++
++    def _fence_detail(self) -> str:
++        """The reason this provider may not start another worker, or ``""``."""
++        with self._session_lock:
++            if self._resolve_locked():
++                return ""
++            return ("a previous session worker's process tree could not be "
++                    "confirmed extinct (%s)" % self._unresolved[0]["reason"])
++
++    def _open_channel(self, key: str, open_request: dict):
++        """Spawn and handshake one session worker.  Overridden in tests."""
++        with self._session_lock:
++            if not self._resolve_locked():
++                # Fail closed rather than run two workers where the older one is
++                # unaccounted for and may still hold a live CLI child.
++                raise RuntimeError(
++                    "session worker replacement is blocked: a previous process "
++                    "tree is unaccounted for")
++        try:
++            channel = SubprocessChannel.spawn(self._worker_path())
++        except _UnresolvedStartup as exc:
++            with self._session_lock:
++                scope = self._session.scope if self._session is not None else ""
++                self._fence_locked(exc.channel, scope, "startup cleanup failed")
++            raise
++        try:
++            frame = channel.exchange({"type": "open", "protocol": _SESSION_PROTOCOL,
++                                      "session_key": key, "request": open_request},
++                                     _READY_TIMEOUT)
++            if frame.get("type") != "ready" or frame.get("protocol") != _SESSION_PROTOCOL:
++                raise RuntimeError("session worker did not report readiness")
++        except BaseException:
++            if not channel.close():
++                with self._session_lock:
++                    self._fence_locked(channel, "", "handshake cleanup failed")
++            raise
++        self.session_evidence["sessions_opened"] += 1
++        return channel
++
++    def _close_session_locked(self, reason: str) -> bool:
++        session = self._session
++        if session is None:
++            return False
++        # One place records why a conversation ended, so the benchmark receipt
++        # can separate "the caller changed the context" from "the call failed".
++        self._note("resets", str(reason or "unspecified"))
++        session.adapter.close()
++        self.session_evidence["longest_session_turns"] = max(
++            self.session_evidence["longest_session_turns"], session.queries)
++        channel = session.channel
++        # The session reference is dropped only once its worker is accounted
++        # for: either it never had one, or its tree is proven extinct, or the
++        # channel is fenced with its ownership handles for a retry.  Dropping it
++        # first would turn a failed cleanup into a clean slate.
++        if channel is not None and not channel.close():
++            self._fence_locked(channel, session.scope, str(reason or "unspecified"))
++            self._session = None
++            session.channel = None
++            return False
++        self._session = None
++        session.channel = None
++        if channel is not None:
++            self._retired_channel_locked(channel)
++        return True
++
++    def _close_session(self, reason: str) -> bool:
++        with self._session_lock:
++            return self._close_session_locked(reason)
++
++    def close_session(self, reason: str = "explicit") -> bool:
++        """Retire any live session; the next call opens a fresh one."""
++        return self._close_session(reason)
++
++    def _fresh_session(self, key: str, tool_bearing: bool) -> NativeSession:
++        session = NativeSession(key, SessionHistoryAdapter(key, tool_bearing))
++        self._session = session
++        return session
++
++    # -- overridden seams ------------------------------------------------
++    def complete(self, system, messages, tool_schemas, on_text=None):
++        fenced = self._fence_detail()
++        if fenced:
++            # No reservation is taken and no worker is started: an unaccounted
++            # process tree from a previous call has to be resolved first, and a
++            # stateless fallback would spawn a replacement just the same.
++            detail = "session transport is fenced: " + fenced
++            return Completion(text="ERROR(claude-agent-sdk): " + detail,
++                              stop_reason="error", error_detail=detail,
++                              request_count=0)
++        reason = ""
++        if not self.session_enabled:
++            reason = "session_disabled"
++        elif not is_text_only(messages):
++            # Images explicitly fall back to the shipped stateless transport,
++            # which delivers or refuses them; they are never dropped, and the
++            # session must not continue past a turn it did not observe.
++            reason = "non_text_content"
++            self._close_session(reason)
++        acquired = False
++        if not reason:
++            acquired = self._busy.acquire(blocking=False)
++            if not acquired:
++                reason = "concurrent_call"
++        if reason:
++            self.session_evidence["stateless_turns"] += 1
++            self._note("fallbacks", reason)
++            self._route.session = False
++            try:
++                return super().complete(system, messages, tool_schemas, on_text=on_text)
++            finally:
++                self._route.session = False
++        self._route.session = True
++        self._route.system = system
++        self._route.plan = None
++        self._route.tool_bearing = bool(tool_schemas)
++        self._route.allowed_tools = (
++            {str(schema.get("name") or "") for schema in tool_schemas}
++            if tool_schemas else None)
++        try:
++            return super().complete(system, messages, tool_schemas, on_text=on_text)
++        finally:
++            self._route.session = False
++            self._route.plan = None
++            self._busy.release()
++
++    def _payload(self, messages, tool_schemas):
++        """Plan the append-only delta, before any physical request is issued.
++
++        Runs on the caller's authoritative history, so a compaction or an
++        elision is detected here — while the only cost of resetting is a full
++        prompt — rather than after a delta has already been sent.
++        """
++        if not getattr(self._route, "session", False):
++            return super()._payload(messages, tool_schemas)
++        structured_tools = self._structured_tools(tool_schemas)
++        open_request = self._worker_request(self._route.system, "", structured_tools)
++        open_request.pop("prompt", None)
++        key = session_key(open_request, tool_schemas)
++
++        with self._session_lock:
++            session = self._session
++            if session is not None and session.key != key:
++                self._close_session_locked("config_changed")
++                session = None
++            elif session is not None and not session.usable():
++                self._close_session_locked("worker_lost")
++                session = None
++            if session is None:
++                session = self._fresh_session(key, bool(tool_schemas))
++            try:
++                plan = session.adapter.plan(key, messages)
++            except ResetRequired as exc:
++                self._close_session_locked(exc.reason)
++                session = self._fresh_session(key, bool(tool_schemas))
++                try:
++                    plan = session.adapter.plan(key, messages)
++                except ResetRequired as retry:
++                    # A fresh session skips reconciliation entirely, so a second
++                    # failure is about the conversation itself, not about drift.
++                    self._close_session_locked(retry.reason)
++                    raise _RequestRefused(
++                        "session transport cannot carry this conversation: "
++                        + retry.detail) from retry
++            if not self._resolve_locked():
++                # Retiring the previous conversation just failed.  Refuse before
++                # anything is issued rather than open a replacement session
++                # while its predecessor's process tree is unaccounted for.
++                raise _RequestRefused(
++                    "session transport is fenced: a previous session worker's "
++                    "process tree could not be confirmed extinct")
++
++        if plan.first:
++            # Byte-identical to what the shipped stateless transport would send.
++            text = super()._payload(messages, tool_schemas)
++        else:
++            text = plan.delta
++        if not isinstance(text, str) or not text.strip():
++            raise _RequestRefused("session transport requires text-only conversation")
++        self._route.plan = (session, plan, open_request)
++        return text
++
++    def _run_worker(self, request: dict, cancel_scope: str = "",
++                    registration=None) -> dict:
++        """Route one planned turn through the persistent worker."""
++        if not getattr(self._route, "session", False):
++            return super()._run_worker(request, cancel_scope=cancel_scope,
++                                       registration=registration)
++        routed = getattr(self._route, "plan", None)
++        if routed is None:
++            # _payload is the only place a turn is planned.  Fail closed rather
++            # than append an unplanned prompt into a live conversation.
++            raise RuntimeError("experimental session transport lost its turn plan")
++        self._route.plan = None
++        session, plan, open_request = routed
++
++        with self._process_condition:
++            if registration is None:
++                invocation = uuid.uuid4().hex
++                state = {"scope": str(cancel_scope or ""), "proc": None,
++                         "cancel_requested": False, "done": False,
++                         "tree_extinct": False, "phase": "starting"}
++                self._active_runs[invocation] = state
++            else:
++                invocation, state = registration
++                if self._active_runs.get(invocation) is not state:
++                    raise RuntimeError("Claude Agent SDK worker registration was lost")
++                if cancel_scope:
++                    state["scope"] = str(cancel_scope)
++                if state["cancel_requested"]:
++                    # cancel_for() already returned process-free proof for this
++                    # pending call; consume the tombstone without sending it.
++                    state["done"] = True
++                    state["tree_extinct"] = True
++                    self._active_runs.pop(invocation, None)
++                    self._process_condition.notify_all()
++                    raise _RequestRefused("session request was cancelled before it was issued")
++                state["phase"] = "starting"
++                state["tree_extinct"] = False
++        session.scope = state["scope"]
++
++        issued = False
++        settled = False
++        channel = None
++        try:
++            channel = session.ensure(self, open_request)
++            with self._session_lock:
++                if self._session is not session:
++                    # A cancellation retired this conversation while its worker
++                    # was starting, so that worker has no owner left to reap it.
++                    session.channel = None
++                    if not channel.close():
++                        self._fence_locked(channel, state["scope"],
++                                           "worker started into a retired session")
++                    raise RuntimeError("session was retired while its worker started")
++            with self._process_condition:
++                # Publishing the worker before releasing the prompt is what lets
++                # a concurrent cancel_for() terminate this exact process tree.
++                state["proc"] = channel.proc
++                state["phase"] = "active"
++                cancelled = bool(state["cancel_requested"])
++                self._process_condition.notify_all()
++            if cancelled:
++                raise RuntimeError("cancelled before the request was released")
++            issued = True
++            payload = session.turn(request, self.timeout)
++        except BaseException as exc:
++            # This conversation is not attested past a failed turn, so it is
++            # retired -- but extinction is never fabricated here.  The tree is
++            # only extinct if this call never published a process, or if the
++            # retirement above actually proved it; otherwise the run stays
++            # registered and the channel stays fenced with its handles.
++            confirmed = self._close_session("turn_failed")
++            settled = True
++            with self._process_condition:
++                if self._active_runs.get(invocation) is state:
++                    state["done"] = True
++                    state["tree_extinct"] = bool(channel is None or confirmed)
++                    if state["tree_extinct"]:
++                        self._active_runs.pop(invocation, None)
++                    self._process_condition.notify_all()
++            if not issued and not isinstance(exc, _RequestRefused):
++                # Nothing reached the worker, so no model request was physically
++                # issued and none may be charged against the run's budget.
++                raise _RequestRefused(
++                    "session request was not issued: " + _safe_failure(exc)) from exc
++            raise
++        finally:
++            if not settled:
++                with self._process_condition:
++                    if self._active_runs.get(invocation) is state:
++                        proc = None if channel is None else channel.proc
++                        state["done"] = True
++                        # The turn succeeded, so this worker is not unaccounted
++                        # for: the live session owns it and reaps it on close.
++                        state["tree_extinct"] = bool(
++                            proc is None or proc.poll() is not None)
++                        self._active_runs.pop(invocation, None)
++                        self._process_condition.notify_all()
++
++        if payload.get("ok") is not True or "structured_error" in payload:
++            reason = "worker_failed"
++            try:
++                rejection = _provider_rejection(payload)
++                refusal = None if rejection is not None else self._session_refusal(
++                    payload, request)
++                reason = ("provider_rejected" if rejection is not None else
++                          "formatter_refused" if refusal is not None else "worker_failed")
++            finally:
++                # Invalid attestation is also a poisoned conversation; the
++                # classifier raising must not leave it eligible for reuse.
++                self._close_session(reason)
++            # The native conversation now holds a response the provider itself
++            # refused; it is poisoned for re-use, so the session is discarded
++            # and the host's one authorized repair turn reserves its own call.
++            if rejection is not None:
++                raise rejection
++            if refusal is not None:
++                raise refusal
++            raise RuntimeError("Claude Agent SDK session worker failed%s" % (
++                (": " + _safe_failure(payload.get("error")))
++                if payload.get("error") else ""))
++        if payload.get("provider_error") is not None:
++            self._close_session("forged_payload")
++            raise RuntimeError(
++                "Claude Agent SDK worker reported both success and a provider error")
++        text = payload.get("text")
++        if not isinstance(text, str):
++            self._close_session("missing_text")
++            raise RuntimeError("Claude Agent SDK response is missing assistant text")
++        session.adapter.commit(plan, reply_for(
++            text, self._route.tool_bearing, self._route.allowed_tools))
++        self.session_evidence["session_turns"] += 1
++        self.session_evidence["longest_session_turns"] = max(
++            self.session_evidence["longest_session_turns"], session.queries)
++        return payload
++
++    def _session_refusal(self, payload: dict, request: dict):
++        """A formatter refusal this exact turn may report, or ``None``.
++
++        The production classifier is reused unmodified.  The session transport
++        adds the per-call attestation that a one-shot worker gets for free from
++        its own exit: a refusal may only be classified for a turn that actually
++        requested structured mode, and only with the tool allowlist that turn
++        asked for.  A mismatch is a forged payload, not a repairable response.
++        """
++        if payload.get("structured_error") != _FORMATTER_REFUSED:
++            return None
++        if request.get("response_format") != _STRUCTURED_FORMAT:
++            raise RuntimeError(
++                "Claude Agent SDK session worker refused a structured response "
++                "for a turn that requested no schema")
++        if payload.get("response_format") != _STRUCTURED_FORMAT:
++            raise RuntimeError(
++                "Claude Agent SDK session worker did not attest structured "
++                "response mode for a refused response")
++        if payload.get("response_tools") != request.get("response_tools"):
++            raise RuntimeError(
++                "Claude Agent SDK session worker attested a different response "
++                "tool allowlist for a refused response")
++        return _formatter_refusal(payload)
++
++    def _cancel(self, scope) -> bool:
++        """Cancel matching calls and retire the session they were running in."""
++        with self._process_condition:
++            states = [state for state in self._active_runs.values()
++                      if scope is None or state["scope"] == scope]
++        super()._cancel(scope)
++        with self._session_lock:
++            had_unresolved = any(scope is None or entry["scope"] == scope
++                                 for entry in self._unresolved)
++            resolved = self._resolve_locked(scope)
++            session = self._session
++            in_scope = session is not None and (scope is None or session.scope == scope)
++            # An idle session still owns a live worker and its CLI child; a
++            # cancellation that left them running would not be a cancellation.
++            closed = self._close_session_locked("cancelled") if in_scope else False
++            # Anything this cancellation is responsible for must actually be
++            # gone.  A retry that succeeds resolves it; one that does not keeps
++            # the cancellation reported as unsuccessful.
++        with self._process_condition:
++            active_gone = not states or all(state["tree_extinct"] for state in states)
++        had_work = bool(states) or in_scope or had_unresolved
++        return had_work and active_gone and resolved and (not in_scope or closed)
+diff --git a/harness/experimental_session_worker.py b/harness/experimental_session_worker.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7d5be2f74047329de84bea1cccbbea5e891f591
+--- /dev/null
++++ b/harness/experimental_session_worker.py
+@@ -0,0 +1,391 @@
++"""EXPERIMENTAL persistent-session entry point for the Claude Agent SDK.
++
++Private subprocess behind :mod:`harness.experimental_session_sdk`.  Where
++``claude_agent_worker`` answers exactly one request and exits, this worker keeps
++**one** ``ClaudeSDKClient`` connected across many host turns, so the SDK's own
++native conversation — not a re-flattened transcript — carries the history.
++
++Every model-facing decision is delegated to the reviewed production worker:
++``claude_agent_worker._build_options`` builds the options, and
++``claude_agent_worker._query`` observes and validates the stream (init
++attestation, empty tool surfaces, one model response, structured formatter
++identity, usage, provider-rejection categories, turn limit).  This module adds
++exactly three things on top:
++
++* one connected client re-used across queries, all client calls in one task;
++* per-turn proof that the request still describes the *same* session — the
++  parent's opaque session key and the fingerprint of the options the client was
++  connected with must both match, so a changed system prompt, model, effort,
++  schema, or tool allowlist can never be appended into an existing session;
++* continuity attestation: the SDK emits ``system/init`` on *every* query, so a
++  repeated init is not evidence of a reset.  The native ``session_id`` is
++  therefore pinned on the first init and any change is a hard stop.
++
++Protocol (UTF-8, one JSON object per line, ``\\n`` framed)::
++
++    in   {"type":"open","protocol":10,"session_key":str,"request":{...}}
++    in   {"type":"turn","protocol":10,"seq":int,"session_key":str,"request":{...}}
++    in   {"type":"close"}
++    out  {"type":"ready","protocol":10}
++    out  {"type":"turn","protocol":10,"seq":int,"payload":{...},"session":{...}}
++    out  {"type":"error","seq":int|null,"error":str}        -- terminal
++
++``payload`` is the *unmodified* return value of ``claude_agent_worker._query``
++— or, when that call raises ``_StructuredContractRejected``, the same
++content-free refusal payload production's ``main`` serializes for it, attested
++against this turn's own mode and tool allowlist.  The parent re-validates all of
++it.  Any invalid frame, out-of-sequence frame,
++protocol violation, SDK error, or cancellation stops the process.  There is no
++retry, no fallback model, no route fallback, and no environment bypass.
++
++Process lifetime is the parent's: the POSIX parent-death channel is armed here
++through the production implementation, and the Windows Job Object is attached by
++the parent before any prompt bytes are released.
++"""
++from __future__ import annotations
++
++import asyncio
++import hashlib
++import json
++import os
++import sys
++
++
++PROTOCOL = 10
++_MAX_FRAME_BYTES = 4 * 1024 * 1024
++
++
++class ProtocolError(RuntimeError):
++    """A frame or SDK observation this worker refuses to continue past."""
++
++
++def _reject_constant(value):
++    raise ValueError("non-finite JSON number is forbidden: %s" % value)
++
++
++def options_fingerprint(options) -> str:
++    """Stable digest of a built ``ClaudeAgentOptions``.
++
++    Session re-use is only safe while the *connected* options still describe the
++    request.  Comparing the built options rather than trusting the parent's key
++    means a parent bug cannot append a turn carrying a different system prompt,
++    model, effort, or response schema into a live conversation.
++    """
++    values = getattr(options, "__dict__", None)
++    if not isinstance(values, dict) or not values:
++        raise ProtocolError("SDK options could not be fingerprinted")
++    parts = ["%s=%r" % (name, values[name]) for name in sorted(values)]
++    return hashlib.sha256("\x00".join(parts).encode("utf-8", "replace")).hexdigest()
++
++
++def _has_tool_result_block(message, checked) -> bool:
++    content = checked._field(message, "content", []) or []
++    if not isinstance(content, list):
++        return False
++    for block in content:
++        kind = str(checked._field(block, "type", "") or type(block).__name__).lower()
++        if "tool_result" in kind or "toolresult" in kind:
++            return True
++    return False
++
++
++class BoundSession:
++    """Drives the reviewed ``_query`` against one already-connected client.
++
++    ``_query`` calls ``sdk.query(prompt=..., options=...)`` and consumes the
++    resulting stream.  This adapter satisfies that surface without opening a new
++    conversation: the prompt is appended to the live client and its response
++    stream is forwarded message by message, observed on the way past.
++    """
++
++    def __init__(self, worker):
++        self._worker = worker
++        self.ClaudeAgentOptions = worker.sdk.ClaudeAgentOptions
++
++    async def query(self, *, prompt, options):
++        worker = self._worker
++        if options_fingerprint(options) != worker.fingerprint:
++            # _query rebuilds options per call; in a session they must still be
++            # the ones the client is connected with, or the caller is silently
++            # asking for a configuration this conversation never had.
++            raise ProtocolError("query options differ from the connected session")
++        await worker.client.query(prompt)
++        async for message in worker.client.receive_response():
++            worker.observe(message)
++            yield message
++
++
++class SessionWorker:
++    """One ClaudeSDKClient, many host turns, all inside one asyncio task."""
++
++    def __init__(self, sdk, checked, emit):
++        self.sdk = sdk
++        self.checked = checked
++        self.emit = emit
++        self.client = None
++        self.fingerprint = ""
++        self.session_key = ""
++        self.structured = False
++        self.session_id = ""
++        self.inits = 0
++        self._seq = 0
++        self._poisoned = ""
++
++    # -- frames ----------------------------------------------------------
++    async def handle(self, frame) -> bool:
++        if not isinstance(frame, dict):
++            raise ProtocolError("frame is not a JSON object")
++        kind = frame.get("type")
++        if kind == "close":
++            if set(frame) - {"type", "protocol"}:
++                raise ProtocolError("close frame has unexpected fields")
++            return False
++        if frame.get("protocol") != PROTOCOL or isinstance(frame.get("protocol"), bool):
++            raise ProtocolError("invalid session protocol")
++        if kind == "open":
++            await self._open(frame)
++            return True
++        if kind == "turn":
++            await self._turn(frame)
++            return True
++        raise ProtocolError("unsupported frame type: %s" % str(kind)[:40])
++
++    async def _open(self, frame) -> None:
++        if self.client is not None:
++            raise ProtocolError("session is already open")
++        key = frame.get("session_key")
++        if not isinstance(key, str) or len(key) != 64 or not key.isalnum():
++            raise ProtocolError("open frame has an invalid session key")
++        request = self._validated(frame.get("request"), prompt=False)
++        options = self.checked._build_options(self.sdk, request)
++        self.fingerprint = options_fingerprint(options)
++        self.structured = request.get("response_format") == self.checked._STRUCTURED_FORMAT
++        client = self.sdk.ClaudeSDKClient(options=options)
++        # connect() without a prompt keeps the CLI in streaming mode, so later
++        # queries append to this same native conversation.  No model request is
++        # issued here: init arrives with the first query.
++        await client.connect()
++        self.client = client
++        self.session_key = key
++        self.emit({"type": "ready", "protocol": PROTOCOL})
++
++    async def _turn(self, frame) -> None:
++        if self.client is None:
++            raise ProtocolError("turn frame arrived before the session was opened")
++        if self._poisoned:
++            raise ProtocolError("session refused a further turn: " + self._poisoned)
++        seq = frame.get("seq")
++        if not isinstance(seq, int) or isinstance(seq, bool) or seq != self._seq + 1:
++            raise ProtocolError("turn frame is out of sequence")
++        if frame.get("session_key") != self.session_key:
++            raise ProtocolError("turn frame does not match this session's key")
++        request = self._validated(frame.get("request"), prompt=True)
++        if (request.get("response_format") == self.checked._STRUCTURED_FORMAT) != self.structured:
++            raise ProtocolError("turn frame changed the session's response contract")
++        options = self.checked._build_options(self.sdk, request)
++        if options_fingerprint(options) != self.fingerprint:
++            raise ProtocolError("turn frame changed the connected session's options")
++        self._seq = seq
++        before = self.inits
++        try:
++            payload = await self.checked._query(request, BoundSession(self))
++        except self.checked._StructuredContractRejected as refusal:
++            # ``_query`` raises this instead of returning; the production worker
++            # serializes it in ``main`` and this worker never reaches ``main``.
++            # Serialize the same content-free classification here, or the one
++            # response the provider's own formatter refused would arrive at the
++            # parent as an unclassifiable transport fault.
++            payload = self._refusal_payload(request, refusal)
++        if self.inits <= before:
++            raise ProtocolError("SDK did not attest this session on this turn")
++        if not self.session_id:
++            raise ProtocolError("SDK did not attest a native session identity")
++        if payload.get("ok") is not True:
++            # A provider rejection or a refused response is forwarded with its
++            # category and usage, but the conversation's state after such a turn
++            # is not attested -- a refused response and its failed formatter
++            # receipt are still in the native history -- so this session may not
++            # serve another turn.  The parent discards it as well.
++            self._poisoned = str(payload.get("provider_error")
++                                 or payload.get("structured_error")
++                                 or "turn was not ok")[:80]
++        self.emit({
++            "type": "turn", "protocol": PROTOCOL, "seq": seq, "payload": payload,
++            "session": {
++                "queries": seq,
++                "inits": self.inits,
++                # Opaque continuity proof only: the native id itself never leaves
++                # this process.
++                "id_sha256": hashlib.sha256(self.session_id.encode("utf-8")).hexdigest(),
++            },
++        })
++
++    def _refusal_payload(self, request: dict, refusal) -> dict:
++        """The reviewed refusal payload, attested against *this* turn.
++
++        Byte-for-byte the categories production's ``main`` reports, plus the
++        per-call attestation the parent re-checks: only a turn that requested
++        structured mode may answer with a formatter refusal, and it carries the
++        allowlist that turn asked for.  Neither the refused response nor the
++        formatter's report is read or forwarded -- the classification, the
++        measured usage and the auth attestation are the whole payload.
++        """
++        if not self.structured or request.get("response_format") != \
++                self.checked._STRUCTURED_FORMAT:
++            raise ProtocolError(
++                "SDK refused a structured response on a turn with no schema")
++        return {"ok": False, "structured_error": self.checked._FORMATTER_REFUSED,
++                "error": "the structured formatter refused the model response",
++                "usage": refusal.usage, "api_key_source": refusal.api_key_source,
++                "response_format": self.checked._STRUCTURED_FORMAT,
++                "response_tools": list(request.get("response_tools") or [])}
++
++    # -- stream observation ----------------------------------------------
++    def observe(self, message) -> None:
++        """Session-level checks layered on top of ``_query``'s own validation."""
++        checked = self.checked
++        kind = checked._message_kind(message)
++        if kind == "system" and str(checked._field(message, "subtype", "")).lower() == "init":
++            data = checked._field(message, "data", {})
++            native = data.get("session_id") if isinstance(data, dict) else None
++            if not isinstance(native, str) or not native.strip():
++                raise ProtocolError("SDK init is missing its native session identity")
++            native = native.strip()
++            if self.session_id and native != self.session_id:
++                # The SDK re-announces init on every query, so a repeated init is
++                # NOT evidence of a reset.  A changed id is.
++                raise ProtocolError("SDK changed its native session identity")
++            self.session_id = native
++            self.inits += 1
++            return
++        if kind == "user" and not self.structured:
++            # A plain turn is configured with no tool at all, so any tool result
++            # means a real tool ran and its output is entering the conversation.
++            # Structured turns are NOT checked here: their one legitimate tool
++            # result is the SDK's own formatter receipt (which populates
++            # ``UserMessage.tool_use_result``), and ``_query`` already proves it
++            # is exactly one receipt, carrying the known text, matching the id of
++            # the single formatter call it receipts.
++            if (checked._field(message, "tool_use_result") is not None
++                    or _has_tool_result_block(message, checked)):
++                raise ProtocolError("SDK delivered a real tool result in plain mode")
++
++    # -- request validation ----------------------------------------------
++    def _validated(self, request, prompt: bool) -> dict:
++        """Re-validate the host request at this process boundary.
++
++        Deliberately mirrors ``claude_agent_worker._read_request`` for the two
++        text protocols this transport supports.  Images are not supported here:
++        the parent falls back to the stateless production transport for them
++        rather than dropping pixels.
++        """
++        if not isinstance(request, dict):
++            raise ProtocolError("session request is not an object")
++        protocol = request.get("protocol")
++        if protocol not in (1, 3) or isinstance(protocol, bool):
++            raise ProtocolError("unsupported session request protocol")
++        for key in ("model", "system_prompt"):
++            if not isinstance(request.get(key), str) or not request[key].strip():
++                raise ProtocolError("session request is missing %s" % key)
++        if "content" in request:
++            raise ProtocolError("the session transport is text-only")
++        if protocol == 3:
++            if request.get("response_format") != self.checked._STRUCTURED_FORMAT:
++                raise ProtocolError("invalid session response format")
++            request["response_tools"] = self.checked._response_tools(
++                request.get("response_tools"))
++        elif "response_format" in request or "response_tools" in request:
++            raise ProtocolError("plain session request must not carry a response format")
++        if prompt:
++            if not isinstance(request.get("prompt"), str) or not request["prompt"].strip():
++                raise ProtocolError("session turn request is missing prompt")
++        elif "prompt" in request:
++            raise ProtocolError("session open request must not carry a prompt")
++        return request
++
++    async def aclose(self) -> None:
++        client, self.client = self.client, None
++        if client is not None:
++            await client.disconnect()
++
++
++async def serve(read_line, emit, sdk, checked) -> int:
++    """Read frames until EOF/close/failure.  Every client call is in this task."""
++    worker = SessionWorker(sdk, checked, emit)
++    status = 0
++    try:
++        while True:
++            line = await read_line()
++            if not line:
++                break                       # EOF: the owning parent went away
++            line = line.strip()
++            if not line:
++                raise ProtocolError("empty frame")
++            if len(line.encode("utf-8")) > _MAX_FRAME_BYTES:
++                raise ProtocolError("frame exceeded the safety limit")
++            try:
++                frame = json.loads(line, parse_constant=_reject_constant)
++            except ProtocolError:
++                raise
++            except Exception as exc:
++                raise ProtocolError("frame is not valid JSON") from exc
++            if not await worker.handle(frame):
++                break
++    except (asyncio.CancelledError, KeyboardInterrupt):
++        emit({"type": "error", "seq": None, "error": "cancelled"})
++        status = 2
++    except BaseException as exc:            # noqa: BLE001 - fail closed and stop
++        emit({"type": "error", "seq": None,
++              "error": "%s: %s" % (type(exc).__name__, str(exc)[:600])})
++        status = 1
++    finally:
++        try:
++            await worker.aclose()
++        except BaseException:               # noqa: BLE001
++            status = status or 1
++    return status
++
++
++def _stdout_emit(frame) -> None:
++    sys.stdout.write(json.dumps(frame, ensure_ascii=False, allow_nan=False,
++                                separators=(",", ":")) + "\n")
++    sys.stdout.flush()
++
++
++def main() -> int:
++    try:
++        # `python -I <script>` puts this directory first on sys.path, so the
++        # reviewed production worker imports as a plain module.  It must be
++        # imported BEFORE the directory is dropped, and the directory must be
++        # dropped before the optional SDK is imported: the sibling
++        # ``claude_agent_sdk.py`` transport would otherwise shadow the installed
++        # official package of the same name.
++        worker_dir = os.path.abspath(os.path.dirname(__file__))
++        if worker_dir not in sys.path:
++            sys.path.insert(0, worker_dir)
++        import claude_agent_worker as checked
++
++        # Arm the exact-parent lifetime channel before importing the SDK or
++        # spawning its runtime, using the reviewed production implementation.
++        checked._arm_parent_death_from_argv()
++
++        normalized = os.path.normcase(worker_dir)
++        sys.path[:] = [entry for entry in sys.path
++                       if os.path.normcase(os.path.abspath(entry or os.getcwd()))
++                       != normalized]
++        import claude_agent_sdk as sdk      # optional dependency: worker-only import
++    except Exception as exc:                # noqa: BLE001
++        _stdout_emit({"type": "error", "seq": None,
++                      "error": "%s: %s" % (type(exc).__name__, str(exc)[:600])})
++        return 1
++
++    async def read_line() -> str:
++        # stdin reads go through a thread so they never move a client call off
++        # the single task that owns connect/query/disconnect.
++        return await asyncio.to_thread(sys.stdin.readline)
++
++    return asyncio.run(serve(read_line, _stdout_emit, sdk, checked))
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_experimental_session_sdk.py b/tests/test_experimental_session_sdk.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..98966fab11a1fd87976ccd06b2aa9728dc8abf99
+--- /dev/null
++++ b/tests/test_experimental_session_sdk.py
+@@ -0,0 +1,1242 @@
++"""EXPERIMENTAL persistent native SDK session transport.
++
++The question these tests answer is not "does a session work" but "can a session
++ever answer from context the caller believes it removed".  Collie hands a
++provider the whole conversation on every call and freely rewrites it — the
++composer elides old tool output, compaction replaces a span with a summary, the
++loop narrows the tool list at its hard deadline, a critic borrows the same
++provider.  A native session holds its own history, so every one of those must
++force a fresh conversation rather than a delta into a stale one.
++
++Nothing here talks to the network, spawns a process, or imports the optional
++SDK: the worker channel and the SDK client are both scripted.
++"""
++import asyncio
++import copy
++import json
++import threading
++
++import pytest
++
++from harness import claude_agent_worker as checked
++from harness import experimental_session_worker as session_worker
++from harness.claude_agent_sdk import ClaudeAgentSdkProvider
++from harness.experimental_session_sdk import (ExperimentalSessionSdkProvider,
++                                              ResetRequired, SessionHistoryAdapter,
++                                              reply_for, session_key)
++
++
++NAMES = ["read_file", "edit_file", "grep"]
++SCHEMAS = [{"name": name, "description": name, "input_schema": {"type": "object"}}
++           for name in NAMES]
++SYSTEM = "You are collie, a focused coding agent."
++KEY = "a" * 64
++READ = '{"tool": "read_file", "args": {"path": "pager.py"}}'
++EDIT = '{"tool": "edit_file", "args": {"path": "pager.py", "old_string": "a"}}'
++DONE = '{"answer": "the cursor validation order is fixed"}'
++# A real 1x1 PNG: the production transport sniffs the container before it
++# accepts an attachment, so a placeholder string would be refused for the wrong
++# reason and the fallback under test would never be exercised.
++PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAh"
++       "KmMIQAAAABJRU5ErkJggg==")
++
++
++# --------------------------------------------------------------------------- #
++#  Scripted transport
++# --------------------------------------------------------------------------- #
++def structured_payload(text, tools=NAMES, cache_read=0):
++    return {"ok": True, "text": text, "api_key_source": "none",
++            "response_format": "structured", "response_tools": list(tools),
++            "usage": {"input_tokens": 2, "output_tokens": 40,
++                      "cache_read_input_tokens": cache_read,
++                      "cache_creation_input_tokens": 0}}
++
++
++def plain_payload(text):
++    return {"ok": True, "text": text, "api_key_source": "none",
++            "usage": {"input_tokens": 2, "output_tokens": 5,
++                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
++
++
++class _FakeProc:
++    def __init__(self):
++        self.returncode = None
++
++    def poll(self):
++        return self.returncode
++
++
++class _ScriptedChannel:
++    """A session worker that replays payloads and records what it was sent."""
++
++    def __init__(self, key, open_request, script):
++        self.key = key
++        self.open_request = open_request
++        self.script = script
++        self.sent = []
++        self.proc = _FakeProc()
++        self.closed = False
++        self.identity = "b" * 64
++
++    def alive(self):
++        return not self.closed and self.proc.poll() is None
++
++    def exchange(self, frame, timeout):
++        if not self.alive():
++            raise RuntimeError("session worker exited")
++        assert frame["session_key"] == self.key, "a turn must name its own session"
++        self.sent.append(frame["request"])
++        payload = self.script.pop(0)
++        if isinstance(payload, BaseException):
++            raise payload
++        return {"type": "turn", "protocol": 10, "seq": frame["seq"], "payload": payload,
++                "session": {"queries": frame["seq"], "inits": frame["seq"],
++                            "id_sha256": self.identity}}
++
++    def close(self):
++        self.closed = True
++        self.proc.returncode = 0
++        return True
++
++
++class _BlockingChannel(_ScriptedChannel):
++    def __init__(self, *args):
++        super().__init__(*args)
++        self.entered = threading.Event()
++        self.released = threading.Event()
++
++    def exchange(self, frame, timeout):
++        self.entered.set()
++        if not self.released.wait(timeout=10):
++            raise TimeoutError("session worker timed out")
++        return super().exchange(frame, timeout)
++
++    def close(self):
++        result = super().close()
++        self.released.set()
++        return result
++
++
++class _Provider(ExperimentalSessionSdkProvider):
++    def __init__(self, script, channel_class=_ScriptedChannel, **kwargs):
++        kwargs.setdefault("structured_output", True)
++        super().__init__(model="opus", **kwargs)
++        self.script = list(script)
++        self.channels = []
++        self.channel_class = channel_class
++
++    def _open_channel(self, key, open_request):
++        channel = self.channel_class(key, open_request, self.script)
++        self.channels.append(channel)
++        self.session_evidence["sessions_opened"] += 1
++        return channel
++
++
++class _Ledger:
++    """One reservation per physically issued model request."""
++
++    def __init__(self):
++        self.reserved = []
++        self.settled = []
++
++    def reserve(self, purpose):
++        self.reserved.append(purpose)
++        return "req-%d" % len(self.reserved)
++
++    def settle(self, request_id, outcome="completed"):
++        self.settled.append((request_id, outcome))
++
++
++def call(provider, ledger, messages, schemas=SCHEMAS, system=SYSTEM, scope="mission-1"):
++    with provider.request_authority(ledger.reserve, ledger.settle, request_scope=scope):
++        return provider.complete(system, list(messages), schemas)
++
++
++def assistant(completion):
++    """The message harness/loop.py appends for a tool-calling completion."""
++    return {"role": "assistant", "content": completion.text,
++            "tool_calls": completion.tool_calls, "thinking_blocks": []}
++
++
++def observation(completion, output):
++    call_ = completion.tool_calls[0]
++    return {"role": "tool", "tool_call_id": call_.id, "name": call_.name,
++            "content": output}
++
++
++def prompts(provider, index=0):
++    return [request["prompt"] for request in provider.channels[index].sent]
++
++
++# --------------------------------------------------------------------------- #
++#  The real loop's tool / action / result sequence
++# --------------------------------------------------------------------------- #
++def test_real_loop_sequence_sends_only_the_new_observations():
++    provider = _Provider([structured_payload(READ), structured_payload(EDIT),
++                          structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "Fix the cursor validation order."}]
++
++    first = call(provider, ledger, messages)
++    assert first.stop_reason == "tool_use"
++    messages += [assistant(first), observation(first, "line one\nline two")]
++
++    second = call(provider, ledger, messages)
++    assert second.stop_reason == "tool_use"
++    messages += [assistant(second), observation(second, "edited pager.py")]
++
++    third = call(provider, ledger, messages)
++    assert third.stop_reason == "end_turn"
++
++    assert len(provider.channels) == 1, "one conversation carried all three turns"
++    sent = prompts(provider)
++    # Turn 1 is byte-identical to what the shipped stateless transport sends.
++    assert sent[0] == ClaudeAgentSdkProvider(model="opus", structured_output=True)._payload(
++        [{"role": "user", "content": "Fix the cursor validation order."}], SCHEMAS)
++    # Turns 2 and 3 append ONLY the new host observation, in the production
++    # serializer's own wording, and never re-send the assistant turn the native
++    # history already holds.
++    assert sent[1] == "Result of read_file: line one\nline two"
++    assert sent[2] == "Result of edit_file: edited pager.py"
++    assert "Fix the cursor validation order" not in sent[1]
++    assert "read_file" not in sent[2].replace("Result of edit_file", "")
++    assert provider.session_evidence["session_turns"] == 3
++
++
++def test_a_new_user_message_and_a_tool_result_append_together():
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents"),
++                 {"role": "user", "content": "also check the pager"}]
++
++    call(provider, ledger, messages)
++
++    assert prompts(provider)[1] == ("Result of read_file: contents\n"
++                                    "User: also check the pager")
++
++
++def test_every_query_takes_exactly_one_reservation():
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents")]
++    second = call(provider, ledger, messages)
++
++    assert first.request_count == 1 and second.request_count == 1
++    assert ledger.reserved == ["claude_agent_sdk", "claude_agent_sdk"]
++    assert ledger.settled == [("req-1", "completed"), ("req-2", "completed")]
++    assert len(provider.channels[0].sent) == 2, "one physical query per reservation"
++
++
++# --------------------------------------------------------------------------- #
++#  Caller-owned context stays authoritative
++# --------------------------------------------------------------------------- #
++def _two_turn_history(provider, ledger):
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "a" * 400)]
++    second = call(provider, ledger, messages)
++    messages += [assistant(second), observation(second, "b" * 400)]
++    return messages
++
++
++def test_tool_result_elision_starts_a_new_conversation():
++    provider = _Provider([structured_payload(READ), structured_payload(EDIT),
++                          structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = _two_turn_history(provider, ledger)
++    # ContextComposer stubs tool output older than its window on every build.
++    elided = list(messages)
++    elided[2] = {**elided[2], "content": "aaa …[older tool output elided]"}
++
++    third = call(provider, ledger, elided)
++
++    assert third.stop_reason == "end_turn"
++    assert len(provider.channels) == 2, "an edited prefix must not receive a delta"
++    assert provider.session_evidence["resets"]["history_rewritten"] == 1
++    # The fresh conversation re-sends the caller's history as it now stands —
++    # including the elision marker, never the removed text.
++    resent = prompts(provider, 1)[0]
++    assert "older tool output elided" in resent
++    assert "a" * 400 not in resent
++
++
++def test_compaction_starts_a_new_conversation():
++    provider = _Provider([structured_payload(READ), structured_payload(EDIT),
++                          structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = _two_turn_history(provider, ledger)
++    compacted = [{"role": "user", "content": "summary of the work so far"},
++                 {"role": "user", "content": "continue"}]
++
++    call(provider, ledger, compacted)
++
++    assert len(provider.channels) == 2
++    assert provider.session_evidence["resets"]["history_shrank"] == 1
++
++
++def test_a_changed_system_prompt_starts_a_new_conversation():
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents")]
++
++    with provider.request_authority(ledger.reserve, ledger.settle,
++                                    request_scope="mission-1"):
++        provider.complete(SYSTEM + "\n\nNOW: 2026-09-08", messages, SCHEMAS)
++
++    assert len(provider.channels) == 2
++    assert provider.session_evidence["resets"]["config_changed"] == 1
++
++
++def test_a_narrowed_tool_list_starts_a_new_conversation():
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents")]
++
++    # The loop hands the model only read/edit/write past its hard deadline.
++    call(provider, ledger, messages,
++         schemas=[s for s in SCHEMAS if s["name"] != "grep"])
++
++    assert len(provider.channels) == 2
++    assert provider.session_evidence["resets"]["config_changed"] == 1
++
++
++def test_effort_and_model_are_inside_the_session_key():
++    base = {"protocol": 3, "model": "opus", "system_prompt": SYSTEM,
++            "effort": "default", "response_format": "structured",
++            "response_tools": NAMES}
++    key = session_key(base, SCHEMAS)
++
++    assert session_key({**base, "effort": "high"}, SCHEMAS) != key
++    assert session_key({**base, "model": "sonnet"}, SCHEMAS) != key
++    assert session_key(base, SCHEMAS[:2]) != key
++    assert session_key(dict(reversed(list(base.items()))), SCHEMAS) == key
++
++
++def test_plain_planner_and_structured_coding_never_share_a_session():
++    provider = _Provider([structured_payload(READ), plain_payload('{"action": "plan"}')])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents")]
++
++    planner = call(provider, ledger, messages, schemas=[])
++
++    assert planner.text == '{"action": "plan"}'
++    assert len(provider.channels) == 2, "different response contracts, different sessions"
++    assert provider.channels[1].open_request["protocol"] == 1
++    assert "response_format" not in provider.channels[1].open_request
++
++
++def test_an_assistant_turn_this_session_never_produced_forces_a_reset():
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents"),
++                 {"role": "assistant", "content": "a summary nobody in this session wrote"},
++                 {"role": "user", "content": "continue"}]
++
++    call(provider, ledger, messages)
++
++    assert len(provider.channels) == 2
++    assert provider.session_evidence["resets"]["assistant_not_from_session"] == 1
++
++
++def test_a_diverged_assistant_envelope_forces_a_reset():
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    rewritten = assistant(first)
++    rewritten["tool_calls"] = [type(first.tool_calls[0])(
++        first.tool_calls[0].id, "read_file", {"path": "other.py"})]
++    messages += [rewritten, observation(first, "contents")]
++
++    call(provider, ledger, messages)
++
++    assert provider.session_evidence["resets"]["assistant_history_diverged"] == 1
++
++
++def test_a_response_contract_miss_cannot_be_followed_by_a_delta():
++    # The model answered, the host recorded no assistant message for it, so the
++    # session holds a turn the caller cannot see.
++    provider = _Provider([structured_payload('{"answer": "x", "_note": "done"}'),
++                          structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++
++    miss = call(provider, ledger, messages)
++    assert miss.stop_reason == "error" and miss.error_code == "response_contract_error"
++    assert miss.request_count == 1, "a contract miss still spent a real request"
++
++    call(provider, ledger, messages + [{"role": "user", "content": "retry"}])
++
++    assert len(provider.channels) == 2
++    assert provider.session_evidence["resets"]["assistant_reply_missing"] == 1
++
++
++# --------------------------------------------------------------------------- #
++#  Fallbacks to the shipped stateless transport
++# --------------------------------------------------------------------------- #
++@pytest.fixture
++def stateless(monkeypatch):
++    """Record every call that takes the unmodified production transport."""
++    calls = []
++
++    def _run_worker(self, request, cancel_scope="", registration=None):
++        calls.append(request)
++        if registration is not None:
++            self._retire_pending(registration)
++        return structured_payload(DONE) if request.get("response_tools") \
++            else plain_payload(DONE)
++
++    monkeypatch.setattr(ClaudeAgentSdkProvider, "_run_worker", _run_worker)
++    return calls
++
++
++def test_images_fall_back_to_the_stateless_transport(stateless):
++    provider = _Provider([structured_payload(READ), structured_payload(DONE)])
++    ledger = _Ledger()
++    messages = [{"role": "user", "content": "start"}]
++    first = call(provider, ledger, messages)
++    messages += [assistant(first), observation(first, "contents"),
++                 {"role": "user", "content": [
++                     {"type": "text", "text": "look at this"},
++                     {"type": "image", "media_type": "image/png", "data": PNG}]}]
++
++    result = call(provider, ledger, messages)
++
++    assert result.stop_reason == "end_turn"
++    assert len(stateless) == 1, "the image request went to the shipped provider"
++    assert provider.session_evidence["fallbacks"]["non_text_content"] == 1
++    # The session never observed the image, so it must not continue.
++    assert provider._session is None
++    assert provider.channels[0].closed is True
++
++
++def test_a_concurrent_call_falls_back_instead_of_interleaving(stateless):
++    provider = _Provider([structured_payload(READ)])
++    ledger = _Ledger()
++    provider._busy.acquire()
++    try:
++        result = call(provider, ledger, [{"role": "user", "content": "critic review"}])
++    finally:
++        provider._busy.release()
++
++    assert result.stop_reason == "end_turn"
++    assert len(stateless) == 1
++    assert provider.session_evidence["fallbacks"]["concurrent_call"] == 1
++    assert provider.channels == [], "no session was opened for the borrowed call"
++
++
++def test_the_transport_can_be_disabled_entirely(stateless):
++    provider = _Provider([], session_enabled=False)
++    ledger = _Ledger()
++
++    call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert len(stateless) == 1 and provider.channels == []
++
++
++# --------------------------------------------------------------------------- #
++#  Failure, rejection, cancellation
++# --------------------------------------------------------------------------- #
++def test_a_provider_rejection_is_classified_and_ends_the_session():
++    rejection = {"ok": False, "provider_error": "rate_limit",
++                 "error": "provider rejected the request: rate_limit",
++                 "api_key_source": "none",
++                 "usage": {"input_tokens": 7, "output_tokens": 0,
++                           "cache_read_input_tokens": 0,
++                           "cache_creation_input_tokens": 0}}
++    provider = _Provider([rejection])
++    ledger = _Ledger()
++
++    result = call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert result.error_status == 429 and result.error_code == "provider_rate_limit"
++    assert result.usage.input_tokens == 7 and result.request_count == 1
++    assert provider._session is None and provider.channels[0].closed is True
++    assert ledger.settled == [("req-1", "error")]
++
++
++def test_a_worker_failure_before_any_frame_charges_no_request():
++    class _Refusing(_Provider):
++        def _open_channel(self, key, open_request):
++            raise RuntimeError("Windows Job Object was not created")
++
++    provider = _Refusing([])
++    ledger = _Ledger()
++
++    result = call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert result.stop_reason == "error"
++    assert result.request_count == 0, "no model request was physically issued"
++    assert ledger.settled == [("req-1", "error")]
++
++
++def test_cancellation_terminates_the_session_mid_query(monkeypatch):
++    import harness.claude_agent_sdk as production
++
++    def _terminate(proc, timeout_s=5.0):
++        proc.returncode = -9
++        return True
++
++    monkeypatch.setattr(production, "_terminate_worker_tree", _terminate)
++    provider = _Provider([structured_payload(READ)], channel_class=_BlockingChannel)
++    ledger = _Ledger()
++    outcome = []
++
++    def run():
++        outcome.append(call(provider, ledger, [{"role": "user", "content": "start"}]))
++
++    worker = threading.Thread(target=run)
++    worker.start()
++    assert provider.channels[0].entered.wait(timeout=10) if provider.channels \
++        else _wait_for_channel(provider)
++    assert provider.cancel_for("mission-1")() is True
++    worker.join(timeout=10)
++
++    assert not worker.is_alive()
++    assert outcome[0].stop_reason == "error"
++    assert provider.channels[0].closed is True
++    assert provider._session is None
++    assert ledger.settled == [("req-1", "error")]
++
++
++def _wait_for_channel(provider):
++    for _ in range(200):
++        if provider.channels:
++            return provider.channels[0].entered.wait(timeout=10)
++        threading.Event().wait(0.05)
++    raise AssertionError("no session worker was published")
++
++
++def test_cancelling_an_idle_session_still_reaps_its_worker(monkeypatch):
++    import harness.claude_agent_sdk as production
++
++    monkeypatch.setattr(production, "_terminate_worker_tree",
++                        lambda proc, timeout_s=5.0: True)
++    provider = _Provider([structured_payload(READ)])
++    ledger = _Ledger()
++    call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert provider.cancel_for("mission-1")() is True
++    assert provider.channels[0].closed is True
++    assert provider._session is None
++
++
++# --------------------------------------------------------------------------- #
++#  Adapter unit behaviour
++# --------------------------------------------------------------------------- #
++def test_the_adapter_refuses_a_second_turn_after_it_closes():
++    adapter = SessionHistoryAdapter(KEY, True)
++    plan = adapter.plan(KEY, [{"role": "user", "content": "one"}])
++    adapter.commit(plan, reply_for(DONE, True, set(NAMES)))
++
++    with pytest.raises(ResetRequired) as failure:
++        adapter.plan(KEY, [{"role": "user", "content": "changed"}])
++    assert failure.value.reason == "history_rewritten"
++
++    with pytest.raises(ResetRequired) as reused:
++        adapter.plan(KEY, [{"role": "user", "content": "one"}])
++    assert reused.value.reason == "session_closed"
++
++
++def test_the_adapter_refuses_an_empty_delta():
++    adapter = SessionHistoryAdapter(KEY, True)
++    history = [{"role": "user", "content": "one"}]
++    plan = adapter.plan(KEY, history)
++    adapter.commit(plan, reply_for(DONE, True, set(NAMES)))
++    history = history + [{"role": "assistant", "content": "the cursor validation "
++                          "order is fixed"}]
++
++    with pytest.raises(ResetRequired) as failure:
++        adapter.plan(KEY, history)
++    assert failure.value.reason == "no_new_host_content"
++
++
++def test_reply_reconciliation_matches_the_hosts_canonical_envelope():
++    tool = reply_for(READ, True, set(NAMES))
++    assert tool.kind == "tool" and tool.name == "read_file"
++    assert reply_for(DONE, True, set(NAMES)).kind == "answer"
++    assert reply_for('{"tool": "rm", "args": {}}', True, set(NAMES)).kind == "unparsed"
++    assert reply_for("free text", False, None).kind == "text"
++
++
++# --------------------------------------------------------------------------- #
++#  Worker: one client, many turns, one attested native session
++# --------------------------------------------------------------------------- #
++class _Options:
++    def __init__(self, **kwargs):
++        self.__dict__.update(kwargs)
++
++
++class _FakeClient:
++    def __init__(self, scripts):
++        self.scripts = list(scripts)
++        self.prompts = []
++        self.connected = False
++        self.disconnected = False
++        self.consumed = 0
++        self._current = []
++
++    async def connect(self):
++        self.connected = True
++
++    async def query(self, prompt):
++        self.prompts.append(prompt)
++        self._current = self.scripts.pop(0)
++
++    async def receive_response(self):
++        for message in self._current:
++            self.consumed += 1
++            yield message
++
++    async def disconnect(self):
++        self.disconnected = True
++
++
++class _FakeSdk:
++    ClaudeAgentOptions = _Options
++
++    def __init__(self, scripts):
++        self.client = _FakeClient(scripts)
++        self.clients = 0
++
++    def ClaudeSDKClient(self, options=None):
++        self.clients += 1
++        self.options = options
++        return self.client
++
++
++def _init(session_id="native-1", **overrides):
++    data = {"tools": ["StructuredOutput"], "skills": [], "plugins": [], "agents": {},
++            "slash_commands": [], "mcp_servers": [], "model": "opus",
++            "apiKeySource": "none", "session_id": session_id}
++    data.update(overrides)
++    return {"type": "system", "subtype": "init", "data": data}
++
++
++def _structured_stream(response, session_id="native-1", message_id="msg_1",
++                       tool_id="toolu_1"):
++    return [
++        _init(session_id=session_id),
++        {"type": "stream_event", "event": {"type": "message_start",
++                                           "message": {"id": message_id}}},
++        {"type": "assistant", "id": message_id, "content": [
++            {"type": "tool_use", "id": tool_id, "name": "StructuredOutput",
++             "input": response}]},
++        {"type": "user", "content": [
++            {"type": "tool_result", "tool_use_id": tool_id,
++             "content": "Structured output provided successfully"}]},
++        {"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
++         "usage": {"input_tokens": 2, "output_tokens": 9},
++         "structured_output": copy.deepcopy(response)},
++    ]
++
++
++def _open_request(system=SYSTEM, effort="default", tools=NAMES):
++    return {"protocol": 3, "model": "opus", "system_prompt": system, "effort": effort,
++            "response_format": "structured", "response_tools": list(tools)}
++
++
++def _drive(sdk, frames):
++    """Run the real frame loop, so a refusal is observed as a terminal frame."""
++    emitted = []
++    lines = [json.dumps(frame, ensure_ascii=False) + "\n" for frame in frames]
++
++    async def read_line():
++        return lines.pop(0) if lines else ""
++
++    status = asyncio.run(session_worker.serve(read_line, emitted.append, sdk, checked))
++    return emitted, status
++
++
++def _turn(seq, request, key=KEY):
++    return {"type": "turn", "protocol": 10, "seq": seq, "session_key": key,
++            "request": request}
++
++
++def test_worker_serves_three_structured_turns_on_one_native_session():
++    sdk = _FakeSdk([_structured_stream({"response": {"tool": "read_file",
++                                                     "args": {"path": "a.py"}}}),
++                    _structured_stream({"response": {"tool": "edit_file",
++                                                     "args": {"path": "a.py"}}},
++                                       message_id="msg_2", tool_id="toolu_2"),
++                    _structured_stream({"response": {"answer": "done"}},
++                                       message_id="msg_3", tool_id="toolu_3")])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()}]
++    frames += [_turn(index + 1, {**_open_request(), "prompt": text})
++               for index, text in enumerate(["full prompt", "Result of read_file: x",
++                                             "Result of edit_file: y"])]
++    frames.append({"type": "close"})
++
++    emitted, status = _drive(sdk, frames)
++
++    assert emitted[0] == {"type": "ready", "protocol": 10}
++    turns = [frame for frame in emitted if frame["type"] == "turn"]
++    assert len(turns) == 3 and all(turn["payload"]["ok"] for turn in turns)
++    assert sdk.clients == 1, "one connected client carried every turn"
++    assert sdk.client.prompts == ["full prompt", "Result of read_file: x",
++                                  "Result of edit_file: y"]
++    # The SDK re-announces init on every query; continuity is the stable id.
++    identities = {turn["session"]["id_sha256"] for turn in turns}
++    assert len(identities) == 1
++    assert [turn["session"]["inits"] for turn in turns] == [1, 2, 3]
++    assert json.loads(turns[2]["payload"]["text"]) == {"answer": "done"}
++    assert sdk.client.disconnected is True
++
++
++def test_worker_refuses_a_turn_that_names_another_session():
++    sdk = _FakeSdk([_structured_stream({"response": {"answer": "done"}})])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()},
++              _turn(1, {**_open_request(), "prompt": "p"}, key="c" * 64)]
++
++    emitted, status = _drive(sdk, frames)
++
++    assert emitted[-1]["type"] == "error"
++    assert "does not match this session's key" in emitted[-1]["error"]
++
++
++def test_worker_refuses_a_turn_whose_options_changed():
++    sdk = _FakeSdk([_structured_stream({"response": {"answer": "done"}})])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()},
++              # Same key on the wire, different system prompt: the worker must
++              # not trust the parent's key alone.
++              _turn(1, {**_open_request(system="a different system prompt"),
++                        "prompt": "p"})]
++
++    emitted, status = _drive(sdk, frames)
++
++    assert emitted[-1]["type"] == "error"
++    assert "changed the connected session's options" in emitted[-1]["error"]
++
++
++def test_worker_stops_when_the_native_session_identity_changes():
++    sdk = _FakeSdk([_structured_stream({"response": {"answer": "one"}}),
++                    _structured_stream({"response": {"answer": "two"}},
++                                       session_id="native-2", message_id="msg_2",
++                                       tool_id="toolu_2")])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()},
++              _turn(1, {**_open_request(), "prompt": "one"}),
++              _turn(2, {**_open_request(), "prompt": "two"})]
++
++    emitted, status = _drive(sdk, frames)
++
++    assert emitted[-1]["type"] == "error"
++    assert "changed its native session identity" in emitted[-1]["error"]
++
++
++def test_worker_accepts_the_structured_formatter_receipt():
++    """The formatter receipt populates UserMessage.tool_use_result on the wire.
++
++    Rejecting it as "a real tool result" is exactly the bug the live smoke found:
++    _query already proves the receipt's identity, so the session layer must not
++    add a second, wrong rule on top of it.
++    """
++    stream = _structured_stream({"response": {"answer": "done"}})
++    stream[3] = {"type": "user", "tool_use_result": {"ok": True},
++                 "content": stream[3]["content"]}
++    sdk = _FakeSdk([stream])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()},
++              _turn(1, {**_open_request(), "prompt": "p"})]
++
++    emitted, status = _drive(sdk, frames)
++
++    assert [frame["type"] for frame in emitted] == ["ready", "turn"]
++    assert emitted[-1]["payload"]["ok"] is True
++
++
++def test_worker_refuses_a_real_tool_result_in_plain_mode():
++    plain_request = {"protocol": 1, "model": "opus", "system_prompt": SYSTEM,
++                     "effort": "default"}
++    stream = [_init(tools=[]),
++              {"type": "assistant", "id": "msg_1",
++               "content": [{"type": "text", "text": "ok"}]},
++              {"type": "user", "content": [
++                  {"type": "tool_result", "tool_use_id": "t1", "content": "ls output"}]},
++              {"type": "result", "is_error": False, "num_turns": 1, "usage": {}}]
++    sdk = _FakeSdk([stream])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": plain_request},
++              _turn(1, {**plain_request, "prompt": "p"})]
++
++    emitted, status = _drive(sdk, frames)
++
++    assert emitted[-1]["type"] == "error"
++    assert "real tool result in plain mode" in emitted[-1]["error"]
++
++
++def test_worker_refuses_an_out_of_sequence_turn_and_a_prompt_on_open():
++    sdk = _FakeSdk([])
++    emitted, status = _drive(sdk, [
++        {"type": "open", "protocol": 10, "session_key": KEY,
++         "request": {**_open_request(), "prompt": "no"}}])
++    assert "must not carry a prompt" in emitted[-1]["error"]
++
++    sdk = _FakeSdk([_structured_stream({"response": {"answer": "done"}})])
++    emitted, status = _drive(sdk, [
++        {"type": "open", "protocol": 10, "session_key": KEY, "request": _open_request()},
++        _turn(2, {**_open_request(), "prompt": "p"})])
++    assert "out of sequence" in emitted[-1]["error"]
++
++
++def test_worker_will_not_serve_another_turn_after_a_rejected_one():
++    rejected = [_init(),
++                {"type": "stream_event",
++                 "event": {"type": "message_start", "message": {"id": "msg_1"}}},
++                {"type": "assistant", "error": "rate_limit", "content": []},
++                {"type": "result", "subtype": "success", "is_error": True,
++                 "num_turns": 1, "usage": {"input_tokens": 3, "output_tokens": 0}}]
++    sdk = _FakeSdk([rejected, _structured_stream({"response": {"answer": "x"}})])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()},
++              _turn(1, {**_open_request(), "prompt": "one"}),
++              _turn(2, {**_open_request(), "prompt": "two"})]
++
++    emitted, status = _drive(sdk, frames)
++
++    first = [frame for frame in emitted if frame["type"] == "turn"][0]
++    assert first["payload"]["provider_error"] == "rate_limit"
++    assert first["payload"]["usage"]["input_tokens"] == 3
++    assert emitted[-1]["type"] == "error"
++    assert "refused a further turn" in emitted[-1]["error"]
++
++
++def test_worker_options_fingerprint_tracks_every_model_facing_field():
++    base = _open_request()
++    fingerprint = session_worker.options_fingerprint(
++        checked._build_options(_FakeSdk([]), base))
++
++    for change in ({"system_prompt": "other"}, {"model": "sonnet"},
++                   {"effort": "high"}, {"response_tools": NAMES[:2]}):
++        other = session_worker.options_fingerprint(
++            checked._build_options(_FakeSdk([]), {**base, **change}))
++        assert other != fingerprint, change
++    assert session_worker.options_fingerprint(
++        checked._build_options(_FakeSdk([]), dict(base))) == fingerprint
++
++
++def test_a_worker_started_into_a_retired_session_is_reaped():
++    """A cancellation landing during startup must not orphan a live worker."""
++    class _Racing(_Provider):
++        def _open_channel(self, key, open_request):
++            channel = super()._open_channel(key, open_request)
++            # Stand in for cancel_for() arriving while the worker starts.
++            self._close_session("cancelled")
++            return channel
++
++    provider = _Racing([structured_payload(READ)])
++    ledger = _Ledger()
++
++    result = call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert result.stop_reason == "error"
++    assert result.request_count == 0, "the turn was never released to the worker"
++    assert provider.channels[0].closed is True, "the orphaned worker was reaped"
++    assert provider.channels[0].sent == []
++
++
++# --------------------------------------------------------------------------- #
++#  Ownership: a cleanup that failed is never reported as a cleanup that worked
++# --------------------------------------------------------------------------- #
++class _Stdio:
++    """One end of the worker pipe: writable, closable, and empty on read."""
++
++    def __init__(self):
++        self.written = []
++        self.closed = False
++
++    def write(self, text):
++        if self.closed:
++            raise ValueError("I/O operation on closed file")
++        self.written.append(text)
++
++    def flush(self):
++        pass
++
++    def close(self):
++        self.closed = True
++
++    def __iter__(self):
++        return iter(())
++
++
++class _StubProc:
++    """A worker process that only dies when termination actually succeeds."""
++
++    def __init__(self):
++        self.returncode = None
++        self.stdin = _Stdio()
++        self.stdout = _Stdio()
++
++    def poll(self):
++        return self.returncode
++
++
++class _Owner:
++    """A kernel ownership handle whose release fails a given number of times."""
++
++    def __init__(self, failures=0):
++        self.failures = failures
++        self.calls = 0
++
++    def close(self):
++        self.calls += 1
++        if self.failures > 0:
++            self.failures -= 1
++            raise OSError("job object handle is busy")
++
++
++def _channel(monkeypatch, terminations, owner=None):
++    """A real SubprocessChannel over a fake process, scripted terminations."""
++    import tempfile
++
++    from harness import experimental_session_sdk as session_sdk
++
++    proc = _StubProc()
++    scripted = list(terminations)
++
++    def _terminate(target, timeout_s=5.0):
++        assert target is proc
++        ok = scripted.pop(0) if scripted else True
++        if ok:
++            target.returncode = -9
++        return ok
++
++    monkeypatch.setattr(session_sdk, "_terminate_worker_tree", _terminate)
++    channel = session_sdk.SubprocessChannel(proc, owner, tempfile.TemporaryFile(), None)
++    return channel, proc
++
++
++def test_a_failed_close_never_becomes_a_successful_one(monkeypatch):
++    """close() used to answer True on every later call, even after failing."""
++    channel, proc = _channel(monkeypatch, [False, False, True])
++
++    assert channel.close() is False
++    assert proc.poll() is None, "the tree is still alive"
++    # The second call is not free: it retries, and it still tells the truth.
++    assert channel.close() is False
++    assert channel.unresolved() is True
++    # The retained handles are what makes an honest retry possible at all.
++    assert channel.close() is True
++    assert channel.unresolved() is False and proc.poll() == -9
++    # Only the first attempt asks the worker politely to stop.
++    assert proc.stdin.written == ['{"type":"close"}\n']
++
++
++def test_an_unreleasable_ownership_handle_keeps_the_channel_unresolved(monkeypatch):
++    owner = _Owner(failures=1)
++    channel, _proc = _channel(monkeypatch, [True, True], owner=owner)
++
++    assert channel.close() is False, "the job object still owns the tree"
++    assert channel.close() is True
++    assert owner.calls == 2, "the handle was retained and released on the retry"
++
++
++class _StuckChannel(_ScriptedChannel):
++    """A worker whose process tree cannot be confirmed extinct on demand."""
++
++    def __init__(self, *args):
++        super().__init__(*args)
++        self.close_failures = 1
++        self.close_calls = 0
++
++    def close(self):
++        self.close_calls += 1
++        if self.close_failures > 0:
++            self.close_failures -= 1
++            return False
++        return super().close()
++
++
++def _stuck_session(script=None):
++    provider = _Provider(script or [structured_payload(READ)],
++                         channel_class=_StuckChannel)
++    ledger = _Ledger()
++    call(provider, ledger, [{"role": "user", "content": "start"}])
++    return provider, ledger
++
++
++def test_an_unconfirmed_session_cleanup_is_reported_as_a_failure():
++    provider, _ledger = _stuck_session()
++
++    assert provider.close_session("test") is False
++    assert provider._session is None
++    assert provider.session_evidence["unresolved_cleanups"] == 1
++
++
++def test_no_replacement_worker_starts_while_the_old_tree_is_unknown():
++    provider, ledger = _stuck_session([structured_payload(READ),
++                                       structured_payload(DONE)])
++    provider.channels[0].close_failures = 10
++    assert provider.close_session("test") is False
++
++    result = call(provider, ledger, [{"role": "user", "content": "second task"}])
++
++    assert result.stop_reason == "error" and "fenced" in result.error_detail
++    assert result.request_count == 0, "no model request was physically issued"
++    assert len(provider.channels) == 1, "no replacement worker was spawned"
++    assert ledger.reserved == ["claude_agent_sdk"], "the fenced call took no reservation"
++
++
++def test_a_confirmed_cleanup_retry_releases_the_fence():
++    provider, ledger = _stuck_session([structured_payload(READ),
++                                       structured_payload(DONE)])
++    provider.channels[0].close_failures = 2
++    assert provider.close_session("test") is False
++    stuck = provider.channels[0]
++
++    assert call(provider, ledger,
++                [{"role": "user", "content": "second task"}]).stop_reason == "error"
++
++    # The retained handles now terminate the tree; only then may work resume.
++    result = call(provider, ledger, [{"role": "user", "content": "second task"}])
++
++    assert stuck.closed is True and stuck.close_calls >= 3
++    assert result.stop_reason == "end_turn"
++    assert len(provider.channels) == 2
++    assert provider.session_evidence["cleanup_retries_confirmed"] == 1
++    assert ledger.reserved == ["claude_agent_sdk"] * 2
++
++
++def test_an_unconfirmed_cleanup_is_not_a_successful_cancellation(monkeypatch):
++    import harness.claude_agent_sdk as production
++
++    monkeypatch.setattr(production, "_terminate_worker_tree",
++                        lambda proc, timeout_s=5.0: True)
++    provider, _ledger = _stuck_session()
++
++    assert provider.cancel_for("mission-1")() is False, "the worker may still be live"
++    assert provider.cancel_for("mission-1")() is True, "the retry proved extinction"
++    assert provider.channels[0].closed is True
++
++
++def test_a_denied_reservation_never_opens_a_session():
++    class _Denying(_Ledger):
++        def reserve(self, purpose):
++            self.reserved.append(purpose)
++            return ""
++
++    provider = _Provider([structured_payload(READ)])
++    ledger = _Denying()
++
++    result = call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert result.request_count == 0
++    assert "reservation denied" in result.error_detail
++    assert provider.channels == [] and provider._session is None
++    assert provider.session_evidence["sessions_opened"] == 0
++    assert ledger.settled == [], "an unreserved call settles nothing"
++
++
++# --------------------------------------------------------------------------- #
++#  A formatter refusal: one accounted response, no prose, no hidden retry
++# --------------------------------------------------------------------------- #
++REFUSED_PROSE = ("input must match the requested schema: `rm` is not one of "
++                 "['read_file', 'edit_file', 'grep']")
++REFUSAL = {"ok": False, "structured_error": "formatter_refused_response",
++           "error": "the structured formatter refused the model response",
++           "api_key_source": "none", "response_format": "structured",
++           "response_tools": list(NAMES),
++           "usage": {"input_tokens": 11, "output_tokens": 0,
++                     "cache_read_input_tokens": 900,
++                     "cache_creation_input_tokens": 0}}
++
++
++def _refused_stream(session_id="native-1", message_id="msg_1", tool_id="toolu_1"):
++    """The provider's own formatter refusing one response, then repairing it."""
++    return [
++        _init(session_id=session_id),
++        {"type": "stream_event", "event": {"type": "message_start", "message": {
++            "id": message_id, "usage": {"input_tokens": 11,
++                                        "cache_read_input_tokens": 900}}}},
++        {"type": "assistant", "id": message_id, "content": [
++            {"type": "tool_use", "id": tool_id, "name": "StructuredOutput",
++             "input": {"response": {"tool": "rm", "args": {}}}}]},
++        {"type": "user", "content": [
++            {"type": "tool_result", "tool_use_id": tool_id,
++             "content": REFUSED_PROSE, "is_error": True}]},
++        # What the SDK does next if the stream is read on: an unreserved repair.
++        {"type": "stream_event", "event": {"type": "message_start",
++                                           "message": {"id": "msg_repair"}}},
++        {"type": "assistant", "id": "msg_repair", "content": [
++            {"type": "tool_use", "id": "toolu_repair", "name": "StructuredOutput",
++             "input": {"response": {"answer": "second try"}}}]},
++    ]
++
++
++def test_worker_forwards_a_formatter_refusal_as_the_reviewed_classification():
++    sdk = _FakeSdk([_refused_stream()])
++    frames = [{"type": "open", "protocol": 10, "session_key": KEY,
++               "request": _open_request()},
++              _turn(1, {**_open_request(), "prompt": "one"}),
++              _turn(2, {**_open_request(), "prompt": "two"})]
++
++    emitted, status = _drive(sdk, frames)
++
++    payload = [frame for frame in emitted if frame["type"] == "turn"][0]["payload"]
++    assert payload["ok"] is False
++    assert payload["structured_error"] == checked._FORMATTER_REFUSED
++    assert payload["api_key_source"] == "none"
++    # The request side is measured; the response side is only revised into the
++    # stream after a repair turn has begun, so it stays unmeasured.
++    assert payload["usage"] == {"input_tokens": 11, "output_tokens": 0,
++                                "cache_read_input_tokens": 900,
++                                "cache_creation_input_tokens": 0}
++    # Per-call attestation travels with the classification.
++    assert payload["response_format"] == "structured"
++    assert payload["response_tools"] == NAMES
++    assert "text" not in payload and "provider_error" not in payload
++    assert REFUSED_PROSE not in json.dumps(emitted), "no rejected prose crossed"
++    assert sdk.client.consumed == 4, "the hidden repair turn was never read"
++    # The refused response is still in the native history: no further turn.
++    assert emitted[-1]["type"] == "error"
++    assert "refused a further turn" in emitted[-1]["error"] and status == 1
++
++
++def test_worker_refuses_to_report_a_refusal_on_a_plain_turn():
++    """Only a turn that requested a schema may answer with a schema refusal."""
++    worker = session_worker.SessionWorker(_FakeSdk([]), checked, lambda frame: None)
++    worker.structured = False
++
++    with pytest.raises(session_worker.ProtocolError) as failure:
++        worker._refusal_payload({"protocol": 1},
++                                checked._StructuredContractRejected({}, "none"))
++    assert "no schema" in str(failure.value)
++
++
++def test_a_formatter_refusal_is_one_repairable_turn_on_a_discarded_session():
++    provider = _Provider([REFUSAL, structured_payload(DONE)])
++    ledger = _Ledger()
++    history = [{"role": "user", "content": "start"}]
++
++    refused = call(provider, ledger, history)
++
++    assert refused.error_status == 422
++    assert refused.error_code == "response_contract_error"
++    assert refused.request_count == 1, "one response was physically issued"
++    assert refused.usage.input_tokens == 11 and refused.usage.cache_read == 900
++    assert REFUSED_PROSE not in (refused.text or "") + (refused.error_detail or "")
++    # The poisoned native conversation is discarded, not continued.
++    assert provider._session is None and provider.channels[0].closed is True
++    assert provider.session_evidence["resets"] == {"formatter_refused": 1}
++
++    # The host's one authorized repair is independently reserved and re-sends
++    # the full prompt on a new conversation.
++    repaired = call(provider, ledger, history + [
++        {"role": "user", "content": "Your reply did not match the contract."}])
++
++    assert repaired.stop_reason == "end_turn"
++    assert len(provider.channels) == 2
++    assert "start" in prompts(provider, 1)[0], "the repair re-sent the full prompt"
++    assert ledger.reserved == ["claude_agent_sdk"] * 2
++    assert ledger.settled == [("req-1", "completed"), ("req-2", "completed")]
++
++
++@pytest.mark.parametrize("payload,match", [
++    (dict(REFUSAL, response_tools=NAMES[:2]), "different response tool allowlist"),
++    ({key: value for key, value in REFUSAL.items() if key != "response_format"},
++     "did not attest structured"),
++    (dict(REFUSAL, text=DONE), "carried assistant content"),
++    (dict(REFUSAL, api_key_source="apiKey"), "reviewed auth attestation"),
++    (dict(REFUSAL, ok=True), "both success and a refused response"),
++])
++def test_a_refusal_without_its_attestation_fails_closed(payload, match):
++    provider = _Provider([payload])
++    ledger = _Ledger()
++
++    result = call(provider, ledger, [{"role": "user", "content": "start"}])
++
++    assert result.stop_reason == "error" and result.error_status != 422
++    assert match in result.error_detail
++    assert provider._session is None and provider.channels[0].closed is True
++    assert ledger.settled == [("req-1", "error")]
++
++
++def test_a_plain_call_can_never_be_answered_with_a_structured_refusal():
++    provider = _Provider([{key: value for key, value in REFUSAL.items()
++                           if key not in ("response_format", "response_tools")}])
++    ledger = _Ledger()
++
++    result = call(provider, ledger, [{"role": "user", "content": "start"}],
++                  schemas=None)
++
++    assert result.stop_reason == "error" and result.error_status != 422
++    assert "requested no schema" in result.error_detail
++    assert provider._session is None
++
++
++def test_plain_coding_keeps_the_same_tool_observation_history():
++    provider = _Provider([plain_payload(READ), plain_payload(DONE)], structured_output=False)
++    ledger = _Ledger()
++    history = [{"role": "user", "content": "read the file"}]
++    first = call(provider, ledger, history)
++    history += [assistant(first), observation(first, "file content")]
++    second = call(provider, ledger, history)
++    assert second.stop_reason == "end_turn"
++    assert len(provider.channels) == 1
++    assert provider.channels[0].open_request["protocol"] == 1
++    assert prompts(provider)[1] == "Result of read_file: file content"
++
++
++def test_failed_turn_keeps_ownership_until_cleanup_is_confirmed():
++    provider = _Provider([RuntimeError("stream failed")], channel_class=_StuckChannel)
++    result = call(provider, _Ledger(), [{"role": "user", "content": "start"}])
++    assert result.stop_reason == "error"
++    assert provider._unresolved
++    assert provider._active_runs, "parent completion must not discard unknown ownership"
++    stuck = provider.channels[0]
++    stuck.close_failures = 0
++    assert provider.close_session("already retired") is False
++    assert provider._fence_detail() == ""
++    assert not provider._active_runs
++
++
++def test_closing_idle_session_cannot_hide_another_failed_owned_tree(monkeypatch):
++    import harness.claude_agent_sdk as production
++    provider, _ = _stuck_session()
++    provider.channels[0].close_failures = 0
++    registration = provider._register_pending("mission-1")
++    state = registration[1]
++    state.update(proc=_FakeProc(), phase="running", tree_extinct=False)
++    monkeypatch.setattr(production, "_terminate_worker_tree", lambda *a, **kw: False)
++    assert provider.cancel_for("mission-1")() is False
++    assert provider.channels[0].closed
++    assert not state["tree_extinct"]
++
++
++def test_unresolved_startup_is_retained_before_any_prompt(monkeypatch):
++    from harness import experimental_session_sdk as session_sdk
++    channel = _StuckChannel(KEY, {}, [])
++    channel.close_failures = 10
++    spawned = []
++
++    def spawn(path):
++        spawned.append(path)
++        raise session_sdk._UnresolvedStartup(channel)
++
++    monkeypatch.setattr(session_sdk.SubprocessChannel, "spawn", spawn)
++    provider = ExperimentalSessionSdkProvider(model="opus", structured_output=True)
++    ledger = _Ledger()
++    first = call(provider, ledger, [{"role": "user", "content": "start"}])
++    assert first.stop_reason == "error" and first.request_count == 0
++    assert provider._unresolved[0]["channel"] is channel
++    second = call(provider, ledger, [{"role": "user", "content": "start"}])
++    assert second.stop_reason == "error" and second.request_count == 0
++    assert len(spawned) == 1
++    assert not channel.sent

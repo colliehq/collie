@@ -1,0 +1,18 @@
+{
+  "source_commit": "24891c8869e4d98e0148986d6e68485b9fa4e35c",
+  "tracked_diff_sha256": "494e181cfe3fedc985562c73ec25a9582bdbbc0820b58ea36c7d8fbf8930d1c2",
+  "tests": [
+    "tests/test_worker_effort.py",
+    "tests/test_claude_code_runner.py",
+    "tests/test_runner_slice.py",
+    "tests/test_runner_registry.py",
+    "tests/test_web_runner.py",
+    "tests/test_claude_code_quota.py",
+    "tests/test_pack_roster.py",
+    "tests/test_accepted_run_policy.py"
+  ],
+  "exit": 0,
+  "seconds": 5.282,
+  "finished_at": "2026-09-08T06:13:55.256065+00:00",
+  "model_calls": 0
+}

@@ -1,0 +1,88 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+___ test_reload_during_queue_save_keeps_original_payload_and_retry_identity ___
+
+ui = <test_web_ui_run_status.Page object at 0x00000215AB22D7F0>
+
+    def test_reload_during_queue_save_keeps_original_payload_and_retry_identity(ui):
+        page = ui.page
+        _Fixture.queue_ack.clear()
+        _Fixture.queue_fail_all = True
+        open_read_thread(page)
+        attach(page)
+        send(page, ASK)
+        expect(page.locator("#taskQueueNotice")).to_contain_text("Saving request")
+        assert _Fixture.queue_seen.wait(3)
+        request_id = _Fixture.queue_posts[0]["id"]
+        page.fill("#input", NEWER)
+        page.reload(wait_until="load")
+        _Fixture.queue_ack.set()
+        row = retained_rows(page)
+>       expect(row).to_have_count(1)
+E       AssertionError: Locator expected to have count '1'
+E       Actual value: 0 
+E       Call log:
+E         - Expect "to_have_count" with timeout 5000ms
+E         - waiting for locator(".task-queue-row.retained")
+E           9 × locator resolved to 0 elements
+E             - unexpected value "0"
+
+tests\test_web_busy_send_ui.py:450: AssertionError
+---------------------------- Captured stderr call -----------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 35647)
+Traceback (most recent call last):
+  File "C:\Users\Sining Xu\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Sining Xu\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Sining Xu\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "C:\Users\Sining Xu\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 496, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Sining Xu\AppData\Local\Python\pythoncore-3.14-64\Lib\http\server.py", line 484, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "C:\workspace\collie-benchmark-2026-09-07-evening\session2-workflow-review-worktree\tests\test_web_ui_run_status.py", line 288, in do_POST
+    return self._json({"error": "temporary response failure"}, 503)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\workspace\collie-benchmark-2026-09-07-evening\session2-workflow-review-worktree\tests\test_web_ui_run_status.py", line 248, in _json
+    self.wfile.write(body)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\Sining Xu\AppData\Local\Python\pythoncore-3.14-64\Lib\socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+----------------------------------------
+______ test_save_failure_after_a_newer_draft_keeps_the_original_request _______
+
+ui = <test_web_ui_run_status.Page object at 0x00000215AB2974D0>
+
+    def test_save_failure_after_a_newer_draft_keeps_the_original_request(ui):
+        page = ui.page
+        _Fixture.queue_ack.clear()
+        _Fixture.queue_fail_once = True
+        open_read_thread(page)
+        send(page, ASK)
+        expect(page.locator("#taskQueueNotice")).to_contain_text("Saving request")
+        assert _Fixture.queue_seen.wait(3)
+        page.fill("#input", NEWER)
+        _Fixture.queue_ack.set()
+>       expect(retained_rows(page)).to_have_count(1)
+E       AssertionError: Locator expected to have count '1'
+E       Actual value: 0 
+E       Call log:
+E         - Expect "to_have_count" with timeout 5000ms
+E         - waiting for locator(".task-queue-row.retained")
+E           9 × locator resolved to 0 elements
+E             - unexpected value "0"
+
+tests\test_web_busy_send_ui.py:474: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_web_busy_send_ui.py::test_reload_during_queue_save_keeps_original_payload_and_retry_identity
+FAILED tests/test_web_busy_send_ui.py::test_save_failure_after_a_newer_draft_keeps_the_original_request
+2 failed in 13.00s

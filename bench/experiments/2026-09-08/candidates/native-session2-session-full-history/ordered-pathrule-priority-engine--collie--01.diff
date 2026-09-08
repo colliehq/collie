@@ -1,0 +1,105 @@
+diff --git a/pathnorm.py b/pathnorm.py
+index eec4ee4..90c4c1f 100644
+--- a/pathnorm.py
++++ b/pathnorm.py
+@@ -1,24 +1,29 @@
+-"""Normalisation of slash separated logical paths."""
+-
+-from ruleerrors import PathTraversalError
+-
+-SEPARATOR = "/"
+-
+-
+-def split_path(path):
+-    """Return the normalised segments of path."""
+-    segments = []
+-    for raw in path.replace("\\", "/").split(SEPARATOR):
+-        if raw == "" or raw == ".":
+-            continue
+-        if raw == "..":
+-            if segments:
+-                segments.pop()
+-            continue
+-        segments.append(raw)
+-    return segments
+-
+-
+-def normalize_path(path):
+-    """Return the canonical string form of path."""
+-    return SEPARATOR.join(split_path(path))
++"""Normalisation of slash separated logical paths."""
++
++from ruleerrors import PathTraversalError, RuleError
++
++SEPARATOR = "/"
++CURRENT = "."
++PARENT = ".."
++NUL = "\x00"
++
++
++def split_path(path):
++    """Return the normalised segments of path as a tuple of str."""
++    if not isinstance(path, str):
++        raise TypeError("path must be a str, not %r" % (type(path).__name__,))
++    if NUL in path:
++        raise RuleError("path must not contain a NUL character")
++    segments = []
++    for raw in path.split(SEPARATOR):
++        if raw == "" or raw == CURRENT:
++            continue
++        if raw == PARENT:
++            raise PathTraversalError("path must not contain a '..' segment")
++        segments.append(raw)
++    return tuple(segments)
++
++
++def normalize_path(path):
++    """Return the canonical string form of path."""
++    return SEPARATOR.join(split_path(path))
+diff --git a/ruleerrors.py b/ruleerrors.py
+index db5b9dd..2a2e341 100644
+--- a/ruleerrors.py
++++ b/ruleerrors.py
+@@ -1,17 +1,25 @@
+-"""Exception types shared by the path-rule engine."""
+-
+-
+-class RuleError(Exception):
+-    """Base class for engine errors."""
+-
+-
+-class PathTraversalError(RuleError):
+-    """Raised for a '..' segment."""
+-
+-
+-class PatternError(RuleError):
+-    """Raised for an invalid pattern."""
+-
+-
+-class RuleSyntaxError(RuleError):
+-    """Raised for an unparsable rule line."""
++"""Exception types shared by the path-rule engine."""
++
++
++class RuleError(ValueError):
++    """Base class for engine errors."""
++
++
++class PathTraversalError(RuleError):
++    """Raised for a '..' segment."""
++
++
++class PatternError(RuleError):
++    """Raised for an invalid pattern."""
++
++
++class RuleSyntaxError(RuleError):
++    """Raised for an unparsable rule line."""
++
++    def __init__(self, message, line_number):
++        super(RuleSyntaxError, self).__init__(message)
++        self.message = message
++        self.line_number = int(line_number)
++
++    def __str__(self):
++        return "line %d: %s" % (self.line_number, self.message)

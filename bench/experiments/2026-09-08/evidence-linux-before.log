@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/verify.py", line 139, in <module>
+    main()
+  File "/verify.py", line 91, in main
+    raise RuntimeError('Source reconstruction failed for '+entry['target_commit']+
+RuntimeError: Source reconstruction failed for 310a3418647c652410b5bd88f5c0297600bfd1dc: error: unable to create temporary file: Read-only file system
+error: unable to create backing store for newly created file CHANGELOG.md
+
