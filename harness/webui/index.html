@@ -3446,6 +3446,10 @@
     "run started": "运行开始",
     "Current": "当前", "Completed": "已完成", "Next": "下一步", "Blocked by": "阻塞原因",
     "Auto retry": "自动重试",
+    "Next check": "下次检查",
+    "Collie will continue checking at the scheduled time.": "Collie 会在预定时间自动继续检查。",
+    "code slice checkpointed; continuing automatically": "代码进度已保存，将自动继续。",
+    "provider quota exhausted; resume after its reset": "模型额度已用完，将在重置后自动继续。",
     "Coverage": "渠道覆盖", "complete": "已完成", "open": "未完成",
     "Nothing verified yet": "尚无已验证步骤", "Mission details": "任务详情",
     "Authorization waiting": "等待授权", "Collie is continuing independent work.": "Collie 正在继续不依赖该授权的工作。",
@@ -3780,6 +3784,10 @@
     "run started": "執行開始",
     "Current": "目前", "Completed": "已完成", "Next": "下一步", "Blocked by": "阻塞原因",
     "Auto retry": "自動重試",
+    "Next check": "下次檢查",
+    "Collie will continue checking at the scheduled time.": "Collie 會在預定時間自動繼續檢查。",
+    "code slice checkpointed; continuing automatically": "程式碼進度已儲存，將自動繼續。",
+    "provider quota exhausted; resume after its reset": "模型額度已用完，將在重設後自動繼續。",
     "Coverage": "渠道覆蓋", "complete": "已完成", "open": "未完成",
     "Nothing verified yet": "尚無已驗證步驟", "Mission details": "任務詳情",
     "Authorization waiting": "等待授權", "Collie is continuing independent work.": "Collie 正在繼續不依賴該授權的工作。",
@@ -7537,11 +7545,15 @@
         " · " + ((coverage.closed || 0) - (coverage.completed || 0)) + " " + t("Closed") : "") +
        " · " + coverage.open + " " + t("open")) : "";
     summaryRow("Coverage", coverageValue);
-    summaryRow("Next", summary.next);
-    if (st.state === "waiting" && st.next_wake_at && /automatic retry/i.test(st.result || "")) {
-      summaryRow("Auto retry", new Date(st.next_wake_at * 1000).toLocaleTimeString([], {
-        hour: "2-digit", minute: "2-digit", second: "2-digit"
-      }));
+    summaryRow("Next", t(summary.next));
+    if (st.state === "waiting" && Number.isSafeInteger(st.next_wake_at) && st.next_wake_at > 0) {
+      var wakeDate = new Date(st.next_wake_at * 1000);
+      if (Number.isFinite(wakeDate.getTime())) {
+        summaryRow("Next check", wakeDate.toLocaleString(todayLocale(), {
+          year: "numeric", month: "short", day: "numeric",
+          hour: "2-digit", minute: "2-digit", timeZoneName: "short"
+        }));
+      }
     }
     summaryRow("Blocked by", summary.blocker, "blocked");
     b.appendChild(sb);
@@ -8768,14 +8780,14 @@
   var todayLastLoaded = 0, todayLoading = false;
 
   function todayLocale() {
-    return UI_LANG === "zh" ? "zh-CN" : UI_LANG === "zhtw" ? "zh-TW" :
+    return UI_LANG === "zh" ? "zh-CN" : UI_LANG === "zh-tw" ? "zh-TW" :
       ({ja:"ja-JP",ko:"ko-KR",es:"es-ES",fr:"fr-FR",de:"de-DE",pt:"pt-BR",ru:"ru-RU"}[UI_LANG] || "en-US");
   }
   function todayGreetingKey(now) {
     var hour = now.getHours();
     if (hour < 5) return "Good evening.";
     if (hour < 12) return "Good morning.";
-    if (hour < 14 && (UI_LANG === "zh" || UI_LANG === "zhtw")) return "Good noon.";
+    if (hour < 14 && (UI_LANG === "zh" || UI_LANG === "zh-tw")) return "Good noon.";
     if (hour < 18) return "Good afternoon.";
     return "Good evening.";
   }

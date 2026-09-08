@@ -318,7 +318,9 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait,
         if mission.state not in (NEEDS_YOU, PAUSED):
             next_step += " (authorization is waiting; independent work continues)"
     elif next_wait:
-        next_step = "Re-check at %s" % next_wait.get("fire_at")
+        # The structured next_wake_at field lets each client display its own
+        # timezone. An epoch embedded in prose is not a usable next step.
+        next_step = "Collie will continue checking at the scheduled time."
     elif mission.state == QUEUED:
         next_step = "Start the next Mission step"
     elif mission.state in (RUNNING, PAUSING, RECONCILING):

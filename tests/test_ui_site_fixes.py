@@ -459,7 +459,7 @@ def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failure
     assert 'className = "mactivity-detail"' in desktop
     assert 't("in_progress")' not in desktop  # statuses are translated through t(item.status)
     assert '"in_progress": "正在执行"' in desktop
-    assert 'summaryRow("Auto retry"' in desktop and "st.next_wake_at" in desktop
+    assert 'summaryRow("Next check"' in desktop and "st.next_wake_at" in desktop
     assert "pending_authorizations" in desktop and "Collie is continuing independent work." in desktop
     for key in ("PROFILE_AGE_BAND", "AUTO_APPLY_PROFILE_CLAIMS",
                 "MAX_AUTO_AUTH_RISK", "DEFER_MISSING_AUTHORIZATIONS"):

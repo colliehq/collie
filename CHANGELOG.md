@@ -20,6 +20,7 @@
 - Claude subscription quota resets become durable Mission waits. SDK and native Claude Code
   workers preserve the provider's reset timestamp and resume the saved task after it, within the
   task's deadline. Incomplete tool effects and missing usage evidence still require attention.
+  Waiting task cards show the next check's local date, time and timezone.
 
 ## v0.25.0 — Tasks keep their place
 
