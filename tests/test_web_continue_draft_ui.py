@@ -178,11 +178,12 @@ def test_a_stop_card_from_another_session_never_starts_a_turn(ui):
     page = ui.page
     cap_the_run(ui)
     page.fill("#input", "a draft that belongs to the capped thread")
+    page.evaluate("window.staleContinueButton = document.querySelector('.stop-note button')")
     page.locator(".thread").filter(has_text="Read README.md").first.click()
     page.wait_for_timeout(400)
     stale = page.evaluate("""() => {
-      const btn = document.querySelector('.stop-note button');
-      if (!btn) return 'gone';
+      const btn = window.staleContinueButton;
+      if (!btn) throw new Error('missing stale control');
       btn.click();
       return btn.disabled ? 'disabled' : 'idle';
     }""")
