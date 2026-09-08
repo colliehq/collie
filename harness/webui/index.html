@@ -1300,6 +1300,8 @@
     border: 1px solid var(--line); border-radius: 8px; padding: 5px 11px; cursor: pointer; }
   .stop-note button:hover { background: var(--surface-2); }
   .stop-note button[disabled] { opacity: .55; cursor: default; }
+  /* Shown only when the click was declined because the composer already held the user's own words. */
+  .stop-note .sn-draft-hint { color: var(--muted); font-size: 12px; flex: 1 1 100%; }
   .handoff-card { margin: 12px 0 8px 48px; max-width: 760px; border: 1px solid var(--line);
     border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
   .handoff-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex;
@@ -3362,6 +3364,7 @@
     "Continue this task": "继续这项任务",
     "Continuing…": "正在继续…",
     "Continue from where you stopped. Do not start over.": "从你停下的地方继续，不要重新开始。",
+    "Your unsent message is kept. Send it to continue this task.": "你还没发送的内容已保留。发送它即可继续这项任务。",
     "Nothing was undone by stopping. Change this run's budget yourself if you want it to go further.":
       "停下不会撤销已经完成的部分。如果希望它继续，请你自己调整本次运行的预算。",
     "Changed work, not checked": "有改动，未经检查",
@@ -3699,6 +3702,7 @@
     "Continue this task": "繼續這項任務",
     "Continuing…": "正在繼續…",
     "Continue from where you stopped. Do not start over.": "從你停下的地方繼續，不要重新開始。",
+    "Your unsent message is kept. Send it to continue this task.": "你尚未傳送的內容已保留。傳送它即可繼續這項任務。",
     "Nothing was undone by stopping. Change this run's budget yourself if you want it to go further.":
       "停下不會撤銷已經完成的部分。如果希望它繼續，請你自己調整本次執行的預算。",
     "Changed work, not checked": "有改動，未經檢查",
@@ -9971,14 +9975,49 @@
   }
   // Resume as one more user turn in the SAME thread, sent once, by hand. Nothing here re-runs a
   // tool, replays a queued follow-up or lifts a limit; the thread's own history is the context.
+  //
+  // The one-click shortcut is for an empty composer. An unsent draft — text, images or IDE context
+  // the user gathered while the run was capping out — is the user's own next turn: it must not be
+  // overwritten by Collie's canned line, and it must never leave under that line either. In that
+  // case the click does nothing but hand the composer back with a word about what Send now means.
   function continueRun(session, btn) {
     if (running || routePending) return;
     if (session && currentSession !== session) return;   // the user moved on; do not send elsewhere
-    if (btn) { btn.disabled = true; btn.textContent = t("Continuing…"); }
     var input = $("input");
+    if (input.value.trim() || attached.length || ideManualContexts.length) {
+      showContinueDraftHint(btn);
+      input.focus();
+      return;                                            // no send, no clear, no modal
+    }
+    setContinueDraftHint(btn, "");
+    if (btn) { btn.disabled = true; btn.textContent = t("Continuing…"); }
     input.value = t("Continue from where you stopped. Do not start over.");
     input.dispatchEvent(new Event("input", { bubbles: true }));
     send();
+    // send() can decline before any run exists — an unset folder or a check that Required
+    // verification demands is only validated here, at send time. A declined start leaves the user
+    // with nothing running, so the offer must come back rather than sit spent on a turn never taken.
+    if (!running && !routePending) {
+      input.value = ""; input.style.height = "auto";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (btn) { btn.disabled = false; btn.textContent = t("Continue this task"); }
+    }
+  }
+  // The hint lives in the stop card that was clicked, beside the button it explains.
+  function setContinueDraftHint(btn, text) {
+    var acts = btn && btn.parentNode;
+    if (!acts) return;
+    var hint = acts.querySelector(".sn-draft-hint");
+    if (!text) { if (hint) hint.remove(); return; }
+    if (!hint) {
+      hint = document.createElement("span"); hint.className = "sn-draft-hint";
+      hint.setAttribute("role", "status");
+      acts.appendChild(hint);
+    }
+    hint.textContent = text;
+  }
+  function showContinueDraftHint(btn) {
+    setContinueDraftHint(btn, t("Your unsent message is kept. Send it to continue this task."));
   }
   // Every interactive request uses one managed stream from launch through its verdict.
   function runStream(q, imgs, runConfig, runSession, userMsgEl, contexts) {
