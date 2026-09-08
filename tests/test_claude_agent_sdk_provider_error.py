@@ -1,6 +1,6 @@
 """Provider-rejection accounting for the Claude Agent SDK transport.
 
-A request the provider refuses is a real, billed request.  These tests pin the
+A request the provider refuses was physically issued.  These tests pin the
 one narrow path that keeps its stable category and measured usage: everything
 else about a rejection (auth attestation, one-turn contract, terminal result,
 absence of rejected text) still fails closed.
@@ -190,6 +190,7 @@ def test_answer_text_before_a_same_turn_rejection_is_never_returned():
 
 @pytest.mark.parametrize("usage", [
     {"input_tokens": -1}, {"input_tokens": 1.5}, {"output_tokens": True},
+    {"output_tokens": False},
     {"input_tokens": float("inf")},
 ])
 def test_malformed_rejection_usage_fails_closed(usage):
@@ -203,6 +204,18 @@ def test_rejection_reports_zero_usage_when_the_provider_measured_none():
     assert result["usage"] == {
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+
+
+@pytest.mark.parametrize("flag", [None, 0, 1, "false", "true"])
+def test_non_boolean_error_flag_cannot_attest_a_rejection(flag):
+    with pytest.raises(RuntimeError, match="invalid error flag"):
+        _run([_init(), _rejected_assistant(), _result(is_error=flag)])
+
+
+@pytest.mark.parametrize("turns", [None, True, False, -1, 1.5, "1"])
+def test_malformed_turn_counts_cannot_attest_one_request(turns):
+    with pytest.raises(RuntimeError, match="invalid turn count"):
+        _run([_init(), _rejected_assistant(), _result(num_turns=turns)])
 
 
 # --------------------------------------------------------------------------- #
@@ -230,12 +243,17 @@ def test_transport_accepts_a_validated_rejection_payload():
 
 @pytest.mark.parametrize("payload,match", [
     (_payload(ok=True), "both success and a provider error"),
+    (_payload(ok=None), "invalid success flag"),
+    (_payload(ok=0), "invalid success flag"),
+    (_payload(ok="false"), "invalid success flag"),
     (_payload(api_key_source="ANTHROPIC_API_KEY"), "reviewed auth attestation"),
     (_payload(api_key_source=None), "reviewed auth attestation"),
     (_payload(text="answer text"), "carried assistant content"),
     (_payload(tool_calls=[{"name": "grep"}]), "carried assistant content"),
+    (_payload(tool_calls=[]), "carried assistant content"),
     (_payload(usage="lots"), "invalid usage"),
     (_payload(usage={"input_tokens": -3}), "invalid input_tokens usage"),
+    (_payload(usage={"input_tokens": False}), "invalid input_tokens usage"),
 ])
 def test_transport_refuses_a_malformed_rejection_payload(payload, match):
     with pytest.raises(RuntimeError, match=match):

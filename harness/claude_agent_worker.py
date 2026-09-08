@@ -38,7 +38,7 @@ _EXTERNAL_OWNER_FLAG = "--collie-external-process-owner"
 
 # Stable, content-free rejection categories the SDK documents on
 # ``AssistantMessage.error`` (its ``AssistantMessageError`` literal).  A request
-# rejected this way was physically issued and billed, and the category is the
+# rejected this way was physically issued, and the category is the
 # only thing that tells a rate limit apart from a malformed request, so it is
 # reported upward instead of being collapsed into a generic worker failure.
 # ``unknown`` is deliberately absent: it carries no classification, so it stays
@@ -376,7 +376,9 @@ def _assistant_text(message) -> str:
 def _usage_dict(value) -> dict:
     value = value if isinstance(value, dict) else {}
     def counter(key):
-        raw = value.get(key, 0) or 0
+        raw = value.get(key, 0)
+        if raw is None:
+            raw = 0
         if (not isinstance(raw, (int, float)) or isinstance(raw, bool)
                 or not math.isfinite(float(raw)) or raw < 0
                 or not float(raw).is_integer()):
@@ -465,7 +467,9 @@ async def _query(request: dict, sdk) -> dict:
                 if result_seen:
                     raise RuntimeError("SDK emitted more than one result message")
                 result_seen = True
-                is_error = bool(_field(message, "is_error", False))
+                is_error = _field(message, "is_error", False)
+                if not isinstance(is_error, bool):
+                    raise RuntimeError("SDK result has an invalid error flag")
                 if rejected and not is_error:
                     # Observed rejections report subtype "success" with
                     # is_error true.  A result which claims outright success
@@ -474,7 +478,10 @@ async def _query(request: dict, sdk) -> dict:
                         "SDK result reported success after a rejected turn")
                 if is_error and not rejected:
                     raise RuntimeError("SDK result reported an error")
-                turns = int(_field(message, "num_turns", 0) or 0)
+                turns = _field(message, "num_turns", 0)
+                if (not isinstance(turns, int) or isinstance(turns, bool)
+                        or turns < 0):
+                    raise RuntimeError("SDK result has an invalid turn count")
                 if turns > 1:
                     raise RuntimeError("SDK exceeded the one-turn limit")
                 usage = _field(message, "usage", {}) or {}
@@ -490,7 +497,7 @@ async def _query(request: dict, sdk) -> dict:
     if not result_seen:
         raise RuntimeError("SDK did not emit a result message")
     if rejected:
-        # A billed provider rejection: only the stable category, the measured
+        # A provider rejection: only the stable category, the measured
         # usage, and the reviewed auth attestation cross the process boundary.
         return {"ok": False, "provider_error": rejected,
                 "error": "provider rejected the request: " + rejected,

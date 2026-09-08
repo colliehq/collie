@@ -56,7 +56,7 @@ _PROVIDER_ERROR_CATEGORIES = {
 class _ProviderRejected(RuntimeError):
     """A physically issued request the provider refused.
 
-    Quota was spent, so the measured usage and the stable category travel with
+    Any reported usage and the stable category travel with
     the failure instead of being flattened into a generic worker exit.  This is
     never a response-contract miss: the model produced no answer to repair.
     """
@@ -257,7 +257,9 @@ def _reject_json_constant(value):
 
 
 def _usage_counter(value, key):
-    raw = value.get(key, 0) or 0
+    raw = value.get(key, 0)
+    if raw is None:
+        raw = 0
     if (not isinstance(raw, (int, float)) or isinstance(raw, bool)
             or not math.isfinite(float(raw)) or raw < 0
             or not float(raw).is_integer()):
@@ -276,13 +278,15 @@ def _provider_rejection(payload: dict):
     category = payload.get("provider_error")
     if not isinstance(category, str) or category not in _PROVIDER_ERROR_CATEGORIES:
         return None
-    if payload.get("ok"):
+    if payload.get("ok") is True:
         raise RuntimeError(
             "Claude Agent SDK worker reported both success and a provider error")
+    if payload.get("ok") is not False:
+        raise RuntimeError("Claude Agent SDK rejection has an invalid success flag")
     if payload.get("api_key_source") != "none":
         raise RuntimeError(
             "Claude Agent SDK rejection is missing its reviewed auth attestation")
-    if "text" in payload or payload.get("tool_calls"):
+    if "text" in payload or "tool_calls" in payload:
         raise RuntimeError("Claude Agent SDK rejection carried assistant content")
     usage_data = payload.get("usage")
     if not isinstance(usage_data, dict):
@@ -842,8 +846,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
             completion.api_key_source = api_key_source
             return completion
         except _ProviderRejected as exc:
-            # The provider refused a request Collie physically issued and was
-            # billed for.  Report the measured usage and a stable, content-free
+            # The provider refused a request Collie physically issued.
+            # Report the measured usage and a stable, content-free
             # category so the host's retry policy can tell a rate limit from an
             # auth or billing failure.  No rejected assistant text is streamed
             # or returned, and no structured-response repair turn is implied:
