@@ -103,6 +103,8 @@ def test_panel_settings_survive_a_fork():
     env = {**os.environ, "COLLIE_STATE_DIR": state,
            "COLLIE_SETTINGS_PATH": os.path.join(state, "settings.json"),
            "FORKTEST_REPO": os.getcwd(), "FORKTEST_STATE": state}
+    # This case tests a panel setting, not an explicit inherited override.
+    env.pop("COLLIE_LANG", None)
     parent = ("import os, sys\n"
               "sys.path.insert(0, os.environ['FORKTEST_REPO'])\n"
               "from harness import settings as st\n"
