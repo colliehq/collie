@@ -26,7 +26,8 @@ from . import settings as _settings
 from .context import ContextComposer
 from .hooks import HookManager
 from .providers import (ModelProvider, Usage, ToolCall, classify_error, content_text,
-                        is_overflow, is_known_terminal, _error_completion)
+                        is_overflow, is_known_terminal, issued_requests, request_count_of,
+                        _error_completion)
 from .recorder import Recorder, RunResult
 from .tools import ToolRegistry, ToolCtx, repair_args
 from .verifier import CodeReproVerifier, Mutation, Observation
@@ -1274,7 +1275,8 @@ class Harness:
 
         Returns None when no request was made, else ``(applied, request_count)`` — the caller
         adds the count to the run's model_calls whether or not the summary was usable, because
-        the request was really issued and really billed.
+        the request was really issued and really billed. The count is the provider's own, so a
+        summary the provider refused to issue at all (a denied request reservation) adds 0.
         """
         policy = self._compaction_policy()
         forced = bool(session.pop(_compaction.FORCE_KEY, False))
@@ -1343,11 +1345,13 @@ class Harness:
                 [{"role": "user", "content": digest}], [], cancelled=self.cancelled)
         except Exception as exc:
             comp = _error_completion(getattr(self.provider, "name", "?"), exc)
-        # From here every path returns (applied, requests): the request physically happened, so
-        # it lands in the ledger, the token total and the shared budget whether the summary was
-        # usable, malformed, refused or arrived after a cancellation.
-        requests = max(1, _compaction.bounded_int(
-            getattr(comp, "request_count", 1), 1, _compaction.MAX_SUMMARY_REQUESTS, 1))
+        # From here every path returns (applied, requests): whatever the attempt physically cost
+        # lands in the ledger, the token total and the shared budget whether the summary was
+        # usable, malformed, refused or arrived after a cancellation. `issued_requests` keeps the
+        # historical ceiling on a bogus count (beyond it, fall back to one) and the historical
+        # default of one for an unreadable count, while letting a truthful 0 — the provider never
+        # issued the summary request — stay 0.
+        requests = issued_requests(comp, maximum=_compaction.MAX_SUMMARY_REQUESTS)
         self._account_usage(total, comp.usage)
         ok, summary, failure = _compaction.validate_summary(comp, policy)
         elapsed = int((time.time() - started) * 1000)
@@ -1442,13 +1446,18 @@ class Harness:
             comp = complete_cancelable(reviewer, sysp, [{"role": "user", "content": msg}],
                                        [], cancelled=self._cancel_requested)
             self._critic_usage = comp.usage   # the caller folds this into the run's token/$ total —
-            self._critic_request_count = max(
-                1, int(getattr(comp, "request_count", 1) or 1))
+            self._critic_request_count = issued_requests(comp)
             # Lightweight/custom providers used by embedders are only required to implement
             # ``complete``.  Accounting metadata must not turn a successfully returned objection
             # into an exception and silently approve the candidate.
             self._critic_model = getattr(reviewer, "model", None)
             text = (comp.text or "").strip()   # a critic call spends real tokens; the receipt must show them
+            if getattr(comp, "stop_reason", "") == "error":
+                # The reviewer never produced a review (denied request reservation, transport
+                # failure). Its error prose is NOT a finding: handing it back as one would spend
+                # a repair round arguing with "ERROR(...): model request reservation denied".
+                # Same fail-open as the exception path below; whatever it cost is still accounted.
+                return True, ""
         except Exception:
             return True, ""            # a critic failure must never block a finish
         if not text or text.upper().lstrip("*# `").startswith("CORRECT"):
@@ -1907,7 +1916,11 @@ class Harness:
                     # A failed streaming attempt burned real tokens too. Pack's aggregate observer
                     # sees the same record exactly once, so N candidates share one budget.
                     self._account_usage(total, comp.usage)
-                    model_calls += max(1, int(getattr(comp, "request_count", 1) or 1))
+                    # What the provider says it physically issued: a repairing adapter's real
+                    # attempts count in full, and an attempt that never left the host (a denied
+                    # request reservation) counts as the 0 it reports — the run's receipt is a
+                    # record of provider usage, not of intentions.
+                    model_calls += issued_requests(comp)
                     if self._cancel_requested():
                         canceled = True
                         res.error = "canceled by user"
@@ -2772,8 +2785,10 @@ class Harness:
                             self._account_usage(total, self._critic_usage,
                                                 getattr(self, "_critic_model", None))
                             self._critic_usage = None; self._critic_model = None
-                            model_calls += max(1, int(getattr(
-                                self, "_critic_request_count", 1) or 1))
+                            # None: an embedder's own critic_fn reported tokens but no count —
+                            # unknown issuance keeps the conservative one request.
+                            model_calls += request_count_of(
+                                getattr(self, "_critic_request_count", None))
                             self._critic_request_count = None
                         if not _ok:
                             session["messages"].append({"role": "assistant", "content": comp.text})
@@ -2924,7 +2939,10 @@ class Harness:
                             self.provider, _sys2, msgs2, [], on_text=_synthesis_text,
                             cancelled=self._cancel_requested)
                         self._account_usage(total, fin.usage)
-                        model_calls += max(1, int(getattr(fin, "request_count", 1) or 1))
+                        # A synthesis the provider refused to issue (denied reservation) is the
+                        # one that inflated a 48-request run's receipt to 49. Count what the
+                        # request gate actually let through; the error below still stands.
+                        model_calls += issued_requests(fin)
                         if self._cancel_requested():
                             canceled = True
                             answer = (fin.text or "".join(interrupt_partial)).strip()

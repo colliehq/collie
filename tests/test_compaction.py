@@ -1076,6 +1076,35 @@ def test_compaction_requests_are_accounted_like_any_other(tmp_path, monkeypatch)
     assert (h.provider.model, 111, 13) in budget.records
 
 
+def _denied_by_the_request_gate():
+    """What the shipped SDK adapter really returns when the gate denies the reservation:
+    an error that never reached a provider and honestly reports 0 physical requests."""
+    from harness.claude_agent_sdk import ClaudeAgentSdkProvider
+    provider = ClaudeAgentSdkProvider(subscription_only=True)
+    provider.request_gate = lambda kind: ""
+    provider._run_worker = lambda *a, **k: pytest.fail("a denied reservation must not spawn")
+    return provider.complete(compaction.SUMMARY_SYSTEM, [{"role": "user", "content": "d"}], [])
+
+
+def test_a_summary_the_gate_never_let_out_is_not_billed(tmp_path, monkeypatch):
+    """The mirror of the test above: a request that was refused before it was issued is not a
+    request. It is still a failed compaction — the transcript keeps its full history."""
+    h = _harness(tmp_path, monkeypatch, "compact_denied")
+    _fake_bash(h)
+    seen = _events(h)
+    provider = _Provider(lambda n, m: _busy_turn(n, m, stop_after=16),
+                         summary=lambda n, digest: _denied_by_the_request_gate())
+    h.provider = provider
+    res = h.run("compact_denied", "go")
+
+    assert provider.summary_digests, "compaction was due at least once"
+    assert res.answer == "all done" and not res.error, "the run itself is unaffected"
+    assert res.model_calls == len(provider.turn_calls), res.model_calls
+    failed = _compaction_events(seen, "failed")
+    assert failed and failed[0]["reason"] == "provider error"
+    assert not _compaction_events(seen, "applied")
+
+
 def test_compaction_respects_the_model_call_cap(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch, "compact_cap")
     _fake_bash(h)

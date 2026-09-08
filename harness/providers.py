@@ -13,6 +13,7 @@ Internal message shape (provider-neutral):
 from __future__ import annotations
 import contextvars
 import json
+import math
 import os
 import re
 import shutil
@@ -102,6 +103,8 @@ class Completion:
     error_code: str = ""
     # Physical provider/CLI requests consumed to produce this logical completion.
     # Most adapters issue exactly one; format-repairing adapters must report more.
+    # An adapter that failed BEFORE issuing anything (a denied request reservation, a
+    # refusal before the worker was spawned) reports 0 — read it with issued_requests().
     request_count: int = 1
     # Extended-thinking blocks ({"type":"thinking","thinking":..,"signature":..} /
     # {"type":"redacted_thinking","data":..}) returned this turn. When thinking is enabled with
@@ -109,6 +112,41 @@ class Completion:
     # the assistant turn on the next request — so the loop stores these and _to_anthropic prepends
     # them. Empty when thinking is off (the normal path).
     thinking_blocks: list = field(default_factory=list)
+
+
+def issued_requests(comp, maximum: int | None = None, default: int = 1) -> int:
+    """The physical provider requests a completion says it issued — ONE policy for every ledger.
+
+    `Completion.request_count` documents requests that really left the host, so an adapter that
+    failed before issuing one (the SDK's denied request reservation, an attachment refused before
+    spawn) honestly reports 0 and must add 0 to the run's model-call ledger: a reservation the
+    gate refused is not provider usage. A valid count above 1 (a format-repairing adapter's real
+    attempts) is counted in full.
+
+    Everything the host cannot READ as a count — absent, None, bool, str, non-finite or
+    non-integral, negative, or beyond `maximum` where the caller documents a ceiling — falls back
+    to the conservative `default` of one request, which is the accounting this code has always
+    used for a provider that did not describe its usage: an adapter that ran and then lied about
+    or omitted its count is far likelier to have spent a request than to have spent none.
+    (`bounded_int`-compatible: integral floats are accepted, bools and strings are not.)
+    """
+    return request_count_of(getattr(comp, "request_count", None), maximum, default)
+
+
+def request_count_of(value, maximum: int | None = None, default: int = 1) -> int:
+    """`issued_requests` policy on a bare number — for a count already carried out of a
+    completion (the critic's, held on the Harness between the review and its accounting)."""
+    if isinstance(value, bool) or isinstance(value, str):
+        return default
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return default
+        value = int(value)
+    if not isinstance(value, int):
+        return default
+    if value < 0 or (maximum is not None and value > maximum):
+        return default
+    return value
 
 
 _LENGTH_STOPS = {"length", "max_tokens"}   # provider-specific output-truncation reasons
