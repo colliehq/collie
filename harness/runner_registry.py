@@ -652,6 +652,17 @@ def _collie_billing(provider: str) -> tuple[str, dict[str, Any]]:
     return "api_metered", evidence
 
 
+def collie_billing_class(provider: str) -> str:
+    """The native-route billing class for ``provider``, as a probe would report it.
+
+    Surfaces that label a finished native/pack run need exactly the string the
+    external-worker path already carries on ``RunnerDecision.billing_class``, and
+    nothing else a probe collects.  Route classification only: this reads a
+    provider NAME, never a credential, and never claims a charge was observed.
+    """
+    return _collie_billing(provider)[0]
+
+
 # --- login state (metadata only) --------------------------------------------
 def _claude_credentials_path() -> str:
     """Where Claude Code keeps its OAuth blob on this host, if it keeps a file."""
@@ -1095,6 +1106,6 @@ __all__ = [
     "CODEX_SDK_CAPABILITIES", "COLLIE_CAPABILITIES",
     "HERMES_ACP_CAPABILITIES", "HERMES_GATEWAY_CAPABILITIES", "PI_RPC_CAPABILITIES",
     "PRIME_RPC_CAPABILITIES", "PROBE_TTL_S", "SPECS", "apply_compat_report",
-    "compat_status", "handshake", "list_probes", "make_runner", "option_keys", "probe",
-    "probe_all", "reset_cache",
+    "collie_billing_class", "compat_status", "handshake", "list_probes",
+    "make_runner", "option_keys", "probe", "probe_all", "reset_cache",
 ]

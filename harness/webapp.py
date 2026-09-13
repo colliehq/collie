@@ -886,6 +886,28 @@ def _provider() -> str:
     return os.environ.get("COLLIE_PROVIDER", "")
 
 
+def _subscription_route(provider: str) -> bool:
+    """Does a finished native/pack run spend a plan allowance rather than API credit?
+
+    The hand-written tuple this replaces listed five provider names and omitted
+    `claude-agent-sdk` — the official Agent SDK route, which is the one a Claude
+    plan login actually runs on — plus its `claude-sdk` alias and `claude-sub`.
+    A real subscription run therefore reported `subscription: false` and the run
+    card printed an API-equivalent estimate as if it were the bill.
+    `runner_registry.collie_billing_class` is the canonical classification, it is
+    the same one the external-worker path reports through
+    `RunnerDecision.billing_class`, and it keeps the paid/local/unknown routes
+    distinct instead of folding them together.
+
+    This is route classification from a provider name, not billing attestation:
+    no credential is read and no network call is made here, and True only means
+    "the cost number beside this is an API-equivalent estimate, not an observed
+    charge" — never that the marginal charge was $0.
+    """
+    from . import runner_registry as runner_reg
+    return runner_reg.collie_billing_class(provider) == "subscription_allowance"
+
+
 class _RunSettings:
     """``settings`` as ONE run must see it: its own frozen ceilings, everything else live.
 
@@ -5790,8 +5812,14 @@ class Handler(BaseHTTPRequestHandler):
                 "decision": decision_payload,
                 "runner": (winner_rec or {}).get("runner_receipt"),
                 "verification_evidence": (winner_rec or {}).get("verification_evidence"),
-                "subscription": prov in ("anthropic-oauth", "claude-cli", "codex-oauth",
-                                           "codex-sub", "codex")}
+                # An external-worker pack spends whatever the selector evidenced for
+                # that worker; a native pack spends the route its candidates actually
+                # ran on, which run_pack records per attempt.  Per-attempt currency
+                # labels still come from the attempt rows and are not touched here.
+                "subscription": (
+                    runner_decision.billing_class == "subscription_allowance"
+                    if runner_decision.runner != "collie" else
+                    _subscription_route((winner_rec or {}).get("provider") or prov))}
             Handler._mirror_pub(sid, "done", done_d)
             Handler._live_pub("done", {"session": sid, "run": run_id, "turns": turns,
                                         "canceled": canceled})
@@ -6429,6 +6457,12 @@ class Handler(BaseHTTPRequestHandler):
             Handler._live_pub("done", {"session": sid, "run": run_id,
                                         "turns": res.turns, "canceled": canceled})
             actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
+            # Which route this run actually executed on, in the same spirit as
+            # actual_speed: the result records the provider the loop used, so a run
+            # that resolved to a different backend than the request started with is
+            # labeled by what ran, not by the name Settings held at accept time.
+            actual_provider = (getattr(res, "provider", "") or
+                               getattr(getattr(h, "provider", None), "name", "") or prov)
             done_d = {
                 "session": sid, "run": run_id, "answer": res.answer or "", "error": res.error,
                 "canceled": canceled,
@@ -6446,8 +6480,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Subscription routes report an API-equivalent estimate, not a provider billing
                 # observation. Flag them so the UI neither presents that estimate as a charge nor
                 # falsely turns an unverified route into an observed $0 bill.
-                "subscription": prov in ("anthropic-oauth", "claude-cli", "codex-oauth",
-                                           "codex-sub", "codex")}
+                "subscription": _subscription_route(actual_provider)}
             review_findings = (_review_findings(res.answer or "")
                                if run_opts["intent"] == "review" else None)
             from .recorder import run_outcome

@@ -91,6 +91,20 @@ def _script(text):
                           error="", canceled=False, stop_reason="completed", completed=True,
                           edited=False, model_calls=2)),
         ]
+    if "summarise the ledger module" in q:
+        # Same run, same cost number, two routes. On a plan route that number is an
+        # API-equivalent estimate the provider never billed, so the card may not
+        # print it as the charge; on a metered route it is the amount.
+        plan = "on my plan" in q
+        sid = "s-plan" if plan else "s-metered"
+        return [
+            ("start", {"session": sid, "run": "r-" + sid, "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "Summarised the ledger module."}),
+            ("done", dict(DONE_BASE, session=sid, run="r-" + sid,
+                          answer="Summarised the ledger module.", error="", canceled=False,
+                          stop_reason="completed", completed=True, edited=False,
+                          cost_usd=0.42, subscription=plan)),
+        ]
     if "fix the parser" in q:
         return [
             ("start", {"session": "s-edit", "run": "r2", "model": "mock", "prior_turns": 0}),
@@ -547,6 +561,25 @@ def test_registry_publishes_a_stop_reason_without_breaking_state():
 
 
 # ------------------------------------------------------------------ tests
+def test_plan_route_shows_plan_and_a_metered_route_shows_the_amount(ui):
+    """The cost tile must not turn a subscription estimate into a bill — either way.
+
+    This is what the `subscription` flag on the terminal frame is for, so it is
+    also the check that says the flag is worth getting right on the server.
+    """
+    cost = "#rCost", "el => [el.textContent, el.title]"
+
+    ui.ask("Summarise the ledger module on my plan")
+    text, title = ui.page.eval_on_selector(*cost)
+    assert text == "plan", "a plan run must not print a currency amount as its charge"
+    assert "actual marginal charge was not independently observed" in title
+    assert "$0.42" in title, "the estimate stays visible, named as an estimate"
+
+    ui.ask("Summarise the ledger module on the metered key")
+    text, title = ui.page.eval_on_selector(*cost)
+    assert text == "$0.42" and title == ""
+
+
 def test_read_only_answer_shows_no_check_card(ui):
     """A question that changed nothing is not "No executed check" — it has nothing to check."""
     ui.ask("Read README.md and tell me what this tool does")
