@@ -1334,12 +1334,17 @@ class DefaultCollieRunner:
             env["COLLIE_MAX_TURNS"] = str(int(budget["max_turns"]))
             env["COLLIE_HTTP_TIMEOUT"] = str(max(.2, float(budget["max_wall_s"])))
             from . import plat
+            # "Killable child" is only true if the child is a tree of its own.
+            # Without this the POSIX child inherits Collie's process group, and
+            # the wall-budget kill below can reach no further than the direct
+            # child — the automation's own subprocesses would outlive the budget
+            # that was supposed to bound them.
             proc = subprocess.Popen(
                 [sys.executable, "-m", "harness.automations", "_execute",
                  "--request", request_path, "--result", result_path],
                 cwd=request["resolved_workspace"], env=env, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                **plat.no_window_kwargs())
+                **plat.new_group_kwargs(), **plat.no_window_kwargs())
             with self._lock:
                 self._proc = proc
             try:

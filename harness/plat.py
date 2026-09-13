@@ -477,7 +477,21 @@ def terminate_named_job_and_wait(name: str, exit_code: int = 1,
 def kill_tree(proc) -> None:
     """Kill a Popen AND every descendant. A backgrounded grandchild that inherited
     the stdout pipe would otherwise hold its write end open and wedge a follow-up
-    drain — the hazard the bash/grep tools guard against on a timeout."""
+    drain — the hazard the bash/grep tools guard against on a timeout.
+
+    The two platforms do not scope this the same way, and the difference is the
+    whole reason for the check below. ``taskkill /T`` walks the PID tree, so on
+    Windows it can only ever reach descendants of this child. POSIX has no such
+    call: ``killpg`` addresses a process GROUP, and a child started without
+    ``new_group_kwargs`` sits in Collie's own group — so signalling
+    ``getpgid(child)`` there would SIGKILL this very process and every sibling
+    beside it. A caller asking to end one command must never take Collie down
+    with it, so a group is only signalled when the child LEADS it, which is
+    exactly the group ``start_new_session`` created for this call. A shared
+    group leaves only the direct child as ours to kill; its descendants were
+    never in a tree this call owns, and the callers that need proof of
+    extinction already report that separately.
+    """
     try:
         if is_windows():
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -485,12 +499,16 @@ def kill_tree(proc) -> None:
                            **no_window_kwargs())
             return
         import signal
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)   # session leader + all grandchildren
+        pid = int(proc.pid)
+        if os.getpgid(pid) == pid:                        # a group made for this child
+            os.killpg(pid, signal.SIGKILL)                # leader + all grandchildren
+            return
     except Exception:
-        try:
-            proc.kill()                                   # last resort: the direct child only
-        except Exception:
-            pass
+        pass
+    try:
+        proc.kill()                                       # the direct child, and only it
+    except Exception:
+        pass
 
 
 # ── filesystem ───────────────────────────────────────────────────────────────
