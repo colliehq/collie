@@ -77,3 +77,43 @@ def test_doctor_repairs_are_bounded_and_confirmation_is_exact(tmp_path):
         raise AssertionError("dead-letter retry needs an explicit confirmation")
     assert repair("retry_dead_notifications", str(tmp_path), confirmed=True)["retried"] == 1
     assert repair("test_notifications", str(tmp_path))["notification_id"].startswith("ntf_")
+
+
+def test_doctor_reports_version_drift_as_optional_maintenance(tmp_path, monkeypatch):
+    from harness import __version__, doctor
+
+    monkeypatch.setattr(doctor, "_command_version", lambda path: {
+        "path": "old/collie", "version": "0.24.0", "ok": True, "error": ""})
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: "old/collie")
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": False, "mode": "none"})
+    monkeypatch.setattr("harness.supervisor.remote_notifications_enabled", lambda: False)
+    report = doctor.report(str(tmp_path), probe_services=False, now=400)
+    drift = [row for row in report["checks"] if row["id"] == "version-drift"]
+    assert len(drift) == 1 and drift[0]["status"] == "warning"
+    # Both versions and the optional update stay visible; only the demand disappears.
+    assert "0.24.0" in drift[0]["detail"] and __version__ in drift[0]["detail"]
+    assert drift[0]["command"] == "collie update --yes"
+    assert report["status"] == "warning"
+    assert report["runtime"]["command"]["version"] == "0.24.0"
+    assert report["runtime"]["source"]["version"] == __version__
+
+
+def test_doctor_still_demands_a_decision_for_startup_rollback(tmp_path, monkeypatch):
+    from harness import doctor
+
+    monkeypatch.setattr(doctor, "_command_version", lambda path: {
+        "path": "old/collie", "version": "0.24.0", "ok": True, "error": ""})
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: "old/collie")
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": False, "mode": "none"})
+    monkeypatch.setattr("harness.supervisor.remote_notifications_enabled", lambda: False)
+    monkeypatch.setattr("harness.update.rollback_status", lambda *_a, **_k: {
+        "required": True, "available": True, "state": "rollback_required",
+        "previous_version": "0.25.0", "plan": {}, "startup_failures": 3,
+        "last_error": "startup checks failed"})
+    report = doctor.report(str(tmp_path), probe_services=False, now=400)
+    statuses = {row["id"]: row["status"] for row in report["checks"]}
+    assert statuses["version-drift"] == "warning"
+    assert statuses["rollback-required"] == "needs_you"
+    assert report["status"] == "needs_you"

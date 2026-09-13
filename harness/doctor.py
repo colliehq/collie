@@ -94,9 +94,13 @@ def report(state_root: str | None = None, *, probe_services: bool = True,
     }
     checks = []
     if active.get("version") and active["version"] != __version__:
+        # A different command on PATH does not block the running source build, so this stays
+        # advisory: both versions and the update command remain visible, but the difference
+        # alone must not enter the "needs a decision" lane next to real recovery items.
         checks.append(_check(
-            "version-drift", "needs_you", "Installed Collie is not this source build",
-            "The command on PATH is %s while this control plane is %s." %
+            "version-drift", "warning", "Installed Collie is not this source build",
+            "The command on PATH is %s while this control plane is %s. Updating is optional; "
+            "this source build keeps running." %
             (active["version"], __version__), action="update",
             command="collie update --yes"))
     elif not active.get("ok"):

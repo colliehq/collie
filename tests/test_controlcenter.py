@@ -90,6 +90,56 @@ def test_recovery_center_combines_work_and_stalled_delivery_without_private_payl
     assert "private title" not in wire and "private body" not in wire
 
 
+def _drifted_command(monkeypatch, tmp_path):
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr("harness.doctor._command_version", lambda path: {
+        "path": "old/collie", "version": "0.24.0", "ok": True, "error": ""})
+    monkeypatch.setattr("harness.doctor.shutil.which", lambda _: "old/collie")
+    # No browser bridge on this host: keep the snapshot about versions and recovery only.
+    monkeypatch.setattr("harness.doctor._get_json", lambda *_a, **_k: {})
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": False, "mode": "none"})
+    monkeypatch.setattr("harness.supervisor.remote_notifications_enabled", lambda: False)
+
+
+def test_recovery_center_lists_version_drift_without_asking_for_a_decision(tmp_path, monkeypatch):
+    from harness import __version__
+    from harness.controlcenter import recovery_snapshot
+
+    _drifted_command(monkeypatch, tmp_path)
+    snap = recovery_snapshot(str(tmp_path))
+    drift = [row for row in snap["items"] if row["id"] == "doctor:version-drift"]
+    assert len(drift) == 1 and drift[0]["severity"] == "warning"
+    assert "0.24.0" in drift[0]["detail"] and __version__ in drift[0]["detail"]
+    assert drift[0]["command"] == "collie update --yes"
+    assert snap["summary"] == {"total": 1, "needs_you": 0, "warning": 1}
+    assert snap["status"] == "warning"
+
+
+def test_recovery_center_counts_real_recovery_beside_advisory_version_drift(tmp_path,
+                                                                            monkeypatch):
+    from harness import sessions
+    from harness.controlcenter import recovery_snapshot
+
+    _drifted_command(monkeypatch, tmp_path)
+    monkeypatch.setattr("harness.update.rollback_status", lambda *_a, **_k: {
+        "required": True, "available": True, "state": "rollback_required",
+        "previous_version": "0.25.0", "plan": {}, "startup_failures": 3,
+        "last_error": "startup checks failed"})
+    sessions.checkpoint("uncertain", [{"role": "user", "content": "private publish text"}],
+                        run_id="r1", state="external_action",
+                        detail={"tool_name": "publish", "tool_call_id": "c1"})
+    snap = recovery_snapshot(str(tmp_path))
+    severities = {row["id"]: row["severity"] for row in snap["items"]}
+    assert severities["doctor:version-drift"] == "warning"
+    assert severities["doctor:rollback-required"] == "needs_you"
+    assert severities["interactive:uncertain"] == "needs_you"
+    assert snap["summary"] == {"total": 3, "needs_you": 2, "warning": 1}
+    assert snap["status"] == "needs_you"
+    assert "private publish text" not in json.dumps(snap)
+
+
 def test_security_center_lists_and_revokes_exact_standing_override(tmp_path):
     from harness.controlcenter import security_revoke_risk, security_snapshot
     from harness.overrides import RiskOverrideStore
