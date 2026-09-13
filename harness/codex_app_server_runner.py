@@ -457,10 +457,17 @@ class CodexAppServerRunner:
             transport = self._active
             if transport is None:
                 return False
+            if self._turn_done.is_set():
+                # The turn already reached its terminal notification and this
+                # invocation is closing the owned tree.  There is nothing left to
+                # interrupt, and recording a cancellation here would retroactively
+                # unsettle finished work — a turn that really changed files would
+                # then demand manual recovery before it could be resumed.
+                return True
             self._cancel_requested = True
             thread_id = self._active_thread_id
             turn_id = self._active_turn_id
-            if thread_id and turn_id and not self._turn_done.is_set():
+            if thread_id and turn_id:
                 self._write_request_id += 1
                 try:
                     transport.send({
@@ -800,7 +807,16 @@ class CodexAppServerRunner:
         elif method == "turn/completed":
             turn = params.get("turn") or {}
             status = str(turn.get("status") or "")
-            state["terminal"] = status
+            # `turn/completed` ends the turn whatever it does or does not say
+            # about a status.  Leaving `terminal` empty for a notification whose
+            # `turn` object drifted (renamed key, absent status) kept the receive
+            # loop running to the wall timeout while `_turn_done` below already
+            # told `cancel_current` there was nothing left to interrupt — so a
+            # user cancel was answered "confirmed", the slice's cancel watcher
+            # stopped asking, and the owned child ran on. An unrecognized status
+            # is reported as "ended without a completed terminal event", which is
+            # what it is, rather than settled.
+            state["terminal"] = status or "unknown"
             if status == "failed":
                 failure = turn.get("error") or {}
                 state["terminal_error"] = runner_specs.redact_text(

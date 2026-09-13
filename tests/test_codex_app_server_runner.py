@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 import os
+import threading
+import time
 
 import pytest
 
@@ -217,4 +219,131 @@ def test_failed_terminal_is_not_settled(tmp_path):
 
     assert result.settled is False
     assert result.error == "model failed"
+    assert result.recovery_required is False
+
+
+class UnknownStatusTransport(ScriptedTransport):
+    """A ``turn/completed`` naming a status this Collie version does not know.
+
+    App Server is documented as experimental, so a renamed or added terminal
+    status is ordinary version drift rather than a hostile peer.
+    """
+
+    def __init__(self, status=""):
+        super().__init__(approval=False, terminal=status)
+        self.receive_calls = 0
+        self.terminate_calls = 0
+        self.close_calls = 0
+        self.delivered = threading.Event()
+
+    def _finish(self):
+        self.incoming.append({"method": "item/completed", "params": {
+            "threadId": self.thread_id, "turnId": "turn_1",
+            "item": {"id": "msg_1", "type": "agentMessage",
+                     "text": "done", "phase": "final_answer"}}})
+        turn = {"id": "turn_1"}
+        if self.terminal:
+            turn["status"] = self.terminal
+        self.incoming.append({"method": "turn/completed", "params": {
+            "threadId": self.thread_id, "turn": turn}})
+
+    def receive(self, timeout_s):
+        self.receive_calls += 1
+        if not self.incoming:
+            # Idle like a live peer instead of busy-spinning, so an invocation
+            # that fails to notice its terminal event is slow, not hot.
+            time.sleep(0.01)
+            raise TimeoutError("script is empty")
+        message = self.incoming.popleft()
+        if message.get("method") == "turn/completed":
+            self.delivered.set()
+        return message
+
+    def terminate(self, timeout_s=5.0):
+        self.terminate_calls += 1
+        return True
+
+    def close(self):
+        self.close_calls += 1
+        return True
+
+
+def test_unknown_terminal_status_ends_the_turn_instead_of_burning_the_wall_clock(tmp_path):
+    transport = UnknownStatusTransport()
+    runner, _ = _runner(transport)
+
+    result = runner.start("fix it", str(tmp_path), timeout_s=1.0)
+
+    # `turn/completed` is the terminal notification whatever status it names.
+    assert result.timed_out is False
+    assert result.settled is False
+    assert "without a completed terminal event" in result.error
+    assert result.final_output == "done"
+    assert transport.close_calls == 1
+    # The receive loop stopped at the terminal notification rather than waiting
+    # out the wall timeout on an exhausted script.
+    assert transport.receive_calls < 20
+
+
+def test_cancel_after_an_unknown_terminal_status_is_not_falsely_confirmed(tmp_path):
+    transport = UnknownStatusTransport()
+    runner, _ = _runner(transport)
+    outcome: dict = {}
+
+    def turn():
+        try:
+            outcome["snapshot"] = runner.start(
+                "fix it", str(tmp_path), timeout_s=20.0)
+        except BaseException as exc:  # reported below, never swallowed
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=turn, name="appserver-unknown", daemon=True)
+    worker.start()
+    assert transport.delivered.wait(10.0)
+    # A user cancel may not answer "confirmed" while a turn is still live: the
+    # slice's cancel watcher stops asking as soon as the runner says True.
+    runner.cancel_current()
+    worker.join(3.0)
+
+    assert not worker.is_alive(), "the turn outlived its terminal notification"
+    assert "error" not in outcome
+    snapshot = outcome["snapshot"]
+    assert snapshot.settled is False
+    assert snapshot.timed_out is False
+    assert transport.close_calls == 1
+
+
+class CancelDuringCloseTransport(ScriptedTransport):
+    """A turn that completes normally while the user's cancel lands on cleanup."""
+
+    def __init__(self):
+        super().__init__(approval=False)
+        self.runner = None
+        self.cancel_result = None
+
+    def close(self):
+        self.cancel_result = self.runner.cancel_current()
+        return True
+
+
+def test_cancel_racing_a_completed_turn_keeps_its_settled_result(tmp_path):
+    digests = iter(("d0", "d1"))
+
+    def mutating(_root):
+        return {"tree_digest": next(digests), "snapshot_complete": True}
+
+    transport = CancelDuringCloseTransport()
+    runner, _ = _runner(transport)
+    runner.snapshotter = mutating
+    transport.runner = runner
+
+    result = runner.start("fix it", str(tmp_path))
+
+    assert transport.cancel_result is True   # nothing was left to interrupt
+    assert result.cancelled is False
+    assert result.settled is True
+    assert result.final_output == "done"
+    assert result.mutated is True
+    # A finished turn whose files really changed must not be pushed into manual
+    # recovery just because a cancel arrived during child cleanup.
     assert result.recovery_required is False
