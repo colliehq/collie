@@ -2,7 +2,7 @@
 
 本轮从 2026-09-13 05:15 PDT 开始，后台任务截止于 2026-09-14 05:15 PDT。
 
-截至 19:35 UTC，二十四项产品修复已经独立验证并提交，组合通过后同步给后续后台任务。新八项真实续接对照全部完成；Claude Code 继续完善上下文压缩实验，并检查手机页面的恢复读取。
+截至 20:00 UTC，二十五项产品修复已经独立验证并提交，同步给后续后台任务。新增真实本地服务重启验证证明手机 Activity 可以保留草稿并恢复读取；完整二十五项回归进行中，Claude Code 继续完善两个 benchmark 驱动与手机 worker 状态显示。
 
 ## 已合入的产品修复
 
@@ -235,6 +235,20 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 新续接对照的完整报告：`manual/continuation-recheck/report-corrected/continuation-v5-parent-live.md`，SHA256 `149e5dc04664bca5a7ee2d0080faca37f342d55a14bccba8c04d18ff335089f0`。父只读复核 `parent-audit-v5` 对全部记录重新分类、检查四个批次前后源码字节和完整原始目录哈希，八项结论一致，未修改输入。原组 Collie 3/4、新组 4/4，原生两组各 4/4；产品版本及证据规则有上述明确变化，样本仅两种小任务各两次，不能据此作总体排名或证明所有续接竞态消失。新组耗时中位数为 Collie 67.0 秒（n=4）、原生 50.9 秒（n=4），包含各自 harness 与评分开销，只记录观察值。
 
 压缩实验 v2 已让任务明确复制大 payload，移除模拟中的非法填充，原始 v1 与完整 v2 均单独归档。六个原始父挑战已通过，但父流程继续复现三项跨恢复测量遗漏：applied 与持久化 checkpoint 的 generation 不同仍通过，以及恢复后出现孤立工具结果或改写原要求仍通过。`pressure-restore-before` 为 3 failed/6 passed，未据此声称产品本身有这些故障。Claude Code 正在补齐完整证据关联，并实现有时间边界、同一会话和实际 steer/compaction 记录的实验驱动；当前还没有真实压缩结果。手机读取任务 `manual/mobile-recovery-read` 基于二十三项独立快照，只调查认证更新后的只读恢复，不自动重放确认或其他写入。
+
+第二十五项提交 `712ad0bc6066976155439d3e9ee3222a5c0dfda9` 让手机 Activity 的只读请求在本机服务令牌更新后自动获取新令牌、各重试一次；并发请求共享刷新结果，较晚返回的旧拒绝复用已经更新的令牌。关闭或替换页面请求仍使旧响应失效，输入草稿不丢，恢复决定等 POST 不会自动重放。只读刷新遵循现有同源、直连 loopback 令牌规则；不扩大 relay/LAN 权限。
+
+最终补丁 `5819896fdd08a592972e71d8477779e9ed10c504b8b0b2f13c9b7fe709af23e1`，精确累计二十五项快照 `4f6763ff2a91ab42109d2172227ba91619043793`。独立 145 passed，原基线 81 passed，新测试在旧代码 4 failed/83 passed，无原有失败；独立 Claude Code 审阅 approve。父另外复现了初版“较晚拒绝多取一次令牌”的问题，独立 1 failed → 1 passed 后加入最终候选。38 项控制面 API 相邻测试也通过；19:54:01 UTC 在后台空档推进自动分支。72 个无关未提交文件保全。
+
+随后做了实际产品服务重启：相同本地端口、保持同一个 390×844 Chromium 页面和未发送草稿，先关闭拥有的旧服务进程树，再启动新的 stock 服务。旧二十四项页面收到 activity/healthz 两个真实 403 后保持不可用；新二十五项收到相同两个 403，接着一次 `/api/session-token` 200、两个读取 200，无页面导航和 POST。两组前后服务的进程树均确认退出，产品目录干净。证据 `manual/mobile-restart-stock-before` / `manual/mobile-restart-stock-after`，两张截图已人工查看；使用 mock provider，没有模型推理，没有响应拦截，也没有远程手机或 relay 测试。该新证据补充了前面的 fixture 验证。
+
+本项仍有明确范围：其他手机 raw fetch 读取不在此次修改；每个轮询周期可再尝试，并非整个页面生命周期永远只刷新一次；token 变更后的首次决定 POST 仍可能先失败、等下次只读刷新后才恢复。提到 specialist 的测试实际只点击了 recovery 决定按钮，共享 POST 路径另由代码审查确认。新的完整回归 `twentyfive-fixes-full` 正在精确二十五项版本上运行，当前不计为通过；完整二十一项的 4093 passed/20 skipped 不覆盖后四项。
+
+测试工具也经过独立反例检查。压缩驱动 v3 的十项父检查为 9 failed/1 passed：取消仍可算成功、错误 runner/model 未拒绝、截断的纠正文本被算已消费、未知写入成功触发 steer 等。外部 worker 对照驱动的八项父检查为 7 failed/1 passed：缺失结果或清理、取消/恢复门禁、错误模型和失败文件契约仍可计成功。两份原版全部冻结，两个 Claude Code 任务正在修复；这些失败来自实验工具，不是已证实的产品故障，未启动新真实压缩或新 worker 对照，也未改写之前已完成的八项真实续接成绩。
+
+重启后的新截图另外暴露了手机 worker 呈现错误：代码仅依据 fresh 布尔值，会把没有心跳标为“需要恢复”，把 fresh 但 failed 的状态标为 Running。新的独立 Claude Code 产品任务 `manual/mobile-worker-state` 基于二十五项版本，正在复现并修正这项显示；尚未接受或提交。
+
+官方只读额度快照 19:54:56 UTC：五小时已用 45%、周额度已用 55%，extra usage 关闭，下一次五小时自然重置 22:10 UTC。没有手动重置或扩展原定截止时间。
 
 ## 工作保全
 
