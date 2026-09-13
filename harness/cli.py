@@ -496,6 +496,40 @@ def apply_turn_decision(h, decision, gate=None):
     return decision
 
 
+def apply_accepted_limits(h, limits):
+    """Hold a REUSED Harness to the ceilings this one turn is authorized to spend.
+
+    ``limits`` is the snapshot a queued request was accepted under
+    (``terminal_queue.accepted_limits``).  ``None`` means this turn has no accepted
+    snapshot — a line the person just typed — and is measured against the settings as
+    they are right now, which is the long-standing behaviour.
+
+    A terminal surface builds ONE Harness and runs many turns on it, so every field
+    set here is set on every turn: an accepted budget must bind the request it arrived
+    with, and must not still be binding whatever is typed next.  The budget itself is
+    handed over as ``h.limits``, which the loop reads once per run; the turn cap and the
+    provider's generation knobs are applied here because the loop reads those from the
+    Harness and the provider object instead.  Nothing writes os.environ — that would
+    move every other run in this process, which is the leak the snapshot exists to stop.
+
+    Call AFTER ``apply_turn_decision``: that resets the turn cap to the harness baseline
+    and may replace ``h.provider`` with one built from a live env read.
+    """
+    from . import settings as _settings
+    resolved = limits if limits is not None else _settings.current_limits()
+    # None leaves the run to snapshot for itself at start, so a typed turn keeps taking
+    # the panel's value at the moment work begins.
+    h.limits = limits
+    cap = max(0, int(resolved.max_turns or 0))
+    h._max_turns_hard_cap = max(1, min(120, cap)) if cap else None
+    h.max_turns = h._max_turns_hard_cap or 0
+    applied, not_applicable = _apply_generation_limits(h.provider, resolved)
+    h.limits_snapshot = resolved
+    h.limits_applied = applied
+    h.limits_not_applicable = tuple(not_applicable)
+    return resolved
+
+
 def turn_decision_receipt(decision, res, provider=None):
     """Compact structured outcome used both for UI receipts and next-turn routing."""
     active = provider
@@ -746,6 +780,12 @@ def cmd_repl(args):
                                 line, provider, configured_model=configured_model,
                                 history=history, receipts=receipts)
                         apply_turn_decision(h, decision, _gate)
+                        # A queued request is held to the budget it was ACCEPTED under,
+                        # not to whatever the panel says now; a typed line is measured
+                        # against the current settings. Applied after the decision,
+                        # which may have rebuilt the provider this reaches.
+                        apply_accepted_limits(
+                            h, terminal_queue.accepted_limits(queued) if queued else None)
                     except Exception as e:
                         print("\ncollie could not route this turn: %s: %s"
                               % (type(e).__name__, e))

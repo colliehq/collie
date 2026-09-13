@@ -39,6 +39,34 @@ def handle_command(line, session, write):
     return True
 
 
+def accepted_limits(entry):
+    """The budget and generation ceilings this queued request was accepted under.
+
+    A request typed into the Web composer freezes MAX_COST / MAX_TOTAL_TOKENS /
+    MAX_TURNS / MAX_TOKENS / TEMPERATURE at acceptance, and the Web queue replays that
+    snapshot when its turn comes. ``/next`` is the other door onto the SAME durable
+    queue, so it has to replay it too: without this the entry ran under whatever the
+    Settings panel happened to say afterwards, which is wrong in both directions — a
+    ceiling raised while the request waited let it spend past what was authorized, and
+    one lowered while it waited aborted the answer the person was waiting for with
+    "stopped: budget ceiling reached".
+
+    ``None`` inside the entry means it made no claim about its limits (it was accepted
+    before they were frozen) and the current settings are the honest answer. A payload
+    this build cannot read is a refusal instead: the request keeps its place in the
+    queue rather than running under a guessed number.
+    """
+    from . import settings
+    frozen = (entry.get("config") or {}).get("frozen") or {}
+    try:
+        return settings.enforce_pinned(settings.limits_from_payload(frozen.get("limits")))
+    except ValueError as exc:
+        raise QueueError(
+            "this request recorded the budget it was accepted under, and this build "
+            "cannot replay it (%s); it was kept pending — re-send it to run under the "
+            "current limits" % exc) from exc
+
+
 def _supported(entry):
     config = entry.get("config") or {}
     if (config.get("strategy", "single") != "single"
@@ -56,6 +84,7 @@ def _supported(entry):
         raise QueueError("worker settings changed since acceptance; the request was kept pending")
     if isinstance(previous, dict) and previous.get("RUNNER", "collie") != "collie":
         raise QueueError("this request selected another worker; start it from the Web queue")
+    accepted_limits(entry)     # refuse an unreplayable budget before the entry is claimed
 
 
 @contextlib.contextmanager
