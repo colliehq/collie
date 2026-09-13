@@ -1333,6 +1333,18 @@
   .stop-note button[disabled] { opacity: .55; cursor: default; }
   /* Shown only when the click was declined because the composer already held the user's own words. */
   .stop-note .sn-draft-hint { color: var(--muted); font-size: 12px; flex: 1 1 100%; }
+  /* An interrupted run whose outside effect is uncertain. It is not a verdict on the task: it says
+     the work is kept, that a person has to look, and where that decision is actually made. */
+  .recovery-note { display: grid; gap: 7px; }
+  .recovery-note .rc-why { color: var(--muted); font-size: 12px; }
+  .recovery-note .rc-reason { font-family: var(--mono); font-size: 12px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .recovery-note button { justify-self: start; font: 600 12px var(--sans); color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 5px 11px; cursor: pointer; }
+  .recovery-note button:hover { background: var(--surface-2); }
+  .activity-row.is-focus { outline: 2px solid var(--pine); outline-offset: 2px; border-radius: 8px; }
   .handoff-card { margin: 12px 0 8px 48px; max-width: 760px; border: 1px solid var(--line);
     border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
   .handoff-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex;
@@ -3166,6 +3178,10 @@
     "These steps were left out. No permission was granted.": "这些步骤已省略，没有授予新的权限。",
     "Check the outcome before continuing": "确认实际结果后继续",
     "Progress is saved. Check the files or target service so Collie can avoid repeating an action.": "进度已保存。请查看文件或目标服务的实际结果，避免重复操作。",
+    "Open recovery controls": "打开恢复控制",
+    "No new run was started. Your request is still here.": "没有开始新的运行，你的要求仍然保留。",
+    "The current recovery state could not be confirmed.": "无法确认当前的恢复状态。",
+    "This conversation is not listed in recovery right now.": "当前会话现在没有出现在恢复列表中。",
     "The action happened": "操作已经发生", "The action did not happen": "操作没有发生",
     "Close this interrupted turn": "结束这一轮中断的操作", "I checked the actual outcome": "我已检查实际结果",
     "Save outcome and continue": "保存结果并继续",
@@ -3543,6 +3559,10 @@
     "These steps were left out. No permission was granted.": "這些步驟已省略，沒有授予新的權限。",
     "Check the outcome before continuing": "確認實際結果後繼續",
     "Progress is saved. Check the files or target service so Collie can avoid repeating an action.": "進度已儲存。請查看檔案或目標服務的實際結果，避免重複操作。",
+    "Open recovery controls": "開啟復原控制",
+    "No new run was started. Your request is still here.": "沒有開始新的執行，你的要求仍然保留。",
+    "The current recovery state could not be confirmed.": "無法確認目前的復原狀態。",
+    "This conversation is not listed in recovery right now.": "目前的對話沒有出現在復原清單中。",
     "The action happened": "操作已經發生", "The action did not happen": "操作沒有發生",
     "Close this interrupted turn": "結束這一輪中斷的操作", "I checked the actual outcome": "我已檢查實際結果",
     "Save outcome and continue": "儲存結果並繼續",
@@ -6080,6 +6100,8 @@
     row.appendChild(button); return button;
   }
   var currentControlTab = "overview", controlData = {};
+  // Set by a conversation asking for ITS recovery item, and consumed by the next recovery render.
+  var recoveryFocusSession = "";
   function renderOverview(activity, health, hooks, doctor) {
     var badge = $("activityHealth"); badge.textContent = t(health.status || "unknown");
     badge.classList.toggle("bad", !health.ok);
@@ -6158,7 +6180,10 @@
     $("controlSummary").textContent = (data.summary.total || 0) + " items · " +
       (data.summary.needs_you || 0) + " need a decision · " + (data.summary.warning || 0) + " warnings";
     var grid = $("activityGrid"); grid.textContent = "";
+    var wanted = recoveryFocusSession, focused = null;
+    recoveryFocusSession = "";                 // one arrival, one highlight
     grid.appendChild(activityLane("Needs You & recovery", data.items || [], function (row, item) {
+      if (wanted && item.identity === wanted) { row.classList.add("is-focus"); focused = row; }
       activityText(row, item.title || item.identity, item.severity); activityDetail(row, item.detail);
       if (item.command) { var cmd = document.createElement("div"); cmd.className = "activity-command";
         cmd.textContent = item.command; row.appendChild(cmd); }
@@ -6186,6 +6211,28 @@
         }
       });
     }));
+    // A conversation sent the person here for its own item. Take them to it — and when the
+    // snapshot does not list it, say that instead of leaving them hunting a row that is not here.
+    if (wanted) {
+      if (focused) {
+        try { focused.scrollIntoView({block:"center"}); } catch (_) {}
+        var act = focused.querySelector("button");
+        if (act) { act.focus(); } else { focused.setAttribute("tabindex", "-1"); focused.focus(); }
+      } else {
+        activityNotice(t("This conversation is not listed in recovery right now.") + " " + wanted, false);
+      }
+    }
+  }
+  // Open the existing recovery controls with THIS conversation's item in view. Navigation only:
+  // nothing here reconciles a fence, acknowledges an outside effect or resends anything.
+  function openRecoveryControls(sid) {
+    recoveryFocusSession = String(sid || "");
+    setActivityMode("activity");
+    if (typeof setProductNav === "function") setProductNav("activity");
+    currentControlTab = "recovery";
+    Array.prototype.forEach.call(document.querySelectorAll("[data-control-tab]"), function (button) {
+      button.classList.toggle("on", button.dataset.controlTab === currentControlTab); });
+    setActivityOpen(true);                     // opening is what fetches the snapshot
   }
   function controlList(value) { return String(value || "").split(/[\n,;]/).map(function (x) {
     return x.trim(); }).filter(Boolean); }
@@ -8623,6 +8670,11 @@
       required: runRequiresCheck({ verification: decision.verification, intent: decision.intent })
     });
     var bubbles = $("log").querySelectorAll(".msg.assistant .bubble");
+    // A reopened thread can be fenced on any ending, including one that reads as finished, so
+    // this is asked before the verdict branches below decide what else to say.
+    if (receipt.recovery_required && bubbles.length) {
+      confirmRecoveryFence(id, receipt, bubbles[bubbles.length - 1]);
+    }
     if (receipt.canceled || receipt.error) {
       showTerminalRunState(receipt);
       if (bubbles.length) {
@@ -10326,7 +10378,104 @@
     note.className = "pack-summary interruption-note " + (d.canceled ? "warn" : "fail");
     note.textContent = d.canceled ? t("Run stopped by the user.") : (d.error || t("failed"));
     flowEl.appendChild(note);
+    // An ordinary stop ends here: the run is simply over. A stop the server fenced is a different
+    // statement — something outside may already have happened — and it gets its own block below.
+    showRecoveryFence(d, d.session || currentSession, {host: flowEl, already: note.textContent});
     scrollDown();
+  }
+
+  // ---- unresolved recovery fence ----------------------------------------
+  //
+  // The terminal contract can report that this conversation is fenced: a tool may have fired
+  // outside the process, so the thread cannot continue until a person says what actually
+  // happened. That verdict rides on any ending — canceled, failed, and a result that otherwise
+  // looks finished. Until it is shown here, the only way to discover it is to type the next
+  // message and be refused.
+  //
+  // This surface states the fact and hands over to the controls that already own the decision.
+  // It never reconciles, acknowledges, resends, or claims the inspection happened.
+  function recoveryReason(d) {
+    var recovery = (d && d.recovery) || {};
+    return String(recovery.reason || (d && d.error) || "").trim();
+  }
+  function recoveryFenceNote(d, sid, opts) {
+    var note = document.createElement("section");
+    note.className = "pack-summary warn recovery-note";
+    note.setAttribute("data-recovery-note", opts.key);
+    note.setAttribute("role", "group");
+    note.setAttribute("aria-live", "polite");   // a required next step, announced where possible
+    note.setAttribute("aria-label", t("Check the outcome before continuing"));
+    var title = document.createElement("b");
+    title.textContent = t("Check the outcome before continuing");
+    note.appendChild(title);
+    if (opts.lead) {
+      var lead = document.createElement("div"); lead.className = "rc-why";
+      lead.textContent = t(opts.lead); note.appendChild(lead);
+    }
+    var why = document.createElement("div"); why.className = "rc-why";
+    why.textContent = t("Progress is saved. Check the files or target service so Collie can avoid repeating an action.");
+    note.appendChild(why);
+    // The server's own words about the interrupted operation. Text, never markup: this string
+    // comes from a tool name, a path or an exception, and none of those may become an element.
+    var reason = recoveryReason(d);
+    if (reason && reason !== opts.already) {
+      var detail = document.createElement("div"); detail.className = "rc-reason";
+      detail.textContent = reason; note.appendChild(detail);
+    }
+    var open = document.createElement("button");
+    open.type = "button"; open.className = "rc-open";
+    open.textContent = t("Open recovery controls");
+    open.onclick = function () { openRecoveryControls(sid); };
+    note.appendChild(open);
+    return note;
+  }
+  function showRecoveryFence(d, sid, opts) {
+    opts = opts || {};
+    sid = String(sid || "");
+    if (!d || !d.recovery_required) return null;
+    // A fence belongs to the conversation it was reported for. A mirrored window, a late frame
+    // or a thread the person has already left must not have it stapled onto what is on screen.
+    if (sid && currentSession && sid !== currentSession) return null;
+    var host = opts.host || flowEl || $("log");
+    if (!host) return null;
+    // One note per fenced run, however many times its terminal frame is delivered.
+    var key = sid + "|" + String((d.run || (d.recovery || {}).run_id || ""));
+    var seen = $("log").querySelectorAll("[data-recovery-note]");
+    for (var i = 0; i < seen.length; i++) {
+      if (seen[i].getAttribute("data-recovery-note") === key) return seen[i];
+    }
+    var note = recoveryFenceNote(d, sid, {key: key, lead: opts.lead, already: opts.already});
+    host.appendChild(note);
+    return note;
+  }
+  // A receipt records the fence that existed when that run ended; it is not a live answer. Ask
+  // this session's own recovery route before saying anything, so a fence reconciled since leaves
+  // no note behind, and so the note carries the server's current reason rather than an old one.
+  var recoveryProbeToken = 0;
+  function confirmRecoveryFence(sid, receipt, host) {
+    if (!sid) return;
+    var token = ++recoveryProbeToken;
+    fetch("/api/recovery/" + encodeURIComponent(sid) + "?token=" + encodeURIComponent(CT))
+      .then(function (r) {
+        return r.json().catch(function () { return {}; })
+                .then(function (data) { return {status: r.status, ok: r.ok, data: data || {}}; });
+      })
+      .then(function (answer) {
+        if (token !== recoveryProbeToken || currentSession !== sid) return;   // moved on
+        if (answer.status === 404) return;             // no fence any more: say nothing at all
+        if (!answer.ok) throw new Error("unconfirmed");
+        if (!answer.data.recovery_required) return;
+        showRecoveryFence({recovery_required: true, recovery: answer.data,
+                           run: answer.data.run_id || receipt.run}, sid, {host: host});
+      })
+      .catch(function () {
+        // The route could not answer. The receipt is still a recorded fact about this run, so
+        // the fence is shown — labelled as unconfirmed, never as a fresh reading.
+        if (token !== recoveryProbeToken || currentSession !== sid) return;
+        showRecoveryFence({recovery_required: true, error: receipt.error || "",
+                           run: receipt.run}, sid,
+                          {host: host, lead: "The current recovery state could not be confirmed."});
+      });
   }
 
   // How a finished child investigation is described in one phrase. Its own stop reason, in the same
@@ -10414,6 +10563,11 @@
       var btn = document.createElement("button");
       btn.type = "button"; btn.textContent = t("Continue this task");
       btn.onclick = function () { continueRun(session, btn); };
+      // A fenced thread refuses another turn until the outside effect is settled. Offering the
+      // click anyway would be a button that only ever answers with a refusal.
+      if (d.recovery_required) {
+        btn.disabled = true; btn.title = t("Check the outcome before continuing");
+      }
       acts.appendChild(btn);
     } else {
       acts.innerHTML = '<span class="sn-why">' +
@@ -10626,7 +10780,10 @@
     stream.addEventListener("done", function (e) {
       var d = null; try { d = JSON.parse(e.data); } catch (_) {}
       if (!d || typeof d !== "object" || Array.isArray(d)) d = null;
-      if (!detached && !sawStart && !(d && d.busy)) {
+      // A pre-start refusal this window is still watching is handled where the refusal is
+      // explained — busy hands the words to the queue, a recovery fence hands them back to the
+      // composer. Retaining here as well would hold the same request in two places at once.
+      if (!detached && !sawStart && !(d && (d.busy || d.recovery_required))) {
         retainSubmission(runSession, q, contexts, imgs, runConfig, "unknown", {submission:submissionId});
       }
       answeredHere();
@@ -10953,6 +11110,27 @@
         });
         return;
       }
+      // The conversation is fenced, so the stream was refused BEFORE a run existed: no start
+      // frame, nothing executed, nothing written. Do not dress that as a finished turn. The
+      // optimistic bubble goes away, the words go back where they came from, and the fence is
+      // stated with the way into the decision that has to happen first. Nothing is queued: a
+      // request parked here would be waiting to run against an unsettled outside effect.
+      if (!sawStart && d.recovery_required) {
+        if (statusEl) { statusEl.remove(); statusEl = null; }
+        if (curMsg && curMsg.parentNode) curMsg.remove();
+        if (userMsgEl && userMsgEl.isConnected) userMsgEl.remove();
+        pstatEl = curTextEl = null; curMsg = flowEl = null;
+        setGate("idle");
+        finishStreamUI();
+        if (!restoreRefusedComposer(runSession, q, imgs, contexts)) {
+          // The composer already holds something newer, or belongs to another thread now.
+          retainSubmission(runSession, q, contexts, imgs, runConfig, "unsent", {submission:submissionId});
+        }
+        showRecoveryFence(d, d.session || runSession,
+                          {host: $("log"), lead: "No new run was started. Your request is still here."});
+        scrollDown();
+        return;
+      }
       if (d.pack) {                                           // best-of-N summary + winner highlight
         var attempts = Array.isArray(d.attempts) ? d.attempts : [];
         /* A mirror reconnect can deliver only the terminal event. Rebuild its candidate rows from
@@ -11025,6 +11203,10 @@
         // is labelled for what it is, and resuming is offered only where resuming is safe.
         addStopNote(d, flowEl, d.session || currentSession);
       }
+      // A run can finish its answer and still leave an unsettled outside effect behind. The
+      // interrupted endings already said so from renderInterruptedRun (one note per run, so this
+      // adds nothing there); this covers a Pack verdict and a result that otherwise reads as done.
+      showRecoveryFence(d, d.session || currentSession, {host: flowEl});
       pstatEl = curTextEl = null; curMsg = flowEl = null;
       // settle the gate on the final truth — TRUST the backend's verified signal (from the
       // receipt) over the client's own event bookkeeping, so a passing repro shows green.

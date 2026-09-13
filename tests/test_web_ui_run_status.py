@@ -37,10 +37,69 @@ TOKEN = "fixture-token"
 DONE_BASE = {"model": "mock", "turns": 1, "tool_calls": 0, "wall_ms": 1200,
              "total_tokens": 900, "prefix_tokens": 400, "cost_usd": 0.0}
 
+# What the backend says when a run stopped with an external tool possibly already fired. The
+# second one is deliberately hostile: a reason is server text, and text is all it may ever be.
+FENCE_REASON = "run_shell ./deploy.sh may already have run"
+HOSTILE_REASON = ('<img src=x onerror="window.__fenced_xss=1">'
+                  '<script>window.__fenced_xss=1</script> publish.sh may have run')
+
+
+def _fence(sid, run, reason):
+    """The recovery block the terminal contract carries beside a fenced verdict."""
+    return {"session_id": sid, "run_id": run, "state": "external_action", "turn": 1,
+            "recovery_required": True, "auto_resumable": False, "reason": reason}
+
 
 def _script(text):
     """Pick a staged run from the request text, the way a router would pick a route."""
     q = (text or "").lower()
+    if "deploy the release" in q:
+        # Stopped mid-tool: the run is over AND the thread stays fenced until a person says
+        # what actually happened outside the process.
+        return [
+            ("start", {"session": "s-fence", "run": "r-fence", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "I started the deploy script."}),
+            ("tool", {"name": "run_shell", "args": {"cmd": "./deploy.sh"}, "ok": True,
+                      "result": "uploading release bundle"}),
+            ("done", dict(DONE_BASE, session="s-fence", run="r-fence", answer="", error="",
+                          canceled=True, stop_reason="canceled", completed=False, edited=False,
+                          recovery_required=True,
+                          recovery=_fence("s-fence", "r-fence", FENCE_REASON))),
+        ]
+    if "publish the changelog" in q:
+        # A result that reads as finished while the fence it left is still open.
+        return [
+            ("start", {"session": "s-fence", "run": "r-pub", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "Published the changelog draft."}),
+            ("done", dict(DONE_BASE, session="s-fence", run="r-pub",
+                          answer="Published the changelog draft.", error="", canceled=False,
+                          stop_reason="completed", completed=True, edited=False,
+                          recovery_required=True,
+                          recovery=_fence("s-fence", "r-pub", HOSTILE_REASON))),
+        ]
+    if "restart the importer" in q:
+        # The same terminal frame twice, the way a reconnecting mirror delivers it.
+        frame = ("done", dict(DONE_BASE, session="s-fence", run="r-twice",
+                              answer="Import halted.", error="", canceled=True,
+                              stop_reason="canceled", completed=False, edited=False,
+                              recovery_required=True,
+                              recovery=_fence("s-fence", "r-twice", FENCE_REASON)))
+        return [
+            ("start", {"session": "s-fence", "run": "r-twice", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "Import halted."}),
+            frame, frame,
+        ]
+    if "cap the fenced migration" in q:
+        # A cap with a fence behind it: the work is kept, but "Continue" is not on offer.
+        return [
+            ("start", {"session": "s-fence", "run": "r-cap", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "Converted the first module."}),
+            ("done", dict(DONE_BASE, session="s-fence", run="r-cap",
+                          answer="Converted the first module.", error="", canceled=False,
+                          stop_reason="turn_limit", completed=False, turns_exhausted=True,
+                          turns=8, max_turns=8, edited=True, recovery_required=True,
+                          recovery=_fence("s-fence", "r-cap", FENCE_REASON))),
+        ]
     if "stop before checking" in q:
         skipped = {"command": "pytest -q", "executed": False, "passed": False,
                    "freshness": "not_run", "skipped_reason": "The user stopped the run."}
@@ -248,6 +307,9 @@ class _Fixture(BaseHTTPRequestHandler):
     start_delay = 0.0                    # hold an ACCEPTED start open, the same way
     queue_active = False
     queue_status_extra = {}
+    recovery_states = {}                 # session id -> /api/recovery/<sid> body, else 404
+    recovery_center_fails = False        # the control-plane snapshot is unavailable
+    reconcile_posts = []                 # nothing in this UI may ever write one of these
     lang = "en"                          # what /api/settings reports, so t() can be exercised
 
     def log_message(self, *_a):
@@ -319,6 +381,9 @@ class _Fixture(BaseHTTPRequestHandler):
         if path == "/api/task-inbox/start":
             _Fixture.queue_starts.append(body)
             return self._json({"started": True, "session": body["session"]})
+        if path == "/api/recovery/reconcile":
+            _Fixture.reconcile_posts.append(body)
+            return self._json({"ok": True})
         return self._json({})
 
     def do_GET(self):
@@ -351,6 +416,24 @@ class _Fixture(BaseHTTPRequestHandler):
             return self._json({"session": sid, "entries": [entry for entry in _Fixture.queue_entries.values()
                               if entry["session"] == sid], "active": _Fixture.queue_active,
                               **_Fixture.queue_status_extra})
+        if path == "/api/recovery-center":
+            if _Fixture.recovery_center_fails:
+                return self._json({"error": "recovery snapshot unavailable"}, 503)
+            items = [{"id": "interactive:" + sid, "kind": "interactive", "identity": sid,
+                      "severity": "needs_you", "title": "Interrupted interactive action",
+                      "detail": state.get("reason", ""),
+                      "actions": ["completed", "not_fired", "cancel"]}
+                     for sid, state in sorted(_Fixture.recovery_states.items())]
+            return self._json({"status": "needs_you" if items else "ok",
+                               "summary": {"total": len(items), "needs_you": len(items),
+                                           "warning": 0},
+                               "items": items})
+        if path.startswith("/api/recovery/"):
+            sid = path[len("/api/recovery/"):]
+            state = _Fixture.recovery_states.get(sid)
+            if state is None:
+                return self._json({"error": "no active recovery state"}, 404)
+            return self._json(dict(state, session_id=sid))
         if path == "/api/stream":
             return self._stream(query)
         if path.startswith("/api/"):
@@ -404,6 +487,17 @@ class _Fixture(BaseHTTPRequestHandler):
                 sid = (query.get("session") or [""])[0] or "s-read"
                 time.sleep(_Fixture.busy_delay)
                 self._sse("done", {"session": sid, "answer": "", "error": "workspace is gone"})
+                return
+            if text.startswith("Fenced fixture"):
+                # What /api/run answers for a conversation with an unresolved recovery fence:
+                # refused before the journal is read, so there is no `start`, no run row and
+                # nothing executed. The refusal carries the fence, not a result.
+                sid = (query.get("session") or [""])[0] or "s-read"
+                state = _Fixture.recovery_states.get(sid) or _fence(sid, "r-earlier", FENCE_REASON)
+                time.sleep(_Fixture.busy_delay)
+                self._sse("done", {"session": sid, "answer": "",
+                                   "error": state.get("reason") or "recovery required",
+                                   "recovery_required": True, "recovery": state})
                 return
             if text.startswith("Busy fixture"):
                 # What web_tasks.serve_managed_stream answers when the session's
@@ -492,6 +586,9 @@ def ui(server, browser):
     _Fixture.busy_delay = 0.0
     _Fixture.start_delay = 0.0
     _Fixture.queue_status_extra = {}
+    _Fixture.recovery_states = {}
+    _Fixture.recovery_center_fails = False
+    _Fixture.reconcile_posts = []
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
@@ -1121,3 +1218,195 @@ def test_steering_is_only_labeled_delivered_after_the_model_boundary(ui):
     assert "Keep the exact steering instruction" in ui.page.locator(".steer-note").inner_text()
     assert "steering delivered" in ui.page.locator(".steer-note").inner_text().lower()
     assert ui.page.locator(".task-queue-row").count() == 0
+
+
+# ------------------------------------------------ the fence a terminal verdict can carry
+#
+# `recovery_required` means an external action may already have happened, so this conversation
+# cannot continue until a person says what the outside world actually looks like. Before this,
+# the only way to learn that from the task surface was to send the next message and be refused.
+# None of these tests may see the page resolve, acknowledge or re-run anything by itself.
+def test_canceled_run_with_an_open_fence_keeps_its_work_and_says_what_is_needed(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    ui.ask("Deploy the release to staging")
+    text = ui.log_text()
+    assert "I started the deploy script." in text, "a fenced stop keeps the partial answer"
+    assert "deploy.sh" in text, "and the tool evidence that made it uncertain"
+    # The stop itself is still reported as a stop; the fence is the extra statement beside it.
+    assert "Run stopped by the user." in ui.page.inner_text(".interruption-note")
+    note = ui.page.locator(".recovery-note")
+    assert note.count() == 1
+    body = note.inner_text()
+    assert "Check the outcome before continuing" in body
+    assert "Progress is saved." in body
+    assert FENCE_REASON in body, "the server's own reason is shown"
+    assert _Fixture.reconcile_posts == [], "showing a fence must never resolve one"
+
+
+def test_an_ordinary_clean_stop_gets_no_recovery_note(ui):
+    """The negative control: a stop with nothing uncertain behind it stays a plain stop."""
+    ui.ask("Interrupt this review with cancel")
+    assert "Run stopped by the user." in ui.page.inner_text(".interruption-note")
+    assert ui.page.locator(".recovery-note").count() == 0
+    ui.ask("Read README.md and tell me what this tool does")
+    assert ui.page.locator(".recovery-note").count() == 0
+
+
+def test_a_finished_looking_result_still_reports_its_fence_and_renders_reason_as_text(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-pub", HOSTILE_REASON)
+    ui.ask("Publish the changelog entry")
+    assert "Published the changelog draft." in ui.log_text(), "the answer is kept"
+    note = ui.page.locator(".recovery-note")
+    assert note.count() == 1, "a completed-looking result with an open fence still warns"
+    reason = ui.page.locator(".recovery-note .rc-reason")
+    assert HOSTILE_REASON in reason.inner_text(), "hostile server text is shown verbatim, as text"
+    assert ui.page.locator(".recovery-note img, .recovery-note script").count() == 0
+    assert ui.page.evaluate("() => window.__fenced_xss || null") is None
+
+
+def test_the_recovery_note_opens_this_conversations_own_recovery_controls(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    _Fixture.recovery_states["s-other"] = _fence("s-other", "r-other", "unrelated thread")
+    ui.ask("Deploy the release to staging")
+    button = ui.page.locator(".recovery-note button")
+    assert button.count() == 1
+    assert button.inner_text() == "Open recovery controls"
+    button.focus()
+    ui.page.keyboard.press("Enter")                      # keyboard reaches the same action
+    ui.page.wait_for_selector("#activityPanel:not([hidden])", timeout=8000)
+    ui.page.wait_for_selector(".activity-row.is-focus", timeout=8000)
+    assert "on" in (ui.page.get_attribute('[data-control-tab="recovery"]', "class") or "")
+    focused = ui.page.locator(".activity-row.is-focus")
+    assert focused.count() == 1, "only THIS conversation's row is singled out"
+    assert "Interrupted interactive action" in focused.inner_text()
+    assert FENCE_REASON in focused.inner_text()
+    assert _Fixture.reconcile_posts == [], "navigating is not deciding"
+
+
+def test_recovery_controls_say_so_when_this_conversation_is_not_listed(ui):
+    """A button that lands on an empty page is a dead button. Name what was asked for."""
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    ui.ask("Deploy the release to staging")
+    _Fixture.recovery_states.clear()                     # reconciled from somewhere else meanwhile
+    ui.page.locator(".recovery-note button").click()
+    ui.page.wait_for_selector("#activityPanel:not([hidden])", timeout=8000)
+    ui.page.wait_for_function(
+        "() => document.getElementById('activityNotice').textContent.includes('s-fence')",
+        timeout=8000)
+    assert "not listed in recovery" in ui.page.inner_text("#activityNotice")
+
+
+def test_a_fenced_send_keeps_the_draft_and_does_not_look_like_a_started_run(ui):
+    _Fixture.recovery_states["s-read"] = _fence("s-read", "r-earlier", FENCE_REASON)
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('README')")
+    draft = "Fenced fixture: ship the second half"
+    ui.page.fill("#input", draft)
+    ui.page.press("#input", "Enter")
+    # The refusal arrives before a run ever exists, so there is no running state to wait out.
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    ui.page.wait_for_timeout(250)
+    assert ui.page.input_value("#input") == draft, "the refused request goes back to the composer"
+    note = ui.page.locator(".recovery-note").last
+    refusal = note.inner_text()
+    assert "No new run was started." in refusal, "the refusal states the fence, not a result"
+    assert FENCE_REASON in refusal
+    # Nothing pretends a turn happened: no optimistic user bubble, no queued resend, no reconcile.
+    assert draft not in ui.log_text()
+    assert _Fixture.queue_posts == [] and _Fixture.queue_starts == []
+    assert _Fixture.reconcile_posts == []
+    assert not ui.page.locator("#statePill.live").count()
+
+
+def test_a_reopened_thread_asks_the_server_before_repeating_a_fence(ui, monkeypatch):
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [{"role": "user", "content": "Deploy the release to staging"},
+                     {"role": "assistant", "content": "I started the deploy script."}],
+        "run_receipts": [{"run": "r-fence", "canceled": True, "stop_reason": "canceled",
+                          "completed": False, "edited": False, "error": "",
+                          "recovery_required": True}]})
+    _Fixture.recovery_states["s-read"] = _fence("s-read", "r-fence", FENCE_REASON)
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    assert FENCE_REASON in ui.page.inner_text(".recovery-note"), "the live reason, not the receipt's"
+    assert "I started the deploy script." in ui.log_text()
+
+
+def test_a_receipt_whose_fence_was_already_resolved_leaves_no_note(ui, monkeypatch):
+    """The receipt is history. A fence reconciled since must not be re-announced as current."""
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [{"role": "user", "content": "Deploy the release to staging"},
+                     {"role": "assistant", "content": "I started the deploy script."}],
+        "run_receipts": [{"run": "r-fence", "canceled": True, "stop_reason": "canceled",
+                          "completed": False, "edited": False, "error": "",
+                          "recovery_required": True}]})
+    _Fixture.recovery_states.clear()                     # /api/recovery/<sid> answers 404
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('deploy')")
+    ui.page.wait_for_timeout(600)
+    assert ui.page.locator(".recovery-note").count() == 0
+    assert "Run stopped by the user." in ui.page.inner_text(".interruption-note")
+
+
+def test_one_note_per_fenced_run_and_never_in_another_thread(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-twice", FENCE_REASON)
+    ui.ask("Restart the importer job")
+    assert ui.page.locator(".recovery-note").count() == 1, "a redelivered verdict adds no second note"
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('README')")
+    ui.page.wait_for_timeout(400)
+    assert ui.page.locator(".recovery-note").count() == 0, "a fence belongs to its own conversation"
+
+
+def test_a_fenced_cap_keeps_its_work_but_does_not_offer_another_turn(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-cap", FENCE_REASON)
+    ui.ask("Cap the fenced migration")
+    assert "Converted the first module." in ui.log_text()
+    assert "Stopped at the turn limit" in ui.log_text()
+    assert ui.page.locator(".recovery-note").count() == 1
+    assert ui.page.is_disabled(".stop-note button"), "continuing is refused while the fence is open"
+    assert len(_Fixture.stream_requests) == 1, "and nothing is resent on the user's behalf"
+
+
+@pytest.mark.parametrize("lang,title,button", [
+    ("zh", "确认实际结果后继续", "打开恢复控制"),
+    ("zh-tw", "確認實際結果後繼續", "開啟復原控制"),
+])
+def test_the_fence_speaks_the_reader_s_language(server, browser, lang, title, button):
+    """Every visible word comes from the shipped dictionaries; the server's reason never does."""
+    _Fixture.lang = lang
+    _Fixture.recovery_states = {"s-fence": _fence("s-fence", "r-fence", FENCE_REASON)}
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        page.wait_for_timeout(300)
+        page.fill("#input", "Deploy the release to staging")
+        page.press("#input", "Enter")
+        await_run(page)
+        note = page.inner_text(".recovery-note")
+        assert title in note and button in note
+        assert FENCE_REASON in note, "the server's own reason is quoted, not translated"
+        assert errors == [], "JS errors: %r" % errors
+    finally:
+        _Fixture.lang = "en"
+        _Fixture.recovery_states = {}
+        context.close()
+
+
+def test_an_unreachable_recovery_route_is_labelled_not_guessed(ui, monkeypatch):
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [{"role": "user", "content": "Deploy the release to staging"},
+                     {"role": "assistant", "content": "I started the deploy script."}],
+        "run_receipts": [{"run": "r-fence", "canceled": True, "stop_reason": "canceled",
+                          "completed": False, "edited": False, "error": FENCE_REASON,
+                          "recovery_required": True}]})
+    ui.page.route("**/api/recovery/s-read*", lambda route: route.abort())
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    note = ui.page.inner_text(".recovery-note")
+    assert "could not be confirmed" in note, "an unread fence is not presented as a fresh reading"
+    assert FENCE_REASON in note
