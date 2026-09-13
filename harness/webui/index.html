@@ -2184,6 +2184,7 @@
   .task-workspace[open] summary::after { transform: rotate(225deg); }
   #taskWorkspaceLabel { flex-shrink: 0; }
   #taskWorkspacePath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace); }
+  #taskWorkspacePending { flex-shrink: 0; padding: 0 6px; border: 1px dashed currentColor; border-radius: 999px; }
   .task-workspace-controls { padding: 10px 0 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .task-workspace-controls label, .task-workspace-controls p { width: 100%; margin: 0; overflow-wrap: anywhere; }
   #taskFolder { flex: 1; min-width: 100px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); }
@@ -2553,7 +2554,7 @@
     <!-- composer -->
     <div class="composer" id="composer">
       <details class="task-workspace" id="taskWorkspace">
-        <summary><span id="taskWorkspaceLabel" data-i18n="Working folder">Working folder</span><span id="taskWorkspacePath"></span></summary>
+        <summary><span id="taskWorkspaceLabel" data-i18n="Working folder">Working folder</span><span id="taskWorkspacePath"></span><span id="taskWorkspacePending" hidden data-i18n="not checked yet">not checked yet</span></summary>
         <div class="task-workspace-controls">
           <label for="taskFolder" data-i18n="Folder on this computer">Folder on this computer</label>
           <input id="taskFolder" type="text" spellcheck="false" autocomplete="off" aria-label="Folder on this computer" data-i18n-aria-label="Folder on this computer">
@@ -3867,6 +3868,7 @@
     "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
     "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
     "This conversation continues in its saved folder.":"这段对话会继续使用已保存的目录。","Select Use folder to check this location.":"请点击「使用此目录」检查位置。",
+    "not checked yet":"尚未检查","This draft is aimed here. Select Use folder to check it before sending.":"这份草稿指向此目录。发送前请点击「使用此目录」检查。",
     "Checking folder...":"正在检查目录…","Applying changes...":"正在应用修改…","Changes applied. The isolated folder is kept.":"修改已应用，隔离目录已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已保存到隔离目录，可从「工作目录」应用修改。",
     "Text draft restored. Reattach files before sending.":"已恢复文字草稿，请在发送前重新附加文件。","Keep text only":"只保留文字",
@@ -4056,6 +4058,7 @@
     "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
     "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
     "This conversation continues in its saved folder.":"這段對話會繼續使用已儲存的目錄。","Select Use folder to check this location.":"請點擊「使用此目錄」檢查位置。",
+    "not checked yet":"尚未檢查","This draft is aimed here. Select Use folder to check it before sending.":"這份草稿指向此目錄。傳送前請點擊「使用此目錄」檢查。",
     "Checking folder...":"正在檢查目錄…","Applying changes...":"正在套用修改…","Changes applied. The isolated folder is kept.":"修改已套用，隔離目錄已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已儲存到隔離目錄，可從「工作目錄」套用修改。",
     "Text draft restored. Reattach files before sending.":"已恢復文字草稿，請在傳送前重新附加檔案。","Keep text only":"只保留文字",
@@ -11284,28 +11287,47 @@
           strategy: $("runStrategy"), effort: $("runEffort"), speed: $("runSpeed"),
           runner: $("runRunner") };
     var setupLocked = false, capabilities = null;
-    var setupSession = null, setupCwd = "", scopeRequest = 0, workspaceInfo = {}, workspaceMissing = false;
+    // `setupCwd` is the folder the server has confirmed for this scope; `pendingCwd` is the one
+    // the person has selected for an unsent new-task draft and nothing has checked yet. Keeping
+    // only the confirmed one made the selection a property of the DOM field alone: a thread
+    // switch or a reload restored the draft's words next to the *default* repository, with the
+    // guard that had been blocking Send cleared along with it, so the next Send ran the task in
+    // a project nobody had chosen for it. The selection belongs to the draft from the keystroke
+    // on, and it is never silently replaced by somewhere else.
+    var setupSession = null, setupCwd = "", pendingCwd = "", scopeRequest = 0,
+        workspaceInfo = {}, workspaceMissing = false;
     var folder = $("taskFolder"), folderUse = $("taskFolderUse"), workspaceApply = $("taskWorkspaceApply");
     function paintWorkspace() {
-      var isolated = workspaceInfo.mode === "isolated";
+      var isolated = workspaceInfo.mode === "isolated", shown = pendingCwd || setupCwd;
       $("taskWorkspaceLabel").textContent = t(isolated ? "Isolated folder" : "Working folder");
-      $("taskWorkspacePath").textContent = setupCwd;
-      $("taskWorkspacePath").title = setupCwd;
+      $("taskWorkspacePath").textContent = shown;
+      $("taskWorkspacePath").title = shown;
+      // Collapsed is the normal state of this panel, so an unchecked selection has to be legible
+      // from the summary line rather than only from the note inside it.
+      $("taskWorkspacePending").hidden = !pendingCwd;
       folder.readOnly = !!setupSession && !workspaceMissing; folder.disabled = setupLocked;
       folderUse.hidden = !!setupSession && !workspaceMissing; folderUse.disabled = setupLocked;
       folderUse.textContent = t(setupSession ? "Continue in this folder" : "Use folder");
       workspaceApply.hidden = !isolated || workspaceMissing; workspaceApply.disabled = setupLocked;
       $("taskWorkspaceNote").textContent = workspaceMissing
-        ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : isolated
+        ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : pendingCwd
+        ? t("This draft is aimed here. Select Use folder to check it before sending.") : isolated
         ? t("Changes stay here until you apply them. Main project:") + " " + (workspaceInfo.origin || "")
         : setupSession ? t("This conversation continues in its saved folder.") : "";
     }
     window.showTaskWorkspace = function (cwd, info) {
-      if (cwd) { setupCwd = cwd; folder.value = cwd; }
+      // A workspace reported for this scope settles the question the selection was asking.
+      if (cwd) { setupCwd = cwd; pendingCwd = ""; folder.value = cwd; folder.setCustomValidity(""); }
       workspaceInfo = info || {}; paintWorkspace(); saveSetup();
     };
     folder.addEventListener("input", function () {
       folder.setCustomValidity(t("Select Use folder to check this location."));
+      // Only a new task may choose its folder here; an existing thread's field is its saved
+      // workspace (read-only unless it went missing), and a draft must never re-aim it.
+      if (setupSession) return;
+      var typed = folder.value.trim();
+      pendingCwd = typed === setupCwd ? "" : typed;
+      paintWorkspace(); saveSetup();
     });
     folderUse.onclick = function () {
       if (!setupSession) { window.refreshVerificationCandidates(); return; }
@@ -11354,6 +11376,7 @@
       Object.keys(fields).forEach(function (key) { values[key] = fields[key].value; });
       try { sessionStorage.setItem(storageKey(setupSession), JSON.stringify({version:1,
         values:values, explicit:window.runExplicitAxes, cwd:setupCwd,
+        pending:setupSession ? "" : pendingCwd,
         verify:verifyCommand.value, verifySource:verifyCommand.dataset.source || "",
         check:packCheck.value, checkSource:packCheck.dataset.source || "", n:$("packN").value}));
       } catch (_) {}
@@ -11381,7 +11404,14 @@
       // Applying a Pack result is a choice for one run, never a remembered grant.
       $("packApply").checked = false;
       setupCwd = typeof saved.cwd === "string" ? saved.cwd : "";
-      folder.value = setupCwd; folder.setCustomValidity(""); workspaceInfo = {}; workspaceMissing = false;
+      // An unchecked selection is restored as a selection: shown, and still blocked from Send
+      // until the check that follows this restore answers for it. It is a new task's property
+      // only — a thread is opened in its own saved workspace, never in a draft's.
+      pendingCwd = !sid && typeof saved.pending === "string" && saved.pending !== setupCwd
+        ? saved.pending : "";
+      folder.value = pendingCwd || setupCwd;
+      folder.setCustomValidity(pendingCwd ? t("Select Use folder to check this location.") : "");
+      workspaceInfo = {}; workspaceMissing = false;
       $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
       [verifyCommand, packCheck, $("packN")].forEach(function (el) { el.setCustomValidity(""); });
       paint();
@@ -11404,7 +11434,8 @@
       if (!setupSession) {
         try { sessionStorage.removeItem(storageKey(null)); } catch (_) {}
       }
-      setupSession = sid; paintWorkspace(); saveSetup();
+      // The draft became this conversation: its folder is the run's, checked before it was sent.
+      setupSession = sid; pendingCwd = ""; paintWorkspace(); saveSetup();
     };
     window.addEventListener("pagehide", saveSetup);
     function positionMenu() {
@@ -11646,7 +11677,9 @@
           if (packCheck.value === beforeCheck) { packCheck.value = ""; packCheck.dataset.source = ""; }
         }
         if (!sid && folder.value.trim() !== requestedFolder) return;
-        setupCwd = data.cwd || ""; folder.value = setupCwd; folder.setCustomValidity(""); workspaceMissing = false;
+        // The answer is about the folder that was asked for, so the selection is now checked.
+        setupCwd = data.cwd || ""; if (!sid) pendingCwd = "";
+        folder.value = setupCwd; folder.setCustomValidity(""); workspaceMissing = false;
         $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
         var first = (data.candidates || [])[0];
         if (!first) { saveSetup(); return; }
