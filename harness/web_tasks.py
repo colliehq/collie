@@ -537,6 +537,43 @@ def reconcile_open_claims(session, owner):
     return task_inbox.reconcile(session, owner, delivered)
 
 
+def recover_abandoned_claims(session):
+    """Settle a dead executor's claims when a surface *reads* the inbox.
+
+    A claim says one executor is responsible for inserting an accepted request.
+    Nothing evicts it on a timeout; the lease is what settles it, because holding
+    the lease proves no executor is running.  Until somebody takes that lease the
+    store keeps reporting ``claimed`` for a request nobody is delivering — and a
+    claim is the one state with no way out from a surface: ``cancel`` and
+    ``edit`` are refused *because* it is claimed, and Start is refused *while* it
+    is claimed.  A process that died between claiming and delivering therefore
+    froze the conversation's queue: the person could neither run, correct nor
+    withdraw work they had been told was accepted.
+
+    So the read path repairs it, under exactly the rule the run path already
+    uses.  ``try_acquire`` never waits, so a live run is never disturbed and its
+    in-flight claim is never touched; the journal — not a heuristic, not the
+    clock — decides what was actually delivered; and the lease is handed straight
+    back.  Every failure here is silent on purpose: this is repair, and a
+    conversation that cannot be repaired at this instant must still be readable.
+    """
+    try:
+        if not task_inbox.list_entries(session, states=("claimed",), limit=1):
+            return False
+        lease = session_owner.try_acquire(session, label="web-inbox-recovery")
+    except (task_inbox.InboxError, ValueError, OSError):
+        return False
+    if lease is None:
+        return False          # somebody is executing it; the claim is in flight
+    try:
+        settled = reconcile_open_claims(session, lease) or {}
+    except (task_inbox.InboxError, session_owner.OwnershipRequired, OSError):
+        return False
+    finally:
+        lease.release()
+    return bool(settled.get("consumed") or settled.get("released"))
+
+
 def inbox_floor(session):
     """The sequence number every request accepted from now on will be above.
 

@@ -555,3 +555,168 @@ def test_recovery_reconcile_refuses_while_another_process_owns_the_session(web):
     code, done = _post(base, token, "/api/recovery/reconcile", {
         "session": sid, "resolution": "cancel", "confirmed": True})
     assert code == 200 and done["ok"] is True
+
+
+# ------------------------------------------- a claim whose executor did not survive
+
+_CLAIM_THEN_DIE = """
+import os, sys
+sys.path.insert(0, {root!r})
+os.environ['COLLIE_SESSIONS_DIR'] = {store!r}
+from harness import session_owner, sessions, task_inbox
+session = {session!r}
+lease = session_owner.acquire(session, label='crasher')
+rows = task_inbox.claim(session, lease, limit=1, modes=('follow_up',))
+if {journal!r}:
+    loaded = sessions.load_checked(session)
+    messages = list((loaded['session'] or {{}}).get('messages') or [])
+    messages.extend(task_inbox.journal_message(row) for row in rows)
+    sessions.save(session, messages)
+print('CLAIMED ' + ','.join(row['id'] for row in rows), flush=True)
+os._exit(9)
+"""
+
+
+def _claim_then_die(state, session, *, journal=False):
+    """Claim the earliest queued request in another process, then kill it outright.
+
+    This is what a crash, a `kill -9` and a machine restart all leave behind: an
+    entry recorded as ``claimed`` by an executor that no longer exists.  With
+    ``journal=True`` the request reached the transcript first, which is the
+    one-line window ``reconcile`` exists to settle.
+    """
+    code = _CLAIM_THEN_DIE.format(
+        root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        store=str(state / "sessions"), session=session, journal=bool(journal))
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         timeout=120)
+    assert out.returncode == 9, out.stderr
+    line = [row for row in out.stdout.splitlines() if row.startswith("CLAIMED")][0]
+    claimed = [i for i in line.split(" ", 1)[1].split(",") if i]
+    assert claimed, out.stdout
+    return claimed
+
+
+def _queue(base, token, sid, entry_id, text):
+    code, out = _post(base, token, "/api/task-inbox", {
+        "session": sid, "id": entry_id, "text": text, "mode": "follow_up",
+        "config": CONFIG})
+    assert code == 200 and out["accepted"] is True
+    return out["entry"]
+
+
+def test_a_claim_left_by_a_dead_executor_does_not_freeze_the_queue(web):
+    """A crash between claiming and delivering must not strand the person's work.
+
+    ``claimed`` is the one state a surface cannot act on: start is refused while
+    an entry is claimed, and edit and cancel are refused because it is.  Nothing
+    evicts a claim on a timer — the lease settles it — so before this, a request
+    claimed by a process that died stayed "Delivering…" for good, and the whole
+    conversation's queue went with it: not runnable, not correctable, not
+    withdrawable.
+    """
+    from harness import sessions, task_inbox
+
+    base, token, state = web
+    sid = "inbox-abandoned"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "finish the migration")
+    _queue(base, token, sid, "req-2", "then write the notes")
+
+    assert _claim_then_die(state, sid) == ["req-1"]
+    assert task_inbox.get(sid, "req-1")["state"] == "claimed", "the crash is real"
+
+    # Reading the conversation settles it from the journal, which holds no such
+    # message: the request is waiting again, exactly as it was accepted.
+    code, listing = _get(base, token, "/api/task-inbox?session=" + sid)
+    assert code == 200 and listing["owner_busy"] is False
+    by_id = {row["id"]: row for row in listing["entries"]}
+    assert by_id["req-1"]["state"] == "pending"
+    assert by_id["req-1"]["text"] == "finish the migration"
+    assert by_id["req-1"]["released"]["reason"] == "owner did not survive"
+    assert by_id["req-2"]["state"] == "pending", "the others are untouched"
+
+    # ...and it can now be withdrawn, which is what "the person is in control of
+    # what they accepted" means when the machine it was accepted on came back.
+    code, canceled = _post(base, token, "/api/task-inbox/cancel",
+                           {"session": sid, "id": "req-1"})
+    assert code == 200 and canceled["entry"]["state"] == "canceled"
+    code, listing = _get(base, token, "/api/task-inbox?session=" + sid)
+    assert [row["id"] for row in listing["entries"] if row["state"] == "pending"] == ["req-2"]
+
+
+def test_a_request_the_transcript_already_holds_is_never_handed_back(web):
+    """The other half of the same crash: settled as delivered, not re-sent.
+
+    The window is one line wide — the message is in the journal, the inbox has
+    not been told — and the journal is the only thing that can tell the two
+    apart.  Recovering a claim must never turn a delivered instruction back into
+    a waiting one, or the model is given it twice.
+    """
+    from harness import sessions, task_inbox
+
+    base, token, state = web
+    sid = "inbox-delivered"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "finish the migration")
+
+    assert _claim_then_die(state, sid, journal=True) == ["req-1"]
+    assert task_inbox.get(sid, "req-1")["state"] == "claimed"
+
+    code, listing = _get(base, token, "/api/task-inbox?session=" + sid)
+    assert code == 200
+    row = {r["id"]: r for r in listing["entries"]}["req-1"]
+    assert row["state"] == "consumed"
+    assert row["delivery"]["recovered"] is True
+    # One copy in the transcript, and the inbox agrees it is spent.
+    messages = sessions.load(sid)["messages"]
+    assert [m.get("inbox_id") for m in messages].count("req-1") == 1
+    assert task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES) == []
+
+
+def _claim_and_hold_in_another_process(state, session):
+    """A live run: it owns the session and is holding a claim it will deliver."""
+    code = (
+        "import sys, time;"
+        "sys.path.insert(0, %r);"
+        "import os; os.environ['COLLIE_SESSIONS_DIR'] = %r;"
+        "from harness import session_owner, task_inbox;"
+        "lease = session_owner.acquire(%r, label='other-process');"
+        "rows = task_inbox.claim(%r, lease, limit=1, modes=('follow_up',));"
+        "print('held' if rows else 'nothing', flush=True);"
+        "time.sleep(120)"
+        % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+           str(state / "sessions"), session, session))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    assert child.stdout.readline().strip() == "held"
+    return child
+
+
+def test_a_live_runs_claim_is_never_taken_away_from_it(web):
+    """Recovery is authorised by the lease, so a running executor always wins it.
+
+    No timeout decides this and no heuristic: the reader asks for the lease and
+    does not wait for it.  A claim it cannot get the lease for belongs to work
+    that is happening right now, and reopening it would let the request be
+    edited, withdrawn or started a second time while the model is receiving it.
+    """
+    from harness import sessions, task_inbox
+
+    base, token, state = web
+    sid = "inbox-inflight"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "finish the migration")
+
+    child = _claim_and_hold_in_another_process(state, sid)
+    try:
+        code, listing = _get(base, token, "/api/task-inbox?session=" + sid)
+        assert code == 200 and listing["owner_busy"] is True
+        assert listing["entries"][0]["state"] == "claimed"
+        assert task_inbox.get(sid, "req-1")["state"] == "claimed"
+
+        # And the actions that are refused *because* it is claimed stay refused.
+        code, refused = _post(base, token, "/api/task-inbox/cancel",
+                              {"session": sid, "id": "req-1"})
+        assert code == 409 and "claimed" in refused["error"]
+    finally:
+        child.terminate(); child.wait(timeout=30)

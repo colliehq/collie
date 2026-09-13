@@ -4704,10 +4704,19 @@ class Handler(BaseHTTPRequestHandler):
         offer Start on a conversation another window is running or refuse it
         forever after a crash.  It is ``null`` when even the OS cannot say.
         ``owner`` stays what it always was: the advisory description, labelled.
+
+        The same crash leaves a second record that lies in the same way: an entry
+        still ``claimed`` by an executor that is gone.  That one is not merely
+        cosmetic — claimed is the state a surface cannot act on at all (start,
+        edit and cancel are each refused because of it) — so it is settled here
+        against the journal before the listing is built, under a lease taken and
+        handed straight back.  A conversation somebody is really running keeps
+        its claim: the lease is never waited for, so a live run always wins it.
         """
         from . import session_owner, task_inbox, web_tasks
         try:
             sid = web_tasks.check_session_id(qs.get("session", [""])[0])
+            web_tasks.recover_abandoned_claims(sid)
             entries = web_tasks.list_public(sid)
         except web_tasks.WebInputError as exc:
             return self._send_json({"error": str(exc)}, exc.status)
@@ -4797,6 +4806,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": detail}, status)
         try:
             sid = web_tasks.check_session_id(body.get("session"))
+            if path in ("/api/task-inbox/edit", "/api/task-inbox/cancel"):
+                # Both are refused while an entry is claimed, which is right when
+                # an executor really is about to insert it and a dead end when
+                # that executor is gone.  Settle the second case from the journal
+                # first, so a crash cannot leave a request the person is unable
+                # either to run or to take back.  Accepting is deliberately not
+                # on this path: the inbox must stay writable while a run owns the
+                # session, so acceptance never asks for the lease at all.
+                web_tasks.recover_abandoned_claims(sid)
             if path == "/api/task-inbox":
                 entry = self._accept_task_input(
                     sid, entry_id=body.get("id"), text=body.get("text"),
