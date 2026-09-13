@@ -444,8 +444,37 @@ function mobileStateLabel(state){
 }
 function mobileStateTone(state){state=String(state||"");if(/failed|dead|cancelled/.test(state))return"bad";
   if(/needs_you|blocked|waiting|paused|cancel_requested|recovery|required/.test(state))return"warn";return"";}
-function mobileOpsRequest(path,body){var options=body==null?{}:{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)};
-  return fetch(api(path),options).then(function(r){return r.json().catch(function(){return{};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||("HTTP "+r.status));return d;});});}
+// A phone page outlives the desktop process it was loaded against: it sits open in a background tab
+// while the server restarts and rotates its token, and every Activity read is then refused until
+// someone notices and reloads by hand. A READ changes nothing, so it may ask once more with a fresh
+// token; concurrent reads share the one refresh, and a refusal that survives it is still reported.
+// Writes below deliberately never take this path — a decision is a person's, made once.
+var mobileTokenRefresh=null;
+function refreshMobileToken(){
+  if(mobileTokenRefresh)return mobileTokenRefresh;
+  mobileTokenRefresh=fetch("/api/session-token",{cache:"no-store",credentials:"same-origin"})
+    .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
+    .then(function(d){if(!d||!d.token)throw new Error("process token unavailable");CT=d.token;return CT;})
+    .finally(function(){mobileTokenRefresh=null;});
+  return mobileTokenRefresh;
+}
+function mobileOpsRead(path){
+  var used=CT;
+  return fetch(api(path)).then(function(r){
+    if(r.status!==403)return r;
+    // Another read may have finished refreshing before this old refusal arrived.
+    if(CT && CT!==used)return fetch(api(path));
+    // One refresh, then at most one retry, and only with a token that is actually different: a
+    // relayed phone (whose token is injected server-side, and which is refused /api/session-token)
+    // reports the refusal instead of looping on something it cannot fix.
+    return refreshMobileToken().then(function(token){return token&&token!==used?fetch(api(path)):r;},
+                                     function(){return r;});
+  });
+}
+function mobileOpsRequest(path,body){
+  var sent=body==null?mobileOpsRead(path)
+    :fetch(api(path),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  return sent.then(function(r){return r.json().catch(function(){return{};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||("HTTP "+r.status));return d;});});}
 function mobileOpsNotice(message,bad){var node=$("mobileActivityNotice");node.textContent=message||"";node.classList.toggle("bad",!!bad);}
 function mobileOpsEmpty(parent,message){var empty=document.createElement("div");empty.className="ops-empty";empty.textContent=t(message);parent.appendChild(empty);}
 function mobileOpsLane(parent,label){var head=document.createElement("div");head.className="ops-lane-label";head.textContent=t(label);parent.appendChild(head);}

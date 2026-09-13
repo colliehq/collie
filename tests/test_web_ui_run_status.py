@@ -320,10 +320,17 @@ class _Fixture(BaseHTTPRequestHandler):
     # server accepts now, `session_token_value` is what /api/session-token hands back, and
     # `guarded_reads` records (path, accepted) for every attempt, retries included.
     guard_token = False
+    guarded_paths = ("/api/recovery/", "/api/recovery-center")
     valid_token = TOKEN
     session_token_value = TOKEN
     token_refresh_fails = False
     guarded_reads = []
+    # The phone's Activity sheet reads these two lanes (and nothing else) for its decisions.
+    activity = {}
+    health = {}
+    activity_delay = 0.0                 # hold an activity read open, so leaving is observable
+    token_refreshes = 0                  # /api/session-token attempts, storms included
+    guarded_writes = []                  # (path, accepted) for every write that reached the server
     lang = "en"                          # what /api/settings reports, so t() can be exercised
 
     def log_message(self, *_a):
@@ -357,10 +364,18 @@ class _Fixture(BaseHTTPRequestHandler):
 
     # -- routes -----------------------------------------------------------
     def do_POST(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path, query = parsed.path, parse_qs(parsed.query)
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         body = json.loads(raw or b"{}")
+        if _Fixture.guard_token:
+            # A rotated token refuses writes exactly as it refuses reads. Every attempt is
+            # recorded, refused ones included, so a silent replay cannot hide here.
+            accepted = (query.get("token") or [""])[0] == _Fixture.valid_token
+            _Fixture.guarded_writes.append((path, accepted))
+            if not accepted:
+                return self._json({"error": "stale session token"}, 403)
         if path == "/api/route":
             _Fixture.route_requests.append(path)
             return self._json({"kind": "chat"})
@@ -409,14 +424,20 @@ class _Fixture(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/api/session-token":
+            _Fixture.token_refreshes += 1
             if _Fixture.token_refresh_fails:
                 return self._json({"error": "no session"}, 503)
             return self._json({"token": _Fixture.session_token_value})
-        if _Fixture.guard_token and path.startswith(("/api/recovery/", "/api/recovery-center")):
+        if _Fixture.guard_token and path.startswith(_Fixture.guarded_paths):
             accepted = (query.get("token") or [""])[0] == _Fixture.valid_token
             _Fixture.guarded_reads.append((path, accepted))
             if not accepted:
                 return self._json({"error": "stale session token"}, 403)
+        if path == "/api/activity":
+            time.sleep(_Fixture.activity_delay)
+            return self._json(_Fixture.activity)
+        if path == "/api/healthz":
+            return self._json(_Fixture.health)
         if path == "/m":
             return self._file("mobile.html", "text/html; charset=utf-8")
         if path == "/logo.svg":
@@ -603,8 +624,8 @@ class Page:
         return self.page.inner_text("#log")
 
 
-@pytest.fixture
-def ui(server, browser):
+def _reset_fixture_state():
+    """Every surface (desktop tab or phone client) starts from the same clean server state."""
     _Fixture.stream_requests = []
     _Fixture.route_requests = []
     _Fixture.queue_entries = {}; _Fixture.queue_posts = []; _Fixture.queue_starts = []
@@ -627,8 +648,17 @@ def ui(server, browser):
     _Fixture.reconcile_posts = []
     _Fixture.repair_posts = []
     _Fixture.guard_token = False
+    _Fixture.guarded_paths = ("/api/recovery/", "/api/recovery-center")
     _Fixture.valid_token = TOKEN; _Fixture.session_token_value = TOKEN
     _Fixture.token_refresh_fails = False; _Fixture.guarded_reads = []
+    _Fixture.activity = {}; _Fixture.health = {}
+    _Fixture.activity_delay = 0.0; _Fixture.token_refreshes = 0
+    _Fixture.guarded_writes = []
+
+
+@pytest.fixture
+def ui(server, browser):
+    _reset_fixture_state()
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
@@ -1558,6 +1588,152 @@ def test_the_recovery_center_still_lists_its_items_after_the_token_rotated(ui):
     assert _reads("/api/recovery-center") == [False, True]
     assert "could not refresh" not in ui.page.inner_text("#activityNotice")
     assert _Fixture.reconcile_posts == [], "reading the list is not deciding anything"
+
+
+# ------------------------------- the same rotation, seen from a phone left open
+#
+# A phone page is the surface most likely to still be open when the desktop process is restarted:
+# it sits in a background tab for days.  Its Activity sheet reads two lanes (/api/activity and
+# /api/healthz) for the recovery decisions it shows, so a rotated token used to turn the whole
+# sheet into "Activity is unavailable" until the reader reloaded by hand.  Those reads now take the
+# same bounded refresh-once/retry-once path as the desktop's.  The decisions themselves are still
+# written only by a person: no reconcile, steer or cancel POST is ever replayed because auth failed.
+MOBILE_RECOVERY_REASON = "publish.sh may already have run"
+PHONE_ACTIVITY = {
+    "sessions": [{"session_id": "s-phone", "state": "recovery_required", "recovery_required": True,
+                  "reason": MOBILE_RECOVERY_REASON}],
+    "task_runs": [], "missions": [], "automations": [], "errors": {}}
+PHONE_HEALTH = {"work": {"missions_active": 0, "task_runs_active": 0,
+                         "recovery_required": ["s-phone"]}, "workers": {}, "services": {}}
+
+
+@pytest.fixture
+def phone(server, browser):
+    """The mobile client, loaded with a token the server is about to stop accepting."""
+    _reset_fixture_state()
+    _Fixture.activity = dict(PHONE_ACTIVITY)
+    _Fixture.health = dict(PHONE_HEALTH)
+    _Fixture.guarded_paths = ("/api/activity", "/api/healthz")
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(server + "/m?token=" + TOKEN, wait_until="load")
+    page.wait_for_selector("#input", timeout=8000)
+    page.wait_for_timeout(200)
+    yield Page(page, errors)
+    assert errors == [], "JS errors: %r" % errors
+    context.close()
+
+
+def _open_phone_activity(phone):
+    phone.page.click("#topState")
+    phone.page.wait_for_selector("#mobileActivity:not([hidden])", timeout=8000)
+
+
+def _phone_notice(phone):
+    return phone.page.inner_text("#mobileActivityNotice")
+
+
+def test_the_phone_activity_sheet_refreshes_a_stale_token_and_reads_the_live_decisions(phone):
+    _rotate_token()                          # the process is replaced while the phone sits open
+    _open_phone_activity(phone)
+    phone.page.wait_for_selector("#mobileRecoveryRows .ops-row", timeout=8000)
+    row = phone.page.inner_text("#mobileRecoveryRows .ops-row")
+    assert "s-phone" in row and MOBILE_RECOVERY_REASON in row, "the server's current decision"
+    assert "Activity is unavailable" not in _phone_notice(phone)
+    assert phone.page.inner_text("#mobileRecoveryCount") == "1"
+    assert _reads("/api/activity") == [False, True], "one refusal, then one retry"
+    assert _reads("/api/healthz") == [False, True]
+    assert _Fixture.token_refreshes == 1, "two concurrent reads share one refresh"
+    assert _Fixture.reconcile_posts == [] and _Fixture.guarded_writes == []
+
+
+def test_a_phone_read_that_stays_refused_keeps_saying_so_without_a_refresh_storm(phone):
+    """Bounded: one refresh, at most one retry per read, then honest uncertainty — and it stops."""
+    _rotate_token(handed_back="still-stale")
+    _open_phone_activity(phone)
+    phone.page.wait_for_function(
+        "() => document.getElementById('mobileActivityNotice').textContent"
+        "        .includes('Activity is unavailable')", timeout=8000)
+    assert phone.page.locator("#mobileRecoveryRows .ops-row").count() == 0, \
+        "no rows are invented for data that was never read"
+    phone.page.wait_for_timeout(1500)
+    before = (len(_Fixture.guarded_reads), _Fixture.token_refreshes)
+    phone.page.wait_for_timeout(1200)
+    assert (len(_Fixture.guarded_reads), _Fixture.token_refreshes) == before, \
+        "a refusal is not retried forever"
+    assert _Fixture.token_refreshes <= 1, "and one stale window is one refresh, not a storm"
+    assert _reads("/api/activity", limit=9) == [False, False], "refused, retried once, then stopped"
+
+
+def test_a_late_phone_refusal_reuses_a_token_another_read_already_refreshed(phone, monkeypatch):
+    refreshed_activity = threading.Event()
+    released = []
+    original = _Fixture.do_GET
+
+    def staggered(handler):
+        parsed = urlparse(handler.path)
+        token = (parse_qs(parsed.query).get("token") or [""])[0]
+        if parsed.path == "/api/healthz" and token == TOKEN:
+            released.append(refreshed_activity.wait(4))
+        result = original(handler)
+        if parsed.path == "/api/activity" and token == "rotated-token":
+            refreshed_activity.set()
+        return result
+
+    monkeypatch.setattr(_Fixture, "do_GET", staggered)
+    _rotate_token()
+    _open_phone_activity(phone)
+    phone.page.wait_for_selector("#mobileRecoveryRows .ops-row", timeout=8000)
+    assert released == [True], "the old health refusal arrived after activity reused the new token"
+    assert _reads("/api/activity") == [False, True]
+    assert _reads("/api/healthz") == [False, True]
+    assert _Fixture.token_refreshes == 1, "reuse the refreshed token instead of asking again"
+    assert _Fixture.guarded_writes == []
+
+
+def test_a_stale_phone_never_replays_a_recovery_decision_or_a_specialist_command(phone):
+    """Reads may be retried because they change nothing. A decision is a person's, once."""
+    _open_phone_activity(phone)
+    phone.page.wait_for_selector("#mobileRecoveryRows .ops-row", timeout=8000)
+    _rotate_token()                          # the token goes stale with the sheet already open
+    phone.page.on("dialog", lambda dialog: dialog.accept())
+    phone.page.locator("#mobileRecoveryRows .ops-row button", has_text="Completed").click()
+    phone.page.wait_for_function(
+        "() => document.getElementById('mobileActivityNotice').textContent.includes('Action failed')",
+        timeout=8000)
+    phone.page.wait_for_timeout(900)
+    assert _Fixture.reconcile_posts == [], "a refused decision was not recorded"
+    assert _Fixture.guarded_writes == [("/api/recovery/reconcile", False)], \
+        "one refused attempt, never replayed on a fresh token"
+    assert _Fixture.token_refreshes == 0, "a refused write does not even go looking for a token"
+
+
+def test_a_late_phone_activity_answer_does_not_land_in_a_closed_sheet(phone):
+    """The refresh makes the read slower, which makes the latest-request guard matter more."""
+    _rotate_token()
+    _Fixture.activity_delay = 0.7            # refusal and retry both land after the sheet is closed
+    _open_phone_activity(phone)
+    phone.page.wait_for_timeout(150)
+    phone.page.click("#mobileActivityClose")
+    phone.page.wait_for_timeout(3000)
+    assert _reads("/api/activity") == [False, True], "the answer did arrive, late"
+    assert phone.page.is_hidden("#mobileActivity"), "and not into a sheet nobody has open"
+    assert phone.page.locator("#mobileRecoveryRows .ops-row").count() == 0
+    assert MOBILE_RECOVERY_REASON not in phone.page.inner_text("body")
+
+
+def test_a_phone_whose_token_is_still_good_reads_each_lane_exactly_once(phone):
+    """The repair is invisible when nothing is wrong: no extra request, no token round-trip."""
+    _Fixture.guarded_reads = []
+    _Fixture.guard_token = True              # armed, but the page's token is still the valid one
+    _open_phone_activity(phone)
+    phone.page.wait_for_selector("#mobileRecoveryRows .ops-row", timeout=8000)
+    phone.page.wait_for_timeout(400)
+    assert _reads("/api/activity", limit=9) == [True], "a successful read is one request"
+    assert _reads("/api/healthz", limit=9) == [True]
+    assert _Fixture.token_refreshes == 0, "and never asks for a token it did not need"
 
 
 # ------------------------------------- the fence a person is already looking at
