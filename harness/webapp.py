@@ -5465,6 +5465,21 @@ class Handler(BaseHTTPRequestHandler):
                     persist_exc,
                     prefix="external-worker recovery boundary could not be cleared: ")
 
+        def _durable_external_fence(cleared=False):
+            """``(state, required)`` for the effect boundary this run armed.
+
+            ``cleared`` is what the caller knows it closed.  A store that cannot
+            be read is never reported as a cleared fence: the person is told to
+            look rather than told, on no evidence, that nothing needs looking at.
+            """
+            if not durable_external_boundary:
+                return None, False
+            try:
+                state = sessions.recovery_state(sid)
+            except Exception:
+                return None, not cleared
+            return state, bool(state and state.get("recovery_required"))
+
         def _host_check(res, surface):
             """Run the required check as a stoppable, fenced, visible host action.
 
@@ -5964,6 +5979,13 @@ class Handler(BaseHTTPRequestHandler):
                             check_error = "required check failed: %s (exit %s)" % (
                                 verify_command, verification_evidence.get("exit_code"))
                             res.error = ((res.error + "; ") if res.error else "") + check_error
+                # A stop read from the run registry is the run's own verdict, not
+                # just this thread's view of it.  Record it on the result before
+                # anything derives an outcome from it, so the telemetry row, the
+                # durable receipt, the terminal frame and the scheduler's outcome
+                # cannot disagree about whether this turn was stopped.
+                if canceled:
+                    res.canceled = True
                 # The initial external outcome was inserted by runner_slice;
                 # update that row with the host verifier's final verdict.  This
                 # remains telemetry: a locked/corrupt runs.db cannot rewrite
@@ -5976,7 +5998,14 @@ class Handler(BaseHTTPRequestHandler):
                 if worker_receipt is not None and worker_receipt.runner:
                     Handler._run_mark(sid, runner=worker_receipt.runner)
                 actual_speed = execution_speed
+                recovery_required = bool(
+                    worker_receipt is None or worker_receipt.recovery_required
+                    # A host check whose tree is unaccounted for is its own
+                    # unsettled effect; the worker's fence stays until both are.
+                    or check_fenced)
+                from .recorder import run_outcome
                 receipt_row = {
+                    **run_outcome(res),
                     "run": run_id, "decision": decision_payload,
                     "runner": worker_receipt.to_dict() if worker_receipt else None,
                     "model": res.model or decision.model,
@@ -5985,6 +6014,11 @@ class Handler(BaseHTTPRequestHandler):
                     "verified": bool(getattr(res, "verified", False)),
                     "verification_evidence": verification_evidence,
                     "error": res.error or "", "canceled": canceled,
+                    # What the worker's own protocol said about settlement, at the
+                    # moment this row was written — the fence itself is still open
+                    # here and is only closed further down, once this receipt and
+                    # the transcript are both durable.
+                    "recovery_required": recovery_required,
                 }
                 try:
                     receipt_saved = bool(sessions.append_run_receipt(sid, receipt_row))
@@ -5999,8 +6033,16 @@ class Handler(BaseHTTPRequestHandler):
                         persistence_error += ": " + receipt_detail
                     res.error = ((res.error + "; ") if res.error else "") + persistence_error
                     res.success = False
-                saved_answer = ("_[stopped by user]_" if canceled else
-                                runner_slice.transcript_text(res))
+                # Stopping ends the turn; it does not delete what the worker had
+                # already produced.  Keep that partial text in the transcript
+                # under the stop marker the UI strips, so a reopened thread shows
+                # the real work instead of only the word "stopped".
+                if canceled:
+                    partial_answer = str(getattr(res, "answer", "") or "").strip()
+                    saved_answer = ((partial_answer + "\n\n_[stopped by user]_")
+                                    if partial_answer else "_[stopped by user]_")
+                else:
+                    saved_answer = runner_slice.transcript_text(res)
                 history_saved = False
                 try:
                     if request_journaled or handed_steers:
@@ -6032,19 +6074,31 @@ class Handler(BaseHTTPRequestHandler):
                         "consumption_unconfirmed": [row["id"] for row in handed_steers]}
                 for steer_error in steer_errors:
                     res.error = ((res.error + "; ") if res.error else "") + steer_error
-                recovery_required = bool(
-                    worker_receipt is None or worker_receipt.recovery_required
-                    # A host check whose tree is unaccounted for is its own
-                    # unsettled effect; the worker's fence stays until both are.
-                    or check_fenced)
+                boundary_cleared = False
                 if receipt_saved and history_saved and not recovery_required:
                     boundary_error = _clear_durable_external_boundary()
                     if boundary_error:
                         res.error = ((res.error + "; ") if res.error else "") + boundary_error
                         res.success = False
+                    else:
+                        boundary_cleared = True
+                # The fence that refuses the next request lives on disk, and this
+                # turn's own bookkeeping is not the only thing that arms it: a
+                # receipt or a transcript that did not land leaves the boundary
+                # exactly where this run opened it.  Read the stored state and
+                # report it WITH this run, instead of letting the person discover
+                # it by being refused the next time they ask.
+                run_recovery, fence_required = _durable_external_fence(boundary_cleared)
+                recovery_required = bool(recovery_required or fence_required)
                 done_d = {
+                    **run_outcome(res),
                     "session": sid, "run": run_id, "answer": res.answer or "",
                     "error": res.error or "", "canceled": canceled,
+                    # The same canonical terminal fields Collie's own branch
+                    # sends: what stopped this turn, and whether the outside
+                    # world has to be looked at before it is asked for again.
+                    "recovery_required": recovery_required,
+                    "recovery": run_recovery if recovery_required else None,
                     "model": res.model or decision.model,
                     "prefix_tokens": res.prefix_tokens,
                     "input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
@@ -6102,9 +6156,15 @@ class Handler(BaseHTTPRequestHandler):
                 from .runner_specs import redact_text
                 error = redact_text("%s: %s" % (type(e).__name__, e))
                 Handler._run_end(sid, error=error, run_id=run_id)
+                # Nothing below this line cleared the boundary, so a crash ends
+                # the turn with the same fence a stop does.  Say that here, on
+                # the frame the person actually sees.
+                crash_recovery, crash_required = _durable_external_fence()
                 done_d = {"session": sid, "run": run_id, "answer": "",
                           "error": error,
                           "canceled": Handler._run_cancelled(sid, run_id),
+                          "recovery_required": crash_required,
+                          "recovery": crash_recovery if crash_required else None,
                           "model": decision.model, "effort": decision.effort,
                           "speed": decision.speed, "decision": decision_payload}
                 Handler._mirror_pub(sid, "done", done_d)
@@ -6127,6 +6187,9 @@ class Handler(BaseHTTPRequestHandler):
                     sessions.append_run_receipt(sid, {
                         "run": run_id, "decision": decision_payload,
                         "error": error, "canceled": done_d["canceled"],
+                        "stop_reason": "canceled" if done_d["canceled"] else "error",
+                        "completed": False,
+                        "recovery_required": crash_required,
                     })
                 except Exception:
                     pass
