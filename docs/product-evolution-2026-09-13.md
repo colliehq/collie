@@ -18,6 +18,8 @@
 
 提交 `b68a62d164ec5bc9a6b3fe947bbab9a89e3265f5` 保留新任务中尚未确认的目录输入，避免切换会话或刷新后文字恢复、目录却回到上次确认值。目录概要显示尚未检查的选择，校验完成前不能在别处启动；已有会话继续使用自己的目录。独立回归 129 passed，相邻会话/目录套件 15 passed，新测试在旧代码上 3 failed、5 passed，审阅 approve。精确快照 `03de14a7`，证据在 `manual/draft-folder/verification` 和 `draft-folder-adjacent-tests`。
 
+提交 `70bdc0ff70954b734818439a0c49785434072338` 让新建任务刷新后回到任务页面，保留草稿，不再跳回 Today。显式点击 Today 则继续回到 Today；会话深链优先，token 和桌面/IDE 参数保留，恢复页面不会启动任务。独立回归 125 passed，新测试在旧代码上 6 failed、4 passed，另一次 Claude Code 只读审阅 approve。精确快照 `e9c6dfa62337d062cef9ab3c99199785738ff117`，证据在 `manual/new-task-view/verification`；实际 Chrome 复测及截图在 `ui-new-task-view`。
+
 ## 验证证据
 
 | 检查 | 结果 | 验证对象 |
@@ -49,7 +51,7 @@
 
 独立仓库没有 remote，不共享原仓库 refs 或 objects。其起点 `3a0065399720ca4fc4f939c389a72e5e370e1e03` 是精确测试过的工作快照加首个修复。后续后台成果由进度文件记录。
 
-当前自动分支已汇入权限、取消和网页草稿修复，推进到 `a35de72419c19007200e3a84f5675d5478b95476`。两次合并分别经过 120、121 项专项测试，并在控制器批次间隙用旧 tip 校验更新分支；没有打断正在执行的批次或使其基线漂移。两个新的并行 Claude Code 实验从这个合并快照开始：一次发送自动校验目录、新任务刷新保留页面。它们仍属进行中的实验。
+当前自动分支已汇入权限、取消和网页草稿修复，推进到 `a35de72419c19007200e3a84f5675d5478b95476`。两次合并分别经过 120、121 项专项测试，并在控制器批次间隙用旧 tip 校验更新分支；没有打断正在执行的批次或使其基线漂移。第 3 批额度恢复实验于 14:15:50 UTC 从此快照开始。新任务视图修复已在源仓库提交，须等当前批次结束后再汇入自动分支。
 
 控制器同时检查绝对截止时间、剩余单调时钟时间和 `STOP` 文件；所有主要执行任务由 Windows Job 管理子进程。创建运行目录下的 `STOP` 文件即可提前结束。本机休眠或关机会减少实际运行时间。
 
@@ -61,7 +63,21 @@
 
 进一步复现的是尚未确认的目录输入丢失，现已由 `b68a62d` 修复。修复后的实际浏览器检查保留未确认的 `folder-b` 路径和草稿，刷新后自动检查目录，然后真正读取该目录的 README，返回 `Collie UI fixture: folder-b`；DOM、截图和说明位于 `ui-pending-candidate`。编码调用达到 20 分钟时限，候选补丁被保留，再由父流程独立验证、审阅后合入；没有把超时调用记作成功。
 
-尚待完善的实际操作是：目录输入后直接点 Send 仍要求额外点 Use folder，新任务刷新仍跳回 Today。两个并行实验正在处理这些连续性问题。首次模型设置选择较多仍保留为体验观察，尚未据此改动。
+一次 Send 自动检查目录的候选通过了 100 项独立回归，并覆盖重复发送、附件替换和目录缺失；但父流程追加的浏览器检查又复现了一个阻断问题：等待目录 A 的检查时改选并确认 B，旧的 Send 会在 B 启动。这份候选没有合入。原验证与失败证据保留在 `manual/folder-send/verification-v2` 和 `folder-send-race-check`，另一轮 Claude Code 正在修复目的目录的身份判断。目录确认成功本身不应代表用户重新发送。
+
+首次模型设置选择较多仍保留为体验观察。实际 Chrome 中有一次初次加载期间点击 New task 后仍显示 Today，随后点击正常；尚未通过受控条件复现，不把它归因于已确认缺陷，也不声称新视图修复覆盖它。
+
+## 真实 Claude Code 工作流实验
+
+`live-claude-compat-v3` 使用已安装的 SDK 自带 Claude Code 2.1.228 运行 Collie 自带的 live conformance。默认模型拒绝旧 CLI，返回“该模型至少需要 2.1.251”，结果 8 PASS、3 FAIL。显式选择 Opus 5 的修复任务仍可运行，因此没有据此硬编码新的全局最低版本或自动切换模型。
+
+官方 npm 包 2.1.270 安装在运行目录 `toolchains` 内，不替换全局 CLI、SDK 或已安装 Collie。[官方安装故障说明](https://code.claude.com/docs/en/troubleshoot-install)记录了 npm 平台原生包的检查方法。使用该隔离运行时重跑同一产品 conformance，`live-claude-compat-v4` 为 11 PASS、0 FAIL、0 SKIP、0 UNVERIFIED：真实模型修改由主机读取文件确认，第二次调用使用同一原生会话，usage 返回有效 token 数据。取消列使用真实所属子进程替身，没有调用真实模型，不能据此声称真实模型工具中断已经验收。
+
+随后 `live-cli-flow` 在合并产品快照 `a35de724` 上，用未经改写的 `harness.cli run`、`claude-code` worker、2.1.270 和显式 Opus 5/high/standard 完成两轮任务。第一轮修复去重顺序与复制隔离，第二轮在同一 Collie 会话及同一原生 Claude locator 上追加生成器和输入验证要求。主机持有的测试没有被模型修改，分别 4 项、7 项通过；两轮均 completed、无 error、无 recovery_required，产品宿主验证及额外外部验证都成功。
+
+调用前独立确认 Claude Max 登录、订阅额度与未启用额外付费，环境排除了 API-key 路线；产品的离线 probe receipt 仍将 billing 标为 unknown/unconfigured，不能将独立前置检查写成产品已完成账单认证。这是功能验收，样本不足以给不同 harness 排名；CLI 报告的美元数是用量折算，不作为订阅实际账单。
+
+失败实验还暴露出 conformance 的依赖关系缺陷：第一轮失败后仍调用 resume，并把未完成的 0 token 结果写成“已完成任务”的 usage 失败。`manual/compat-prerequisite` 正在用 Claude Code 修复和测试，目标是保留主因、跳过无效依赖调用，并保持能力验证状态真实。
 
 ## 工作保全
 
