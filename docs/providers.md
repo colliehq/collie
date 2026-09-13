@@ -12,6 +12,13 @@ with `--provider`, or by setting `COLLIE_PROVIDER`. An explicit environment vari
 | Claude CLI | `claude-cli` | Compatibility route through `claude -p`; Collie's prompt replaces the default prompt and built-in tools are disabled, but this subprocess surface is not native overnight. |
 | Claude raw OAuth (legacy experimental) | `anthropic-oauth` | Collie-owned raw Messages request using the local login credential. This is not the native overnight route and is not treated as a documented Claude-plan interface. |
 
+On the `claude-agent-sdk` route, ordinary tool turns use Collie's host-validated
+`{tool|answer}` text envelope. The existing single format-repair request uses the
+SDK's strict schema mode; this does not add requests or retries beyond that repair.
+A schema refusal still surfaces as HTTP 422. The tool-less Mission planner keeps
+its separate action contract. Programmatic callers can set `structured_repair=False`
+to retain the text-envelope repair behavior.
+
 A subscription login is not itself proof of zero marginal charge. Provider policy and account
 settings can change; unattended `--no-paid-overage` runs use a fail-closed preflight and never
 silently switch to an API key, paid credits, or another provider.
