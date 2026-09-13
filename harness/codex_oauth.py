@@ -152,9 +152,18 @@ def _fresh_access_token() -> tuple[str, str]:
 class CodexOAuthProvider(ModelProvider):
     name = "codex-oauth"
     reports_cache = True                  # Responses usage carries input_tokens_details.cached_tokens
+    # DECLARED, not merely defaulted below. A durable request accepted with "Max output
+    # tokens" left empty froze that emptiness, and `cli._apply_generation_limits` replays it
+    # by restoring the provider's own default — never by leaving the COLLIE_MAX_TOKENS the
+    # constructor happened to read, which by then may be a cap saved after acceptance for
+    # somebody else's work. A provider that cannot name its default makes that replay
+    # impossible, so it is refused instead of guessed: without this attribute every queued
+    # Web/`/next` request on the ChatGPT subscription failed at harness construction with
+    # "provider does not declare its default max_tokens".
+    default_max_tokens = 16384
     URL = BASE_URL.rstrip("/") + "/responses"
 
-    def __init__(self, model: str = "gpt-5.6-terra", max_tokens: int = 16384,
+    def __init__(self, model: str = "gpt-5.6-terra", max_tokens: int = default_max_tokens,
                  effort: str | None = None, speed: str = "standard"):
         self.model = model
         self.max_tokens = int(os.environ.get("COLLIE_MAX_TOKENS", str(max_tokens)))

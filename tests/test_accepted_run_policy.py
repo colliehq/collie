@@ -28,6 +28,84 @@ def test_an_unset_generation_limit_replays_the_provider_default(monkeypatch):
     assert compatible.temperature == 0.0
 
 
+def test_a_queued_request_with_no_output_cap_can_start_on_the_codex_subscription(
+        tmp_path, monkeypatch):
+    """The panel leaves "Max output tokens" empty by default, so that is what most accepted
+    requests froze, and replaying it means restoring the provider's OWN default: the request
+    was authorized without an output cap, and the COLLIE_MAX_TOKENS its provider read at
+    construction may be a cap another tab saved while it waited.  A provider that cannot name
+    that default is refused rather than guessed at — so one that owns ``max_tokens`` without
+    declaring it makes every durable request on it unstartable, which is what the ChatGPT
+    Codex subscription did: the Web queue and ``/next`` both died inside ``make_harness``
+    with "provider does not declare its default max_tokens", before a single token was sent.
+    """
+    from harness import codex_oauth
+    auth = tmp_path / "codex"
+    auth.mkdir()
+    (auth / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(codex_oauth, "_auth_path", lambda: str(auth / "auth.json"))
+    monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(settings, "_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(settings, "_cache", {"mtime": -1.0, "data": {}})
+    monkeypatch.setattr(settings, "_HARD_ENV", set())
+    for key in settings.LIMIT_KEYS:
+        monkeypatch.delenv("COLLIE_" + key, raising=False)
+    accepted = settings.RunLimits(source="frozen")    # accepted with no output cap at all
+    monkeypatch.setenv("COLLIE_MAX_TOKENS", "512")    # ... then another tab saved one
+    harness = cli.make_harness(str(tmp_path), provider="codex-oauth", embed="bm25",
+                               limits=accepted)
+    try:
+        assert harness.provider.max_tokens == codex_oauth.CodexOAuthProvider.default_max_tokens
+        assert harness.limits_applied["MAX_TOKENS"] == 16384
+        assert not harness.limits_not_applicable
+        # `/next` replays the same snapshot onto the long-lived terminal harness, every turn.
+        monkeypatch.setenv("COLLIE_MAX_TOKENS", "64")
+        cli.apply_accepted_limits(harness, accepted)
+        assert harness.provider.max_tokens == 16384, "a later save is not this request's cap"
+        # ... and a line typed after it is measured against the settings as they are now.
+        cli.apply_accepted_limits(harness, None)
+        assert harness.provider.max_tokens == 64
+    finally:
+        harness.memory.close()
+        harness.recorder.close()
+
+
+def test_no_provider_owns_a_generation_knob_it_cannot_name_a_default_for():
+    """The contract the refusal above rests on, checked against the real provider sources.
+
+    ``cli._apply_generation_limits`` can only replay an accepted "unset" by restoring a
+    declared default, so owning ``self.max_tokens``/``self.temperature`` without declaring
+    ``default_*`` is not a style problem: it silently strands every queued request on that
+    provider while live typing keeps working, which is exactly why it survived unnoticed.
+    Discovered from the source (any ``*Provider`` in the package) rather than a hand-kept
+    list, and resolved through the class so an inherited default counts.
+    """
+    import ast
+    import importlib
+    import pathlib
+
+    candidates = []
+    for path in sorted(pathlib.Path(cli.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ClassDef) or not node.name.endswith("Provider"):
+                continue
+            assigned = {target.attr for stmt in ast.walk(node)
+                        if isinstance(stmt, ast.Assign)
+                        for target in stmt.targets
+                        if isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name) and target.value.id == "self"}
+            for knob in ("max_tokens", "temperature"):
+                if knob in assigned:
+                    candidates.append((path.stem, node.name, knob))
+    assert ("codex_oauth", "CodexOAuthProvider", "max_tokens") in candidates, candidates
+    undeclared = [
+        "%s.%s has no default_%s" % (name, knob, knob) for module, name, knob in candidates
+        if not hasattr(getattr(importlib.import_module("harness." + module), name),
+                       "default_" + knob)]
+    assert undeclared == [], undeclared
+
+
 def test_a_partial_or_noncanonical_frozen_budget_cannot_become_unlimited():
     payload = settings.RunLimits(max_total_tokens=3000, source="frozen").payload()
     examples = []
