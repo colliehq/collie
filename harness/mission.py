@@ -771,6 +771,23 @@ def code_mission_profile(mission):
     return profile
 
 
+def _quota_yielded(delivery) -> bool:
+    """True when the last code slice yielded on a provider quota it may simply wait out.
+
+    The receipt must say all three things: the slice asked to continue, the stop
+    was transient, and the provider published a reset that was still in the
+    future when the slice ended (``quota_reset_at`` is validated by
+    ``providers.provider_retry_at`` at that boundary, because an epoch read back
+    on a later dispatch is necessarily in the past).  Prose, an assistant's
+    guess, and a transient error with no published boundary are all excluded.
+    """
+    if not isinstance(delivery, dict):
+        return False
+    reset = delivery.get("quota_reset_at")
+    return bool(delivery.get("continue_needed") and delivery.get("transient") and
+                type(reset) is int and reset > 0)
+
+
 def code_mission_goal(mission, notes=None) -> str:
     """The user's complete authorized request, plus their updates in order.
 
@@ -5342,6 +5359,18 @@ class MissionDriver:
             # A human just gave new instructions; that is new information, so the
             # no-progress counter starts again rather than blocking their reply.
             unproductive = 0
+        elif _quota_yielded(delivery) and not slice_progressed:
+            # The provider refused the request outright, so this slice never got
+            # to touch the workspace: it is neither progress nor evidence that
+            # the agent is stuck.  Counting a refused slice against the
+            # no-progress budget spent that budget on *waiting* — three quota
+            # windows in a row (15+ hours of correctly scheduled waits) ended the
+            # Mission with "no file change across 3 consecutive slices; it is not
+            # making progress on its own", which describes neither what happened
+            # nor anything a person can act on.  A transient error with no
+            # published reset still counts: that retry has no natural boundary,
+            # so the backstop must keep firing for it.
+            unproductive = int(state.get("unproductive", 0) or 0)
         elif not delivery.get("mutation_reported"):
             # An outcome we cannot characterise is not evidence of progress.
             unproductive = int(state.get("unproductive", 0) or 0) + 1

@@ -183,3 +183,64 @@ def test_automatic_wake_resumes_the_original_goal_only_after_reset(tmp_path):
     finally:
         store.close()
         actions.close()
+
+
+@pytest.mark.parametrize("mode", ["published", "absent", "stale"])
+def test_refused_slices_wait_out_every_window_without_spending_no_progress(tmp_path, mode):
+    """A slice the provider refused never ran, so it is not evidence of no progress.
+
+    Three consecutive quota windows are three correctly scheduled waits, not
+    three unproductive coding slices: consuming that budget ended the Mission
+    with "no file change across 3 consecutive slices" after fifteen hours of
+    waiting.  A transient stop with no published reset keeps consuming it,
+    because that retry has no natural boundary to wait for.
+    """
+    from harness.jobs import NEEDS_YOU, WAITING
+    from harness.mission import CODE_UNPRODUCTIVE_SLICES, create_mission, world_leash
+    from test_mission_code_dispatch import GOAL, _dedicated_case, _driver
+    now = int(time.time())
+    reset = now + 18000
+    retry_at = {"published": reset, "absent": 0, "stale": now - 1}[mode]
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    seen = []
+
+    def runner(goal, **_context):
+        seen.append(goal)
+        return {"answer": "HTTP 429: Claude Code rate limit; subscription resets",
+                "error": "HTTP 429: Claude Code rate limit", "verified": False,
+                "continue_needed": True, "transient": True,
+                "retry_at": retry_at, "retry_after_seconds": 60,
+                "session_id": "mission-code-dispatch-test", "turns": 1,
+                "slice_mutated": False, "patch_attributed": False}
+
+    store, actions, driver = _driver(tmp_path, runner)
+    try:
+        create_mission(store, "windows", GOAL, case=_dedicated_case(workspace),
+                       leash=world_leash(may=["code"], autonomous=True,
+                                         workspace_mode="isolated"))
+        states = [driver.advance("windows")]
+        for _ in range(2 * CODE_UNPRODUCTIVE_SLICES):
+            if states[-1] != WAITING:
+                break
+            states.append(driver.wake("windows", now=reset + 3, force=False))
+        case = store.get("windows").case
+        delivery = case["code_delivery"]
+        assert delivery["transient"] is True
+        # Validated at the slice boundary: a stale epoch is not a timer to wait on.
+        assert delivery["quota_reset_at"] == (reset if mode == "published" else 0)
+        if mode == "published":
+            # Still waiting on the provider's own reset, still resuming the user's
+            # own goal, and never asking a person to do something about a quota.
+            assert states == [WAITING] * (2 * CODE_UNPRODUCTIVE_SLICES + 1)
+            assert seen == [GOAL] * len(states)
+            assert store.next_wait("windows")["fire_at"] == reset + 3
+            assert case["code_dispatch"]["unproductive"] == 0
+            assert case["code_dispatch"]["attempts"] == len(states)
+        else:
+            assert states[-1] == NEEDS_YOU
+            assert "no file change across" in store.get("windows").result
+            assert len(seen) <= CODE_UNPRODUCTIVE_SLICES + 1
+    finally:
+        store.close()
+        actions.close()

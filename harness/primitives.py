@@ -2391,6 +2391,7 @@ def _real_code(runner=None):
                 out = active_runner(goal)
         if isinstance(out, str):
             out = {"answer": out, "verified": False}
+        from .providers import provider_retry_at
         pending = bool(out.get("continue_needed"))
         verification = out.get("verification") if isinstance(
             out.get("verification"), dict) else {}
@@ -2436,6 +2437,14 @@ def _real_code(runner=None):
             "stop_reason": str(out.get("stop_reason") or "")[:80],
             "error": str(out.get("error") or "")[:500],
             "verification_detail": str(verification.get("detail") or "")[:500],
+            # Why this slice stopped early, kept as durable facts rather than
+            # left in the answer prose: the next dispatch has to tell "the
+            # provider refused the request and published a reset we are already
+            # parked on" apart from "the agent ran and changed nothing".  The
+            # reset is validated against the clock HERE, at the slice boundary,
+            # because a later dispatch necessarily reads it as a past epoch.
+            "transient": bool(out.get("transient")),
+            "quota_reset_at": provider_retry_at(out.get("retry_at")),
             "at": int(time.time()),
         }
         case_update = {
