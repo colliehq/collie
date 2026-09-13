@@ -222,9 +222,12 @@ def test_a_selection_the_server_has_not_answered_for_yet_is_still_the_drafts_fol
     assert _FolderFixture.stream_queries[-1].get("cwd") == ROOTS["b"]
 
 
-def test_an_unchecked_selection_blocks_send_instead_of_running_somewhere_else(ui):
+def test_an_unchecked_selection_waits_for_the_check_instead_of_running_somewhere_else(ui):
     """While the answer is in flight the folder is not yet known to exist. That is a reason to
-    wait, never a reason to fall back to the default repository."""
+    wait, never a reason to fall back to the default repository.
+
+    Send used to be *refused* here and to ask for a Use folder click; it now waits for that same
+    read-only check and starts the request itself (see `test_web_folder_send`)."""
     page = ui.page
     _FolderFixture.verification_delay = 1.5
     ui.select_folder(ROOTS["b"])
@@ -237,8 +240,9 @@ def test_an_unchecked_selection_blocks_send_instead_of_running_somewhere_else(ui
 
     expect(page.locator("#taskWorkspacePending")).to_be_hidden(timeout=6000)
     assert ui.folder() == ROOTS["b"]
-    ui.send()
+    expect(page.locator("#input")).to_have_value("", timeout=6000)
     page.wait_for_timeout(600)
+    assert len(_FolderFixture.stream_queries) == 1
     assert _FolderFixture.stream_queries[-1].get("cwd") == ROOTS["b"]
 
 

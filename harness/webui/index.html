@@ -3873,7 +3873,8 @@
     "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
     "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
     "This conversation continues in its saved folder.":"这段对话会继续使用已保存的目录。","Select Use folder to check this location.":"请点击「使用此目录」检查位置。",
-    "not checked yet":"尚未检查","This draft is aimed here. Select Use folder to check it before sending.":"这份草稿指向此目录。发送前请点击「使用此目录」检查。",
+    "not checked yet":"尚未检查","checking folder...":"正在检查目录…",
+    "This draft is aimed here. Send checks this folder before it starts.":"这份草稿指向此目录。发送时会先检查该目录再开始。",
     "Checking folder...":"正在检查目录…","Applying changes...":"正在应用修改…","Changes applied. The isolated folder is kept.":"修改已应用，隔离目录已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已保存到隔离目录，可从「工作目录」应用修改。",
     "Text draft restored. Reattach files before sending.":"已恢复文字草稿，请在发送前重新附加文件。","Keep text only":"只保留文字",
@@ -4063,7 +4064,8 @@
     "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
     "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
     "This conversation continues in its saved folder.":"這段對話會繼續使用已儲存的目錄。","Select Use folder to check this location.":"請點擊「使用此目錄」檢查位置。",
-    "not checked yet":"尚未檢查","This draft is aimed here. Select Use folder to check it before sending.":"這份草稿指向此目錄。傳送前請點擊「使用此目錄」檢查。",
+    "not checked yet":"尚未檢查","checking folder...":"正在檢查目錄…",
+    "This draft is aimed here. Send checks this folder before it starts.":"這份草稿指向此目錄。傳送時會先檢查該目錄再開始。",
     "Checking folder...":"正在檢查目錄…","Applying changes...":"正在套用修改…","Changes applied. The isolated folder is kept.":"修改已套用，隔離目錄已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已儲存到隔離目錄，可從「工作目錄」套用修改。",
     "Text draft restored. Reattach files before sending.":"已恢復文字草稿，請在傳送前重新附加檔案。","Keep text only":"只保留文字",
@@ -10149,6 +10151,29 @@
   setInterval(function () { if (currentSession && document.visibilityState !== "hidden") loadTaskQueue(); }, 2500);
 
 
+  // One Send is one request. A new task's folder is checked as part of the Send already pressed,
+  // and the submission waits here while that read-only check is open: another Send joins the wait,
+  // and if what was submitted moves on before the answer lands the wait is dropped.
+  var pendingSendCheck = null;
+  // What that submission is made of: what the queue submits under (words, revision, manual
+  // context), the attachments by identity rather than count (one file swapped for another is
+  // another message), and the destination — the folder *choice*, not its text.
+  function composerSubmissionIdentity() {
+    return {text:$("input").value, revision:queueDraftRevision, images:attached.slice(),
+            manual:JSON.stringify(ideManualContexts), session:currentSession,
+            surface:document.body.getAttribute("data-surface"),
+            destination:window.workspaceDestination ? window.workspaceDestination() : 0};
+  }
+  function sameAttachments(now, then) {
+    return now.length === then.length && now.every(function (image, i) { return image === then[i]; });
+  }
+  function sendIntentSameSubmission(intent) {   // all of it still on screen, unedited
+    var now = composerSubmissionIdentity();
+    return now.text === intent.text && now.revision === intent.revision &&
+      now.manual === intent.manual && now.session === intent.session &&
+      now.surface === intent.surface && now.destination === intent.destination &&
+      sameAttachments(now.images, intent.images);
+  }
   function send(followUpOverride) {
     if (routePending) return;
     var input = $("input");
@@ -10198,6 +10223,27 @@
       return;
     }
     if (!q && !imgs.length) return;
+    // The folder typed for a new task is part of this Send, not a separate approval: look at it
+    // now, start only once that look says the directory is there, and on a refusal keep the draft
+    // and the chosen folder exactly as they are — never another project.
+    if (window.workspaceCheckNeeded && window.workspaceCheckNeeded()) {
+      if (pendingSendCheck) {
+        if (sendIntentSameSubmission(pendingSendCheck)) return;   // the open wait is this Send
+        pendingSendCheck = null;   // moved on: that wait would refuse itself and take this along
+      }
+      var waiting = pendingSendCheck = composerSubmissionIdentity();
+      waiting.override = followUpOverride;
+      window.ensureWorkspaceChecked().then(function (confirmed) {
+        if (pendingSendCheck !== waiting) return;
+        pendingSendCheck = null;
+        // Nothing starts unless this is still the submission on screen, and the composer is free.
+        if (running || routePending || !sendIntentSameSubmission(waiting)) return;
+        if (confirmed) { send(waiting.override); return; }
+        // Refused. The panel already says why; open it rather than interrupt with a dialog.
+        $("taskWorkspace").open = true;
+      });
+      return;
+    }
     var runConfig = readRunConfig(), runSession = currentSession;
     if (!validateRunConfig(runConfig)) return;
     // explicit overrides force the interactive stream (skip the classifier)
@@ -11320,6 +11366,12 @@
     // on, and it is never silently replaced by somewhere else.
     var setupSession = null, setupCwd = "", pendingCwd = "", scopeRequest = 0,
         workspaceInfo = {}, workspaceMissing = false;
+    // Checking a folder is a read-only look at the disk, not a second thing to approve, so Send
+    // performs it itself; `checkFlight` is the look that is open and `checkKey` the question it
+    // answers, so everything asking that same question joins it. `destination` counts the times
+    // the person has aimed this draft somewhere — the identity of the choice rather than its
+    // text, so no answer is ever read as one about a folder chosen after it was asked.
+    var checkFlight = null, checkKey = "", destination = 0, checking = false;
     var folder = $("taskFolder"), folderUse = $("taskFolderUse"), workspaceApply = $("taskWorkspaceApply");
     function paintWorkspace() {
       var isolated = workspaceInfo.mode === "isolated", shown = pendingCwd || setupCwd;
@@ -11328,14 +11380,16 @@
       $("taskWorkspacePath").title = shown;
       // Collapsed is the normal state of this panel, so an unchecked selection has to be legible
       // from the summary line rather than only from the note inside it.
-      $("taskWorkspacePending").hidden = !pendingCwd;
+      $("taskWorkspacePending").hidden = !(pendingCwd || checking);
+      $("taskWorkspacePending").textContent = t(checking ? "checking folder..." : "not checked yet");
       folder.readOnly = !!setupSession && !workspaceMissing; folder.disabled = setupLocked;
       folderUse.hidden = !!setupSession && !workspaceMissing; folderUse.disabled = setupLocked;
       folderUse.textContent = t(setupSession ? "Continue in this folder" : "Use folder");
       workspaceApply.hidden = !isolated || workspaceMissing; workspaceApply.disabled = setupLocked;
       $("taskWorkspaceNote").textContent = workspaceMissing
-        ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : pendingCwd
-        ? t("This draft is aimed here. Select Use folder to check it before sending.") : isolated
+        ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : checking
+        ? t("Checking folder...") : pendingCwd
+        ? t("This draft is aimed here. Send checks this folder before it starts.") : isolated
         ? t("Changes stay here until you apply them. Main project:") + " " + (workspaceInfo.origin || "")
         : setupSession ? t("This conversation continues in its saved folder.") : "";
     }
@@ -11345,6 +11399,7 @@
       workspaceInfo = info || {}; paintWorkspace(); saveSetup();
     };
     folder.addEventListener("input", function () {
+      destination++;          // the person re-aimed the draft; nothing asked before this is an answer about it
       folder.setCustomValidity(t("Select Use folder to check this location."));
       // Only a new task may choose its folder here; an existing thread's field is its saved
       // workspace (read-only unless it went missing), and a draft must never re-aim it.
@@ -11353,6 +11408,22 @@
       pendingCwd = typed === setupCwd ? "" : typed;
       paintWorkspace(); saveSetup();
     });
+    // What Send settles before starting a new task here. Only a new task's own folder is answered
+    // this way: moving a conversation's workspace is still a relocation the person asks for.
+    window.workspaceCheckNeeded = function () {
+      return !setupSession && (!!pendingCwd || workspaceMissing || !!folder.validationMessage);
+    };
+    window.workspaceDestination = function () { return destination; };
+    window.ensureWorkspaceChecked = function () {
+      var mark = destination;
+      return window.refreshVerificationCandidates().then(function (answered) {
+        // Confirmed means the server said yes about the folder it was asked about, the draft is
+        // still aimed at that same choice, and nothing objects to the field. (Settling the
+        // requested path on its resolved spelling is not a change.)
+        return !!answered && destination === mark && !setupSession && !pendingCwd &&
+          !workspaceMissing && !folder.validationMessage;
+      });
+    };
     folderUse.onclick = function () {
       if (!setupSession) { window.refreshVerificationCandidates(); return; }
       if (!workspaceMissing || setupLocked) return;
@@ -11433,7 +11504,7 @@
       // only — a thread is opened in its own saved workspace, never in a draft's.
       pendingCwd = !sid && typeof saved.pending === "string" && saved.pending !== setupCwd
         ? saved.pending : "";
-      folder.value = pendingCwd || setupCwd;
+      folder.value = pendingCwd || setupCwd; destination++;   // this scope's aim, not the last one's
       folder.setCustomValidity(pendingCwd ? t("Select Use folder to check this location.") : "");
       workspaceInfo = {}; workspaceMissing = false;
       $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
@@ -11679,14 +11750,18 @@
       });
     };
     window.refreshVerificationCandidates = function () {
-      var request = ++scopeRequest, sid = setupSession, beforeVerify = verifyCommand.value,
+      var sid = setupSession, requestedFolder = !sid ? folder.value.trim() : "";
+      // Asking again about the same choice is the same read-only look: joining the one already
+      // open keeps a Send waiting on it, where a second question settles the first as stale.
+      var watched = !!requestedFolder && (requestedFolder !== setupCwd || !!folder.validationMessage);
+      var key = watched ? destination + " " + requestedFolder : "";
+      if (key && checkFlight && checkKey === key) return checkFlight;
+      var request = ++scopeRequest, beforeVerify = verifyCommand.value,
           beforeCheck = packCheck.value, beforeCwd = setupCwd;
-      var requestedFolder = !sid ? folder.value.trim() : "";
       var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) :
         requestedFolder ? "?cwd=" + encodeURIComponent(requestedFolder) : "");
-      if (requestedFolder && (requestedFolder !== beforeCwd || folder.validationMessage))
-        folder.setCustomValidity(t("Checking folder..."));
-      return authenticatedFetch(path).then(function (r) {
+      if (watched) { folder.setCustomValidity(t("Checking folder...")); checking = true; paintWorkspace(); }
+      var flight = authenticatedFetch(path).then(function (r) {
         return r.json().then(function (data) {
           if (!r.ok) {
             var error = new Error(data.error || "HTTP " + r.status);
@@ -11695,31 +11770,42 @@
           return data;
         });
       }).then(function (data) {
-        if (request !== scopeRequest || setupSession !== sid) return;
+        // Resolves to whether this look answered its own question: one that a later question
+        // overtook settles nothing, least of all a Send waiting on it.
+        if (request !== scopeRequest || setupSession !== sid) return false;
         if (beforeCwd && data.cwd && beforeCwd !== data.cwd) {
           if (verifyCommand.value === beforeVerify) { verifyCommand.value = ""; verifyCommand.dataset.source = ""; }
           if (packCheck.value === beforeCheck) { packCheck.value = ""; packCheck.dataset.source = ""; }
         }
-        if (!sid && folder.value.trim() !== requestedFolder) return;
+        if (!sid && folder.value.trim() !== requestedFolder) return false;
         // The answer is about the folder that was asked for, so the selection is now checked.
         setupCwd = data.cwd || ""; if (!sid) pendingCwd = "";
         folder.value = setupCwd; folder.setCustomValidity(""); workspaceMissing = false;
         $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
         var first = (data.candidates || [])[0];
-        if (!first) { saveSetup(); return; }
+        if (!first) { saveSetup(); return true; }
         if (verifyCommand && !verifyCommand.value) {
           verifyCommand.value = first.command;
           verifyCommand.dataset.source = first.source || "detected";
         }
         if (packCheck && !packCheck.value) { packCheck.value = first.command; packCheck.dataset.source = first.source || "detected"; }
-        saveSetup();
+        saveSetup(); return true;
       }).catch(function (error) {
-        if (request !== scopeRequest || setupSession !== sid) return;
+        if (request !== scopeRequest || setupSession !== sid) return false;
         workspaceMissing = !!error.workspaceMissing; paintWorkspace();
         if (workspaceMissing) $("taskWorkspace").open = true;
         $("taskWorkspaceStatus").textContent = error.message || String(error);
         if (!sid && requestedFolder) folder.setCustomValidity(error.message || String(error));
       });
+      if (watched) {
+        checkFlight = flight; checkKey = key;
+        // Only the look that still owns the field may stop saying "checking".
+        flight.then(function () {
+          if (checkFlight !== flight) return;
+          checkFlight = null; checkKey = ""; checking = false; paintWorkspace();
+        });
+      }
+      return flight;
     };
     menu.addEventListener("click", saveSetup);
     [$("packN"),packCheck,verifyCommand].forEach(function (el) { el.addEventListener("input", saveSetup); });
