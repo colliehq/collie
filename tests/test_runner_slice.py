@@ -476,6 +476,44 @@ def test_cancel_before_start_skips_the_launch(monkeypatch, workspace):
     assert "cancelled before the worker started" in res.error
 
 
+def test_a_stopped_worker_turn_is_never_reported_as_a_finished_one(monkeypatch,
+                                                                   workspace):
+    """The stop has to survive the projection onto a RunResult and a runs.db row.
+
+    A bidirectional worker can accept ``turn/interrupt`` and still deliver its
+    own clean terminal event a moment later, which leaves a snapshot that is
+    ``cancelled`` with no error text.  Every surface downstream asks
+    ``recorder.run_stop_reason``/``run_outcome`` rather than the snapshot, so
+    losing the stop here published the run as completed.
+    """
+    from harness.recorder import Recorder, run_outcome
+
+    interrupted = _snapshot("codex-app-server", workspace, settled=False,
+                            cancelled=True, exit_code=0, error="",
+                            final_output="partial work")
+    runner = _FakeRunner("codex-app-server", result=interrupted)
+    _install(monkeypatch, codex_app_server=runner)
+    recorder = Recorder(os.path.join(workspace, "runs.db"))
+    try:
+        res = runner_slice.run_adhoc(
+            _decision("codex-app-server"), "t", workspace, task_id="web",
+            recorder=recorder)
+        row = recorder.db.execute(
+            "SELECT stop_reason,success FROM runs WHERE run_id=?",
+            (res.run_id,)).fetchone()
+    finally:
+        recorder.close()
+
+    assert res.canceled is True
+    assert res.success is False
+    outcome = run_outcome(res)
+    assert outcome["stop_reason"] == "canceled" and outcome["canceled"] is True
+    assert outcome["completed"] is False
+    assert tuple(row) == ("canceled", 0)
+    # The answer the worker did produce is still carried back to the person.
+    assert res.answer == "partial work"
+
+
 def test_a_broken_cancel_predicate_does_not_kill_the_run(monkeypatch, workspace):
     def explode():
         raise RuntimeError("the request table is gone")

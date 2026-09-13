@@ -1601,6 +1601,14 @@ def snapshot_to_run_result(snapshot: Any, spec: HarnessSpec, probe: RunnerProbe,
 
     settled = bool(getattr(snapshot, "settled", False))
     error = redact_text(getattr(snapshot, "error", "") or "")
+    # A stop is a terminal fact of its own, and it is the snapshot — not the
+    # error string — that records it.  Dropping it here made every consumer that
+    # reads `RunResult.canceled`/`stop_reason` (`recorder.run_stop_reason`, the
+    # Web `done` event, the durable run receipt) describe a stopped worker turn
+    # as an ordinary failure — and, when the worker's protocol still reported a
+    # clean terminal event after the interrupt (an App Server `turn/completed`
+    # racing `turn/interrupt`, which leaves `error` empty), as a COMPLETED one.
+    cancelled = bool(getattr(snapshot, "cancelled", False))
     return RunResult(
         task_id=task_id,
         harness=spec.key,                    # runs.db groups by this; runner keys never
@@ -1618,8 +1626,12 @@ def snapshot_to_run_result(snapshot: Any, spec: HarnessSpec, probe: RunnerProbe,
         wall_ms=wall_ms,
         success=bool(settled and not error
                      and not getattr(snapshot, "timed_out", False)
-                     and not getattr(snapshot, "cancelled", False)
+                     and not cancelled
                      and not getattr(snapshot, "recovery_required", False)),
+        canceled=cancelled,
+        # Kept in the vocabulary every surface already speaks; "" leaves the
+        # verdict to `run_stop_reason`, exactly as before.
+        stop_reason="canceled" if cancelled else "",
         verified=False,                      # host verifier only — see docstring
         cost_usd=cost_usd,
         answer=str(getattr(snapshot, "final_output", "") or ""),

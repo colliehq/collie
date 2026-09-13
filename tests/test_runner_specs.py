@@ -567,6 +567,43 @@ def test_snapshot_to_run_result_redacts_the_error_and_fails_the_run():
     assert res.success is False
 
 
+def test_snapshot_to_run_result_carries_the_stop_into_the_run_result():
+    """A stopped worker turn must not be projected as a finished one.
+
+    ``RunnerSnapshot.cancelled`` is the only record that a stop happened; the
+    error string is not.  An App Server ``turn/completed`` that races
+    ``turn/interrupt`` leaves a snapshot with ``cancelled=True`` and no error at
+    all, which ``run_stop_reason`` used to read as "completed" — the one verdict
+    a stopped run may never be reported under.
+    """
+    from harness.recorder import run_outcome, run_stop_reason
+
+    clean_terminal = _snapshot(settled=False, cancelled=True, error="",
+                               exit_code=0, final_output="partial work")
+    assert clean_terminal.terminal_state == "cancelled"
+    res = snapshot_to_run_result(clean_terminal, _codex_spec(), _codex_probe())
+    assert res.canceled is True
+    assert res.stop_reason == "canceled"
+    assert res.success is False
+    assert run_stop_reason(res) == "canceled"
+    assert run_outcome(res)["completed"] is False
+
+    # The ordinary process-tree cancel does carry an error, and it too has to
+    # read as a stop rather than as an unexplained failure.
+    killed = _snapshot(settled=False, cancelled=True, exit_code=None,
+                       error="Codex turn was cancelled")
+    killed_res = snapshot_to_run_result(killed, _codex_spec(), _codex_probe())
+    assert (killed_res.canceled, run_stop_reason(killed_res)) == (True, "canceled")
+
+    # A turn nobody stopped is untouched: the verdict stays with run_stop_reason.
+    settled = snapshot_to_run_result(_snapshot(), _codex_spec(), _codex_probe())
+    assert (settled.canceled, settled.stop_reason) == (False, "")
+    assert run_stop_reason(settled) == "completed"
+    failed = snapshot_to_run_result(_snapshot(settled=False, error="boom"),
+                                    _codex_spec(), _codex_probe())
+    assert (failed.canceled, run_stop_reason(failed)) == (False, "error")
+
+
 def test_snapshot_to_run_result_refuses_a_mismatched_probe_or_decision():
     with pytest.raises(RunnerError):
         snapshot_to_run_result(_snapshot(), _codex_spec(),
