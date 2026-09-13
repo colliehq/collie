@@ -113,6 +113,10 @@ class Completion:
     # them. Empty when thinking is off (the normal path).
     thinking_blocks: list = field(default_factory=list)
     retry_at: int = 0              # provider-attested quota reset (UTC epoch seconds)
+    # A structural refusal category, never the rejected assistant text. Consumers
+    # allowlist known categories before logging or emitting this provider metadata.
+    # Append fields to preserve existing positional request/thinking accounting.
+    contract_reason: str = ""
 
 
 def provider_retry_at(value, now=None) -> int:
@@ -1387,6 +1391,104 @@ def _parse_response_envelope(text: str, allowed_tools=None):
     # calls. Length-derived IDs collided in ordinary reads and could make an
     # older tool result look like the receipt for a newly interrupted call.
     return kind, ToolCall("cli_" + uuid.uuid4().hex, name, args)
+
+
+# Stable, content-free categories for "the reply did not match Collie's
+# {tool|answer} contract".  A single ``response_contract_error`` cannot tell a
+# model that wrote prose apart from one whose JSON carried an unescaped newline,
+# from one that named a tool the executor does not have -- yet those need three
+# different next actions, and the host already knows which happened at the point
+# it refuses the reply.  Every category below is computed from STRUCTURE alone:
+# no assistant text, tool argument or reasoning is read out of the reply, so a
+# category is safe to put in a nudge, an event, a receipt and the run record.
+CONTRACT_MISS_REASONS = (
+    "empty_response",      # the provider returned no assistant text at all
+    "no_json_object",      # prose only: nothing JSON-shaped to decode
+    "malformed_json",      # JSON-shaped but not decodable (escaping/quoting/truncation)
+    "ambiguous_json",      # decodable JSON the contract refuses: duplicate keys, NaN/Infinity
+    "not_a_json_object",   # valid JSON that is not one object (a list/batch of calls, a string)
+    "multiple_envelopes",  # more than one valid envelope in one reply
+    "extra_keys",          # the envelope carried keys outside the contract
+    "args_not_object",     # "args" was not a JSON object
+    "answer_not_string",   # "answer" was not a string
+    "unknown_tool",        # a well-formed call naming a tool the executor does not have
+    "not_an_envelope",     # a JSON object that is neither a tool call nor an answer
+)
+
+
+def _object_miss_reason(obj, allowed):
+    """One object's contract verdict: "" when it IS a valid envelope."""
+    keys = set(obj)
+    if "tool" in keys or "args" in keys:
+        if not {"tool", "args"} <= keys:
+            return "not_an_envelope"
+        if keys != {"tool", "args"}:
+            return "extra_keys"
+        if not isinstance(obj["tool"], str) or not obj["tool"]:
+            return "not_an_envelope"
+        if not isinstance(obj["args"], dict):
+            return "args_not_object"
+        if allowed is not None and obj["tool"] not in allowed:
+            return "unknown_tool"
+        return ""
+    if "answer" in keys:
+        if keys != {"answer"}:
+            return "extra_keys"
+        if not isinstance(obj["answer"], str):
+            return "answer_not_string"
+        return ""
+    return "not_an_envelope"
+
+
+def contract_miss_reason(text, allowed_tools=None) -> str:
+    """Classify a reply that ``_parse_response_envelope`` already refused.
+
+    This deliberately re-inspects the refused text instead of being folded into
+    the parser: the acceptance rules stay exactly one implementation, and a
+    classification bug can never widen what Collie is willing to execute.  The
+    return value is one of :data:`CONTRACT_MISS_REASONS`, or "" when the text
+    would in fact have been accepted (never expected; callers treat it as
+    "unclassified" rather than as permission to run anything).
+    """
+    if not isinstance(text, str) or not text.strip():
+        return "empty_response"
+    allowed = None if allowed_tools is None else set(allowed_tools)
+    try:
+        value = json.loads(text, object_pairs_hook=_unique_json_object,
+                           parse_constant=_reject_json_constant)
+    except RecursionError:
+        return "malformed_json"
+    except (TypeError, ValueError, json.JSONDecodeError):
+        try:
+            # Syntactically fine, but refused by the contract's own strictness
+            # (duplicate keys, non-finite numbers).  Worth its own category: the
+            # model must change the VALUE it sent, not how it escaped it.
+            json.loads(text)
+        except RecursionError:
+            return "malformed_json"
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        else:
+            return "ambiguous_json"
+        try:
+            objects = list(_json_objects(text))
+        except RecursionError:
+            objects = []
+        if not objects:
+            return "malformed_json" if re.search(r"[\[{]", text) else "no_json_object"
+    else:
+        if not isinstance(value, dict):
+            return "not_a_json_object"
+        objects = [value]
+    reasons = [_object_miss_reason(obj, allowed) for obj in objects]
+    if reasons.count("") > 1:
+        return "multiple_envelopes"
+    if reasons.count("") == 1:
+        return ""
+    for reason in reasons:
+        if reason and reason != "not_an_envelope":
+            return reason
+    return "not_an_envelope"
 
 
 def _parse_tool_json(text: str):

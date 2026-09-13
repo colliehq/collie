@@ -52,6 +52,55 @@ FORMAT_REPAIR_NUDGE = (
     "object of arguments, or one final answer. Do not return a list or batch, multiple alternatives, "
     "extra keys, Markdown fences, or prose outside the required response envelope.")
 
+# The one corrective turn above used to be blind: whatever the model got wrong, it was told only
+# that the reply "could not be parsed", and a real run still failed after its repair.
+# The refused text was not saved, so that run's exact cause remains unknown. The provider
+# now classifies the shape (providers.CONTRACT_MISS_REASONS) without retaining the text, naming the
+# one fact that decides the next reply.  Each hint stays content-free: it describes the SHAPE that
+# was refused, never what the model wrote.
+CONTRACT_REPAIR_HINTS = {
+    "empty_response": "Your previous reply carried no text at all — emit the response object itself.",
+    "no_json_object": "Your previous reply was prose with no JSON object in it.",
+    "malformed_json": "Your previous reply was JSON-shaped but did not parse. Escape string "
+                      "contents properly (\\\\ for a backslash, \\\" for a quote, \\n for a "
+                      "newline) — a raw newline or a stray backslash inside a string breaks it.",
+    "ambiguous_json": "Your previous reply parsed but used a duplicate object key or a non-finite "
+                      "number (NaN/Infinity), which the contract refuses.",
+    "not_a_json_object": "Your previous reply was valid JSON but not a single object; a list or "
+                         "batch of actions is refused. Send one action.",
+    "multiple_envelopes": "Your previous reply contained more than one response object.",
+    "extra_keys": "Your previous reply carried keys outside the contract: a call has exactly "
+                  "\"tool\" and \"args\", an answer has exactly \"answer\".",
+    "args_not_object": "In your previous reply \"args\" was not a JSON object; it must be an "
+                       "object, even when empty.",
+    "answer_not_string": "In your previous reply \"answer\" was not a string.",
+    "unknown_tool": "Your previous reply named a tool the executor does not have.",
+    "not_an_envelope": "Your previous reply was a JSON object that was neither a tool call nor "
+                       "an answer.",
+    "provider_schema_refusal": "The provider's own formatter refused your previous reply against "
+                               "this contract's schema.",
+}
+
+
+def _safe_contract_reason(completion) -> str:
+    """Only known categories may cross into events, receipts and persisted records."""
+    reason = getattr(completion, "contract_reason", "")
+    return reason if type(reason) is str and reason in CONTRACT_REPAIR_HINTS else ""
+
+
+def format_repair_nudge(reason: str = "", tool_names=()) -> str:
+    """The corrective user turn, sharpened by a content-free miss category.
+
+    ``tool_names`` is the host's own active allowlist, not anything read out of
+    the refused reply, so naming it cannot leak model output back to the model.
+    """
+    hint = CONTRACT_REPAIR_HINTS.get(str(reason or ""), "")
+    names = [str(name) for name in (tool_names or []) if str(name)]
+    if reason == "unknown_tool" and names:
+        hint += " The executor's tools are: %s." % ", ".join(sorted(names))
+    return FORMAT_REPAIR_NUDGE + ((" " + hint) if hint else "")
+
+
 VERIFY_NUDGE = ("Before finalizing, use the bash tool to run the project's relevant tests "
                 "(`python -m pytest -q`, `npm test`, `go test ./...`, `cargo test`, or this "
                 "repository's equivalent). If anything fails, read the error, fix it, and re-run. "
@@ -2047,16 +2096,20 @@ class Harness:
                             and not self._over_budget(total)):
                         res.contract_repairs += 1
                         consecutive_contract_repairs += 1
+                        reason = _safe_contract_reason(comp)
                         # Do not append either the rejected output or this synthetic correction to
                         # session["messages"].  The next successful tool/answer is the only assistant
                         # turn that becomes durable history.
                         call_messages = list(msgs) + [{
-                            "role": "user", "content": FORMAT_REPAIR_NUDGE,
+                            "role": "user",
+                            "content": format_repair_nudge(
+                                reason, [s.get("name") for s in schemas]),
                             "source": "harness", "kind": "format_repair",
                         }]
                         self.recorder.log_turn(
                             rid, turn, "format_repair",
-                            "response_contract_error; corrective request %d/%d" % (
+                            "response_contract_error%s; corrective request %d/%d" % (
+                                (" [%s]" % reason) if reason else "",
                                 consecutive_contract_repairs, self.max_contract_repairs),
                             comp.usage.input_tokens, comp.usage.output_tokens,
                             meta.prefix_tokens, 0, cache_read=comp.usage.cache_read)
@@ -2064,6 +2117,7 @@ class Harness:
                             "format_repair", attempt=consecutive_contract_repairs,
                             total_repairs=res.contract_repairs,
                             max=self.max_contract_repairs,
+                            reason=reason,
                             error_code=(getattr(comp, "error_code", "")
                                         or "response_contract_error"))
                         continue
@@ -2106,12 +2160,19 @@ class Harness:
                     if cls == "protocol":
                         # Content-free terminal form: malformed assistant text must not enter the
                         # result, recorder, session checkpoint, or memory through an error string.
-                        note = ("gave up after %d structured-response repair%s" % (
+                        # The structural category DOES belong here: without it a finished run is
+                        # undiagnosable afterwards -- "the model wrote prose", "its JSON did not
+                        # escape a newline" and "it named a tool we do not have" all read alike,
+                        # and they call for three different next actions.  It said
+                        # "structured-response" even for runs that never used structured mode.
+                        note = ("gave up after %d response-contract repair%s" % (
                             consecutive_contract_repairs, "" if consecutive_contract_repairs == 1 else "s")
                                 if consecutive_contract_repairs else
-                                "structured-response repair unavailable at the request budget")
-                        comp.text = "protocol: [%s] %sresponse_contract_error" % (
-                            note, ("HTTP %d " % comp.error_status) if comp.error_status else "")
+                                "response-contract repair unavailable at the request budget")
+                        reason = _safe_contract_reason(comp)
+                        comp.text = "protocol: [%s] %sresponse_contract_error%s" % (
+                            note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                            (" [%s]" % reason) if reason else "")
                     else:
                         known = is_known_terminal(comp.error_detail or comp.text or "")
                         note = ("not retried (fatal)" if known else

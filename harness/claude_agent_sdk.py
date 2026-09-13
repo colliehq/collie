@@ -24,7 +24,8 @@ import time
 import uuid
 
 from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
-                        _parse_response_envelope, content_text, provider_default_model)
+                        _parse_response_envelope, content_text,
+                        contract_miss_reason, provider_default_model)
 
 
 _MAX_STDOUT = 2 * 1024 * 1024
@@ -967,14 +968,18 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 # The SDK request itself succeeded and consumed quota, but the result cannot safely
                 # drive Collie's executor.  Surface a stable semantic error so Harness can spend at
                 # most one separately-authorized corrective turn.  Never stream or persist the
-                # rejected assistant text.
+                # rejected assistant text -- only the structural category of the miss, which is
+                # what lets that one corrective turn say something the model can act on.
                 status = "completed"
+                reason = contract_miss_reason(text, allowed_tools=allowed_tools)
                 completion = Completion(
                     text="ERROR(claude-agent-sdk): response contract error",
                     usage=usage, stop_reason="error", error_status=422,
                     error_code="response_contract_error",
+                    contract_reason=reason,
                     error_detail=("response_contract_error: assistant response did not match "
-                                  "Collie's tool/answer contract"),
+                                  "Collie's tool/answer contract" +
+                                  ((" (%s)" % reason) if reason else "")),
                     request_count=1)
                 completion.api_key_source = api_key_source
                 return completion
@@ -1030,9 +1035,13 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 text="ERROR(claude-agent-sdk): response contract error",
                 usage=exc.usage, stop_reason="error", error_status=422,
                 error_code="response_contract_error",
+                # The refused response never crosses the worker boundary, so the
+                # only honest category here is "the provider's own schema
+                # formatter refused it" -- distinct from every in-band shape miss.
+                contract_reason="provider_schema_refusal",
                 error_detail=("response_contract_error: the provider's structured "
                               "formatter refused the assistant response against "
-                              "Collie's tool/answer schema"),
+                              "Collie's tool/answer schema (provider_schema_refusal)"),
                 request_count=1)
             completion.api_key_source = exc.api_key_source
             return completion
