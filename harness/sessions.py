@@ -6,6 +6,7 @@ keeps a long thread from bloating the prefix, so sessions can grow safely.
 """
 import ast
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -410,15 +411,140 @@ def append_run_receipt(sid, receipt, limit=40, directory=None):
     return True
 
 
+def _workspace_key(path):
+    """One spelling of a workspace directory: a separator, a ``.``, a slash or case
+    all name one worktree, and raw strings are how a cleanup deletes live work."""
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    try:
+        text = os.path.realpath(os.path.abspath(os.path.expanduser(path.strip())))
+    except (OSError, ValueError):
+        return ""
+    return os.path.normcase(os.path.normpath(text))
+
+
+def _isolated_key(raw):
+    """The isolated directory a session lives in right now, or "" if it has none."""
+    workspace = raw.get("workspace") if isinstance(raw.get("workspace"), dict) else {}
+    return _workspace_key(workspace.get("path")) if workspace.get("mode") == "isolated" else ""
+
+
+def _workspace_claim(key, directory=None):
+    """Serialize binding, forking and releasing ONE workspace directory across
+    processes. Fixed order: own lease, this claim, cotenant leases, journals."""
+    if not key:
+        return contextlib.nullcontext()
+    from . import session_owner
+    name = "workspace-" + hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:32]
+    return _locked(session_owner.sidecar_path(name, session_owner.RUNTIME_SUBDIR, ".claim", directory))
+
+
+def workspace_holders(path, *, exclude=(), directory=None):
+    """Which other conversations still live in this workspace directory: ids that
+    certainly reside here, ids whose journal would not parse, and rows this store
+    cannot even name (unreadable listing, unusable filename, unresolvable path).
+    Residency is where a session runs, not a field written at fork time."""
+    key = _workspace_key(path)
+    if not key:
+        return {"sessions": [], "unreadable": [], "opaque": ["a workspace path that will not resolve"]}
+    skip = {s for s in exclude if s}
+    holders, unreadable, opaque = [], [], []
+    try:
+        d = _dir(directory)
+        names = sorted(os.listdir(d))
+    except OSError as exc:
+        return {"sessions": [], "unreadable": [], "opaque": ["the sessions store: %s" % exc]}
+    for name in names:
+        if not name.endswith(".json") or name[:-5] in skip:
+            continue
+        other = name[:-5]
+        p = _path(other, d)
+        if not p:
+            # No addressable id: no lease to take, no record to read. Unknown, not absent.
+            opaque.append("an unusable journal name (%s)" % name[:60])
+            continue
+        try:
+            with _locked(p):
+                raw = _validate_raw(_load_raw(p), other)
+        except (ValueError, OSError):
+            unreadable.append(other)
+            continue
+        workspace = raw.get("workspace") if isinstance(raw.get("workspace"), dict) else {}
+        # `cwd` counts too: an old journal may carry only the directory it runs in.
+        if key in {_workspace_key(workspace.get("path")), _workspace_key(raw.get("cwd"))}:
+            holders.append(other)
+    return {"sessions": holders, "unreadable": unreadable, "opaque": opaque}
+
+
+@contextlib.contextmanager
+def _exclusive_workspace(sid, path, directory=None):
+    """Hold a shared workspace still: its claim, plus every cotenant's run lease,
+    through copy, apply, relocation and cleanup - probing only samples a lease, and
+    the neighbour can start the instant after and edit the tree mid-copy. A journal
+    that will not parse is a cotenant until proved otherwise: its id is still a
+    lease, and taking it is what makes copying out of here sound (an idle one costs
+    nothing, a held one is a live editor). A row with no usable id cannot be held at
+    all, so refuse rather than guess."""
+    from . import session_owner
+    leases = []
+    with _workspace_claim(_workspace_key(path), directory):
+        try:
+            others = workspace_holders(path, exclude=(sid,), directory=directory)
+            if others["opaque"]:
+                raise ValueError("this shared workspace cannot be checked for other running"
+                                 " conversations (%s); copying out of it is not safe"
+                                 % ", ".join(others["opaque"][:3]))
+            for other in sorted(others["sessions"]) + sorted(others["unreadable"]):
+                lease = session_owner.try_acquire(other, label="cotenant", directory=directory)
+                if lease is None:
+                    torn = "" if other in others["sessions"] else " (and its record is unreadable)"
+                    raise ValueError("another conversation (%s) is running in this shared workspace"
+                                     "%s; stop it before applying these changes" % (other, torn))
+                leases.append(lease)
+            yield
+        finally:
+            for lease in leases:
+                with contextlib.suppress(OSError, ValueError):
+                    lease.release()
+
+
+def _release_vacated_workspace(sid, old_path, directory=None, *, claimed=False):
+    """Remove a handed-off worktree only when this conversation was its last resident.
+    Never raises: the changes are durable by now, so a cleanup that cannot run is a
+    retained directory, not a failed handoff."""
+    from . import worktree
+    claim = contextlib.nullcontext() if claimed else _workspace_claim(_workspace_key(old_path), directory)
+    try:
+        with claim:
+            # Inside the claim: no new resident can register between question and deletion.
+            holders = workspace_holders(old_path, exclude=(sid,), directory=directory)
+            kept = ""
+            if holders["sessions"]:
+                kept = "still the workspace of %s" % ", ".join(holders["sessions"][:5])
+            elif holders["unreadable"] or holders["opaque"]:
+                # Idle is not absent: a free lease never says whose work is in here.
+                kept = ("%s could not be read, so no conversation can be ruled out"
+                        % ", ".join((holders["unreadable"] + holders["opaque"])[:3]))
+            if kept:
+                return {"removed": False, "reason": "kept: " + kept}
+            released = worktree.release(old_path, force=True)
+    except OSError as exc:
+        return {"removed": False, "reason": "kept: cleanup could not run (%s)" % exc}
+    ok = bool(released.get("ok"))
+    return {"removed": ok, "reason": "" if ok else "kept: %s" % (released.get("error") or "removal failed")}
+
+
 def bind_isolated_workspace(sid, info, cwd=""):
-    """Record a prepared workspace before dispatch, under the caller's run lease."""
+    """Record a prepared workspace before dispatch, under the caller's run lease: its one
+    caller binds a fresh worktree, and claims it so that cleanups can see this resident."""
     p = _path(sid)
     if not p or not info.get("ok") or not os.path.isdir(info.get("dir") or ""):
         raise ValueError("isolated workspace is unavailable")
-    with _locked(p):
+    with _workspace_claim(_workspace_key(info["dir"])), _locked(p):
         raw = _validate_raw(_load_raw(p), sid) if os.path.exists(p) else {"id": sid, "messages": []}
         workspace = {"mode": "isolated", "path": info["dir"], "branch": info["branch"],
-                     "origin": info["root"], "base_commit": info.get("base_commit") or ""}
+                     "origin": info["root"], "base_commit": info.get("base_commit") or "",
+                     "owner": sid}
         raw.update(cwd=info["dir"], workspace=workspace, updated=time.time())
         raw["handoffs"] = (list(raw.get("handoffs") or []) + [
             {"at": raw["updated"], "target": "isolated", "workspace": workspace,
@@ -1021,6 +1147,17 @@ def _fork_prefix(messages, at_index):
     return prefix + closures
 
 
+def _inherited_workspace(workspace, parent):
+    """A branch inherits the parent's directory, not its ownership: copying the record
+    wholesale made the child a second owner, which is how a cleanup came to believe
+    it was the last resident."""
+    child = dict(workspace or {})
+    if child.get("mode") == "isolated" and child.get("path"):
+        child["owner"] = child.get("owner") or parent
+        child["shared"] = True
+    return child
+
+
 def fork(sid, at_index, *, child_id="", title=""):
     """Create a new durable session from one exact message boundary."""
     source_path = _path(sid)
@@ -1039,15 +1176,27 @@ def fork(sid, at_index, *, child_id="", title=""):
     if os.path.exists(target):
         raise ValueError("child session already exists")
     now = time.time()
-    child = {"id": child_id, "project": source.get("project") or "web",
-             "cwd": source.get("cwd") or "", "updated": now,
-             "messages": _fork_prefix(messages, at_index), "last_answer": "",
-             "title": (title or ((source.get("title") or sid) + " · fork"))[:80],
-             "forked_from": sid, "fork_index": at_index,
-             "lineage": list(source.get("lineage") or [])[-30:] + [sid],
-             "workspace": dict(source.get("workspace") or {})}
-    with _locked(target):
-        _atomic_dump(child, target)
+    for _ in range(5):
+        key = _isolated_key(source)
+        with _workspace_claim(key):
+            # Re-read under the claim actually held, and write the branch only if the parent
+            # still lives where it protects: a handoff may have vacated this directory since.
+            with _locked(source_path):
+                source = _validate_raw(_load_raw(source_path), sid)
+            if _isolated_key(source) != key:
+                continue                # take the claim that now matters instead
+            child = {"id": child_id, "project": source.get("project") or "web",
+                     "cwd": source.get("cwd") or "", "updated": now,
+                     "messages": _fork_prefix(messages, at_index), "last_answer": "",
+                     "title": (title or ((source.get("title") or sid) + " · fork"))[:80],
+                     "forked_from": sid, "fork_index": at_index,
+                     "lineage": list(source.get("lineage") or [])[-30:] + [sid],
+                     "workspace": _inherited_workspace(source.get("workspace"), sid)}
+            with _locked(target):
+                _atomic_dump(child, target)
+            break
+    else:
+        raise ValueError("this conversation's workspace is moving; try the fork again")
     return {"id": child_id, "forked_from": sid, "fork_index": at_index,
             "messages": at_index, "cwd": child["cwd"], "title": child["title"]}
 
@@ -1065,6 +1214,12 @@ def handoff(sid, target, *, confirm=False, remove_isolated=False):
 
 
 def _handoff_owned(sid, target, *, confirm=False, remove_isolated=False):
+    """Move a workspace, holding any shared tree still until the move is complete."""
+    with contextlib.ExitStack() as exclusion:      # cotenant leases, held to the end
+        return _handoff_applying(sid, target, exclusion, confirm=confirm, remove_isolated=remove_isolated)
+
+
+def _handoff_applying(sid, target, exclusion, *, confirm=False, remove_isolated=False):
     """Move a workspace while the caller owns the execution lease, without blocking readers."""
     p = _path(sid)
     if not p or not os.path.exists(p):
@@ -1088,10 +1243,13 @@ def _handoff_owned(sid, target, *, confirm=False, remove_isolated=False):
         if not result.get("ok"):
             raise ValueError(result.get("error") or "could not create isolated workspace")
         workspace = {"mode": "isolated", "path": result["dir"], "branch": result["branch"],
-                     "origin": result["root"], "base_commit": result.get("base_commit") or ""}
+                     "origin": result["root"], "base_commit": result.get("base_commit") or "",
+                     "owner": sid}
     else:
         if workspace.get("mode") != "isolated":
             return {"ok": True, "session": sid, "workspace": workspace, "existing": True}
+        # Before the patch, not after: a live cotenant cannot be copied out mid-edit.
+        exclusion.enter_context(_exclusive_workspace(sid, workspace.get("path") or ""))
         def before_apply():
             with _locked(p):
                 latest = _validate_raw(_load_raw(p), sid)
@@ -1125,8 +1283,23 @@ def _handoff_owned(sid, target, *, confirm=False, remove_isolated=False):
         raw["handoffs"] = (list(raw.get("handoffs") or []) +
                            [{"at": now, "target": target, "workspace": workspace}])[-50:]
         _atomic_dump(raw, p)
-    # A requested cleanup happens only after the new durable location is committed.
+    # Only after the new location is committed, and only if nobody else lives there.
     if remove_isolated and old_path:
-        released = worktree.release(old_path, force=True)
-        workspace["isolated_removed"] = bool(released.get("ok"))
+        cleanup = _release_vacated_workspace(sid, old_path, claimed=True)
+        workspace["isolated_removed"] = cleanup["removed"]
+        if not cleanup["removed"]:
+            workspace["isolated_retained"] = cleanup["reason"]
+        notes = ("isolated_removed", "isolated_retained", "cleanup_note_error")
+        try:
+            with _locked(p):
+                raw = _validate_raw(_load_raw(p), sid)
+                stored = raw.get("workspace") if isinstance(raw.get("workspace"), dict) else None
+                # Only annotate the record this handoff wrote: anything else arrived
+                # after it, and a footnote is not worth overwriting it.
+                if stored == {k: v for k, v in workspace.items() if k not in notes}:
+                    raw["workspace"] = dict(workspace)
+                    _atomic_dump(raw, p)
+        except (OSError, ValueError) as exc:
+            # The new location is already recorded; only this footnote is missing.
+            workspace["cleanup_note_error"] = str(exc)[:200]
     return {"ok": True, "session": sid, "workspace": workspace}
