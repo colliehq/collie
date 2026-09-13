@@ -2,7 +2,7 @@
 
 本轮从 2026-09-13 05:15 PDT 开始，后台任务截止于 2026-09-14 05:15 PDT。
 
-截至 20:00 UTC，二十五项产品修复已经独立验证并提交，同步给后续后台任务。新增真实本地服务重启验证证明手机 Activity 可以保留草稿并恢复读取；完整二十五项回归进行中，Claude Code 继续完善两个 benchmark 驱动与手机 worker 状态显示。
+截至 20:37 UTC，二十六项产品修复已经独立验证并提交；精确二十五项版本完整回归为 4117 passed、20 skipped，其他门禁全部通过。新的八项外部 worker / 原生 Claude Code 续接实验已完成，发现评分器缓存误判；真实上下文压力实验遇到响应格式错误，正在继续诊断。
 
 ## 已合入的产品修复
 
@@ -249,6 +249,22 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 重启后的新截图另外暴露了手机 worker 呈现错误：代码仅依据 fresh 布尔值，会把没有心跳标为“需要恢复”，把 fresh 但 failed 的状态标为 Running。新的独立 Claude Code 产品任务 `manual/mobile-worker-state` 基于二十五项版本，正在复现并修正这项显示；尚未接受或提交。
 
 官方只读额度快照 19:54:56 UTC：五小时已用 45%、周额度已用 55%，extra usage 关闭，下一次五小时自然重置 22:10 UTC。没有手动重置或扩展原定截止时间。
+
+第二十六项提交 `27270d4bd41a7aeca4d6714a434dcd0d2d02efba` 修复手机 Activity 的后台服务状态：缺少心跳显示“无心跳”，失效心跳保留已知状态并提醒；实际 failed、dead、circuit_open 等失败不再因 fresh=true 显示 Running。未知状态保持提醒。原先五个缺少心跳的 worker 被误标为“需要恢复”，现在不会制造恢复操作的错觉；真实会话恢复决定不变。
+
+补丁 `344694a9bd9c71977066e7ebd256d203704c797fd6ae4c8e9870b16f1b730dbf`，干净累计二十六项快照 `0c1f6b839d49fabd10076e38905fd7413aa7a5e3`。独立 166 passed、原基线 87 passed、新测试在旧代码 10 failed/87 passed，没有原有失败；只读 Claude Code 审阅 approve。父另补未知 prototype 名称的反例，2 failed/1 passed → 3 passed。健康状态的旧代码失败来自说明文案更新，不作为十个独立健康故障。三种界面语言同步，保留 token 更新、草稿、请求身份和 POST 行为。72 个无关未提交文件保全。
+
+接受后又在该精确版本做真实 stock 本地服务重启：六个检查全部通过，包括旧令牌被真正拒绝、并发只读请求恢复、新令牌、草稿、同一页面和无 POST。两棵所属服务进程树确认退出；`manual/mobile-worker-stock-after/phone-after-restart.png` 已人工查看。使用 390×844 headless Chromium 和 mock provider，无响应拦截、无模型推理；不代表远程手机或 relay 验收。ambient/remote 面板仍有相同旧状态映射，另一个 Claude Code 任务正在修复，暂不计接受。
+
+`twentyfive-fixes-full` 已于 20:15:46 UTC 完成，精确 `4f6763ff2a91ab42109d2172227ba91619043793`：4117 passed、20 skipped，GUI 63/63、surfaces 41/41，其他发布检查全部通过。耗时 1294.98 秒；它不包含第二十六项或后续候选。自动第九批基于二十五项运行中，尚未把第二十六项同步到活动分支。
+
+上下文压力驱动经过额外父反例、作者 206 项离线检查以及新 stock mock 后，在原定限制内启动了一次真实 Max 实验 `manual/context-pressure-plan/attempts/parent-v5-live`。产品固定为二十一项 `672c0561`，CLI 2.1.228 / Opus 5/high/standard；实际阈值、订阅身份、源码、预算和清理证据通过。20:12:57 UTC 收尾，四轮、三个成功工具调用后得到 `HTTP 422 response_contract_error`，一次格式修复仍失败。整体 FAILED，没有完成产物、实际压缩或恢复运行；没有为获得成功而重跑。拒绝的模型原文未落盘，不能断言具体格式原因或“输出太大”。新 Claude Code 产品任务正在补查可诊断性和修复机制。
+
+该压力报告另外把生产者实际模型名 `claude-agent-sdk:claude-opus-5` 错判为偏离裸名 `claude-opus-5`；这是测量规则缺陷，原报告保持不变。即使单列纠正这一行，真实终态错误仍使整体 FAILED。执行驱动哈希 `b28008f56862f84bf9fbac7c3d183fb271f9364baf37ac027dc4486eb4715f99`；原始记录和前后源码/输入哈希均保留。
+
+另一组 `manual/worker-continuation-plan/parent-v3-live` 于 20:31:53 UTC 完成：两种任务各两次重复、两条路径，共八项全部记录，文件功能检查 8/8 通过，同一 native 会话的两次调用、实际运行参数和所属进程清理均有证据。固定产品为二十四项 `1e1c38e2`，两端均隔离 CLI 2.1.270 / Opus 5/high/standard。Collie 路径是直接调用 stock `ClaudeCodeRunner.start/resume` 的 adapter 诊断，不是完整 web 会话恢复；原生路径有 Bash 共六种工具，worker 五种文件工具，不能用于总体排名，也不能和早先 own-loop / CLI 2.1.228 的八项合并。
+
+原评分将 worker 4/4 complete、原生 0/4 complete：原生四项仅在新增缓存文件规则失败，全部功能检查通过。父发现规则把 `.pyc` 一概称作“grader 或 host 产物”，而任务明确要求运行 Python 测试；仅凭扩展名无法确定来源或证明违反任务。原成绩与目录保留，后续只读审计将单独记录测量更正，不把这组误判宣传为产品优势。`parent-v3-live-report/report.json` 输入哈希未变、无缺失样本；冻结执行源码和 fixture/grader 见 `PARENT-PINS-v3.json`。父此前还以真实慢 grader 复现了超时后进程仍存活的清理窗口，等待所属进程退出后，在 0.2 秒预算下约 0.213 秒结束、确认 PID 消失；这是实验运行器修复，不算产品功能修复。
 
 ## 工作保全
 
