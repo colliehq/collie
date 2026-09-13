@@ -26,6 +26,10 @@
 
 提交 `e63989135a0cc2c3a0e6e115350954fd96413c65` 让新任务的 Send 自动检查所填目录，检查通过后继续同一次发送。Send 与“使用此目录”的同一检查共用结果，重复点击不会吞掉请求或重复启动；等待时换目录、改字、替换附件或切换会话会保留当前草稿并放弃旧发送。已有会话仍使用保存的目录。最终独立回归 116 passed，旧代码 18 failed、9 passed，Claude Code 只读审阅 approve；其中一个旧失败是原有未修改测试的时序竞态，其余确定行为失败支撑修复。父流程针对目录变化和重复确认的独立失败/通过实验另行保留。精确测试快照 `48d7dfaf012d00b1f676fc445600829f391d17e6`，证据 `manual/folder-send-merged/verification-v2`。原工作区合入只应用审阅后的三文件增量，71 个无关脏文件哈希保持一致。
 
+提交 `6a047ea6f7fcfae89b00c734f1550f0b100d0391` 保留页面末尾脚本到达前的 New task/Today 选择，并让该选择优先于更早的会话深链；早期新输入及主动清空优先于旧根草稿，按正常输入路径保存。恢复页面不会启动任务。独立 125 passed、旧代码 6 failed/13 passed、Claude Code 只读审阅 approve；补查 Mission、会话显示、任务连续性和成果交接共 26 passed。精确组合快照 `35d18c953f2ea2a0d98cd52ffc9b02bd4f95e0a9`，证据 `manual/ui-bootstrap-merged/verification` 和 `bootstrap-wider-ui-v2`。更早一次扩大检查因文件名写错而未收集测试，保留为无效尝试，不计通过。该修复只处理两个根视图按钮；其他导航在同一早期窗口、未选择根视图时的深链早期输入仍未覆盖。
+
+提交 `28564f12cad7e16d470d66d3656743ce83be6238` 修复执行进程退出后任务仍被标成 claimed、无法开始/编辑/取消的队列。读取或编辑/取消入口先尝试非阻塞获取会话租约，再用现有日志核对：已经交付的标为 consumed，尚未交付的恢复 pending；活执行者仍持有租约时不干扰它，日志不可读时不凭猜测重新排队。独立 193 passed、旧代码 2 failed/15 passed、只读审阅 approve。完整回归 3954 passed、20 skipped，GUI 63/63、surfaces 41/41、全部门禁通过。精确快照 `d40a3fcb9e115ad6043c0d502199bd0a8e9cc46e`，证据 `rounds/04-queued-intent`；该完整快照不含第八、九项网页修复，组合检查另行记录。
+
 ## 验证证据
 
 | 检查 | 结果 | 验证对象 |
@@ -80,7 +84,7 @@
 
 父流程又在该候选复现旧根草稿覆盖早期新输入和主动清空的情况，补上输入事件记录、按当前根视图恢复并通过正常输入处理保存。原候选两项失败的证据在 `early-draft-precedence-before`，修正后同一外部检查及页面连续性套件在 `early-draft-precedence-after` 通过。
 
-扩大回归出现一个未修改的目录测试失败：它只等待输入后立即更新的目录概要，就在 Use folder 检查结束前发送。以 0.8 秒服务端延迟，在 clean 775 和启动候选上均复现相同 Send 丢失；证据 `bootstrap-adjacent-folder-base/candidate` 的通过表示诊断断言确认缺陷存在，不是产品验收通过。该问题由已独立接受的目录发送提交解决。启动增量随后叠加到 `48d7dfaf`，新的 `manual/ui-bootstrap-merged/verification` 为 125 passed、旧代码 6 failed/13 passed，正在只读审阅，尚未合入。
+扩大回归出现一个未修改的目录测试失败：它只等待输入后立即更新的目录概要，就在 Use folder 检查结束前发送。以 0.8 秒服务端延迟，在 clean 775 和启动候选上均复现相同 Send 丢失；证据 `bootstrap-adjacent-folder-base/candidate` 的通过表示诊断断言确认缺陷存在，不是产品验收通过。该问题由已独立接受的目录发送提交解决。启动增量随后叠加到 `48d7dfaf`，新的 `manual/ui-bootstrap-merged/verification` 为 125 passed、旧代码 6 failed/13 passed，只读审阅及额外 26 项相邻回归通过后已合入第九项提交。
 
 ## 真实 Claude Code 工作流实验
 
@@ -97,6 +101,16 @@
 调用前独立确认 Claude Max 登录、订阅额度与未启用额外付费，环境排除了 API-key 路线；产品的离线 probe receipt 仍将 billing 标为 unknown/unconfigured，不能将独立前置检查写成产品已完成账单认证。这是功能验收，样本不足以给不同 harness 排名；CLI 报告的美元数是用量折算，不作为订阅实际账单。
 
 conformance 依赖关系修复后的真实对照保存在 `live-compat-prereq-old` 和 `live-compat-prereq-new`：旧运行时默认模型仍按原样失败，但报告变为 8 PASS、1 FAIL、2 UNVERIFIED，不再虚构额外的续接/用量失败；新运行时依旧 11 PASS。测试计划记录了精确工作区补丁 SHA256，与独立审阅对象相同。少一次调用由记录调用次数的行为测试验证，实际报告确认了依赖列未执行。
+
+### 真模型工具执行中的停止与继续
+
+Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 stock webapp、独立临时项目和宿主验收。父流程先复现并修正两个实验判定漏洞：过期工具入口文件不证明进程仍存活，未收到 tool_result 也可能只是事件尚在缓冲。修正后只有活着、内容未改、尚未结束的短时工具进程才建立 Collie 工具边界；外部 worker 的事件顺序仍标为未验证。父流程还核对真实产品完成状态、有效 JSON 部分成果、所需验证结果以及全部进程清理。原生作者版本、修正补丁、模拟试跑和独立检查都保留。
+
+`live-cancel-collie-v1` 于 15:42 UTC 完成，精确产品仍为 `775b9a86`。模型先修改文件，再真正通过 bash 运行最长 90 秒的临时 hold.py；宿主确认该进程存活后按 Stop，约 95.2 ms 收到 canceled 结束帧，工具实际运行约 0.3 秒便退出，没有完成标记。部分修改保留、受保护测试未改，随后同一产品会话继续，产品明确 completed、required verification 通过、额外宿主 4/4 通过，所属进程全部清理。这是一个真实功能样本，不能推出一般延迟或成功率。
+
+`live-cancel-worker-v1` 也经实际外部 Claude Code worker 接受 Stop 并返回 canceled，部分修改保留。其工具事件无法证明物理执行边界，因此该能力仍未验证。显式继续收到 recovery_required 的起跑前拒绝：必须先检查中断效果。实验整体 FAIL 表示直接继续未达成，不意味着恢复检查本身错误。更具体的产品缺口是第一条 worker 结束帧没有携带恢复状态，用户再次尝试才看见原因；`manual/worker-terminal-recovery` 正在修复报告路径，保留真实恢复门禁。
+
+该 worker 实验还暴露工具自身的记录问题：已收到起跑前 done，却又等待 start 180 秒，并在摘要丢掉 done。原始 SSE 完整保留，父流程已修正等候与摘要逻辑、两项检查通过，没有重写旧实验。两次 live 执行的原驱动 SHA256 均为 `1be9d3cf…a6d9f233`，代码字节按执行前后哈希核对后保存在各外层运行目录 sources/driver.py；后来的读取修正另有版本。各 runtime、费用估算、订阅前置检查继续分开记录，不混为 harness 排名或实际账单。
 
 ## 工作保全
 
