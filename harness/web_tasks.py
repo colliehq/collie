@@ -1105,8 +1105,9 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
     request stays exactly where it is, waiting for an explicit Start.
 
     The follow-up is the one successor that never waits for a release: it
-    inherits the lease, so this turn's ending is announced (``gate``) before the
-    follow-up exists, never after it has started reporting.
+    inherits the lease, so this turn's ending is announced on the feeds they
+    share (``gate``) before the follow-up exists, never after it has started
+    reporting — and it waits for nothing else this turn still has to write.
     """
     outcome = getattr(handler, "_stream_outcome", None) or {}
     claimed = [entry["id"]] if entry else []
@@ -1170,11 +1171,22 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
         # than back on the market — so the ending turn announces itself now, and
         # must: after `schedule` the follow-up is publishing its own start into
         # the same backlog and feeds, where a late `done` would end *its* run.
+        # Only the shared half, though.  This turn's own socket and its optional
+        # phone buzz are nobody else's ordering, and a wedged writer or a phone
+        # that never answers would otherwise hold an already-accepted follow-up
+        # at the door for as long as it takes.  The release at the tail of the
+        # turn publishes those, on this thread, behind the follow-up.
         from . import webapp
-        webapp.Handler._terminal_release(sid, gate)
+        webapp.Handler._terminal_handover(sid, gate)
         schedule(sid, lease, nxt)
         return True
-    except Exception:
+    except Exception as exc:
+        # The lease was never handed over, so the caller releases it — and the
+        # request goes back to waiting with a reason, which is the only place a
+        # person can see that the follow-up they accepted is not running.
+        note_queue_error(sid, "the next queued request could not be started, so it is "
+                              "still waiting: %s: %s" % (type(exc).__name__, str(exc)[:200]),
+                         entry_id=nxt["id"], kind="settlement")
         release_undelivered(sid, lease, [nxt["id"]], "the next turn could not be started")
         return False
 

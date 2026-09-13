@@ -1114,6 +1114,157 @@ def test_a_hand_over_ends_the_old_run_before_the_new_one_starts(lab, monkeypatch
     assert _states(session) == {"follow-1": "consumed"}
 
 
+def test_a_follow_up_does_not_wait_for_the_ending_turns_own_socket_or_phone(
+        lab, monkeypatch):
+    """The ending turn owes two different things, and only one of them is shared.
+
+    A follow-up that has been accepted, claimed and handed the lease is waiting on
+    an ordering — this turn's ``done`` on the feeds they both publish to.  It is
+    not waiting on this turn's own socket, which nobody may be reading, or on a
+    phone that never answers; the run those belong to is over.  Behind them, an
+    accepted request does not start until a write to a dead client times out.
+    """
+    from harness import webapp
+    session = "handover-wedged-io"
+    _accept(lab, session, "follow-1", "second request")
+    notifying, unwedge, ran = threading.Event(), threading.Event(), threading.Event()
+    runs, read = {}, []
+
+    def _wedged_notify(sid, res, wall_ms=None, replay=False):
+        # The real notifier's own seam, with a phone that never answers: held as
+        # this turn's own I/O (`shared=False`), published at its release.
+        if not replay and webapp.Handler._terminal_defer(
+                sid, lambda gate: lambda: _wedged_notify(sid, res, wall_ms, replay=True),
+                shared=False):
+            return
+        notifying.set()
+        assert unwedge.wait(20), "the ending turn's notifier was never let go"
+
+    def _remember(harness, record):
+        with webapp.Handler._runs_lock:
+            runs[record["message"]] = webapp.Handler._runs[session]["run"]
+        if record["message"] == "second request":
+            ran.set()
+
+    monkeypatch.setattr(webapp.Handler, "_notify_done", staticmethod(_wedged_notify))
+    lab.during_run = _remember
+    mirror, live = _watch(session)
+    # The first turn's own frame is held behind the wedged notifier too, so the
+    # reader stays blocked and the assertions run while that turn is still writing.
+    reader = threading.Thread(
+        target=lambda: read.append(_stream(lab, q="first request", session=session)),
+        daemon=True)
+    try:
+        reader.start()
+        assert notifying.wait(20), "the ending turn never reached its own I/O"
+        assert ran.wait(20), "the follow-up waited for the ending turn's own I/O"
+        assert not read, "the ending turn's own frame is still unwritten, as intended"
+        # What the follow-up did start behind: this turn's ending, in order, on
+        # every feed the two of them share.
+        for feed in (_received(mirror), _received(live)):
+            assert ("done", runs["first request"]) in feed and (
+                feed.index(("done", runs["first request"]))
+                < feed.index(("start", runs["second request"]))), (
+                "a watching window was shown the new run ending before it began: %r" % (feed,))
+        unwedge.set()
+        reader.join(20)
+        assert read and read[0][-1][0] == "done", "the ending turn's own frame never landed"
+        assert read[0][-1][1]["run"] == runs["first request"]
+        assert [kind for kind, _ in read[0]].count("done") == 1
+    finally:
+        unwedge.set()
+        lab.during_run = None
+        reader.join(20)
+        _unwatch(session, mirror, live)
+    _settle()
+    assert [call["message"] for call in lab.calls] == ["first request", "second request"]
+    assert _states(session) == {"follow-1": "consumed"}
+
+
+def test_a_hand_over_publishes_the_shared_half_and_still_owes_its_own(lab):
+    """Handing the session on is not the end of the ending turn's announcement.
+
+    What a successor must not overtake goes out first and frees the session; what
+    only this turn is waiting on is still this turn's to write, exactly once, at
+    the tail of the turn — and taking nothing back off the successor."""
+    from harness import webapp
+    session = "handover-halves"
+    mirror, live = _watch(session)
+    own = []
+    try:
+        ending = webapp.Handler._terminal_arm(session)
+        webapp.Handler._mirror_pub(session, "done", {"session": session, "run": "old"})
+        assert ending.defer(lambda: own.append("this turn's socket"), shared=False)
+        assert not _received(mirror), "an ending turn is held until it hands over"
+
+        webapp.Handler._terminal_handover(session, ending)
+        assert _received(mirror) == [("done", "old")], "the shared half waited"
+        assert own == [], "the next run was made to wait for this turn's own socket"
+        with webapp.Handler._terminal_lock:
+            assert session not in webapp.Handler._terminal_gates, "the session was not handed on"
+        # And nothing more may be held: a `done` offered now would land behind the
+        # start of the run that replaced this one.
+        assert ending.defer(lambda: own.append("late"), shared=True) is False
+
+        successor = webapp.Handler._terminal_arm(session)
+        webapp.Handler._terminal_release(session, ending)     # the tail of the old turn
+        assert own == ["this turn's socket"]
+        with webapp.Handler._terminal_lock:
+            assert webapp.Handler._terminal_gates.get(session) is successor, (
+                "the ending turn's release took the successor's session")
+        webapp.Handler._terminal_release(session, successor)
+        assert own == ["this turn's socket"], "the ending turn's own I/O was published twice"
+        assert not _received(mirror)
+    finally:
+        _unwatch(session, mirror, live)
+
+
+def test_a_follow_up_that_cannot_be_started_stays_accepted_and_says_so(lab, monkeypatch):
+    """The hand-over happens before the follow-up exists, so it can still fail.
+
+    A thread that cannot be started leaves the lease in this turn's hands and the
+    request accepted: it goes back to waiting, the session is free, and why
+    nothing is running is somewhere a person can read it."""
+    from harness import webapp
+    session = "handover-no-thread"
+    _accept(lab, session, "follow-1", "second request")
+
+    real_schedule, refused = web_tasks.schedule, []
+
+    def _no_thread(sid, owner, entry):
+        if not refused:                    # the hand-over's one failure, then honest
+            refused.append(True)
+            raise RuntimeError("can't start new thread")
+        return real_schedule(sid, owner, entry)
+    monkeypatch.setattr(web_tasks, "schedule", _no_thread)
+    mirror, live = _watch(session)
+    try:
+        events = _stream(lab, q="first request", session=session)
+        assert events[-1][0] == "done" and events[-1][1]["error"] in ("", None)
+        assert _received(mirror).count(("done", events[-1][1]["run"])) == 1, (
+            "the turn that could not hand over never finished announcing either")
+    finally:
+        _unwatch(session, mirror, live)
+    _settle()
+
+    assert [call["message"] for call in lab.calls] == ["first request"]
+    assert _states(session) == {"follow-1": "pending"}, "the accepted request is still waiting"
+    with webapp.Handler._terminal_lock:
+        assert session not in webapp.Handler._terminal_gates
+    code, listing = _get(lab, "/api/task-inbox?session=" + session)
+    assert code == 200 and listing["owner_busy"] is False, "the lease leaked"
+    assert listing["queue_error"]["kind"] == "settlement"
+    assert "could not be started" in listing["queue_error"]["error"]
+    assert listing["queue_error"]["entry"] == "follow-1"
+    # Still the same request, and an explicit Start runs it on the same history.
+    code, started = _post(lab, "/api/task-inbox/start", {"session": session})
+    assert code == 200 and started["started"] is True
+    assert started["entry"]["id"] == "follow-1" and started["entry"]["text"] == "second request"
+    _settle()
+    assert [call["message"] for call in lab.calls] == ["first request", "second request"]
+    assert _states(session) == {"follow-1": "consumed"}
+
+
 @pytest.mark.parametrize("bus", ["mirror", "live"])
 @pytest.mark.parametrize("patience", ["spent", "kept", "dropped"])
 def test_a_successor_cannot_publish_through_an_ending_turn(lab, monkeypatch, bus, patience):

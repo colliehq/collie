@@ -969,6 +969,11 @@ class _TerminalGate:
     nobody up.  A turn still announcing when that bounded wait runs out is
     *superseded*, not believed: what it has not published is dropped where those
     feeds are written.
+
+    The two halves are published in two steps, not one: the shared half can be
+    out — and the session handed on — while this turn's own I/O is still being
+    written, which is what lets a follow-up that inherits the lease start behind
+    the ordering it must respect and nothing else.
     """
 
     __slots__ = ("session", "_lock", "_shared", "_local", "_open", "stale", "_settled")
@@ -990,20 +995,36 @@ class _TerminalGate:
             (self._shared if shared else self._local).append(publish)
             return True
 
-    def flush(self):
-        """Publish what was held: the shared feeds, then this turn's own I/O."""
+    def publish_shared(self):
+        """Publish the half of the announcement someone else is behind, and stop
+        taking new ones.
+
+        This turn's own socket and its optional phone buzz stay held for
+        ``flush``: no other turn reads them, so no other turn should have to wait
+        for them.  Where the lease goes straight to a follow-up, that difference
+        is the follow-up's start time.
+        """
         with self._lock:
-            if not self._open:
-                return
             self._open = False
             shared, self._shared = self._shared, []
-            local, self._local = self._local, []
         try:
             self._publish(shared)
         finally:
             # The shared feeds carry this turn's ending in order now, which is the
             # only part of the announcement anyone else is behind.
             self._settled.set()
+
+    def flush(self):
+        """Publish what was held: the shared feeds, then this turn's own I/O.
+
+        Both halves are the finishing turn's to write, in that order and on its
+        own thread, whether or not it handed the session on part way through:
+        each announcement is taken off the gate once, so the rest of a
+        hand-over's announcement is what is left to publish here.
+        """
+        self.publish_shared()
+        with self._lock:
+            local, self._local = self._local, []
         self._publish(local)
 
     @staticmethod
@@ -1122,9 +1143,35 @@ class Handler(BaseHTTPRequestHandler):
         try:
             gate.flush()
         finally:
-            with cls._terminal_lock:
-                if cls._terminal_gates.get(sid) is gate:
-                    cls._terminal_gates.pop(sid, None)
+            cls._terminal_drop(sid, gate)
+
+    @classmethod
+    def _terminal_handover(cls, sid, gate):
+        """Announce this turn's ending where the next turn will publish, then give
+        up the session — keeping this turn's own socket and notifier held for the
+        ``_terminal_release`` that still follows.
+
+        For the one successor that is handed the lease instead of competing for
+        it.  What it must not overtake (the shared feeds, and the backlog its own
+        ``start`` refills) is out before it exists; what only this turn is waiting
+        on — a socket nobody is reading, a phone that is not answering — is not in
+        its way.  Both halves are this turn's to publish either way: the release
+        at the tail of the turn is what writes the rest.
+        """
+        if gate is None:
+            return
+        try:
+            gate.publish_shared()
+        finally:
+            cls._terminal_drop(sid, gate)
+
+    @classmethod
+    def _terminal_drop(cls, sid, gate):
+        """Give up the session's terminal slot, and only if it is still this
+        turn's: a successor that has already armed owns its own gate."""
+        with cls._terminal_lock:
+            if cls._terminal_gates.get(sid) is gate:
+                cls._terminal_gates.pop(sid, None)
 
     @classmethod
     def _terminal_defer(cls, sid, build, shared=True):
