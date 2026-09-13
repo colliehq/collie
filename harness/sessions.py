@@ -991,6 +991,36 @@ def timeline(sid):
             "handoffs": list(raw.get("handoffs") or [])[-50:]}
 
 
+def _fork_prefix(messages, at_index):
+    """Carry a prefix into a branch as a thread a provider will still accept.
+
+    A fork boundary is any message index, so the cut routinely lands between an
+    assistant's ``tool_use`` blocks and the results that answered them — the
+    Studio timeline offers exactly that index for every assistant node.  The
+    carried prefix then ends on tool calls nothing ever answers, and Anthropic
+    (and the OpenAI-compatible shape) reject that history outright: the branch
+    is born unusable and every turn in it fails on history the person cannot
+    see or repair.
+
+    Closing them here is transcript hygiene, not a claim about the world.  The
+    child keeps the PARENT's workspace, so a call that was already running may
+    well have changed it; the closure says only what is actually known — this
+    branch does not carry the result, and the effect was not undone.
+    """
+    prefix = list(messages[:at_index])
+    closures = []
+    for call in _pending_calls(prefix):
+        closures.append({
+            "role": "tool", "tool_call_id": call["id"],
+            "name": call.get("name") or "tool",
+            "content": ("FORK: this conversation was branched before this call's result was "
+                        "recorded, so the result is not part of this branch. The call may "
+                        "already have run and changed the workspace, and nothing was undone; "
+                        "inspect the current state before requesting it again."),
+        })
+    return prefix + closures
+
+
 def fork(sid, at_index, *, child_id="", title=""):
     """Create a new durable session from one exact message boundary."""
     source_path = _path(sid)
@@ -1011,7 +1041,7 @@ def fork(sid, at_index, *, child_id="", title=""):
     now = time.time()
     child = {"id": child_id, "project": source.get("project") or "web",
              "cwd": source.get("cwd") or "", "updated": now,
-             "messages": messages[:at_index], "last_answer": "",
+             "messages": _fork_prefix(messages, at_index), "last_answer": "",
              "title": (title or ((source.get("title") or sid) + " · fork"))[:80],
              "forked_from": sid, "fork_index": at_index,
              "lineage": list(source.get("lineage") or [])[-30:] + [sid],

@@ -265,6 +265,141 @@ def test_incoming_tool_information_is_not_discarded_as_an_old_prefix(store, new_
     assert messages == [original, incoming], "new evidence must not be projected away"
 
 
+# ------------------------------------------------------------- branching off
+
+
+def _batched_thread():
+    """One assistant turn that issued two calls, both answered, then a conclusion."""
+    return [
+        {"role": "user", "content": "inspect and update"},
+        {"role": "assistant", "content": "working", "tool_calls": [
+            {"id": "c1", "name": "read_file", "args": {"path": "a.txt"}},
+            {"id": "c2", "name": "write_file", "args": {"path": "b.txt",
+                                                        "content": "applied"}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": "alpha"},
+        {"role": "tool", "tool_call_id": "c2", "name": "write_file", "content": "wrote b.txt"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+
+def _unanswered(messages):
+    """tool_use ids in a thread that no later tool result answers."""
+    pending = {}
+    for message in messages:
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls") or []:
+                cid = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+                if cid:
+                    pending[cid] = True
+        elif message.get("role") == "tool":
+            pending.pop(message.get("tool_call_id"), None)
+    return sorted(pending)
+
+
+def _anthropic_orphans(messages):
+    """Ids the real Anthropic projection would send with no answering tool_result."""
+    from harness.providers import AnthropicProvider
+
+    # Pure local message projection; the key is never used because nothing is sent.
+    wire = AnthropicProvider(api_key="offline-regression-test")._to_anthropic(messages)
+    answered, issued = set(), []
+    for entry in wire:
+        for block in entry.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                issued.append(block["id"])
+            elif block.get("type") == "tool_result":
+                answered.add(block["tool_use_id"])
+    return [cid for cid in issued if cid not in answered]
+
+
+def test_forking_inside_a_tool_batch_yields_a_branch_a_provider_accepts(store):
+    """A branch cut mid-batch must be runnable, not born rejected.
+
+    The timeline offers a fork index after every message, so the natural way to
+    say "go back to just before those results came in" cuts between an
+    assistant's ``tool_use`` blocks and the results that answered them.  The
+    carried prefix then ends on calls nothing answers, which Anthropic rejects
+    outright — so every turn in the new branch fails on history the person can
+    neither see nor repair, and the fork is simply dead.
+    """
+    sessions.save("parent", _batched_thread(), cwd=os.getcwd(), answer="done")
+    before = open(os.path.join(store, "parent.json"), "rb").read()
+
+    sessions.fork("parent", 2, child_id="mid-batch", title="another approach")
+
+    with open(os.path.join(store, "mid-batch.json"), encoding="utf-8") as fh:
+        stored = json.load(fh)
+    assert _unanswered(stored["messages"]) == [], "the branch carries unanswerable tool calls"
+    assert _anthropic_orphans(sessions.load("mid-batch")["messages"]) == []
+
+    # The closure is honest: it reports what this branch carries, and invents no result.
+    closures = [m for m in stored["messages"] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in closures] == ["c1", "c2"]
+    assert [m["name"] for m in closures] == ["read_file", "write_file"]
+    for message in closures:
+        assert "not part of this branch" in message["content"]
+        assert "nothing was undone" in message["content"]
+        assert "alpha" not in message["content"] and "wrote b.txt" not in message["content"]
+
+    # Branching reads the parent; it never rewrites it.
+    assert open(os.path.join(store, "parent.json"), "rb").read() == before
+
+
+def test_a_half_answered_batch_keeps_its_real_result_when_branched(store):
+    """Only the calls the cut actually orphaned are closed, and never twice."""
+    sessions.save("half", _batched_thread(), cwd=os.getcwd(), answer="done")
+
+    sessions.fork("half", 3, child_id="half-child")
+
+    messages = sessions.load("half-child")["messages"]
+    assert _unanswered(messages) == [] and _anthropic_orphans(messages) == []
+    results = {m["tool_call_id"]: m["content"] for m in messages if m.get("role") == "tool"}
+    assert results["c1"] == "alpha", "a recorded result must cross the cut verbatim"
+    assert "not part of this branch" in results["c2"]
+    assert len([m for m in messages if m.get("role") == "tool"]) == 2
+
+
+def test_a_branch_on_a_clean_boundary_carries_the_prefix_unchanged(store):
+    """Nothing is invented where the cut orphaned nothing."""
+    thread = _batched_thread()
+    sessions.save("clean", thread, cwd=os.getcwd(), answer="done")
+
+    for index, child in ((0, "at-start"), (1, "after-user"), (4, "after-results"),
+                         (5, "at-end")):
+        sessions.fork("clean", index, child_id=child)
+        with open(os.path.join(store, child + ".json"), encoding="utf-8") as fh:
+            carried = json.load(fh)["messages"]
+        assert carried == thread[:index], "%s: the carried prefix was altered" % child
+
+
+def test_a_branch_keeps_growing_from_its_closed_prefix(store):
+    """A branch is a fresh thread, not a thread recovering from an interruption.
+
+    An unanswered call left in the carried prefix is indistinguishable from one
+    a crash orphaned, so the first checkpoint makes resume backfill "the run was
+    interrupted" notices into a branch no run ever touched — and the model is
+    told a story about this conversation that never happened.
+    """
+    sessions.save("origin", _batched_thread(), cwd=os.getcwd(), answer="done")
+    sessions.fork("origin", 2, child_id="growing")
+
+    live = sessions.load("growing")["messages"]
+    opening = len(live)
+    for turn in range(3):
+        live.append({"role": "assistant", "content": "branch turn %d" % turn})
+        sessions.checkpoint("growing", live, run_id="r", turn=turn, state="tool_complete")
+
+    after = sessions.load("growing")["messages"]
+    assert not any("interrupted" in str(m.get("content", "")) for m in after), \
+        "a branch was described to the model as an interrupted run"
+    assert len(after) == opening + 3, "the branch did not grow by exactly the turns it took"
+    assert [m["content"] for m in after[-3:]] == \
+        ["branch turn 0", "branch turn 1", "branch turn 2"]
+    assert _anthropic_orphans(after) == []
+
+
 # ------------------------------------------------------- surviving a restart
 
 
