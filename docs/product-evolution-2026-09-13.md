@@ -20,6 +20,10 @@
 
 提交 `70bdc0ff70954b734818439a0c49785434072338` 让新建任务刷新后回到任务页面，保留草稿，不再跳回 Today。显式点击 Today 则继续回到 Today；会话深链优先，token 和桌面/IDE 参数保留，恢复页面不会启动任务。独立回归 125 passed，新测试在旧代码上 6 failed、4 passed，另一次 Claude Code 只读审阅 approve。精确快照 `e9c6dfa62337d062cef9ab3c99199785738ff117`，证据在 `manual/new-task-view/verification`；实际 Chrome 复测及截图在 `ui-new-task-view`。
 
+提交 `09691c15ccad86f1d5f196f88d5755a613b858ed` 避免额度等待消耗 Mission 的无进展预算。原先连续三次额度拒绝后，任务会要求用户介入，即使 provider 已提供下一次重置时间。现在保存并识别有效的重置元数据，等待不算成无进展；没有有效重置时间时原有保护仍生效，显式预算、截止时间和恢复门禁保持原语义。独立回归 107 passed、只读审阅 approve；精确快照 `f4880fd5`。原新增测试的旧代码失败先触及缺失元数据字段，父流程因此又做了独立时钟推进实验：旧版第三个五小时窗口后 needs_you，新版连续六次拒绝仍等待，提前唤醒不调用 provider，缺失/过期重置仍触发原保护。证据在 `quota-advancing-before`、`quota-advancing-candidate`；是模拟时钟与 mock provider，没有真的耗尽六个额度窗口。
+
+提交 `f685df87a0bae744096dabd95eb36f12223a3d38` 修复 live conformance 的失败依赖：第一轮未通过时不再额外调用 resume；没有完成的任务不会被误报为已完成但 usage 为 0。后续列保留主因并标为 UNVERIFIED，能力验证仍收紧；第一轮成功、续接失败时保留第一轮的有效用量。独立回归 105 passed、5 skipped，新测试在旧代码上 6 failed、3 passed，只读审阅 approve。精确快照 `df54b7c8`；真实 CLI 复测见下文。
+
 ## 验证证据
 
 | 检查 | 结果 | 验证对象 |
@@ -51,7 +55,7 @@
 
 独立仓库没有 remote，不共享原仓库 refs 或 objects。其起点 `3a0065399720ca4fc4f939c389a72e5e370e1e03` 是精确测试过的工作快照加首个修复。后续后台成果由进度文件记录。
 
-当前自动分支已汇入权限、取消和网页草稿修复，推进到 `a35de72419c19007200e3a84f5675d5478b95476`。两次合并分别经过 120、121 项专项测试，并在控制器批次间隙用旧 tip 校验更新分支；没有打断正在执行的批次或使其基线漂移。第 3 批额度恢复实验于 14:15:50 UTC 从此快照开始。新任务视图修复已在源仓库提交，须等当前批次结束后再汇入自动分支。
+当前自动分支已汇入上述七项修复，推进到 `775b9a866e99b083631ba943561e8650107ee890`。第 3 批额度恢复完成后，新任务视图和 conformance 修复合并经过 186 passed、5 skipped 的专项检查，并于 14:37 UTC 在控制器批次间隙用旧 tip 校验更新。证据在 `combined-quota-view-compat-tests` 和 `manual/combined-quota-view/merge.json`。完整回归仍只覆盖前述 `a4a79b46`，不把专项检查写成最新快照的完整回归。
 
 控制器同时检查绝对截止时间、剩余单调时钟时间和 `STOP` 文件；所有主要执行任务由 Windows Job 管理子进程。创建运行目录下的 `STOP` 文件即可提前结束。本机休眠或关机会减少实际运行时间。
 
@@ -77,7 +81,7 @@
 
 调用前独立确认 Claude Max 登录、订阅额度与未启用额外付费，环境排除了 API-key 路线；产品的离线 probe receipt 仍将 billing 标为 unknown/unconfigured，不能将独立前置检查写成产品已完成账单认证。这是功能验收，样本不足以给不同 harness 排名；CLI 报告的美元数是用量折算，不作为订阅实际账单。
 
-失败实验还暴露出 conformance 的依赖关系缺陷：第一轮失败后仍调用 resume，并把未完成的 0 token 结果写成“已完成任务”的 usage 失败。`manual/compat-prerequisite` 正在用 Claude Code 修复和测试，目标是保留主因、跳过无效依赖调用，并保持能力验证状态真实。
+conformance 依赖关系修复后的真实对照保存在 `live-compat-prereq-old` 和 `live-compat-prereq-new`：旧运行时默认模型仍按原样失败，但报告变为 8 PASS、1 FAIL、2 UNVERIFIED，不再虚构额外的续接/用量失败；新运行时依旧 11 PASS。测试计划记录了精确工作区补丁 SHA256，与独立审阅对象相同。少一次调用由记录调用次数的行为测试验证，实际报告确认了依赖列未执行。
 
 ## 工作保全
 
