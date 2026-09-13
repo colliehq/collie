@@ -24,6 +24,8 @@
 
 提交 `f685df87a0bae744096dabd95eb36f12223a3d38` 修复 live conformance 的失败依赖：第一轮未通过时不再额外调用 resume；没有完成的任务不会被误报为已完成但 usage 为 0。后续列保留主因并标为 UNVERIFIED，能力验证仍收紧；第一轮成功、续接失败时保留第一轮的有效用量。独立回归 105 passed、5 skipped，新测试在旧代码上 6 failed、3 passed，只读审阅 approve。精确快照 `df54b7c8`；真实 CLI 复测见下文。
 
+提交 `e63989135a0cc2c3a0e6e115350954fd96413c65` 让新任务的 Send 自动检查所填目录，检查通过后继续同一次发送。Send 与“使用此目录”的同一检查共用结果，重复点击不会吞掉请求或重复启动；等待时换目录、改字、替换附件或切换会话会保留当前草稿并放弃旧发送。已有会话仍使用保存的目录。最终独立回归 116 passed，旧代码 18 failed、9 passed，Claude Code 只读审阅 approve；其中一个旧失败是原有未修改测试的时序竞态，其余确定行为失败支撑修复。父流程针对目录变化和重复确认的独立失败/通过实验另行保留。精确测试快照 `48d7dfaf012d00b1f676fc445600829f391d17e6`，证据 `manual/folder-send-merged/verification-v2`。原工作区合入只应用审阅后的三文件增量，71 个无关脏文件哈希保持一致。
+
 ## 验证证据
 
 | 检查 | 结果 | 验证对象 |
@@ -68,15 +70,17 @@
 
 进一步复现的是尚未确认的目录输入丢失，现已由 `b68a62d` 修复。修复后的实际浏览器检查保留未确认的 `folder-b` 路径和草稿，刷新后自动检查目录，然后真正读取该目录的 README，返回 `Collie UI fixture: folder-b`；DOM、截图和说明位于 `ui-pending-candidate`。编码调用达到 20 分钟时限，候选补丁被保留，再由父流程独立验证、审阅后合入；没有把超时调用记作成功。
 
-一次 Send 自动检查目录仍是候选，尚未合入。第一次独立 100 项回归后，追加测试发现改选并确认 B 会让等待 A 的旧 Send 在 B 启动；此问题已修复，原失败与通过复测分别保留在 `folder-send-race-check`、`folder-send-race-after`。候选已与七项已提交修复合并，新的独立回归 114 passed、旧代码 15 failed/10 passed，实际 Chrome 一次 Send 自动检查并读取 folder-b 的证据在 `ui-folder-send-merged`。
+一次 Send 自动检查目录已由上文第八项提交合入。过程中第一次独立 100 项回归后，追加测试发现改选并确认 B 会让等待 A 的旧 Send 在 B 启动；此问题已修复，原失败与通过复测分别保留在 `folder-send-race-check`、`folder-send-race-after`。候选与七项已提交修复合并后的阶段回归为 114 passed、旧代码 15 failed/10 passed，实际 Chrome 一次 Send 自动检查并读取 folder-b 的证据在 `ui-folder-send-merged`。实际截图对应阶段补丁 bea，不是最终 090 补丁的逐字节验收。
 
-父流程随后又在同一合并候选复现了重复目录检查导致 Send 停住：自动检查期间点击“使用此目录”，即使目录和草稿都未改变，旧等待也会被丢弃。草稿保留，但要再次 Send。`folder-send-duplicate-check` 保留失败，原候选审阅正常停止。Claude Code 的 `manual/folder-send-merged/coalescing-followup` 已完成修复，同一目录选择的各检查入口共用在途检查；父流程原复现在 `folder-send-duplicate-after` 通过。新的独立验证 `verification-v2` 为 116 passed、旧代码 18 failed/9 passed，仍等待只读审阅结论，尚未合入。
+父流程随后又在同一合并候选复现了重复目录检查导致 Send 停住：自动检查期间点击“使用此目录”，即使目录和草稿都未改变，旧等待也会被丢弃。草稿保留，但要再次 Send。`folder-send-duplicate-check` 保留失败，原候选审阅正常停止。Claude Code 的 `manual/folder-send-merged/coalescing-followup` 完成修复，同一目录选择的各检查入口共用在途检查；父流程原复现在 `folder-send-duplicate-after` 通过。最终独立验证和只读审阅均通过后才合入，见上文。
 
 首次模型设置选择较多仍保留为体验观察。实际 Chrome 中有一次初次加载期间点击 New task 后仍显示 Today，随后点击正常；尚未通过受控条件复现，不把它归因于已确认缺陷，也不声称新视图修复覆盖它。
 
 独立诊断用服务端延迟分别控制 Today 数据、配置和会话响应，未发现这些迟到响应覆盖新视图；另用 HTML 分段传输确实复现了“按钮已显示、末尾脚本尚未加载时点击被吞掉”。这是一个受控缺陷，但没有证据证明它就是前述实际 Chrome 观察的原因。`manual/ui-bootstrap/intent-followup` 补齐早期显式导航与会话深链的先后语义，但调用在 15:08 UTC 达到时限，保留候选，不记作成功结束。
 
-父流程又在该候选复现旧根草稿覆盖早期新输入和主动清空的情况，补上输入事件记录、按当前根视图恢复并通过正常输入处理保存。原候选两项失败的证据在 `early-draft-precedence-before`，修正后同一外部检查及页面连续性套件在 `early-draft-precedence-after` 通过。更广的独立网页回归仍在执行，出现的失败尚待分析；这份候选尚未合入。
+父流程又在该候选复现旧根草稿覆盖早期新输入和主动清空的情况，补上输入事件记录、按当前根视图恢复并通过正常输入处理保存。原候选两项失败的证据在 `early-draft-precedence-before`，修正后同一外部检查及页面连续性套件在 `early-draft-precedence-after` 通过。
+
+扩大回归出现一个未修改的目录测试失败：它只等待输入后立即更新的目录概要，就在 Use folder 检查结束前发送。以 0.8 秒服务端延迟，在 clean 775 和启动候选上均复现相同 Send 丢失；证据 `bootstrap-adjacent-folder-base/candidate` 的通过表示诊断断言确认缺陷存在，不是产品验收通过。该问题由已独立接受的目录发送提交解决。启动增量随后叠加到 `48d7dfaf`，新的 `manual/ui-bootstrap-merged/verification` 为 125 passed、旧代码 6 failed/13 passed，正在只读审阅，尚未合入。
 
 ## 真实 Claude Code 工作流实验
 
