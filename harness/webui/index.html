@@ -6219,8 +6219,12 @@
     if (wanted) {
       if (focused) {
         try { focused.scrollIntoView({block:"center"}); } catch (_) {}
-        var act = focused.querySelector("button");
-        if (act) { act.focus(); } else { focused.setAttribute("tabindex", "-1"); focused.focus(); }
+        // Arriving is not deciding. Focus lands on the row itself, never on its first action —
+        // which is the strongest claim the row can make — so the Enter a person presses after
+        // being moved somewhere raises no confirmation and posts nothing. The actions keep their
+        // order and their wording, one Tab away.
+        focused.setAttribute("tabindex", "-1");
+        try { focused.focus(); } catch (_) {}
       } else {
         activityNotice(t("This conversation is not listed in recovery right now.") + " " + wanted, false);
       }
@@ -8675,8 +8679,9 @@
     var bubbles = $("log").querySelectorAll(".msg.assistant .bubble");
     // A reopened thread can be fenced on any ending, including one that reads as finished, so
     // this is asked before the verdict branches below decide what else to say.
+    var fenceProbe = null;
     if (receipt.recovery_required && bubbles.length) {
-      confirmRecoveryFence(id, receipt, bubbles[bubbles.length - 1]);
+      fenceProbe = confirmRecoveryFence(id, receipt, bubbles[bubbles.length - 1]);
     }
     if (receipt.canceled || receipt.error) {
       showTerminalRunState(receipt);
@@ -8689,7 +8694,12 @@
     }
     if (!isUnfinished(receipt)) return;
     showTerminalRunState(receipt);
-    if (bubbles.length) addStopNote(receipt, bubbles[bubbles.length - 1], id);
+    if (!bubbles.length) return;
+    // A receipt records the fence this run ENDED with, not how the thread stands now. The stop
+    // note is handed the same live answer the note above it already asked for, so a fence settled
+    // since stops refusing a turn there is no longer any reason to refuse.
+    releaseContinueOnClearedFence(addStopNote(receipt, bubbles[bubbles.length - 1], id),
+                                  fenceProbe, id);
   }
 
   var sessionLoadPending;
@@ -10401,6 +10411,23 @@
     var recovery = (d && d.recovery) || {};
     return String(recovery.reason || (d && d.error) || "").trim();
   }
+  // The one line on the note that says what just happened to THIS attempt — a Send that was
+  // refused, or a state the page could not confirm. It sits inside the note's own aria-live
+  // region, and it is rebuilt rather than rewritten, so a second refusal is announced as a second
+  // event instead of passing as an unchanged string. Nothing here moves focus: the composer still
+  // holds the user's words, and the fenced run keeps its one card.
+  function fenceStatusLine(note, lead) {
+    if (!note || !lead) return note;
+    var old = note.querySelector(".rc-status");
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var line = document.createElement("div");
+    line.className = "rc-why rc-status";
+    line.textContent = t(lead);
+    var title = note.querySelector("b");
+    if (title) note.insertBefore(line, title.nextSibling);
+    else note.insertBefore(line, note.firstChild);
+    return note;
+  }
   function recoveryFenceNote(d, sid, opts) {
     var note = document.createElement("section");
     note.className = "pack-summary warn recovery-note";
@@ -10411,10 +10438,7 @@
     var title = document.createElement("b");
     title.textContent = t("Check the outcome before continuing");
     note.appendChild(title);
-    if (opts.lead) {
-      var lead = document.createElement("div"); lead.className = "rc-why";
-      lead.textContent = t(opts.lead); note.appendChild(lead);
-    }
+    fenceStatusLine(note, opts.lead);
     var why = document.createElement("div"); why.className = "rc-why";
     why.textContent = t("Progress is saved. Check the files or target service so Collie can avoid repeating an action.");
     note.appendChild(why);
@@ -10445,7 +10469,10 @@
     var key = sid + "|" + String((d.run || (d.recovery || {}).run_id || ""));
     var seen = $("log").querySelectorAll("[data-recovery-note]");
     for (var i = 0; i < seen.length; i++) {
-      if (seen[i].getAttribute("data-recovery-note") === key) return seen[i];
+      // Already on screen for this run: one card, never two. A lead arriving with the repeat
+      // — most often a Send refused while this very note was visible — is written into the note's
+      // status line, so the refusal is seen and politely announced instead of being swallowed.
+      if (seen[i].getAttribute("data-recovery-note") === key) return fenceStatusLine(seen[i], opts.lead);
     }
     var note = recoveryFenceNote(d, sid, {key: key, lead: opts.lead, already: opts.already});
     host.appendChild(note);
@@ -10454,33 +10481,44 @@
   // A receipt records the fence that existed when that run ended; it is not a live answer. Ask
   // this session's own recovery route before saying anything, so a fence reconciled since leaves
   // no note behind, and so the note carries the server's current reason rather than an old one.
+  //
+  // It also ANSWERS with what it read, so one probe can settle more than the note: `true` fenced,
+  // `false` authoritatively clear (404, or a body that says `recovery_required: false`), and
+  // `null` for everything that is not an answer — a read still in flight when a newer one started,
+  // a refused or unreadable route, a reply for a conversation the reader has left, a body with no
+  // verdict in it. A caller gating a control on this must treat `null` as still fenced.
   var recoveryProbeToken = 0;
   function confirmRecoveryFence(sid, receipt, host) {
-    if (!sid) return;
+    if (!sid) return Promise.resolve(null);
     var token = ++recoveryProbeToken;
+    function mine() { return token === recoveryProbeToken && currentSession === sid; }
     // Same bounded authenticated read as everything else: a window reopened after the server was
     // restarted refreshes its process token once and asks again, instead of reporting the fence as
     // unconfirmed. A refusal that survives that retry still falls through to the honest fallback.
-    authenticatedFetch("/api/recovery/" + encodeURIComponent(sid))
+    return authenticatedFetch("/api/recovery/" + encodeURIComponent(sid))
       .then(function (r) {
         return r.json().catch(function () { return {}; })
                 .then(function (data) { return {status: r.status, ok: r.ok, data: data || {}}; });
       })
       .then(function (answer) {
-        if (token !== recoveryProbeToken || currentSession !== sid) return;   // moved on
-        if (answer.status === 404) return;             // no fence any more: say nothing at all
+        if (!mine()) return null;                      // moved on
+        if (answer.status === 404) return false;       // no fence any more: say nothing at all
         if (!answer.ok) throw new Error("unconfirmed");
-        if (!answer.data.recovery_required) return;
+        var fenced = answer.data.recovery_required;
+        if (fenced === false) return false;            // the route said so in as many words
+        if (!fenced) return null;                      // a body with no verdict is not an answer
         showRecoveryFence({recovery_required: true, recovery: answer.data,
                            run: answer.data.run_id || receipt.run}, sid, {host: host});
+        return true;
       })
       .catch(function () {
         // The route could not answer. The receipt is still a recorded fact about this run, so
         // the fence is shown — labelled as unconfirmed, never as a fresh reading.
-        if (token !== recoveryProbeToken || currentSession !== sid) return;
+        if (!mine()) return null;
         showRecoveryFence({recovery_required: true, error: receipt.error || "",
                            run: receipt.run}, sid,
                           {host: host, lead: "The current recovery state could not be confirmed."});
+        return null;                                   // unread is not cleared
       });
   }
 
@@ -10582,6 +10620,25 @@
     }
     flow.appendChild(box);
     return box;
+  }
+  // "Continue this task" is disabled on a fenced receipt and stays disabled unless the live probe
+  // says, in as many words, that the fence is gone. In flight, unknown, malformed, refused and
+  // still-fenced all keep the refusal — a thread must never be offered another turn on an unread
+  // state. Enabling is guarded three ways: a superseded probe answers `null`, the conversation on
+  // screen must still be the one that was asked about, and the note must still be the one in the
+  // document — so a late answer cannot reach into a newer view or a newer run. What it restores is
+  // only the ordinary manual turn below: one explicit click, nothing replayed, no limit lifted.
+  function releaseContinueOnClearedFence(box, probe, session) {
+    if (!box || !probe) return;
+    var btn = box.querySelector("button");
+    if (!btn || !btn.disabled) return;      // a budget cap offers no button at all; leave it so
+    probe.then(function (fenced) {
+      if (fenced !== false) return;
+      if (currentSession !== session) return;
+      if (!box.isConnected || !btn.isConnected) return;
+      btn.disabled = false;
+      btn.removeAttribute("title");
+    });
   }
   // Resume as one more user turn in the SAME thread, sent once, by hand. Nothing here re-runs a
   // tool, replays a queued follow-up or lifts a limit; the thread's own history is the context.

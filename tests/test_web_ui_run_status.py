@@ -1542,3 +1542,183 @@ def test_the_recovery_center_still_lists_its_items_after_the_token_rotated(ui):
     assert _reads("/api/recovery-center") == [False, True]
     assert "could not refresh" not in ui.page.inner_text("#activityNotice")
     assert _Fixture.reconcile_posts == [], "reading the list is not deciding anything"
+
+
+# ------------------------------------- the fence a person is already looking at
+#
+# A fenced thread shows its card *because* it is fenced, so the card is on screen for every refusal
+# after the first. The refusal has to reach the reader through the card that is already there:
+# a second card would say the same thing twice, and silence lets a refused Send look like a sent
+# one. None of this may queue, resend, reconcile or take the keyboard away from the composer.
+FENCED_THREAD = {
+    "messages": [{"role": "user", "content": "Deploy the release to staging"},
+                 {"role": "assistant", "content": "I started the deploy script."}],
+    "run_receipts": [{"run": "r-fence", "canceled": True, "stop_reason": "canceled",
+                      "completed": False, "edited": False, "error": "",
+                      "recovery_required": True}]}
+
+
+def _open_live_fenced_thread(ui, monkeypatch):
+    """Reopen a thread whose fence is confirmed live, so its note is up before anything is typed."""
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", FENCED_THREAD)
+    _Fixture.recovery_states["s-read"] = _fence("s-read", "r-fence", FENCE_REASON)
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    assert ui.page.locator(".recovery-note .rc-status").count() == 0, "nothing refused yet"
+
+
+def test_a_refused_send_speaks_through_the_fence_note_already_on_screen(ui, monkeypatch):
+    _open_live_fenced_thread(ui, monkeypatch)
+    draft = "Fenced fixture: ship the second half"
+    ui.page.fill("#input", draft)
+    ui.page.press("#input", "Enter")
+    ui.page.wait_for_function(
+        "() => { var line = document.querySelector('.recovery-note .rc-status');"
+        "        return !!line && line.textContent.includes('No new run was started.'); }",
+        timeout=8000)
+    ui.page.wait_for_timeout(250)
+    assert ui.page.locator(".recovery-note").count() == 1, "the one card speaks again, not twice"
+    assert FENCE_REASON in ui.page.inner_text(".recovery-note"), "and keeps its live reason"
+    assert ui.page.input_value("#input") == draft, "the refused request goes back to the composer"
+    assert draft not in ui.log_text(), "nothing pretends a turn happened"
+    assert ui.page.evaluate("() => !!document.activeElement.closest('.recovery-note')") is False, \
+        "the note re-announces itself; it does not take the keyboard from the composer"
+    assert _Fixture.queue_posts == [] and _Fixture.queue_starts == []
+    assert _Fixture.reconcile_posts == []
+
+
+def test_a_second_refusal_rewrites_the_status_line_instead_of_stacking_notes(ui, monkeypatch):
+    _open_live_fenced_thread(ui, monkeypatch)
+    for draft in ("Fenced fixture: first attempt", "Fenced fixture: second attempt"):
+        ui.page.fill("#input", draft)
+        ui.page.press("#input", "Enter")
+        ui.page.wait_for_function(
+            "draft => document.getElementById('input').value === draft", arg=draft, timeout=8000)
+        assert ui.page.locator(".recovery-note").count() == 1
+        assert ui.page.locator(".recovery-note .rc-status").count() == 1, "one line, rewritten"
+        assert "No new run was started." in ui.page.inner_text(".recovery-note .rc-status")
+    assert _Fixture.queue_posts == [] and _Fixture.queue_starts == []
+    assert _Fixture.reconcile_posts == [], "a refusal is never a resolution"
+    assert len(_Fixture.stream_requests) == 2 and all(
+        r["q"].startswith("Fenced fixture") for r in _Fixture.stream_requests), \
+        "each Send was the user's own, and neither was retried by the page"
+
+
+# ------------------------------- a capped run whose fence was settled somewhere else
+#
+# The receipt records the fence the run ENDED with. The page already re-reads the live state for
+# the note; the Continue button has to read the same answer, or a thread stays dead after the one
+# thing blocking it is gone. Anything short of an authoritative "no fence" keeps the refusal.
+def _capped_fenced_transcript():
+    return {"messages": [{"role": "user",
+                          "content": "Migrate every module to the new config loader"},
+                         {"role": "assistant",
+                          "content": "I converted the first two modules and listed the rest."}],
+            "run_receipts": [{"run": "r3", "stop_reason": "turn_limit", "completed": False,
+                              "turns_exhausted": True, "turns": 8, "max_turns": 8, "edited": True,
+                              "verified": False, "canceled": False, "error": "",
+                              "recovery_required": True,
+                              "decision": {"intent": "build", "verification": "auto"}}]}
+
+
+def _open_capped_fenced_thread(ui, monkeypatch):
+    monkeypatch.setitem(TRANSCRIPTS, "s-cap", _capped_fenced_transcript())
+    ui.page.locator(".thread").filter(has_text="Migrate every module").first.click()
+    ui.page.wait_for_function(
+        "() => document.getElementById('log').textContent.includes('Stopped at the turn limit')",
+        timeout=8000)
+
+
+def test_a_capped_receipt_offers_its_turn_again_once_the_live_fence_is_gone(ui, monkeypatch):
+    _Fixture.recovery_states.clear()                 # /api/recovery/s-cap answers 404: it is gone
+    _open_capped_fenced_thread(ui, monkeypatch)
+    ui.page.wait_for_function(
+        "() => { var b = document.querySelector('.stop-note button'); return !!b && !b.disabled; }",
+        timeout=8000)
+    assert ui.page.locator(".recovery-note").count() == 0, "no live fence, so no card to point at"
+    assert not ui.page.get_attribute(".stop-note button", "title"), "and no tooltip about one"
+    assert _Fixture.stream_requests == [], "re-reading the fence starts nothing by itself"
+    ui.page.click(".stop-note button")               # one ordinary manual follow-up, by hand
+    await_run(ui.page)
+    assert len(_Fixture.stream_requests) == 1, "exactly the turn that was clicked for"
+    assert _Fixture.reconcile_posts == [], "continuing is not resolving anything"
+
+
+@pytest.mark.parametrize("staged,expect_note", [
+    ("fence", True),                                 # the route says the fence is still open
+    ("unreachable", True),                           # the route could not answer at all
+    ("unparseable", False),                          # a 200 whose body is not JSON
+    ("no_verdict", False),                           # a 200 that never says either way
+])
+def test_a_capped_receipt_keeps_refusing_a_turn_on_anything_but_a_clear_answer(
+        ui, monkeypatch, staged, expect_note):
+    if staged == "fence":
+        _Fixture.recovery_states["s-cap"] = _fence("s-cap", "r3", FENCE_REASON)
+    elif staged == "unreachable":
+        ui.page.route("**/api/recovery/s-cap*", lambda route: route.fulfill(
+            status=503, content_type="application/json",
+            body=json.dumps({"error": "recovery state unavailable"})))
+    elif staged == "unparseable":
+        ui.page.route("**/api/recovery/s-cap*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body="{not json at all"))
+    else:
+        ui.page.route("**/api/recovery/s-cap*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body="{}"))
+    _open_capped_fenced_thread(ui, monkeypatch)
+    ui.page.wait_for_timeout(1000)                   # long enough for the probe to have answered
+    assert ui.page.is_disabled(".stop-note button"), "an unread state is not a cleared one"
+    assert (ui.page.locator(".recovery-note").count() > 0) is expect_note
+    assert _Fixture.stream_requests == [], "and nothing is continued on the user's behalf"
+    assert _Fixture.reconcile_posts == []
+
+
+def test_a_late_cleared_fence_cannot_reach_into_a_newer_view_of_the_thread(ui, monkeypatch):
+    """The first read answers "gone" - but it lands after a newer read of a newly fenced run."""
+    _Fixture.recovery_states.clear()
+    _Fixture.recovery_delay = 0.9                    # the answer arrives after the reader moves on
+    monkeypatch.setitem(TRANSCRIPTS, "s-cap", _capped_fenced_transcript())
+    ui.page.locator(".thread").filter(has_text="Migrate every module").first.click()
+    ui.page.wait_for_timeout(150)
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function(
+        "() => document.getElementById('log').textContent.includes('per-category totals')",
+        timeout=8000)
+    _Fixture.recovery_states["s-cap"] = _fence("s-cap", "r3", FENCE_REASON)   # fenced again since
+    ui.page.locator(".thread").filter(has_text="Migrate every module").first.click()
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    ui.page.wait_for_timeout(1200)                   # by now the stale 404 has certainly landed
+    assert ui.page.locator(".recovery-note").count() == 1
+    assert ui.page.is_disabled(".stop-note button"), "the stale clear belongs to the view that left"
+    assert _Fixture.stream_requests == []
+    assert _Fixture.reconcile_posts == []
+
+
+# -------------------------------------- arriving in recovery is not deciding in recovery
+#
+# The row's first action is `completed` - an assertion that an external, possibly irreversible
+# thing DID happen. Landing the keyboard there makes the reflex Enter the strongest claim on the
+# page, for a person who was sent there to look. The row takes the focus instead; the actions keep
+# their order, their wording and their confirmation, one Tab away.
+def test_arriving_in_recovery_focuses_the_row_and_enter_decides_nothing(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    ui.ask("Deploy the release to staging")
+    dialogs = []
+    ui.page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+    ui.page.locator(".recovery-note button").click()
+    ui.page.wait_for_selector(".activity-row.is-focus", timeout=8000)
+    ui.page.wait_for_timeout(300)
+    landed = ui.page.evaluate(
+        "() => { var el = document.activeElement;"
+        "        return [el.tagName, el.classList.contains('is-focus')]; }")
+    assert landed[0] != "BUTTON", "arriving must not put the keyboard on a resolution"
+    assert landed[1], "it lands on the row that was scrolled into view and highlighted"
+    ui.page.keyboard.press("Enter")
+    ui.page.wait_for_timeout(400)
+    assert dialogs == [], "the reflex Enter raises no confirmation"
+    assert _Fixture.reconcile_posts == [], "and asserts nothing about the outside world"
+    # Every resolution is still on the row, in its order, and still one Tab from the keyboard.
+    ui.page.keyboard.press("Tab")
+    first = ui.page.evaluate(
+        "() => [document.activeElement.tagName, document.activeElement.textContent]")
+    assert first == ["BUTTON", "completed"], "the actions stay reachable, unchanged, and in order"
+    assert ui.page.locator(".activity-row.is-focus button").count() == 3
