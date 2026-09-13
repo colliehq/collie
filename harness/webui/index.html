@@ -6049,8 +6049,11 @@
 
   // ---- compact authenticated operations view (metadata only) ---------------
   var activityPanel = $("activityPanel"), activityButton = $("activityBtn");
+  // Reads go through the shared authenticated path: a long-lived window whose process token went
+  // stale gets one refresh and one retry, so an operations tab shows the snapshot rather than
+  // "could not refresh" until some later poll. Writes (activityPost) deliberately never retry.
   function activityGet(path) {
-    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(CT))
+    return authenticatedFetch(path)
       .then(function (r) { return r.json().then(function (d) {
         if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
       }); });
@@ -10455,7 +10458,10 @@
   function confirmRecoveryFence(sid, receipt, host) {
     if (!sid) return;
     var token = ++recoveryProbeToken;
-    fetch("/api/recovery/" + encodeURIComponent(sid) + "?token=" + encodeURIComponent(CT))
+    // Same bounded authenticated read as everything else: a window reopened after the server was
+    // restarted refreshes its process token once and asks again, instead of reporting the fence as
+    // unconfirmed. A refusal that survives that retry still falls through to the honest fallback.
+    authenticatedFetch("/api/recovery/" + encodeURIComponent(sid))
       .then(function (r) {
         return r.json().catch(function () { return {}; })
                 .then(function (data) { return {status: r.status, ok: r.ok, data: data || {}}; });

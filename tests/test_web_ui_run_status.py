@@ -309,7 +309,17 @@ class _Fixture(BaseHTTPRequestHandler):
     queue_status_extra = {}
     recovery_states = {}                 # session id -> /api/recovery/<sid> body, else 404
     recovery_center_fails = False        # the control-plane snapshot is unavailable
+    recovery_delay = 0.0                 # hold a recovery read open, so leaving is observable
     reconcile_posts = []                 # nothing in this UI may ever write one of these
+    # A restarted server rotates the process token the page was loaded with. Only the recovery
+    # reads are guarded, so an armed test isolates exactly that path: `valid_token` is what the
+    # server accepts now, `session_token_value` is what /api/session-token hands back, and
+    # `guarded_reads` records (path, accepted) for every attempt, retries included.
+    guard_token = False
+    valid_token = TOKEN
+    session_token_value = TOKEN
+    token_refresh_fails = False
+    guarded_reads = []
     lang = "en"                          # what /api/settings reports, so t() can be exercised
 
     def log_message(self, *_a):
@@ -391,6 +401,15 @@ class _Fixture(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         if path in ("/", "/index.html"):
             return self._file("index.html", "text/html; charset=utf-8")
+        if path == "/api/session-token":
+            if _Fixture.token_refresh_fails:
+                return self._json({"error": "no session"}, 503)
+            return self._json({"token": _Fixture.session_token_value})
+        if _Fixture.guard_token and path.startswith(("/api/recovery/", "/api/recovery-center")):
+            accepted = (query.get("token") or [""])[0] == _Fixture.valid_token
+            _Fixture.guarded_reads.append((path, accepted))
+            if not accepted:
+                return self._json({"error": "stale session token"}, 403)
         if path == "/m":
             return self._file("mobile.html", "text/html; charset=utf-8")
         if path == "/logo.svg":
@@ -429,6 +448,7 @@ class _Fixture(BaseHTTPRequestHandler):
                                            "warning": 0},
                                "items": items})
         if path.startswith("/api/recovery/"):
+            time.sleep(_Fixture.recovery_delay)
             sid = path[len("/api/recovery/"):]
             state = _Fixture.recovery_states.get(sid)
             if state is None:
@@ -588,7 +608,11 @@ def ui(server, browser):
     _Fixture.queue_status_extra = {}
     _Fixture.recovery_states = {}
     _Fixture.recovery_center_fails = False
+    _Fixture.recovery_delay = 0.0
     _Fixture.reconcile_posts = []
+    _Fixture.guard_token = False
+    _Fixture.valid_token = TOKEN; _Fixture.session_token_value = TOKEN
+    _Fixture.token_refresh_fails = False; _Fixture.guarded_reads = []
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
@@ -1410,3 +1434,111 @@ def test_an_unreachable_recovery_route_is_labelled_not_guessed(ui, monkeypatch):
     note = ui.page.inner_text(".recovery-note")
     assert "could not be confirmed" in note, "an unread fence is not presented as a fresh reading"
     assert FENCE_REASON in note
+
+
+# ------------------------------------------- a stale process token is not an unknown fence
+# A desktop window outlives the process it was loaded against: after a restart the server refuses
+# its token until the page picks up a new one. The recovery reads have to take the same bounded
+# refresh-once-and-retry-once path every other authenticated read takes, or reopening an
+# interrupted receipt reports "could not be confirmed" for a fence the server could have answered
+# for. Nothing here may reconcile, resend, or keep retrying.
+def _reopen_fenced_thread(ui, monkeypatch, error=""):
+    """Give the saved thread a history whose receipt records a fence, and open it."""
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [{"role": "user", "content": "Deploy the release to staging"},
+                     {"role": "assistant", "content": "I started the deploy script."}],
+        "run_receipts": [{"run": "r-fence", "canceled": True, "stop_reason": "canceled",
+                          "completed": False, "edited": False, "error": error,
+                          "recovery_required": True}]})
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+
+
+def _rotate_token(handed_back="rotated-token"):
+    """The server now accepts only a new token; /api/session-token hands back `handed_back`."""
+    _Fixture.valid_token = "rotated-token"
+    _Fixture.session_token_value = handed_back
+    _Fixture.guarded_reads = []
+    _Fixture.guard_token = True
+
+
+def _reads(fragment, limit=2):
+    """Accepted/refused verdicts for the guarded reads of one route, oldest first."""
+    return [ok for path, ok in _Fixture.guarded_reads if fragment in path][:limit]
+
+
+LIVE_REASON = "publish.sh may already have run"
+
+
+def test_a_reopened_fenced_thread_refreshes_a_stale_token_and_reads_the_live_fence(ui, monkeypatch):
+    _Fixture.recovery_states["s-read"] = _fence("s-read", "r-fence", LIVE_REASON)
+    _rotate_token()
+    _reopen_fenced_thread(ui, monkeypatch, error=FENCE_REASON)
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    note = ui.page.inner_text(".recovery-note")
+    assert LIVE_REASON in note, "the server's current reason, read after the token was refreshed"
+    assert "could not be confirmed" not in note, "a refused-then-refreshed read IS a fresh reading"
+    assert _reads("/api/recovery/s-read") == [False, True], "one refusal, then one retry"
+    assert _Fixture.reconcile_posts == []
+
+
+def test_a_resolved_fence_stays_silent_even_when_the_token_had_to_be_refreshed(ui, monkeypatch):
+    """404 is an answer: the fence is gone. Refreshing to get it must not invent a note."""
+    _Fixture.recovery_states.clear()
+    _rotate_token()
+    _reopen_fenced_thread(ui, monkeypatch)
+    ui.page.wait_for_function("() => document.getElementById('log').textContent.includes('deploy')")
+    ui.page.wait_for_timeout(800)
+    assert _reads("/api/recovery/s-read") == [False, True]
+    assert ui.page.locator(".recovery-note").count() == 0, "an old fence is not re-announced"
+    assert "Run stopped by the user." in ui.page.inner_text(".interruption-note")
+
+
+@pytest.mark.parametrize("refresh_fails,expected", [(True, [False]), (False, [False, False])])
+def test_a_token_that_cannot_be_made_fresh_falls_back_honestly_and_stops(ui, monkeypatch,
+                                                                        refresh_fails, expected):
+    """Bounded: one refresh attempt, at most one retry, then the receipt — labelled, not guessed."""
+    _Fixture.recovery_states["s-read"] = _fence("s-read", "r-fence", LIVE_REASON)
+    _rotate_token(handed_back="still-stale")
+    _Fixture.token_refresh_fails = refresh_fails
+    _reopen_fenced_thread(ui, monkeypatch, error=FENCE_REASON)
+    ui.page.wait_for_selector(".recovery-note", timeout=8000)
+    note = ui.page.inner_text(".recovery-note")
+    assert "could not be confirmed" in note, "an unread fence is not presented as a fresh reading"
+    assert FENCE_REASON in note, "the receipt's own recorded reason is what is quoted"
+    assert LIVE_REASON not in note, "and never a reason the page never managed to read"
+    assert _reads("/api/recovery/s-read", limit=9) == expected
+    ui.page.wait_for_timeout(1500)
+    assert _reads("/api/recovery/s-read", limit=9) == expected, "a refusal is not retried forever"
+    assert _Fixture.reconcile_posts == []
+
+
+def test_a_late_recovery_answer_does_not_follow_the_reader_into_another_thread(ui, monkeypatch):
+    """The refresh makes the read slower, which makes the stale-session guards matter more."""
+    _Fixture.recovery_states["s-read"] = _fence("s-read", "r-fence", LIVE_REASON)
+    _rotate_token()
+    _Fixture.recovery_delay = 0.9            # refusal and retry both land after the reader leaves
+    _reopen_fenced_thread(ui, monkeypatch)
+    ui.page.wait_for_timeout(150)
+    ui.page.locator(".thread").filter(has_text="Migrate every module").first.click()
+    ui.page.wait_for_function(
+        "() => document.getElementById('log').textContent.includes('first two modules')")
+    ui.page.wait_for_timeout(2800)
+    assert _reads("/api/recovery/s-read") == [False, True], "the answer did arrive, late"
+    assert ui.page.locator(".recovery-note").count() == 0, "into the thread that was left behind"
+    assert LIVE_REASON not in ui.log_text()
+    assert _Fixture.reconcile_posts == []
+
+
+def test_the_recovery_center_still_lists_its_items_after_the_token_rotated(ui):
+    """The read-only control-plane snapshot goes through the same path as the fence probe."""
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    ui.ask("Deploy the release to staging")
+    _rotate_token()                          # the process is replaced while the page sits open
+    ui.page.locator(".recovery-note button").click()
+    ui.page.wait_for_selector("#activityPanel:not([hidden])", timeout=8000)
+    ui.page.wait_for_selector(".activity-row.is-focus", timeout=8000)
+    focused = ui.page.inner_text(".activity-row.is-focus")
+    assert "Interrupted interactive action" in focused and FENCE_REASON in focused
+    assert _reads("/api/recovery-center") == [False, True]
+    assert "could not refresh" not in ui.page.inner_text("#activityNotice")
+    assert _Fixture.reconcile_posts == [], "reading the list is not deciding anything"
