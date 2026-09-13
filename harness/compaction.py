@@ -507,6 +507,7 @@ def plan(messages, checkpoint, gate=None, *, policy: CompactionPolicy,
         return None, "cooldown"
     previous = validate_checkpoint(messages, checkpoint)
     floor, previous_summary, generation = 0, "", 0
+    stalled = False
     if previous:
         floor = previous["cutoff"]
         previous_summary = previous["summary"]
@@ -516,14 +517,33 @@ def plan(messages, checkpoint, gate=None, *, policy: CompactionPolicy,
             # The last summary did not actually shrink the projection. Demanding twice the
             # progress is what stops a stalled run from re-summarizing every single turn.
             needed *= 2
-        if (n - previous["source_messages"]) < needed:
-            return None, "no_progress"
+        stalled = (n - previous["source_messages"]) < needed
     cutoff = choose_cutoff(messages, policy, floor)
     if not cutoff:
         return None, "no_safe_cutoff"
+    backlog = False
+    if stalled:
+        # BACKLOG. ``prepare`` packs the digest by whole messages and stops at the first one
+        # that does not fit, so a compaction of a long thread — a resumed conversation, an
+        # imported history — routinely absorbs only the oldest slice of the span it was
+        # offered and records ``span_truncated``. Everything above that effective cut is still
+        # sent verbatim on every subsequent request, so the projection can stay far above the
+        # threshold with nothing left to wait for. Measuring progress as NEW messages then
+        # blocks the very compaction that would finish the job (a real provider overflow does
+        # not unblock it either: ``force`` only bypasses the threshold), and the run dies of
+        # the growth this module exists to stop. So a previous compaction that ran out of
+        # digest budget may be continued while the untouched backlog is still worth one
+        # request. ``prepare`` refuses a truncated span below ``min_compacted`` before
+        # spending anything, and each accepted continuation moves the cut strictly up, so the
+        # chain is bounded by the transcript rather than by the turn counter.
+        backlog = (bool(previous.get("span_truncated"))
+                   and (cutoff - floor) >= policy.min_compacted)
+        if not backlog:
+            return None, "no_progress"
     return CompactionPlan(
         cutoff=cutoff, kept=n - cutoff, source_messages=n,
-        before_tokens=int(total_tokens), reason=("overflow" if force else reason),
+        before_tokens=int(total_tokens),
+        reason=("overflow" if force else ("backlog" if backlog else reason)),
         previous_cutoff=floor, previous_summary=previous_summary,
         previous_generation=generation), "ok"
 

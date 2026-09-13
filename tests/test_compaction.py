@@ -1309,6 +1309,91 @@ def test_no_progress_means_no_second_summary():
                            total_tokens=99_000)[1] == "ok"
 
 
+def test_a_span_the_digest_could_not_finish_is_continued_not_blocked():
+    """Backlog is progress. A compaction that ran out of digest budget left the rest of the
+    span being sent verbatim on every request, and "wait for new messages" is a rule about
+    the wrong quantity: there is nothing to wait for, and a real overflow cannot unblock it
+    either. Continuing is allowed only while the untouched backlog is worth a request, so the
+    anti-storm rule still holds everywhere it was actually protecting something."""
+    policy = _policy()
+    messages = [{"role": "user", "content": "u%d" % i} for i in range(40)]
+    checkpoint = _make_checkpoint(messages, 20, policy=policy)
+    checkpoint["source_messages"] = len(messages)
+
+    finished = dict(checkpoint, span_truncated=False)
+    assert compaction.plan(messages, finished, None, policy=policy,
+                           total_tokens=99_000)[1] == "no_progress"
+
+    truncated = dict(checkpoint, span_truncated=True)
+    plan, why = compaction.plan(messages, truncated, None, policy=policy, total_tokens=99_000)
+    assert why == "ok" and plan.previous_cutoff == 20
+    assert plan.cutoff - 20 >= policy.min_compacted
+    assert plan.reason == "backlog", "the ledger must say why it compacted twice in a row"
+    # A forced continuation still reports the overflow that demanded it.
+    assert compaction.plan(messages, truncated, None, policy=policy, total_tokens=99_000,
+                           force=True)[0].reason == "overflow"
+
+    # ...and it stops the moment the leftover is too small to be worth a model request,
+    # so the chain is bounded by the transcript rather than running every turn.
+    late = _make_checkpoint(messages, 30, policy=policy)
+    late["source_messages"] = len(messages)
+    late["span_truncated"] = True
+    assert 0 < compaction.choose_cutoff(messages, policy, 30) - 30 < policy.min_compacted
+    assert compaction.plan(messages, late, None, policy=policy,
+                           total_tokens=99_000)[1] == "no_progress"
+
+    # every other gate still comes first
+    assert compaction.plan(messages, truncated, {"failures": policy.max_failures},
+                           policy=policy, total_tokens=99_000)[1] == "failed_out"
+    assert compaction.plan(messages, truncated, None, policy=policy,
+                           total_tokens=10)[1] == "below_threshold"
+
+
+def test_a_resumed_long_thread_drains_its_backlog_instead_of_staying_oversized(
+        tmp_path, monkeypatch):
+    """The workflow: continue a conversation whose history is longer than one digest.
+
+    ``prepare`` packs the digest by whole messages, so the first compaction of a long
+    resumed thread absorbs only the oldest slice and marks the checkpoint truncated. The rest
+    was still sent verbatim on every following request while ``plan`` waited for new messages
+    that would not have helped, so the projection stayed above the threshold for the whole
+    run — the growth compaction exists to stop.
+    """
+    policy = _policy()
+    h = _harness(tmp_path, monkeypatch, "compact_backlog", policy=policy)
+    _fake_bash(h)
+    seen = _events(h)
+    history = _seed_history(pairs=30)
+    history[0]["content"] = "finish the migration; never touch data/ and always run pytest -q"
+    provider = _Provider(lambda n, m: _busy_turn(n, m, stop_after=4, answer="migration done"))
+    h.provider = provider
+    res = h.run("compact_backlog", "carry on where you left off", history=history)
+
+    assert res.answer == "migration done", (res.answer, res.error)
+    applied = _compaction_events(seen, "applied")
+    assert len(applied) >= 2, "one digest cannot absorb this thread: %s" % applied
+    assert applied[0]["span_truncated"] is True
+    assert applied[1]["reason"] == "backlog"
+    assert applied[1]["cutoff"] > applied[0]["cutoff"]
+    assert applied[-1]["after_tokens"] < applied[0]["after_tokens"]
+
+    # The point of the feature: what is SENT comes back under the threshold inside this run,
+    # rather than waiting for turns the user would have to pay for first.
+    assert compaction.estimate_messages(provider.turn_calls[0]) > policy.threshold_tokens
+    assert compaction.estimate_messages(provider.turn_calls[-1]) < policy.threshold_tokens
+
+    # ...and nothing was traded away for it: the transcript is whole, the user's words and
+    # their constraint crossed every cut, and no projection artifact became history.
+    assert len(res.messages) > len(history)
+    assert res.messages[0]["content"] == history[0]["content"]
+    assert not [m for m in res.messages if m.get("compaction")]
+    handoff = provider.turn_calls[-1][0]
+    assert handoff.get("compaction") is True
+    assert "never touch data/" in handoff["content"]
+    # the live request stays in the projection, quoted across the cut or verbatim in the tail
+    assert "carry on where you left off" in json.dumps(provider.turn_calls[-1], default=str)
+
+
 def test_a_compaction_that_did_not_help_demands_double_the_progress():
     policy = _policy()
     messages = [{"role": "user", "content": "u%d" % i} for i in range(40)]
