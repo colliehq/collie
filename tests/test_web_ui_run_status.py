@@ -1736,6 +1736,127 @@ def test_a_phone_whose_token_is_still_good_reads_each_lane_exactly_once(phone):
     assert _Fixture.token_refreshes == 0, "and never asks for a token it did not need"
 
 
+# ------------------------------- what a worker heartbeat on the phone actually means
+#
+# The Services lane on the phone renders `aggregate_health`'s worker rows.  Each row is one
+# *desired* worker: `state` is the last thing the supervisor wrote, defaulting to "missing" when no
+# heartbeat row exists at all, and `fresh` only says whether that row is still inside its TTL.
+# Presenting that as `fresh ? Running : Recovery required` said two untrue things.  A stock server
+# with no job workers showed five "Recovery required" rows while session recovery was empty --
+# telling the reader to inspect an external system for an action nobody sent, which is also not
+# something a person can reconcile.  And a *fresh* "failed"/"dead"/"circuit_open" beat -- a worker
+# that reported its own failure seconds ago -- was shown as Running.
+def _beat(state, fresh, age_s=3.0, pid=4242):
+    """Exactly the shape harness.ops.aggregate_health serialises for one desired worker."""
+    return {"state": state, "fresh": fresh, "age_s": age_s, "pid": pid, "detail": {}}
+
+
+NO_HEARTBEAT = _beat("missing", False, age_s=None, pid=0)
+
+
+def _phone_workers(phone, workers, services=None):
+    """Open the sheet against a health snapshot carrying these worker rows."""
+    _Fixture.health = dict(PHONE_HEALTH, workers=workers, services=services or {})
+    _open_phone_activity(phone)
+    phone.page.wait_for_selector("#mobileOtherActivity .ops-row", timeout=8000)
+    return phone.page.eval_on_selector_all(
+        "#mobileOtherActivity .ops-row",
+        "rows => rows.map(row => ({"
+        "  title: row.querySelector('.ops-row-title').textContent,"
+        "  meta: (row.querySelector('.ops-row-meta') || {}).textContent || '',"
+        "  state: row.querySelector('.ops-row-state').textContent,"
+        "  tone: row.querySelector('.ops-row-state').className}))")
+
+
+def test_a_worker_that_never_reported_is_not_a_recovery_decision_for_the_reader(phone):
+    """A stock server with no job workers: cautionary, but nothing for a person to reconcile."""
+    rows = _phone_workers(phone, {"jobd": NO_HEARTBEAT, "web": NO_HEARTBEAT})
+    assert [row["state"] for row in rows] == ["No heartbeat", "No heartbeat"]
+    assert all("Recovery required" not in row["state"] for row in rows), \
+        "nothing was sent, so there is no uncertain external action to inspect"
+    assert all("warn" in row["tone"] for row in rows), "cautionary, not a green Running"
+    assert all("no heartbeat recorded" in row["meta"] for row in rows)
+    lane = phone.page.inner_text("#mobileOtherActivity")
+    assert "Background service status updates automatically." in lane
+    # The genuine session decision is still the only thing asking a person to inspect anything.
+    assert "s-phone" in phone.page.inner_text("#mobileRecoveryRows .ops-row")
+    assert phone.page.locator("#mobileRecoveryRows .ops-row button").count() == 3
+    assert _Fixture.reconcile_posts == [], "reading a health page decides nothing"
+
+
+def test_a_fresh_failure_heartbeat_is_not_reported_as_running(phone):
+    """The worker reported its own failure seconds ago. Freshness is not health."""
+    rows = _phone_workers(phone, {"ambient": _beat("failed", True),
+                                  "bridge": _beat("dead", True),
+                                  "jobd": _beat("circuit_open", True)})
+    assert [row["state"] for row in rows] == ["Failed", "Failed", "Restarts paused"]
+    assert all("bad" in row["tone"] for row in rows), "an actionable failure, stated as one"
+    assert "Running" not in phone.page.inner_text("#mobileOtherActivity")
+
+
+def test_a_stale_failure_heartbeat_does_not_decay_into_something_softer(phone):
+    """Going quiet after reporting a failure does not withdraw the failure."""
+    rows = _phone_workers(phone, {"jobd": _beat("failed", False, age_s=240.0)})
+    assert rows[0]["state"] == "Failed" and "bad" in rows[0]["tone"]
+    assert "heartbeat 240s ago" in rows[0]["meta"], "and the silence is still visible"
+
+
+def test_a_healthy_worker_still_just_says_running(phone):
+    rows = _phone_workers(phone, {"web": _beat("running", True, age_s=2.4)},
+                          services={"web": {"ok": True}})
+    assert rows[0]["state"] == "Running" and rows[0]["tone"].strip() == "ops-row-state"
+    assert "heartbeat 2s ago" in rows[0]["meta"]
+    assert rows[1]["title"].startswith("web · Service") and rows[1]["state"] == "Running"
+
+
+def test_a_stale_heartbeat_is_stale_and_keeps_the_last_state_it_reported(phone):
+    """Not proof of anything external: the page says what it knows and when it knew it."""
+    rows = _phone_workers(phone, {"jobd": _beat("running", False, age_s=95.0),
+                                  "web": _beat("starting", True)})
+    assert rows[0]["state"] == "Heartbeat stale" and "warn" in rows[0]["tone"]
+    assert "heartbeat 95s ago" in rows[0]["meta"]
+    assert "last known state: Running" in rows[0]["meta"]
+    assert rows[1]["state"] == "Starting", "and a fresh transient state is shown as itself"
+
+
+@pytest.mark.parametrize("state", ["shutdown_timeout", "__proto__", "constructor"])
+def test_a_state_this_page_does_not_know_is_shown_as_uncertain_not_as_healthy(phone, state):
+    rows = _phone_workers(phone, {"jobd": _beat(state, True)})
+    assert rows[0]["state"] == state.replace("_", " "), "the producer's own word, not a guess"
+    assert "warn" in rows[0]["tone"] and "unrecognised worker state" in rows[0]["meta"]
+
+
+@pytest.mark.parametrize("lang,failed,missing,stale,note", [
+    ("zh", "失败", "没有心跳", "心跳已过期", "后台服务状态会自动更新"),
+    ("zh-tw", "失敗", "沒有心跳", "心跳已過期", "背景服務狀態會自動更新"),
+])
+def test_worker_states_speak_the_reader_s_language(server, browser, lang, failed, missing,
+                                                   stale, note):
+    _reset_fixture_state()
+    _Fixture.lang = lang
+    _Fixture.activity = dict(PHONE_ACTIVITY)
+    _Fixture.health = dict(PHONE_HEALTH, workers={
+        "ambient": _beat("failed", True), "bridge": NO_HEARTBEAT,
+        "jobd": _beat("running", False, age_s=95.0), "web": _beat("running", True)})
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(server + "/m?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        page.click("#topState")
+        page.wait_for_selector("#mobileOtherActivity .ops-row", timeout=8000)
+        lane = page.inner_text("#mobileOtherActivity")
+        assert failed in lane and missing in lane and stale in lane and note in lane
+        assert "运行中" in lane or "執行中" in lane, "the healthy worker reads as running"
+        assert "Recovery required" not in lane and "需要恢复" not in lane and "需要復原" not in lane
+        assert errors == [], "JS errors: %r" % errors
+    finally:
+        _Fixture.lang = "en"
+        context.close()
+
+
 # ------------------------------------- the fence a person is already looking at
 #
 # A fenced thread shows its card *because* it is fenced, so the card is on screen for every refusal

@@ -152,6 +152,7 @@
   .ops-row-state { align-self:start; color:var(--good); font:10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
   .ops-row-state.warn { color:var(--warn); }
   .ops-row-state.bad { color:var(--bad); }
+  .ops-row-state.mute { color:var(--dim); }
   .ops-actions { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; }
   .ops-actions button { min-height:34px; padding:6px 9px; border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.035); color:var(--ink); font:inherit; font-size:11px; font-weight:650; }
   .ops-actions button.primary { border-color:rgba(111,127,214,.65); color:#c7d0ff; }
@@ -161,6 +162,7 @@
   .ops-tree-row::before { content:""; position:absolute; left:-8px; top:0; bottom:0; width:1px; background:var(--line); opacity:.7; }
   .ops-tree-row.is-root::before { display:none; }
   .ops-lane-label { padding:8px 1px 3px; color:var(--dim); font-size:10px; font-weight:750; letter-spacing:.05em; text-transform:uppercase; }
+  .ops-lane-note { padding:0 1px 5px; color:var(--dim); font-size:11px; line-height:1.45; }
   :where(button,textarea,select,input,summary,[tabindex]):focus-visible { outline:3px solid #aab6ff; outline-offset:2px; }
   @media (max-width:350px) { .rungrid { grid-template-columns:1fr; } .runpack { grid-column:auto; grid-template-columns:64px minmax(0,1fr); } .runpack .check,.runhint { grid-column:1/-1; } .topstate { width:30px; padding:0; justify-content:center; } .topstate span { display:none; } .device { margin-left:0; } .ops-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 
@@ -363,7 +365,12 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "Steer this specialist at its next safe boundary:":"在下一个安全边界向该专员补充要求：","Request specialist cancellation?":"要请求取消该专员吗？",
   "Resolution recorded.":"已记录恢复决定。","Steer queued.":"补充要求已排队。","Cancellation requested.":"已请求取消。",
   "Services":"服务","Automations":"自动化","Interactive":"对话","Mission":"任务","Automation":"自动化","Service":"服务","Background":"后台运行",
-  "Queued":"排队中","Blocked":"已阻塞","Waiting":"等待中","Needs You":"需要你","Paused":"已暂停","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿","Unavailable lane":"通道不可用" };
+  "Queued":"排队中","Blocked":"已阻塞","Waiting":"等待中","Needs You":"需要你","Paused":"已暂停","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿","Unavailable lane":"通道不可用",
+  "Background service status updates automatically.":"后台服务状态会自动更新。",
+  "Starting":"启动中","Restarting":"重启中","Not healthy":"状态异常","Restarts paused":"已暂停重启",
+  "Disabled":"已停用","Stopped":"已停止","No heartbeat":"没有心跳","Heartbeat stale":"心跳已过期",
+  "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"没有任何心跳记录",
+  "last known state: {s}":"最后已知状态：{s}","unrecognised worker state":"无法识别的工作进程状态" };
 var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ New chat":"＋ 新對話",
   "Open chats":"開啟對話列表","New chat":"新對話",
   "Ask Collie to fix code, run commands, or investigate":"讓 Collie 幫你修改程式碼、執行命令或調查問題",
@@ -427,7 +434,12 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "Steer this specialist at its next safe boundary:":"在下一個安全邊界向該專員補充要求：","Request specialist cancellation?":"要請求取消該專員嗎？",
   "Resolution recorded.":"已記錄復原決定。","Steer queued.":"補充要求已排入佇列。","Cancellation requested.":"已請求取消。",
   "Services":"服務","Automations":"自動化","Interactive":"對話","Mission":"任務","Automation":"自動化","Service":"服務","Background":"背景執行",
-  "Queued":"排隊中","Blocked":"已封鎖","Waiting":"等待中","Needs You":"需要你","Paused":"已暫停","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿","Unavailable lane":"通道無法使用" };
+  "Queued":"排隊中","Blocked":"已封鎖","Waiting":"等待中","Needs You":"需要你","Paused":"已暫停","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿","Unavailable lane":"通道無法使用",
+  "Background service status updates automatically.":"背景服務狀態會自動更新。",
+  "Starting":"啟動中","Restarting":"重新啟動中","Not healthy":"狀態異常","Restarts paused":"已暫停重新啟動",
+  "Disabled":"已停用","Stopped":"已停止","No heartbeat":"沒有心跳","Heartbeat stale":"心跳已過期",
+  "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"沒有任何心跳記錄",
+  "last known state: {s}":"最後已知狀態：{s}","unrecognised worker state":"無法辨識的工作程序狀態" };
 function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(d[en]||en):en; }
 
 // ---- authenticated Activity + recovery (allowlisted lifecycle metadata only) ----
@@ -478,13 +490,18 @@ function mobileOpsRequest(path,body){
 function mobileOpsNotice(message,bad){var node=$("mobileActivityNotice");node.textContent=message||"";node.classList.toggle("bad",!!bad);}
 function mobileOpsEmpty(parent,message){var empty=document.createElement("div");empty.className="ops-empty";empty.textContent=t(message);parent.appendChild(empty);}
 function mobileOpsLane(parent,label){var head=document.createElement("div");head.className="ops-lane-label";head.textContent=t(label);parent.appendChild(head);}
+function mobileOpsLaneNote(parent,text){var note=document.createElement("div");note.className="ops-lane-note";note.textContent=t(text);parent.appendChild(note);}
 function mobileOpsRow(parent,title,meta,state,depth){
   var row=document.createElement("div");row.className="ops-row"+(depth!=null?" ops-tree-row":"");
   if(depth!=null){var treeDepth=Math.min(Math.max(Number(depth)||0,0),6);row.style.setProperty("--tree-indent",treeDepth*12+"px");row.classList.toggle("is-root",treeDepth===0);}
   var main=document.createElement("div");main.className="ops-row-main";
   var name=document.createElement("div");name.className="ops-row-title";name.textContent=title||"—";main.appendChild(name);
   if(meta){var detail=document.createElement("div");detail.className="ops-row-meta";detail.textContent=meta;main.appendChild(detail);}
-  var status=document.createElement("div");status.className="ops-row-state "+mobileStateTone(state);status.textContent=mobileStateLabel(state);
+  // `state` is a lifecycle state string, or an already-resolved {label,tone} badge for a lane
+  // (worker heartbeats) whose vocabulary is deliberately not the session one.
+  var badge=state&&typeof state==="object"?{label:t(state.label),tone:state.tone||""}
+                                          :{label:mobileStateLabel(state),tone:mobileStateTone(state)};
+  var status=document.createElement("div");status.className="ops-row-state "+badge.tone;status.textContent=badge.label;
   row.appendChild(main);row.appendChild(status);parent.appendChild(row);return row;
 }
 function mobileOpsButton(row,label,className,run){
@@ -534,12 +551,47 @@ function renderMobileRunTree(activity){
     }
   });
 }
+// ---- worker heartbeats, which are not session-recovery decisions ----
+// `aggregate_health` serialises one row per *desired* worker: `state` is the last thing the
+// supervisor wrote for it — "running", "starting", "backoff", "unhealthy", "circuit_open",
+// "failed", "dead", "disabled", "external", "stopped" — and defaults to "missing" when there is no
+// heartbeat row at all; `fresh` only says whether that row is still inside its TTL. Rendering this
+// as `fresh ? Running : Recovery required` borrowed the *session* vocabulary and said two untrue
+// things with it: a worker that never reported became an uncertain external action to inspect
+// (nothing was sent, and a heartbeat is not something a person can reconcile), and a worker that
+// had just reported its own failure became Running. Freshness is not health, and silence is not
+// proof of anything — each is now said in its own words.
+var MOBILE_WORKER_STATES={
+  running:{label:"Running",tone:""},external:{label:"Running",tone:""},ok:{label:"Running",tone:""},
+  starting:{label:"Starting",tone:"mute"},disabled:{label:"Disabled",tone:"mute"},
+  backoff:{label:"Restarting",tone:"warn"},unhealthy:{label:"Not healthy",tone:"warn"},
+  stopped:{label:"Stopped",tone:"warn"},
+  failed:{label:"Failed",tone:"bad"},dead:{label:"Failed",tone:"bad"},
+  circuit_open:{label:"Restarts paused",tone:"bad"}};
+function mobileWorkerStatus(worker){
+  var state=String((worker&&worker.state)||"missing"),known=Object.prototype.hasOwnProperty.call(MOBILE_WORKER_STATES,state)?MOBILE_WORKER_STATES[state]:null;
+  // A reported failure stays a failure: a stale one was not withdrawn, a fresh one is not health.
+  if(known&&known.tone==="bad")return{label:known.label,tone:"bad",note:""};
+  if(state==="missing")return{label:"No heartbeat",tone:"warn",note:""};
+  // An unknown producer state is uncertainty, never an assumption of health: quote it as it came.
+  if(!known)return{label:state.replace(/_/g," "),tone:"warn",note:t("unrecognised worker state")};
+  if((worker&&worker.fresh)!==true)return{label:"Heartbeat stale",tone:"warn",
+    note:t("last known state: {s}").replace("{s}",t(known.label))};
+  return{label:known.label,tone:known.tone,note:""};
+}
+function mobileWorkerRow(parent,name,worker){
+  var status=mobileWorkerStatus(worker),age=worker&&worker.age_s,meta=[
+    age==null?t("no heartbeat recorded"):t("heartbeat {n}s ago").replace("{n}",Math.round(age))];
+  if(status.note)meta.push(status.note);
+  return mobileOpsRow(parent,name+" · "+t("Worker"),meta.join(" · "),status);
+}
 function mobileRecent(rows,active,max){var picked=(rows||[]).filter(active),seen={};picked.forEach(function(row){seen[row]=true;});
   (rows||[]).slice(-max).forEach(function(row){if(picked.indexOf(row)<0)picked.push(row);});return picked.slice(-max);}
 function renderMobileOther(activity,health){
   var box=$("mobileOtherActivity");box.textContent="";var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};
-  if(Object.keys(workers).length||Object.keys(services).length){mobileOpsLane(box,"Services");Object.keys(workers).sort().forEach(function(name){var worker=workers[name]||{};
-      mobileOpsRow(box,name+" · "+t("Worker"),worker.age_s==null?"":Math.round(worker.age_s)+"s",worker.fresh?"running":"recovery_required");count++;});
+  if(Object.keys(workers).length||Object.keys(services).length){mobileOpsLane(box,"Services");
+    if(Object.keys(workers).length)mobileOpsLaneNote(box,"Background service status updates automatically.");
+    Object.keys(workers).sort().forEach(function(name){mobileWorkerRow(box,name,workers[name]||{});count++;});
     Object.keys(services).sort().forEach(function(name){mobileOpsRow(box,name+" · "+t("Service"),"",services[name].ok?"running":"failed");count++;});}
   var missions=mobileRecent(activity.missions||[],function(row){return mobileMissionActive(row.state);},8);if(missions.length){mobileOpsLane(box,"Missions");missions.forEach(function(data){mobileOpsRow(box,data.mission_id,data.lane||t("Mission"),data.state);count++;});}
   var automations=mobileRecent(activity.automations||[],function(row){return !mobileTerminal(row.state);},8);if(automations.length){mobileOpsLane(box,"Automations");automations.forEach(function(data){mobileOpsRow(box,(data.automation_id||t("Automation"))+" · "+(data.execution_id||"—"),t("Automation"),data.state);count++;});}
