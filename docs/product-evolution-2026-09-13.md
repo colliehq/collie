@@ -2,7 +2,7 @@
 
 本轮从 2026-09-13 05:15 PDT 开始，后台任务截止于 2026-09-14 05:15 PDT。
 
-截至 19:20 UTC，二十三项产品修复已经独立验证并提交。后台第八批以二十二项版本继续改进 worker；新的真实续接对照已启动，上下文压缩评测方案正在修正。
+截至 19:35 UTC，二十四项产品修复已经独立验证并提交，组合通过后同步给后续后台任务。新八项真实续接对照全部完成；Claude Code 继续完善上下文压缩实验，并检查手机页面的恢复读取。
 
 ## 已合入的产品修复
 
@@ -61,6 +61,7 @@
 | 排队预算与权限修复后的完整离线回归 | 3919 passed、20 skipped；GUI 63/63、surfaces 41/41、全部门禁通过 | `a4a79b46`，尚不含后来的取消与网页补丁 |
 | 七项修复的完整离线回归 | 3951 passed、20 skipped；全部门禁通过、surfaces 41/41 | `775b9a86`，`seven-fixes-full`，15:13 UTC 完成 |
 | 十项修复的完整离线回归 | 3982 passed、20 skipped；GUI 63/63、surfaces 41/41、全部门禁通过 | `e2ad9541`，`ten-fixes-full`，16:16:25 UTC 完成；不含第十一项 worker 终态修复 |
+| 二十一项组合完整回归 | 4093 passed、20 skipped；GUI 63/63、surfaces 41/41、全部门禁通过 | `672c0561`，`twentyone-fixes-full`；不覆盖22–24项 |
 | 已合并的四项产品修复 | 121 passed | `a35de724`，覆盖排队、权限、worker 结果、网页草稿；是专项回归 |
 | 修复后的专项回归 | 313 passed、1 skipped | 12 个相关测试文件，包括终端路由、恢复和任务 inbox |
 | 同一新增测试文件放到旧代码上 | 8 failed、3 passed | 相同测试文件 SHA256；失败包括预算漂移、损坏快照和下一轮生成设置 |
@@ -207,7 +208,7 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 
 独立 221 passed、旧代码 3 failed/44 passed、只读 Claude Code 审阅通过；其中两项证明真实阻塞或缺失错误说明，一项针对新增交接接口。此前四个父流程事件顺序检查再次通过，已提交快照的排队及外部输入相邻检查另有 29 passed。精确二十二项快照 `92e4366f2d993125e26f1bc2963ba598ed9ab4c9` 于 19:03:50 UTC 同步到自动分支。证据在 `manual/queued-notification-merged/verification`、三个 `queued-*-parent` 目录及 `twentytwo-input-adjacent`；两项集成都保全 72 个无关未提交文件。
 
-这项修复保留取消、预算、恢复门禁与已接受请求设置。上一轮自身的 I/O 仍可能保持它的线程存活；改动让后续任务独立于这段等待，并非消除所有可能的 I/O 阻塞。同一个结束记录仍由一个生产线程完成发布，未来改成多线程调用时需要重新核对该假设。正在运行的二十一项完整回归不覆盖第二十二项。
+这项修复保留取消、预算、恢复门禁与已接受请求设置。上一轮自身的 I/O 仍可能保持它的线程存活；改动让后续任务独立于这段等待，并非消除所有可能的 I/O 阻塞。同一个结束记录仍由一个生产线程完成发布，未来改成多线程调用时需要重新核对该假设。单独完成的二十一项完整回归不覆盖第二十二项。
 
 恢复页的可选维护折叠随后作为第二十三项通过独立门禁并合入，详见下文。
 
@@ -217,13 +218,23 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 
 第二十三项提交 `3955f4c2945554461d965a47a25c16846ee48d0a` 将恢复中心的可选维护提醒默认收起。只处理 doctor、service、notification 中明确的 warning 且没有结果确认动作的条目；真正需要处理的任务、未知类别或严重状态继续显示。展开选择保留到本页刷新，进入某条提醒时自动展开并聚焦对应行；没有执行修复或替用户确认结果。
 
-独立 192 passed，旧代码 7 failed/74 passed，原始套件 69 passed，Claude Code 只读审阅通过。部分旧失败先触及“缺少折叠区域”，没有把每一个都夸大为独立原始状态缺陷；红色徽标的区别另有源码检查及新断言支持。精确候选 `d31b4bb3c99a5343447d2c0fa088213943fd9929` 基于二十一项；与第二十二项组合后的完整二十三项快照 `973dff46e55cd71b0e43c0db6047c3913c30f91c` 追加 98 passed。证据 `manual/optional-recovery-presentation-merged/verification` 和 `twentythree-fixes-focused`。源码集成保全 71 个无关未提交文件。自动第八批正在二十二项基线上运行，因此暂不推进它的工作分支。
+独立 192 passed，旧代码 7 failed/74 passed，原始套件 69 passed，Claude Code 只读审阅通过。部分旧失败先触及“缺少折叠区域”，没有把每一个都夸大为独立原始状态缺陷；红色徽标的区别另有源码检查及新断言支持。精确候选 `d31b4bb3c99a5343447d2c0fa088213943fd9929` 基于二十一项；与第二十二项组合后的完整二十三项快照 `973dff46e55cd71b0e43c0db6047c3913c30f91c` 追加 98 passed。证据 `manual/optional-recovery-presentation-merged/verification` 和 `twentythree-fixes-focused`。源码集成保全 71 个无关未提交文件。当时自动第八批正在二十二项基线上运行；该批后来完成后，组合推进见第二十四项。
 
 本项采用 headless 浏览器结构和行为验证；用户浏览器后端目前不可用，没有新视觉验收结论。移动端未改动，繁体文案尚无单独浏览器用例，摘要计数仍保留既有英文。
 
-新的真实连续任务实验 `manual/continuation-recheck/runs/continuation-v5-parent-live` 已于 19:16:55 UTC 开始。首组两项均完成并通过文件与工作流检查；其余样本继续进行，不能先计为全八项成功。使用与旧样本相同的两种任务、提示、fixture、grader、seed 和配置运行限制，产品从旧十项 `e2ad9541` 更新到十九项 `073b2f30`，逐轮证据规则也增强，均明确披露。当前最新产品二十三项不在该固定对照中。
+新的真实连续任务实验 `manual/continuation-recheck/runs/continuation-v5-parent-live` 已于 19:16:55 UTC 开始。八项均在 19:25:54 UTC 前完成，Collie 4/4、原生 Claude Code 4/4，通过各自两轮文件评分、工作流、逐轮运行时、同一会话和进程树清理检查。所有八项均有记录，没有缺失或排除失败来缩小分母。使用与旧样本相同的两种任务、提示、fixture、grader、seed 和配置运行限制，产品从旧十项 `e2ad9541` 更新到十九项 `073b2f30`，逐轮证据规则也增强，均明确披露。当前最新产品二十三项不在该固定对照中。
 
 本轮 driver SHA256 `e37afa001bf4b872d85d6f65358b113a1fe0ef46d24c56467aeb96fd9b9d9604`；新 manifest self hash `e701d619a49356e4b576a1b7a654ead0423b488ac855e3ea817fe0860be26858`，还冻结实际导入的 controller、quota、任务、fixture 和报告器字节。父预检通过，四项 stock mock 全部保持 mock_unresolved、MOCK_OK，没有调用模型；真实批次重新检查普通 Max 登录与额度。19:16:55 快照五小时使用 36%、本周 53%，额外付费关闭，自然五小时重置为 22:10 UTC。原八项与先前长链实验均未改写或合并样本。
+
+第二十四项提交 `30445b937c859238748d005ae96592afea9bf746` 修复 Codex App Server worker 的结束与取消竞态。原先缺少 status 的 turn/completed 通知会标记结束、却让接收循环继续等待，取消也已经返回确认；现在该通知结束接收，并按未知状态保留未完成结论。正常完成后、进程清理期间收到的取消不再倒过来把已完成工作改成 cancelled 或误加恢复门禁。
+
+独立 77 passed，旧代码 3 failed/8 passed，Claude Code 只读审阅通过，精确自动快照 `b1a24dfc1752b7dc7d02ac1e7245854a6469b7ec`，补丁 SHA256 `4f5602849c9be2d9d583816c25c0d436b7bc2e4b8fc8732cabab85302143c63b`。三项均为实际行为断言失败；使用 mock transport，没有声称验证真实 Codex 服务当前会发出异常消息。原有主动取消、清理确认和恢复保护继续有效；更早握手阶段收到结束通知后仍等待响应的窗口未在本项修复。集成保全 72 个无关未提交文件。
+
+二十三项 UI 与本项组合成精确二十四项快照 `1e1c38e259e2607b1859a1e97d2673aaca7a0c6f`，`twentyfour-fixes-focused` 的 92 项组合检查通过，于 `2026-09-13T19:35:05.219240+00:00` 在后台批次空档推进自动分支。此前完整二十一项仍是 4093 passed、20 skipped、全部门禁通过；未将它计为完整二十四项回归。下一轮继续使用新组合，截止时间保持原定 2026-09-14 05:15 PDT。
+
+新续接对照的完整报告：`manual/continuation-recheck/report-corrected/continuation-v5-parent-live.md`，SHA256 `149e5dc04664bca5a7ee2d0080faca37f342d55a14bccba8c04d18ff335089f0`。父只读复核 `parent-audit-v5` 对全部记录重新分类、检查四个批次前后源码字节和完整原始目录哈希，八项结论一致，未修改输入。原组 Collie 3/4、新组 4/4，原生两组各 4/4；产品版本及证据规则有上述明确变化，样本仅两种小任务各两次，不能据此作总体排名或证明所有续接竞态消失。新组耗时中位数为 Collie 67.0 秒（n=4）、原生 50.9 秒（n=4），包含各自 harness 与评分开销，只记录观察值。
+
+压缩实验 v2 已让任务明确复制大 payload，移除模拟中的非法填充，原始 v1 与完整 v2 均单独归档。六个原始父挑战已通过，但父流程继续复现三项跨恢复测量遗漏：applied 与持久化 checkpoint 的 generation 不同仍通过，以及恢复后出现孤立工具结果或改写原要求仍通过。`pressure-restore-before` 为 3 failed/6 passed，未据此声称产品本身有这些故障。Claude Code 正在补齐完整证据关联，并实现有时间边界、同一会话和实际 steer/compaction 记录的实验驱动；当前还没有真实压缩结果。手机读取任务 `manual/mobile-recovery-read` 基于二十三项独立快照，只调查认证更新后的只读恢复，不自动重放确认或其他写入。
 
 ## 工作保全
 
