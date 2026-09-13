@@ -140,7 +140,7 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 | 第二轮纠正修改要求 | 1 / 2 | 2 / 2 |
 | 多文件先审阅、再修改 | 2 / 2 | 2 / 2 |
 
-总计 7 / 8 完成。Collie 的一个样本在第一轮已经返回 completed 后，立即发送的第二轮在约 51 ms 内被拒绝：`this session already has an active run`。因此第二轮没有启动，宿主验收也未通过。原分类为 `invalid_protocol`，这项产品拒绝必须留在已执行分母里，不能把该格写成 1 / 1。原始 report 还把偶数样本的中位数写成上中位数；报告修正正在单独处理，原记录不覆盖。`manual/terminal-release` 已启动 Claude Code 定位并修复完成通知与执行释放时序，尚未接受其补丁。
+总计 7 / 8 完成。Collie 的一个样本在第一轮已经返回 completed 后，立即发送的第二轮在约 51 ms 内被拒绝：`this session already has an active run`。因此第二轮没有启动，宿主验收也未通过。原分类为 `invalid_protocol`，这项产品拒绝必须留在已执行分母里，不能把该格写成 1 / 1。原始 report 还把偶数样本的中位数写成上中位数；独立后处理器已修正这两点，并补上禁止覆盖输入证据和旧输出的保护。39 项统计检查与 3 项父流程检查通过，正确报告位于运行目录 manual/harness-comparison-plan/report-corrected/continuation-v3-live-parent.md，原记录不覆盖。`manual/terminal-release` 已启动 Claude Code 定位并修复完成通知与执行释放时序，尚未接受其补丁。
 
 所有样本的进程清理、原评分器完整哈希及应保持不变的文件约束检查通过；两个模型路径的正常样本均保持原会话。执行前，独立的 7 项判分检查、40 项补充检查及真实服务的模拟试跑通过。模拟试跑只证明实验流程，没有算作模型成果。每个批次保存执行源码及前后哈希；不会修改旧样本来消除失败。
 
