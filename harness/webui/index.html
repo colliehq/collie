@@ -873,6 +873,16 @@
   .activity-detail { width:100%; color:var(--muted); font-size:11px; line-height:1.45; white-space:normal; }
   .activity-command { width:100%; padding:5px 7px; border-radius:6px; background:var(--surface);
     color:var(--pine); font:10.5px var(--mono); overflow-wrap:anywhere; }
+  /* Optional checks: a fold, not an alarm. Same lane chrome, muted tokens, no coral anywhere. */
+  .optional-lane summary { display:flex; align-items:center; gap:6px; padding:8px 10px; cursor:pointer;
+    color:var(--muted); font:700 10px var(--mono); letter-spacing:.07em; text-transform:uppercase;
+    list-style:none; }
+  .optional-lane summary::-webkit-details-marker { display:none; }
+  .optional-lane summary::before { content:"\25B8"; color:var(--faint); font-size:11px; }
+  .optional-lane details[open] > summary { border-bottom:1px solid var(--line); }
+  .optional-lane details[open] > summary::before { content:"\25BE"; }
+  .optional-lane .optional-note { color:var(--faint); padding:7px 2px 3px; font-size:11px;
+    text-transform:none; letter-spacing:0; }
   .control-editor { grid-column:1/-1; border:1px solid var(--line); border-radius:10px;
     background:var(--surface-2); padding:12px; }
   .control-editor h3 { margin:0 0 9px; font-size:13px; }
@@ -3182,6 +3192,8 @@
     "No new run was started. Your request is still here.": "没有开始新的运行，你的要求仍然保留。",
     "The current recovery state could not be confirmed.": "无法确认当前的恢复状态。",
     "This conversation is not listed in recovery right now.": "当前会话现在没有出现在恢复列表中。",
+    "Optional checks": "可选检查", "nothing to decide": "无需决定",
+    "Warnings only. The main task can continue without these.": "仅为提醒。主要任务可以继续，不必先处理这些。",
     "The action happened": "操作已经发生", "The action did not happen": "操作没有发生",
     "Close this interrupted turn": "结束这一轮中断的操作", "I checked the actual outcome": "我已检查实际结果",
     "Save outcome and continue": "保存结果并继续",
@@ -3563,6 +3575,8 @@
     "No new run was started. Your request is still here.": "沒有開始新的執行，你的要求仍然保留。",
     "The current recovery state could not be confirmed.": "無法確認目前的復原狀態。",
     "This conversation is not listed in recovery right now.": "目前的對話沒有出現在復原清單中。",
+    "Optional checks": "可選檢查", "nothing to decide": "無需決定",
+    "Warnings only. The main task can continue without these.": "僅為提醒。主要任務可以繼續，不必先處理這些。",
     "The action happened": "操作已經發生", "The action did not happen": "操作沒有發生",
     "Close this interrupted turn": "結束這一輪中斷的操作", "I checked the actual outcome": "我已檢查實際結果",
     "Save outcome and continue": "儲存結果並繼續",
@@ -6177,15 +6191,54 @@
     }));
     $("controlSummary").textContent = t("Service status, ongoing tasks and checks for this installation.");
   }
+  // A warning the main task can continue past is maintenance, not a decision. It stays listed,
+  // counted and complete — detail, command and its own action — but folded, so the lane above is
+  // only the things that actually block someone. Conservative by construction: exactly `warning`,
+  // exactly the kinds the snapshot contract defines, and never anything carrying a reconciliation.
+  var RECOVERY_OPTIONAL_KINDS = {doctor:1, service:1, notification:1};
+  var RECOVERY_RESOLUTIONS = ["completed", "not_fired", "cancel"];
+  function isOptionalRecoveryCheck(item) {
+    if (!item || item.severity !== "warning") return false;   // unknown/needs_you/error stay above
+    if (RECOVERY_OPTIONAL_KINDS[String(item.kind || "")] !== 1) return false;
+    return !(item.actions || []).some(function (action) {
+      return RECOVERY_RESOLUTIONS.indexOf(action) >= 0;
+    });
+  }
+  // Opening the fold is a reading choice, so it survives every read-only refresh of this page.
+  // It is deliberately not persisted anywhere: a whole new page starts folded again.
+  var recoveryOptionalOpen = false;
+  function optionalChecksLane(rows, render) {
+    var lane = document.createElement("section"); lane.className = "activity-lane optional-lane";
+    var fold = document.createElement("details"); fold.open = recoveryOptionalOpen;
+    fold.addEventListener("toggle", function () { recoveryOptionalOpen = fold.open; });
+    var head = document.createElement("summary");
+    head.textContent = t("Optional checks") + " (" + rows.length + ") · " + t("nothing to decide");
+    fold.appendChild(head);
+    var box = document.createElement("div"); box.className = "activity-rows";
+    var note = document.createElement("div"); note.className = "activity-empty optional-note";
+    note.textContent = t("Warnings only. The main task can continue without these.");
+    box.appendChild(note);
+    rows.forEach(function (item) {
+      var row = document.createElement("div"); row.className = "activity-row";
+      render(row, item); box.appendChild(row);
+    });
+    fold.appendChild(box); lane.appendChild(fold); return lane;
+  }
   function renderRecovery(data) {
+    var items = data.items || [], optional = items.filter(isOptionalRecoveryCheck);
+    var required = items.filter(function (item) { return optional.indexOf(item) < 0; });
     var badge = $("activityHealth"); badge.textContent = data.status || "unknown";
-    badge.classList.toggle("bad", data.status !== "ok");
+    // Red means "something is stuck". Warning-only maintenance is not, but a status this page does
+    // not recognise is treated as if it were, rather than quietly downgraded.
+    badge.classList.toggle("bad", required.length > 0 ||
+      ["ok", "warning"].indexOf(data.status) < 0);
     $("controlSummary").textContent = (data.summary.total || 0) + " items · " +
-      (data.summary.needs_you || 0) + " need a decision · " + (data.summary.warning || 0) + " warnings";
+      (data.summary.needs_you || 0) + " need a decision · " + (data.summary.warning || 0) + " warnings" +
+      (optional.length ? " · " + optional.length + " optional" : "");
     var grid = $("activityGrid"); grid.textContent = "";
     var wanted = recoveryFocusSession, focused = null;
     recoveryFocusSession = "";                 // one arrival, one highlight
-    grid.appendChild(activityLane("Needs You & recovery", data.items || [], function (row, item) {
+    function recoveryRow(row, item) {
       if (wanted && item.identity === wanted) { row.classList.add("is-focus"); focused = row; }
       activityText(row, item.title || item.identity, item.severity); activityDetail(row, item.detail);
       if (item.command) { var cmd = document.createElement("div"); cmd.className = "activity-command";
@@ -6213,11 +6266,17 @@
           activityAction(row, "Open automation", function () { setControlTab("automations"); });
         }
       });
-    }));
+    }
+    grid.appendChild(activityLane("Needs You & recovery", required, recoveryRow));
+    if (optional.length) grid.appendChild(optionalChecksLane(optional, recoveryRow));
     // A conversation sent the person here for its own item. Take them to it — and when the
     // snapshot does not list it, say that instead of leaving them hunting a row that is not here.
     if (wanted) {
       if (focused) {
+        // A row nobody can see cannot be focused. If the match landed in the fold, open the fold
+        // first — and keep it open, so the next refresh does not hide the row they were sent to.
+        var fold = focused.closest && focused.closest("details");
+        if (fold && !fold.open) { fold.open = true; recoveryOptionalOpen = true; }
         try { focused.scrollIntoView({block:"center"}); } catch (_) {}
         // Arriving is not deciding. Focus lands on the row itself, never on its first action —
         // which is the strongest claim the row can make — so the Enter a person presses after

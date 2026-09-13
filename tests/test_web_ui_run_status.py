@@ -310,7 +310,11 @@ class _Fixture(BaseHTTPRequestHandler):
     recovery_states = {}                 # session id -> /api/recovery/<sid> body, else 404
     recovery_center_fails = False        # the control-plane snapshot is unavailable
     recovery_delay = 0.0                 # hold a recovery read open, so leaving is observable
+    recovery_extra_items = []            # snapshot rows beside the session-derived ones
+    recovery_only_extra = False          # ...and, when set, instead of them
+    recovery_status = ""                 # force a snapshot `status`, including one nobody knows
     reconcile_posts = []                 # nothing in this UI may ever write one of these
+    repair_posts = []                    # nor one of these: no repair/test/retry runs by itself
     # A restarted server rotates the process token the page was loaded with. Only the recovery
     # reads are guarded, so an armed test isolates exactly that path: `valid_token` is what the
     # server accepts now, `session_token_value` is what /api/session-token hands back, and
@@ -394,6 +398,9 @@ class _Fixture(BaseHTTPRequestHandler):
         if path == "/api/recovery/reconcile":
             _Fixture.reconcile_posts.append(body)
             return self._json({"ok": True})
+        if path == "/api/doctor/repair":
+            _Fixture.repair_posts.append(body)
+            return self._json({"ok": True})
         return self._json({})
 
     def do_GET(self):
@@ -438,14 +445,19 @@ class _Fixture(BaseHTTPRequestHandler):
         if path == "/api/recovery-center":
             if _Fixture.recovery_center_fails:
                 return self._json({"error": "recovery snapshot unavailable"}, 503)
-            items = [{"id": "interactive:" + sid, "kind": "interactive", "identity": sid,
-                      "severity": "needs_you", "title": "Interrupted interactive action",
-                      "detail": state.get("reason", ""),
-                      "actions": ["completed", "not_fired", "cancel"]}
-                     for sid, state in sorted(_Fixture.recovery_states.items())]
-            return self._json({"status": "needs_you" if items else "ok",
-                               "summary": {"total": len(items), "needs_you": len(items),
-                                           "warning": 0},
+            items = [] if _Fixture.recovery_only_extra else [
+                {"id": "interactive:" + sid, "kind": "interactive", "identity": sid,
+                 "severity": "needs_you", "title": "Interrupted interactive action",
+                 "detail": state.get("reason", ""),
+                 "actions": ["completed", "not_fired", "cancel"]}
+                for sid, state in sorted(_Fixture.recovery_states.items())]
+            items += [dict(item) for item in _Fixture.recovery_extra_items]
+            severe = [i for i in items if i["severity"] in ("needs_you", "error")]
+            warning = [i for i in items if i["severity"] == "warning"]
+            return self._json({"status": _Fixture.recovery_status or (
+                                   "needs_you" if severe else "warning" if items else "ok"),
+                               "summary": {"total": len(items), "needs_you": len(severe),
+                                           "warning": len(warning)},
                                "items": items})
         if path.startswith("/api/recovery/"):
             time.sleep(_Fixture.recovery_delay)
@@ -609,7 +621,11 @@ def ui(server, browser):
     _Fixture.recovery_states = {}
     _Fixture.recovery_center_fails = False
     _Fixture.recovery_delay = 0.0
+    _Fixture.recovery_extra_items = []
+    _Fixture.recovery_only_extra = False
+    _Fixture.recovery_status = ""
     _Fixture.reconcile_posts = []
+    _Fixture.repair_posts = []
     _Fixture.guard_token = False
     _Fixture.valid_token = TOKEN; _Fixture.session_token_value = TOKEN
     _Fixture.token_refresh_fails = False; _Fixture.guarded_reads = []
@@ -1722,3 +1738,205 @@ def test_arriving_in_recovery_focuses_the_row_and_enter_decides_nothing(ui):
         "() => [document.activeElement.tagName, document.activeElement.textContent]")
     assert first == ["BUTTON", "completed"], "the actions stay reachable, unchanged, and in order"
     assert ui.page.locator(".activity-row.is-focus button").count() == 3
+
+
+# ------------------------------------ maintenance warnings are not a decision to make
+#
+# The recovery lane listed everything the snapshot carried in one "Needs You & recovery" column and
+# painted the health badge red for any status other than `ok`. So an installation whose only finding
+# was "the installed Collie differs from the running source" — advisory, nothing blocked — looked
+# exactly like an interrupted deploy waiting on a person. Warning-only maintenance of the kinds the
+# snapshot contract defines now folds into a plainly labelled optional section, complete and
+# counted, while anything that could actually block the work stays where it was. Nothing here may
+# dismiss a record, acknowledge one, or run a repair, test, retry or reconcile by itself.
+DRIFT_CHECK = {"id": "doctor:version_drift", "kind": "doctor", "identity": "version_drift",
+               "severity": "warning", "title": "Installed Collie differs from the running source",
+               "detail": "Installed 0.9.1, this source tree is 0.9.2. Reinstall when convenient.",
+               "command": "pip install -e .", "actions": ["inspect_doctor"]}
+STALE_PUMP = {"id": "service:notification-pump", "kind": "service", "identity": "notification-pump",
+              "severity": "warning", "title": "notification-pump is stale",
+              "detail": "No fresh heartbeat for about 300 seconds", "actions": ["inspect_doctor"]}
+
+
+def _open_recovery_tab(page):
+    """Open the control panel on the recovery tab, the way a person reaches it from the toolbar."""
+    page.click("#topbarMore > summary")
+    page.click("#activityBtn")
+    page.evaluate("() => { document.getElementById('topbarMore').open = false; }")  # click away
+    page.wait_for_selector("#activityPanel:not([hidden])", timeout=8000)
+    page.click('[data-control-tab="recovery"]')
+    page.wait_for_function(
+        "() => document.getElementById('controlSummary').textContent.includes('need a decision')",
+        timeout=8000)
+    page.wait_for_timeout(150)
+
+
+def _fold_open(page):
+    return page.evaluate("() => { var d = document.querySelector('.optional-lane details');"
+                         "        return !!d && d.open; }")
+
+
+def test_a_warning_only_snapshot_folds_its_optional_checks_and_does_not_look_like_a_failure(ui):
+    _Fixture.recovery_extra_items = [DRIFT_CHECK, STALE_PUMP]
+    _open_recovery_tab(ui.page)
+    # The main lane is empty and says so; nothing there is asking anyone for anything.
+    required = ui.page.locator(".activity-lane:not(.optional-lane)")
+    assert required.count() == 1 and required.locator(".activity-row").count() == 0
+    assert required.locator(".activity-empty").inner_text() == "None"
+    # The warnings are listed, counted and named — folded shut on a page opened just now.
+    summary = ui.page.locator(".optional-lane summary")
+    assert summary.count() == 1
+    label = summary.text_content()             # the lane heads are upper-cased by CSS, not copy
+    assert "Optional checks (2)" in label and "nothing to decide" in label
+    assert _fold_open(ui.page) is False, "a fresh page starts folded"
+    assert ui.page.locator(".optional-lane .activity-row").count() == 2, "listed, not dropped"
+    assert not ui.page.locator(".optional-lane .activity-row").first.is_visible()
+    assert "2 optional" in ui.page.inner_text("#controlSummary")
+    # Advisory is not red, and nothing in the fold borrows the failure token.
+    badge = ui.page.locator("#activityHealth")
+    assert badge.inner_text() == "warning"
+    assert "bad" not in (badge.get_attribute("class") or ""), "a warning is not a red failure"
+    assert ui.page.locator(".optional-lane .bad, #activityNotice.bad").count() == 0
+    assert _Fixture.reconcile_posts == [] and _Fixture.repair_posts == [], \
+        "showing maintenance neither resolves nor repairs anything"
+
+
+def test_an_opened_fold_survives_a_read_only_refresh_and_keeps_every_detail(ui):
+    _Fixture.recovery_extra_items = [DRIFT_CHECK, STALE_PUMP]
+    _open_recovery_tab(ui.page)
+    ui.page.click(".optional-lane summary")
+    ui.page.wait_for_selector(".optional-lane .activity-row", state="visible", timeout=8000)
+    drift = ui.page.locator(".optional-lane .activity-row").first
+    body = drift.inner_text()
+    assert DRIFT_CHECK["title"] in body and "warning" in body
+    assert "this source tree is 0.9.2" in body, "the whole detail is kept, not summarised away"
+    assert drift.locator(".activity-command").inner_text() == "pip install -e ."
+    ui.page.click("#activityRefresh")                    # the same read-only GET the poll makes
+    ui.page.wait_for_timeout(500)
+    assert _fold_open(ui.page) is True, "a refresh must not re-hide what the reader opened"
+    assert ui.page.locator(".optional-lane .activity-row").first.is_visible()
+    assert _Fixture.reconcile_posts == [] and _Fixture.repair_posts == []
+
+
+def test_a_brand_new_page_starts_folded_again_because_nothing_was_written_anywhere(server, browser):
+    """The choice lives in the open page, so opening it stores no user state to clean up later."""
+    _Fixture.recovery_extra_items = [DRIFT_CHECK]
+    _Fixture.recovery_states = {}
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        _open_recovery_tab(page)
+        page.click(".optional-lane summary")
+        assert _fold_open(page) is True
+        page.reload(wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        _open_recovery_tab(page)
+        assert _fold_open(page) is False
+        assert errors == [], "JS errors: %r" % errors
+    finally:
+        _Fixture.recovery_extra_items = []
+        context.close()
+
+
+def test_a_mixed_snapshot_keeps_the_real_decision_in_full_view_beside_the_fold(ui):
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    _Fixture.recovery_extra_items = [DRIFT_CHECK]
+    _open_recovery_tab(ui.page)
+    decision = ui.page.locator(".activity-lane:not(.optional-lane) .activity-row")
+    assert decision.count() == 1 and decision.is_visible()
+    assert "Interrupted interactive action" in decision.inner_text()
+    assert FENCE_REASON in decision.inner_text()
+    assert [button.inner_text() for button in decision.locator("button").all()] == \
+        ["completed", "Not fired", "cancel"], "every resolution, in its order and its wording"
+    assert _fold_open(ui.page) is False, "the maintenance beside it is still only maintenance"
+    assert ui.page.locator(".optional-lane .activity-row").count() == 1
+    assert "bad" in (ui.page.get_attribute("#activityHealth", "class") or ""), \
+        "a real decision still reads as one"
+    assert _Fixture.reconcile_posts == [] and _Fixture.repair_posts == []
+
+
+@pytest.mark.parametrize("item", [
+    dict(DRIFT_CHECK, severity="error"),                        # severe
+    dict(DRIFT_CHECK, severity="catastrophe"),                  # a severity nobody here knows
+    dict(DRIFT_CHECK, severity="warning", kind="quarantine"),   # a kind nobody here knows
+    dict(DRIFT_CHECK, severity="warning", kind="interactive"),  # work recovery, however labelled
+    dict(DRIFT_CHECK, severity="warning", kind="notification",
+         actions=["completed", "not_fired", "cancel"]),         # carries a reconciliation
+])
+def test_severe_unknown_and_reconcilable_items_are_never_folded_away(ui, item):
+    _Fixture.recovery_extra_items = [item]
+    _open_recovery_tab(ui.page)
+    assert ui.page.locator(".optional-lane").count() == 0, "only known warning-only rows fold"
+    row = ui.page.locator(".activity-lane .activity-row")
+    assert row.count() == 1 and row.is_visible()
+    assert item["title"] in row.inner_text()
+    assert "bad" in (ui.page.get_attribute("#activityHealth", "class") or "")
+    assert _Fixture.reconcile_posts == [] and _Fixture.repair_posts == []
+
+
+def test_a_snapshot_status_this_page_does_not_recognise_stays_red(ui):
+    """Folding rows is a reading aid; it never quietly downgrades a verdict from the server."""
+    _Fixture.recovery_extra_items = [DRIFT_CHECK]
+    _Fixture.recovery_status = "degraded"
+    _open_recovery_tab(ui.page)
+    badge = ui.page.locator("#activityHealth")
+    assert badge.inner_text() == "degraded"
+    assert "bad" in (badge.get_attribute("class") or "")
+    assert ui.page.locator(".optional-lane").count() == 1, "the row is still listed, in the fold"
+
+
+def test_being_sent_to_an_item_inside_the_fold_reveals_it_before_focusing_it(ui):
+    """Focus on a row nobody can see is a dead end. Open the fold, then land on the row."""
+    _Fixture.recovery_states["s-fence"] = _fence("s-fence", "r-fence", FENCE_REASON)
+    ui.ask("Deploy the release to staging")
+    # The snapshot now classifies this conversation's own item as warning-only maintenance.
+    _Fixture.recovery_only_extra = True
+    _Fixture.recovery_extra_items = [dict(DRIFT_CHECK, identity="s-fence",
+                                          title="Interrupted interactive action")]
+    dialogs = []
+    ui.page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+    ui.page.locator(".recovery-note button").click()
+    ui.page.wait_for_selector(".activity-row.is-focus", timeout=8000)
+    ui.page.wait_for_timeout(300)
+    assert _fold_open(ui.page) is True, "the fold opened so the row could be seen"
+    focused = ui.page.locator(".optional-lane .activity-row.is-focus")
+    assert focused.count() == 1 and focused.is_visible()
+    assert ui.page.evaluate(
+        "() => document.activeElement.classList.contains('is-focus')") is True
+    assert "not listed in recovery" not in ui.page.inner_text("#activityNotice")
+    ui.page.keyboard.press("Enter")
+    ui.page.wait_for_timeout(300)
+    assert dialogs == [] and _Fixture.reconcile_posts == [] and _Fixture.repair_posts == []
+    ui.page.click("#activityRefresh")                    # and the reveal is not undone by a poll
+    ui.page.wait_for_timeout(500)
+    assert _fold_open(ui.page) is True
+
+
+def test_the_optional_section_speaks_the_reader_s_language(server, browser):
+    _Fixture.lang = "zh"
+    _Fixture.recovery_states = {}
+    _Fixture.recovery_extra_items = [DRIFT_CHECK]
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        _open_recovery_tab(page)
+        summary = page.text_content(".optional-lane summary")
+        assert "可选检查" in summary and "无需决定" in summary and "(1)" in summary
+        page.click(".optional-lane summary")
+        page.wait_for_selector(".optional-lane .activity-row", state="visible", timeout=8000)
+        assert "主要任务可以继续" in page.inner_text(".optional-lane .optional-note")
+        assert DRIFT_CHECK["detail"] in page.inner_text(".optional-lane"), \
+            "the server's own words are quoted, not translated"
+        assert errors == [], "JS errors: %r" % errors
+    finally:
+        _Fixture.lang = "en"
+        _Fixture.recovery_extra_items = []
+        context.close()
