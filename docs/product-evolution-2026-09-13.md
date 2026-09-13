@@ -32,6 +32,12 @@
 
 提交 `32c790d27eb13bd5ebdb4af812ecb12cea24b93b` 修复外部 worker 的结束记录：正常停止时返回 canonical stop_reason/completed，读取持久化恢复状态并随第一条结束帧报告，调度器据此保留待处理任务；停止时保存已有的部分答案。恢复日志不可读时保留不确定性，不自动确认或清除恢复门禁。Claude Code 作者在临时切回旧代码做比较时超时；父流程从它保存的精确补丁恢复实现，叠加到十项修复快照，独立 208 passed、旧代码 6 failed/16 passed、只读审阅 approve 后合入。精确测试快照 `6786eca14c5c278c11b29fe0022502e26adbb11d`，证据 `manual/worker-terminal-merged/verification`；集成保留 70 个无关脏文件。聊天界面尚未消费 recovery 字段，正在单独补齐，不能把后端修复说成完整恢复体验已经完成。pack、断连异常等相邻终态的剩余差异也保留为后续检查项。
 
+提交 `dcb87e2c659cf2c4935e3bcc602fec9a158c8393` 修复会话分叉恰好截在工具调用与结果之间时的历史不完整。分叉前缀现在给缺失的结果补充明确的分支说明，保留已记录结果，不声称外部动作没有执行或已撤销；父会话日志不变。独立 64 passed、旧代码 3 failed/23 passed、只读审阅 approve，精确快照 `7c9f79592ad389b084b046661c649003cb5a4e0f`。检查经过真实 provider 消息转换，但没有以此声称做过真实 API 拒绝对照。旧的已落盘分支暂不回填；分叉共享隔离目录的清理所有权另行修复。第十一、十二项组合为 `5a32299f17908c202e98579de8f674e823e04b36`，158 passed、2 skipped 后，于 16:29:34 UTC 更新自动分支，证据 `combined-fork-worker-checks`。
+
+提交 `ed5f5efb5f6e16f0faeef8c9bd3b0d211dcb6e90` 修复 native/pack 的订阅显示分类遗漏：SDK 和已接受的别名不再漏出 plan 标签；使用实际执行 provider 的既有规范分类，外部 worker pack 使用已有 runner billing evidence。金额仍是 API 等价估算，没有增加账单认证或宣称实际收费为零。独立 193 passed、旧代码 10 failed/60 passed、只读审阅 approve；其中两项旧代码失败触及缺失 helper，另外八项为真实布尔结果错误。新增桌面测试固定已有 plan 提示与 metered 金额显示，是消费者合同检查，旧代码也通过。私有快照 `0429172b8e964716b5c2106917798f72d25806d3`，证据 `manual/subscription-label-merged/verification`。每个 pack attempt 及部分移动端金额标签暂未覆盖。
+
+全部十三项的干净组合快照为 `87eeda438d4212b6c9aefa46014de6d4e27998e7`；180 项组合回归通过后，于 16:37:11 UTC 同步到自动分支。此前全十项的完整回归不能代替这个新组合的全量测试。聊天恢复入口候选的独立 175 项检查已通过，但尚未完成旧界面对照和只读审阅，不算已合入。
+
 ## 验证证据
 
 | 检查 | 结果 | 验证对象 |
@@ -113,7 +119,11 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 
 `live-cancel-collie-v1` 于 15:42 UTC 完成，精确产品仍为 `775b9a86`。模型先修改文件，再真正通过 bash 运行最长 90 秒的临时 hold.py；宿主确认该进程存活后按 Stop，约 95.2 ms 收到 canceled 结束帧，工具实际运行约 0.3 秒便退出，没有完成标记。部分修改保留、受保护测试未改，随后同一产品会话继续，产品明确 completed、required verification 通过、额外宿主 4/4 通过，所属进程全部清理。这是一个真实功能样本，不能推出一般延迟或成功率。
 
-`live-cancel-worker-v1` 也经实际外部 Claude Code worker 接受 Stop 并返回 canceled，部分修改保留。其工具事件无法证明物理执行边界，因此该能力仍未验证。显式继续收到 recovery_required 的起跑前拒绝：必须先检查中断效果。实验整体 FAIL 表示直接继续未达成，不意味着恢复检查本身错误。更具体的产品缺口是第一条 worker 结束帧没有携带恢复状态，用户再次尝试才看见原因；报告路径已作为第十一项后端修复合入，真实恢复门禁保留。`live-worker-terminal-v2` 正在该精确候选上复测，尚未把它记作通过。
+`live-cancel-worker-v1` 也经实际外部 Claude Code worker 接受 Stop 并返回 canceled，部分修改保留。其工具事件无法证明物理执行边界，因此该能力仍未验证。显式继续收到 recovery_required 的起跑前拒绝：必须先检查中断效果。实验整体 FAIL 表示直接继续未达成，不意味着恢复检查本身错误。更具体的产品缺口是第一条 worker 结束帧没有携带恢复状态，用户再次尝试才看见原因；报告路径已作为第十一项后端修复合入，真实恢复门禁保留。
+
+`live-worker-terminal-v2` 于 16:19:22 UTC 收尾，精确快照 `6786eca1`、同一隔离 Claude Code 2.1.270 / Opus 5。第一条停止帧立即带上 completed=false、stop_reason=canceled、recovery_required=true 和 external_action。实验据此跳过第二次请求，避免一次已知无效的重试；宿主确认部分修改保留、受保护测试未改、所属进程树已清理。原工作流总判定仍为 FAIL（直接继续未达成），物理工具边界仍 UNVERIFIED；独立读取原始前后结束帧的 `terminal-contract.json` 将“恢复元数据修复”单列为 PASS。不是完整恢复工作流或成功率排名。
+
+16:13–16:15 UTC 的实际浏览器检查 `ui-ten-fixes` 在干净 e2ad 上使用 mock provider：刷新后新任务文字与尚未确认的 folder-a 保留；改为 folder-b 后只按一次 Send、未按 Use folder，唯一会话读取了 folder-b 的真实 README；再刷新同会话，答案和目录保持。截图和 DOM 记录已保存，测试页面及服务已关闭。首次加载的一次 New task 点击仍有未归因的异常观察，没有把它记为已解决。
 
 该 worker 实验还暴露工具自身的记录问题：已收到起跑前 done，却又等待 start 180 秒，并在摘要丢掉 done。原始 SSE 完整保留，父流程已修正等候与摘要逻辑、两项检查通过，没有重写旧实验。两次 live 执行的原驱动 SHA256 均为 `1be9d3cf…a6d9f233`，代码字节按执行前后哈希核对后保存在各外层运行目录 sources/driver.py；后来的读取修正另有版本。各 runtime、费用估算、订阅前置检查继续分开记录，不混为 harness 排名或实际账单。
 
