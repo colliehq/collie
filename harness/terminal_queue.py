@@ -67,6 +67,32 @@ def accepted_limits(entry):
             "current limits" % exc) from exc
 
 
+def accepted_capabilities(entry):
+    """The sensitive grants this queued request was accepted under.
+
+    The Web composer freezes DESKTOP_CONTROL / SCREEN_CAPTURE / MCP_MANAGE /
+    MCP_DISCOVERY at acceptance and the managed stream replays that payload when the
+    request's turn comes. ``/next`` claims the SAME durable entry, so it replays it too:
+    a toggle switched on while the request waited must not arm a task nobody accepted
+    with that authority. Revocation needs no replay — ``capability_policy.allowed``
+    requires the live setting as well, so a grant turned off meanwhile stays off.
+
+    ``None`` inside the entry means it made no claim (accepted before policies were
+    frozen) and the current snapshot is the honest answer, which is exactly what
+    ``from_payload`` returns for it. A payload this build cannot read is a refusal: the
+    request keeps its place in the queue rather than running under guessed permissions.
+    """
+    from . import capability_policy
+    frozen = (entry.get("config") or {}).get("frozen") or {}
+    try:
+        return capability_policy.from_payload(frozen.get("capabilities"))
+    except ValueError as exc:
+        raise QueueError(
+            "this request recorded the capability settings it was accepted under, and "
+            "this build cannot replay them (%s); it was kept pending — re-send it to "
+            "run under the current settings" % exc) from exc
+
+
 def _supported(entry):
     config = entry.get("config") or {}
     if (config.get("strategy", "single") != "single"
@@ -84,7 +110,8 @@ def _supported(entry):
         raise QueueError("worker settings changed since acceptance; the request was kept pending")
     if isinstance(previous, dict) and previous.get("RUNNER", "collie") != "collie":
         raise QueueError("this request selected another worker; start it from the Web queue")
-    accepted_limits(entry)     # refuse an unreplayable budget before the entry is claimed
+    accepted_limits(entry)          # refuse an unreplayable budget before the entry is claimed
+    accepted_capabilities(entry)    # ... and unreplayable grants, for the same reason
 
 
 @contextlib.contextmanager

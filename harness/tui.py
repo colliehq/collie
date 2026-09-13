@@ -550,9 +550,9 @@ def _read_line(console, have_rich):
 def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None,
             cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
-    from .cli import (apply_accepted_limits, apply_turn_decision, make_harness,
-                      owned_turn_state, recovery_notice, resolve_turn_decision,
-                      turn_decision_receipt)
+    from .cli import (apply_accepted_capabilities, apply_accepted_limits,
+                      apply_turn_decision, make_harness, owned_turn_state,
+                      recovery_notice, resolve_turn_decision, turn_decision_receipt)
     from . import run_ownership, terminal_queue
     from . import sessions as sess
 
@@ -773,6 +773,10 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         # typed here is measured against the settings as they are now.
                         apply_accepted_limits(
                             h, terminal_queue.accepted_limits(queued) if queued else None)
+                        # And the accepted capability grants, which bind this request
+                        # only; live revocation still applies on top of them.
+                        apply_accepted_capabilities(
+                            h, terminal_queue.accepted_capabilities(queued) if queued else None)
                     except Exception as ex:
                         msg = ("collie could not route this turn: %s: %s"
                                % (type(ex).__name__, ex))

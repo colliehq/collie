@@ -530,6 +530,25 @@ def apply_accepted_limits(h, limits):
     return resolved
 
 
+def apply_accepted_capabilities(h, capabilities):
+    """Hold a REUSED Harness to the sensitive grants this one turn is authorized to use.
+
+    ``capabilities`` is the policy a queued request was accepted under
+    (``terminal_queue.accepted_capabilities``).  ``None`` means this turn has no accepted
+    policy — a line the person just typed — and the run snapshots the settings as they are
+    when it starts, which is the long-standing behaviour.
+
+    A terminal surface builds ONE Harness and runs many turns on it, so this is set on
+    every turn: an accepted policy must bind the request it arrived with, and must not
+    still be binding whatever is typed next.  ``Harness.run`` hands the value it finds
+    here to the turn's ToolCtx, which is what every capability check consults — and only
+    ever as a ceiling, because ``capability_policy.allowed`` still requires the live
+    setting too, so revoking a capability takes effect immediately either way.
+    """
+    h.capabilities = dict(capabilities) if capabilities is not None else None
+    return h.capabilities
+
+
 def turn_decision_receipt(decision, res, provider=None):
     """Compact structured outcome used both for UI receipts and next-turn routing."""
     active = provider
@@ -786,6 +805,10 @@ def cmd_repl(args):
                         # which may have rebuilt the provider this reaches.
                         apply_accepted_limits(
                             h, terminal_queue.accepted_limits(queued) if queued else None)
+                        # Same rule for sensitive authority: the request replays the
+                        # grants it was accepted with, a typed line takes today's.
+                        apply_accepted_capabilities(
+                            h, terminal_queue.accepted_capabilities(queued) if queued else None)
                     except Exception as e:
                         print("\ncollie could not route this turn: %s: %s"
                               % (type(e).__name__, e))
