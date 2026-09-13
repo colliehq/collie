@@ -27,7 +27,9 @@ Three rules shape the code:
 skip says "this cannot apply here" (no CLI, wrong phase), while unverified says
 "this could have been checked and was not", and the registry downgrades
 capabilities for the second but not the first.  Collapsing them would let an
-unrun matrix read as a clean bill of health.
+unrun matrix read as a clean bill of health.  A live column whose prerequisite
+column failed is the second kind (:class:`PrerequisiteFailed`): it does not run,
+it does not spend a turn, and the capability it speaks for is withdrawn.
 
 **One cell cannot take the matrix down.**  Every check runs inside its own
 try/except and turns an exception into a ``FAIL`` with a redacted summary.  A
@@ -185,6 +187,19 @@ class SkipCheck(Exception):
     Raised with the reason a human needs: ``not installed: claude-code``,
     ``live checks disabled``.  The reason is rendered inside the cell as
     ``SKIP(reason)`` and collected into the report's ``unverified_reasons``.
+    """
+
+
+class PrerequisiteFailed(Exception):
+    """The column this one builds on did not pass, so this one did not run.
+
+    ``UNVERIFIED``, not ``SKIP``, and the difference is the whole point: a skip
+    says "this cannot apply here" and leaves the declared capability alone, while
+    a prerequisite failure means the capability *could* have been checked on this
+    host and was not — the registry must take it away rather than let an unrun
+    column read as evidence.  It is not a ``FAIL`` either: the column asserts
+    nothing about its own runner here, and a second red cell carrying the first
+    cell's error only buries the failure that actually happened.
     """
 
 
@@ -618,6 +633,13 @@ class CheckContext:
     snapshot and its runner there, ``resume`` continues that same thread and
     ``usage`` reads the tokens both of them accumulated.  Three columns, one
     billable turn each, instead of three fresh sessions.
+
+    That sharing is also a dependency, so ``outcomes`` records what each column
+    ended up saying (:func:`_cell` fills it in).  A dependent column reads it
+    through :func:`_needs` instead of inferring from the leftovers in ``state``:
+    a snapshot is left behind whether or not the turn it came from was any good,
+    and believing one that was not is how a failed first turn used to buy a
+    second model call and then a fabricated usage failure.
     """
 
     spec: HarnessSpec
@@ -626,6 +648,8 @@ class CheckContext:
     docker: bool = False
     scratch_root: str = ""
     state: dict[str, Any] = field(default_factory=dict)
+    # check name -> (status, detail), in the order the columns ran.
+    outcomes: dict[str, tuple[str, str]] = field(default_factory=dict)
     _temp_dirs: list[str] = field(default_factory=list)
 
     def workspace(self, suffix: str = "ws") -> str:
@@ -647,6 +671,29 @@ class CheckContext:
             except Exception:
                 pass            # a leftover temp directory is not worth a failed run
         self._temp_dirs.clear()
+
+
+def _needs(ctx: CheckContext, name: str, why: str) -> None:
+    """Stop a dependent column when the one it builds on did not pass.
+
+    The reason carries the prerequisite's own detail, so the operator reading the
+    dependent cell sees the failure that actually happened rather than a second,
+    derived one.  A prerequisite that was skipped skips this column too — "no CLI
+    installed" is still not a fact about resuming — while a prerequisite that
+    failed or went unverified leaves this column ``UNVERIFIED``, which is what
+    makes the registry withdraw the capability instead of leaving it declared.
+
+    A prerequisite that was not part of this run at all (``collie runners compat
+    --checks resume``) says nothing either way; the column falls through to its
+    own guards.
+    """
+    status, detail = ctx.outcomes.get(name, ("", ""))
+    if not status or status == PASS:
+        return
+    reason = "%s (%s %s: %s)" % (why, name, status, _scrub(detail, 240) or "no detail")
+    if status == SKIP:
+        raise SkipCheck(reason)
+    raise PrerequisiteFailed(reason)
 
 
 # ---------------------------------------------------------------------------
@@ -1560,6 +1607,10 @@ def check_one_turn(ctx: CheckContext) -> str:
 
     _expect(snapshot.settled,
             "the turn did not settle: %s" % (_scrub(snapshot.error, 200) or "(no error)"))
+    # Past this line a turn really completed, so its tokens are evidence `usage`
+    # may read even if an assertion below fails: a settled turn whose edit never
+    # landed is a bad turn, not an unmeasured one.
+    ctx.state["completed"] = snapshot
     _expect(snapshot.mutated, "the turn settled without changing the workspace")
     with open(os.path.join(workspace, _FIXTURE_FILE), "r", encoding="utf-8") as handle:
         body = handle.read()
@@ -1580,6 +1631,11 @@ def check_one_turn(ctx: CheckContext) -> str:
 def check_resume(ctx: CheckContext) -> str:
     """A second turn continues the first thread instead of quietly starting a new one."""
     spec = ctx.spec
+    # Only a first turn that passed *every* one_turn assertion is a thread worth
+    # continuing.  Resuming a thread whose turn never settled spends a second
+    # model call to rediscover the first one's error, and resuming one whose edit
+    # never landed asks the runner to change a line that is not there.
+    _needs(ctx, "one_turn", "no verified first turn to resume")
     first = ctx.state.get("snapshot")
     runner = ctx.state.get("runner")
     workspace = ctx.state.get("workspace")
@@ -1593,6 +1649,10 @@ def check_resume(ctx: CheckContext) -> str:
 
     _expect(second.settled,
             "the resumed turn did not settle: %s" % (_scrub(second.error, 200) or "(none)"))
+    # Settled, so this turn's cumulative counters supersede the first turn's for
+    # `usage`.  Before it settles they do not: a resume that never completed must
+    # not be allowed to overwrite the usable evidence the first turn left.
+    ctx.state["completed"] = second
     _expect(second.thread_id == first.thread_id,
             "the resumed turn reports locator %r, not the one the snapshot named"
             % (second.thread_id or ""))
@@ -1610,8 +1670,13 @@ def check_resume(ctx: CheckContext) -> str:
 def check_usage(ctx: CheckContext) -> str:
     """Token counts match what the spec claims, and absence is None rather than zero."""
     spec = ctx.spec
-    snapshot = ctx.state.get("snapshot")
+    # The *completed* turn, not merely the most recent one.  Reading a snapshot
+    # whose turn never settled turns somebody else's failure into "a completed
+    # turn reported 0 output tokens", which is a claim about the runner's usage
+    # reporting that nothing in this run supports.
+    snapshot = ctx.state.get("completed")
     if snapshot is None:
+        _needs(ctx, "one_turn", "no completed turn to read usage from")
         raise SkipCheck("one_turn produced no turn to read usage from")
 
     usage = usage_to_collie(spec.key, dict(snapshot.usage or {}))
@@ -1712,6 +1777,8 @@ def _cell(check: Check, ctx: CheckContext) -> dict[str, Any]:
         detail = check.run(ctx) or ""
     except SkipCheck as exc:
         status, detail = SKIP, str(exc)
+    except PrerequisiteFailed as exc:
+        status, detail = UNVERIFIED, str(exc)
     except BillingOverrideError as exc:
         # The parent shell would re-bill or re-route this worker.  That is a fact
         # about the host, not about the runner, and it is the same refusal a real
@@ -1721,8 +1788,11 @@ def _cell(check: Check, ctx: CheckContext) -> dict[str, Any]:
         status, detail = FAIL, str(exc)
     except Exception as exc:
         status, detail = FAIL, "%s: %s" % (type(exc).__name__, exc)
-    return {"status": status, "detail": _scrub(detail),
+    cell = {"status": status, "detail": _scrub(detail),
             "duration_ms": int((time.monotonic() - began) * 1000)}
+    # What a later column in this row is allowed to build on (see `_needs`).
+    ctx.outcomes[check.name] = (status, cell["detail"])
+    return cell
 
 
 def _row(key: str, *, live: bool, docker: bool, scratch_root: str,
@@ -2006,6 +2076,6 @@ def write_report(report: Mapping[str, Any], path: str) -> tuple[str, str]:
 
 __all__ = [
     "CHECKS", "CHECK_NAMES", "Check", "CheckContext", "CheckFailure", "FAIL",
-    "LIVE_CHECK_NAMES", "OFFLINE_CHECK_NAMES", "PASS", "SCHEMA", "SKIP", "SkipCheck",
-    "UNVERIFIED", "render_markdown", "run_matrix", "write_report",
+    "LIVE_CHECK_NAMES", "OFFLINE_CHECK_NAMES", "PASS", "PrerequisiteFailed", "SCHEMA",
+    "SKIP", "SkipCheck", "UNVERIFIED", "render_markdown", "run_matrix", "write_report",
 ]
