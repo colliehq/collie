@@ -30,6 +30,8 @@
 
 提交 `28564f12cad7e16d470d66d3656743ce83be6238` 修复执行进程退出后任务仍被标成 claimed、无法开始/编辑/取消的队列。读取或编辑/取消入口先尝试非阻塞获取会话租约，再用现有日志核对：已经交付的标为 consumed，尚未交付的恢复 pending；活执行者仍持有租约时不干扰它，日志不可读时不凭猜测重新排队。独立 193 passed、旧代码 2 failed/15 passed、只读审阅 approve。完整回归 3954 passed、20 skipped，GUI 63/63、surfaces 41/41、全部门禁通过。精确快照 `d40a3fcb9e115ad6043c0d502199bd0a8e9cc46e`，证据 `rounds/04-queued-intent`；该完整快照不含第八、九项网页修复，组合检查另行记录。
 
+提交 `32c790d27eb13bd5ebdb4af812ecb12cea24b93b` 修复外部 worker 的结束记录：正常停止时返回 canonical stop_reason/completed，读取持久化恢复状态并随第一条结束帧报告，调度器据此保留待处理任务；停止时保存已有的部分答案。恢复日志不可读时保留不确定性，不自动确认或清除恢复门禁。Claude Code 作者在临时切回旧代码做比较时超时；父流程从它保存的精确补丁恢复实现，叠加到十项修复快照，独立 208 passed、旧代码 6 failed/16 passed、只读审阅 approve 后合入。精确测试快照 `6786eca14c5c278c11b29fe0022502e26adbb11d`，证据 `manual/worker-terminal-merged/verification`；集成保留 70 个无关脏文件。聊天界面尚未消费 recovery 字段，正在单独补齐，不能把后端修复说成完整恢复体验已经完成。pack、断连异常等相邻终态的剩余差异也保留为后续检查项。
+
 ## 验证证据
 
 | 检查 | 结果 | 验证对象 |
@@ -38,6 +40,7 @@
 | GUI 和其他界面 | GUI 63/63；surfaces 41/41 | 同一开始快照 |
 | 排队预算与权限修复后的完整离线回归 | 3919 passed、20 skipped；GUI 63/63、surfaces 41/41、全部门禁通过 | `a4a79b46`，尚不含后来的取消与网页补丁 |
 | 七项修复的完整离线回归 | 3951 passed、20 skipped；全部门禁通过、surfaces 41/41 | `775b9a86`，`seven-fixes-full`，15:13 UTC 完成 |
+| 十项修复的完整离线回归 | 3982 passed、20 skipped；GUI 63/63、surfaces 41/41、全部门禁通过 | `e2ad9541`，`ten-fixes-full`，16:16:25 UTC 完成；不含第十一项 worker 终态修复 |
 | 已合并的四项产品修复 | 121 passed | `a35de724`，覆盖排队、权限、worker 结果、网页草稿；是专项回归 |
 | 修复后的专项回归 | 313 passed、1 skipped | 12 个相关测试文件，包括终端路由、恢复和任务 inbox |
 | 同一新增测试文件放到旧代码上 | 8 failed、3 passed | 相同测试文件 SHA256；失败包括预算漂移、损坏快照和下一轮生成设置 |
@@ -46,7 +49,7 @@
 | 控制器维护后的验证 | 19 项通过 | 增加已完成批次恢复、旧进程存活时拒绝重复启动、保留原截止时间；真实 Claude Code 结构化审阅调用通过 |
 | Windows 子进程生命周期 | 2 个真实场景通过 | 父进程退出、截止时间到达后，所属子进程均已终止 |
 
-完整回归已覆盖开始快照、排队修复快照和七项修复的合并快照。测试使用 mock provider、独立状态目录和临时数据，网络依赖检查按既有开关跳过，不能据此声称所有真实模型和平台均已验收。
+完整回归已覆盖开始快照、排队修复快照以及七项、十项修复的合并快照。测试使用 mock provider、独立状态目录和临时数据，网络依赖检查按既有开关跳过，不能据此声称所有真实模型和平台均已验收。
 
 第一轮 native Claude Code 编码调用保存了修复和测试，随后额外执行全量测试时触及 25 分钟单次时间限制。该调用保留为 timeout；父进程另行完成上述验证与审阅，没有将它记成成功结束的调用。
 
@@ -64,7 +67,7 @@
 
 14:37 UTC，自动分支先汇入七项修复到 `775b9a866e99b083631ba943561e8650107ee890`。第 3 批额度恢复完成后，新任务视图和 conformance 修复合并经过 186 passed、5 skipped 的专项检查，在控制器批次间隙用旧 tip 校验更新。证据在 `combined-quota-view-compat-tests` 和 `manual/combined-quota-view/merge.json`。该精确合并快照随后也通过完整回归，见验证表。
 
-15:57 UTC，第 4 批队列修复与两项网页修复经过组合检查 280 passed，自动分支更新到 `e2ad95417952b8897b52be67571e8bde961f1a9f`，包括全部十项产品修复。干净组合 checkout 为 `manual/combined-queue-ui/product`，记录在 `combined-queue-ui-checks` 和其 `merge.json`。全十项的 `ten-fixes-full` 已于 15:57:57 UTC 启动，仍在运行；不把先前 d40 的 3954 项完整回归写成这个组合版本的完整回归。
+15:57 UTC，第 4 批队列修复与两项网页修复经过组合检查 280 passed，自动分支更新到 `e2ad95417952b8897b52be67571e8bde961f1a9f`，包括全部十项产品修复。干净组合 checkout 为 `manual/combined-queue-ui/product`，记录在 `combined-queue-ui-checks` 和其 `merge.json`。全十项的 `ten-fixes-full` 于 16:16:25 UTC 正常完成，耗时 1108.839 秒，结果见验证表。第 5 批会话存储任务已基于该快照开始；第十一项手动修复待批次结束后合并到自动分支。
 
 控制器同时检查绝对截止时间、剩余单调时钟时间和 `STOP` 文件；所有主要执行任务由 Windows Job 管理子进程。创建运行目录下的 `STOP` 文件即可提前结束。本机休眠或关机会减少实际运行时间。
 
@@ -110,7 +113,7 @@ Claude Code 编写的实验工具在 `manual/live-cancel-design`，使用实际 
 
 `live-cancel-collie-v1` 于 15:42 UTC 完成，精确产品仍为 `775b9a86`。模型先修改文件，再真正通过 bash 运行最长 90 秒的临时 hold.py；宿主确认该进程存活后按 Stop，约 95.2 ms 收到 canceled 结束帧，工具实际运行约 0.3 秒便退出，没有完成标记。部分修改保留、受保护测试未改，随后同一产品会话继续，产品明确 completed、required verification 通过、额外宿主 4/4 通过，所属进程全部清理。这是一个真实功能样本，不能推出一般延迟或成功率。
 
-`live-cancel-worker-v1` 也经实际外部 Claude Code worker 接受 Stop 并返回 canceled，部分修改保留。其工具事件无法证明物理执行边界，因此该能力仍未验证。显式继续收到 recovery_required 的起跑前拒绝：必须先检查中断效果。实验整体 FAIL 表示直接继续未达成，不意味着恢复检查本身错误。更具体的产品缺口是第一条 worker 结束帧没有携带恢复状态，用户再次尝试才看见原因；`manual/worker-terminal-recovery` 正在修复报告路径，保留真实恢复门禁。
+`live-cancel-worker-v1` 也经实际外部 Claude Code worker 接受 Stop 并返回 canceled，部分修改保留。其工具事件无法证明物理执行边界，因此该能力仍未验证。显式继续收到 recovery_required 的起跑前拒绝：必须先检查中断效果。实验整体 FAIL 表示直接继续未达成，不意味着恢复检查本身错误。更具体的产品缺口是第一条 worker 结束帧没有携带恢复状态，用户再次尝试才看见原因；报告路径已作为第十一项后端修复合入，真实恢复门禁保留。`live-worker-terminal-v2` 正在该精确候选上复测，尚未把它记作通过。
 
 该 worker 实验还暴露工具自身的记录问题：已收到起跑前 done，却又等待 start 180 秒，并在摘要丢掉 done。原始 SSE 完整保留，父流程已修正等候与摘要逻辑、两项检查通过，没有重写旧实验。两次 live 执行的原驱动 SHA256 均为 `1be9d3cf…a6d9f233`，代码字节按执行前后哈希核对后保存在各外层运行目录 sources/driver.py；后来的读取修正另有版本。各 runtime、费用估算、订阅前置检查继续分开记录，不混为 harness 排名或实际账单。
 
