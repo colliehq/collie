@@ -62,7 +62,9 @@
 
 独立仓库没有 remote，不共享原仓库 refs 或 objects。其起点 `3a0065399720ca4fc4f939c389a72e5e370e1e03` 是精确测试过的工作快照加首个修复。后续后台成果由进度文件记录。
 
-当前自动分支已汇入上述七项修复，推进到 `775b9a866e99b083631ba943561e8650107ee890`。第 3 批额度恢复完成后，新任务视图和 conformance 修复合并经过 186 passed、5 skipped 的专项检查，并于 14:37 UTC 在控制器批次间隙用旧 tip 校验更新。证据在 `combined-quota-view-compat-tests` 和 `manual/combined-quota-view/merge.json`。该精确合并快照随后也通过完整回归，见验证表。
+14:37 UTC，自动分支先汇入七项修复到 `775b9a866e99b083631ba943561e8650107ee890`。第 3 批额度恢复完成后，新任务视图和 conformance 修复合并经过 186 passed、5 skipped 的专项检查，在控制器批次间隙用旧 tip 校验更新。证据在 `combined-quota-view-compat-tests` 和 `manual/combined-quota-view/merge.json`。该精确合并快照随后也通过完整回归，见验证表。
+
+15:57 UTC，第 4 批队列修复与两项网页修复经过组合检查 280 passed，自动分支更新到 `e2ad95417952b8897b52be67571e8bde961f1a9f`，包括全部十项产品修复。干净组合 checkout 为 `manual/combined-queue-ui/product`，记录在 `combined-queue-ui-checks` 和其 `merge.json`。全十项的 `ten-fixes-full` 已于 15:57:57 UTC 启动，仍在运行；不把先前 d40 的 3954 项完整回归写成这个组合版本的完整回归。
 
 控制器同时检查绝对截止时间、剩余单调时钟时间和 `STOP` 文件；所有主要执行任务由 Windows Job 管理子进程。创建运行目录下的 `STOP` 文件即可提前结束。本机休眠或关机会减少实际运行时间。
 
