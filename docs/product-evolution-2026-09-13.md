@@ -67,9 +67,13 @@
 
 进一步复现的是尚未确认的目录输入丢失，现已由 `b68a62d` 修复。修复后的实际浏览器检查保留未确认的 `folder-b` 路径和草稿，刷新后自动检查目录，然后真正读取该目录的 README，返回 `Collie UI fixture: folder-b`；DOM、截图和说明位于 `ui-pending-candidate`。编码调用达到 20 分钟时限，候选补丁被保留，再由父流程独立验证、审阅后合入；没有把超时调用记作成功。
 
-一次 Send 自动检查目录的候选通过了 100 项独立回归，并覆盖重复发送、附件替换和目录缺失；但父流程追加的浏览器检查又复现了一个阻断问题：等待目录 A 的检查时改选并确认 B，旧的 Send 会在 B 启动。这份候选没有合入。原验证与失败证据保留在 `manual/folder-send/verification-v2` 和 `folder-send-race-check`，另一轮 Claude Code 正在修复目的目录的身份判断。目录确认成功本身不应代表用户重新发送。
+一次 Send 自动检查目录仍是候选，尚未合入。第一次独立 100 项回归后，追加测试发现改选并确认 B 会让等待 A 的旧 Send 在 B 启动；此问题已修复，原失败与通过复测分别保留在 `folder-send-race-check`、`folder-send-race-after`。候选已与七项已提交修复合并，新的独立回归 114 passed、旧代码 15 failed/10 passed，实际 Chrome 一次 Send 自动检查并读取 folder-b 的证据在 `ui-folder-send-merged`。
+
+父流程随后又在同一合并候选复现了重复目录检查导致 Send 停住：自动检查期间点击“使用此目录”，即使目录和草稿都未改变，旧等待也会被丢弃。草稿保留，但要再次 Send。`folder-send-duplicate-check` 保留失败；该候选审阅已停止，`manual/folder-send-merged/coalescing-followup` 正在修复各检查入口的合并行为。普通路径通过不代表所有连续操作已完成。
 
 首次模型设置选择较多仍保留为体验观察。实际 Chrome 中有一次初次加载期间点击 New task 后仍显示 Today，随后点击正常；尚未通过受控条件复现，不把它归因于已确认缺陷，也不声称新视图修复覆盖它。
+
+独立诊断用服务端延迟分别控制 Today 数据、配置和会话响应，未发现这些迟到响应覆盖新视图；另用 HTML 分段传输确实复现了“按钮已显示、末尾脚本尚未加载时点击被吞掉”。这是一个受控缺陷，但没有证据证明它就是前述实际 Chrome 观察的原因。`manual/ui-bootstrap/intent-followup` 正补齐早期显式导航与会话深链的先后语义，尚未合入。
 
 ## 真实 Claude Code 工作流实验
 
@@ -78,6 +82,10 @@
 官方 npm 包 2.1.270 安装在运行目录 `toolchains` 内，不替换全局 CLI、SDK 或已安装 Collie。[官方安装故障说明](https://code.claude.com/docs/en/troubleshoot-install)记录了 npm 平台原生包的检查方法。使用该隔离运行时重跑同一产品 conformance，`live-claude-compat-v4` 为 11 PASS、0 FAIL、0 SKIP、0 UNVERIFIED：真实模型修改由主机读取文件确认，第二次调用使用同一原生会话，usage 返回有效 token 数据。取消列使用真实所属子进程替身，没有调用真实模型，不能据此声称真实模型工具中断已经验收。
 
 随后 `live-cli-flow` 在合并产品快照 `a35de724` 上，用未经改写的 `harness.cli run`、`claude-code` worker、2.1.270 和显式 Opus 5/high/standard 完成两轮任务。第一轮修复去重顺序与复制隔离，第二轮在同一 Collie 会话及同一原生 Claude locator 上追加生成器和输入验证要求。主机持有的测试没有被模型修改，分别 4 项、7 项通过；两轮均 completed、无 error、无 recovery_required，产品宿主验证及额外外部验证都成功。
+
+`live-native-cli-flow` 又在快照 `775b9a86` 上经 `--runner collie --provider claude-agent-sdk` 跑了同一公开验收任务，覆盖 Collie 自己的工具循环和结构化响应路径。两轮 completed、保持同一 Collie 会话，受保护测试未被修改，产品宿主验证及额外外部检查均为 4/4、7/7；第二轮记录 5 次模型调用。这一路使用已安装官方 SDK 自带运行时，没有注入另一条 CLI 路径。它与外部 worker 的验收分开记录，不把不同运行时、不同工具循环下的耗时当成受控排名。
+
+七项已提交修复的完整回归 `seven-fixes-full` 已于 14:55:50 UTC 开始，精确快照 `775b9a866e99b083631ba943561e8650107ee890`。仍在运行，不能提前报告通过；它不包含上述尚未合入的目录发送和早期点击候选。
 
 调用前独立确认 Claude Max 登录、订阅额度与未启用额外付费，环境排除了 API-key 路线；产品的离线 probe receipt 仍将 billing 标为 unknown/unconfigured，不能将独立前置检查写成产品已完成账单认证。这是功能验收，样本不足以给不同 harness 排名；CLI 报告的美元数是用量折算，不作为订阅实际账单。
 
