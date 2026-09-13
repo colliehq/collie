@@ -3,6 +3,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/logo.svg">
 <title>Collie · web</title>
+<script>
+  /* An early click still counts. This page's own script sits at the end of a long document, so the
+     sidebar can be painted — and pressed — a beat before any handler exists; that first New task
+     press was swallowed, leaving the visitor on Today wondering why the button did nothing, with
+     pressing it again as the only way through. This records which of the two root views was asked
+     for, and the bootstrap below reads it when it decides where to open. It only ever remembers a
+     choice: nothing is fetched, sent or navigated from here. */
+  (function () {
+    window.__collieEarlyView = "";
+    window.__collieEarlyDraft = null;
+    function record(event) {
+      if (event.type === "input") {
+        if (event.target && event.target.id === "input")
+          window.__collieEarlyDraft = {text:event.target.value, view:window.__collieEarlyView};
+        return;
+      }
+      var node = event.target && event.target.closest ? event.target.closest("#newChat,#navHome") : null;
+      if (node) window.__collieEarlyView = node.id === "newChat" ? "new" : "today";
+    }
+    document.addEventListener("click", record, true);
+    document.addEventListener("input", record, true);
+    window.__collieEarlyViewStop = function () {   // the real handlers own every click after boot
+      document.removeEventListener("click", record, true);
+      document.removeEventListener("input", record, true);
+      window.__collieEarlyViewStop = null;
+    };
+  })();
+</script>
 <style>
   /* ============================================================= palette
      "Blue Merle" — named for the border-collie coat: a slate-indigo chrome on
@@ -9287,10 +9315,29 @@
   window.addEventListener("focus", function () {
     if (document.body.getAttribute("data-surface") === "today") loadToday(true);
   });
-  // Open on the surface the address asks for. A session or mission deep link paints its own canvas
-  // in the final bootstrap below, so only the plain `view=new` case skips Today — and skipping it
-  // means Today's sources are never fetched for a page that was never going to show them.
-  if (INITIAL_VIEW === "new" && !INITIAL_SESSION && !INITIAL_MISSION) newThread(false);
+  // Where this visit opens, decided once. The address is a request from before the page existed; a
+  // press made while it was loading is later, and later wins — that is the whole of the rule, and it
+  // is the same rule the buttons above follow once they are alive. `BOOT_ROUTE` is that decision,
+  // and the final bootstrap at the end of this script obeys it too, so nothing down there can
+  // reopen the thread the visitor has already walked out of.
+  //
+  //   an early press   →  the root view it asked for, whatever the address said
+  //   mission=…        →  that mission's canvas, painted by the bootstrap below
+  //   session=…        →  that thread, painted by the bootstrap below
+  //   view=new         →  the task canvas, and Today's sources are never fetched for it
+  //   nothing          →  Today
+  //
+  // The recorder in the head speaks for the same two buttons as the handlers above, so it can only
+  // ever name a root view; it is detached here, and every later click belongs to the real handlers.
+  var EARLY_VIEW = window.__collieEarlyView || "";
+  if (window.__collieEarlyViewStop) window.__collieEarlyViewStop();
+  var BOOT_ROUTE = EARLY_VIEW ? EARLY_VIEW
+    : INITIAL_MISSION ? "mission"
+    : INITIAL_SESSION ? "session"
+    : INITIAL_VIEW === "new" ? "new" : "today";
+  // Leaving a deep link behind is the button's own doing: newThread and showToday drop `session`
+  // and `mission` from the address, so the address keeps agreeing with the surface on screen.
+  if (BOOT_ROUTE === "new") newThread(EARLY_VIEW === "new");
   else showToday(true);
 
   // Starter cards in the empty state: click one to drop a ready-made prompt into the composer (so a
@@ -12081,10 +12128,26 @@
     poll(); setInterval(poll, 4000);
   })();
 
-  switchComposerDraft(INITIAL_SESSION || null);
+  // The last steps of the boot, on the route decided at the top of this script — not on the address
+  // it started from. Opening a canvas is only half of opening a thread: the composer's draft and the
+  // task setup are scoped to it too, and left pointing at a session nobody is reading they would
+  // hand the wrong unsent words, and the wrong folder, to whoever types next. A root view scopes
+  // both to the root, which is where the setup panel already starts.
+  var BOOT_SESSION = BOOT_ROUTE === "session" ? INITIAL_SESSION : "";
+  // An edit made to the root composer while loading is newer than its stored draft. The event
+  // record distinguishes an intentional clear from a field nobody touched. A pre-navigation edit
+  // to a session/mission composer does not become a root draft merely because a root button won.
+  var EARLY_DRAFT = window.__collieEarlyDraft;
+  switchComposerDraft(BOOT_SESSION || null);
+  if (EARLY_DRAFT && (BOOT_ROUTE === "new" || BOOT_ROUTE === "today") &&
+      (EARLY_DRAFT.view || (!INITIAL_SESSION && !INITIAL_MISSION))) {
+    $("input").value = EARLY_DRAFT.text;
+    $("input").dispatchEvent(new Event("input", {bubbles:true}));
+  }
+  window.__collieEarlyDraft = null;
   loadSessions();
-  if (INITIAL_MISSION) showMission(INITIAL_MISSION);
-  else if (INITIAL_SESSION) openSession(INITIAL_SESSION);
+  if (BOOT_ROUTE === "mission") showMission(INITIAL_MISSION);
+  else if (BOOT_SESSION) openSession(BOOT_SESSION);
   focusComposer(false);
 })();
 </script>
