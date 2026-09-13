@@ -920,6 +920,76 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
     return evidence
 
 
+# ── what one receipt actually establishes, in one sentence ───────────────────
+# ``passed`` is the completion-grade verdict and it is correct.  What no
+# user-facing surface ever said out loud is WHY a receipt can be not-passed
+# while the command itself exited zero: the freshness binding failed, so the
+# exit code does not cover the bytes the check was asked about.
+#
+# That is not a check failure, and calling it one sends a person hunting for a
+# broken test that does not exist.  It is also not rare: any check that writes
+# its own build output into the workspace it grades — ``cargo test`` into
+# ``target/``, ``npm run build`` into ``dist/``, ``make build`` — changes the
+# tree under itself and lands here on every green run.
+_UNCERTIFIED_FRESHNESS = {
+    "changed_during_check":
+        "the workspace changed while it was running, so its result does not "
+        "cover the files that exist now",
+    "process_tree_cleanup_failed":
+        "its process tree could not be proved extinct, so something it started "
+        "may still be writing files",
+    "caller_marked_stale":
+        "the result was already recorded as stale before the check started",
+    "unknown":
+        "the workspace could not be fingerprinted completely, so the result "
+        "cannot be bound to exact bytes",
+}
+_UNCERTIFIED_DEFAULT = ("its result could not be bound to the files that exist "
+                        "now")
+
+
+def check_result_state(evidence) -> str:
+    """Classify one check receipt: what did it establish, in one word?
+
+    ``passed``, ``failed``, ``inconclusive``, ``cancelled`` or ``not_run``.
+    ``inconclusive`` is the exit-zero-but-unbindable case above; every caller
+    that only knew "passed or not" reported it as a failure.
+    """
+    ev = evidence if isinstance(evidence, dict) else {}
+    if ev.get("executed") is False:
+        return "not_run"
+    if ev.get("cancelled"):
+        return "cancelled"
+    if ev.get("passed") is True:
+        return "passed"
+    if ev.get("command_passed") is True:
+        return "inconclusive"
+    return "failed"
+
+
+def check_result_reason(evidence, command="") -> str:
+    """The run-error sentence a required check owes when it did not certify.
+
+    Empty for a check that passed.  The wording is the receipt's own, so the
+    conversation, the CLI and the durable receipt cannot disagree with the
+    evidence they were all derived from.
+    """
+    ev = evidence if isinstance(evidence, dict) else {}
+    command = str(command or ev.get("command") or "")
+    state = check_result_state(ev)
+    if state == "passed":
+        return ""
+    if state == "not_run":
+        return "required check did not run: %s" % command
+    if state == "cancelled":
+        return "required check was stopped before it finished: %s" % command
+    if state == "inconclusive":
+        return ("required check did not certify this result: %s exited 0, but %s"
+                % (command, _UNCERTIFIED_FRESHNESS.get(
+                    str(ev.get("freshness") or ""), _UNCERTIFIED_DEFAULT)))
+    return "required check failed: %s (exit %s)" % (command, ev.get("exit_code"))
+
+
 # ── the durable effect fence around a host check ─────────────────────────────
 # A repository check is a real external action: it runs project code that can
 # write files, and the surrounding turn cannot be replayed afterwards without

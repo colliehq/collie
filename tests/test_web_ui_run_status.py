@@ -50,6 +50,23 @@ def _fence(sid, run, reason):
             "recovery_required": True, "auto_resumable": False, "reason": reason}
 
 
+# What `run_verification_command` records for a green check that moved the tree under
+# itself — `cargo test` writing `target/`, `npm run build` writing `dist/`. Both commands
+# are ones `detect_verification_commands` proposes, so this is the ordinary case, not a
+# corner of one.
+UNCERTIFIED_EVIDENCE = {"command": "npm run build", "executed": True, "cancelled": False,
+                        "exit_code": 0, "command_passed": True, "passed": False,
+                        "ran_after_last_edit": False, "freshness": "changed_during_check",
+                        "working_tree_changed_during_check": True, "source": "user"}
+UNCERTIFIED_ERROR = ("required check did not certify this result: npm run build exited 0, "
+                     "but the workspace changed while it was running, so its result does "
+                     "not cover the files that exist now")
+# The same run, except the command really did fail. Nothing about the repair may soften it.
+FAILED_EVIDENCE = dict(UNCERTIFIED_EVIDENCE, exit_code=1, command_passed=False,
+                       freshness="fresh", working_tree_changed_during_check=False,
+                       command="pytest -q")
+
+
 def _script(text):
     """Pick a staged run from the request text, the way a router would pick a route."""
     q = (text or "").lower()
@@ -138,6 +155,33 @@ def _script(text):
             ("done", dict(DONE_BASE, session="s-check-stop", run="r-check-stop",
                           answer="The requested fix is ready.", canceled=True, completed=False,
                           stop_reason="canceled", verification_evidence=evidence)),
+        ]
+    if "bundle the release assets" in q:
+        # Exit 0, and still no verdict about these files: the check wrote its own build
+        # output into the workspace it was grading, so the receipt could not be bound to
+        # the bytes that exist now. `command_passed` and `passed` are two different facts
+        # and the surface is not allowed to collapse them into "failed · exit 0".
+        return [
+            ("start", {"session": "s-uncertified", "run": "r-unc", "model": "mock",
+                       "prior_turns": 0}),
+            ("edit", {"path": "src/app.js", "old": "a = 1\n", "new": "a = 2\n"}),
+            ("verification_evidence", {"evidence": UNCERTIFIED_EVIDENCE}),
+            ("done", dict(DONE_BASE, session="s-uncertified", run="r-unc",
+                          answer="Bundled the release assets.",
+                          error=UNCERTIFIED_ERROR, canceled=False, stop_reason="error",
+                          completed=False, edited=True, verified=False,
+                          verification_evidence=UNCERTIFIED_EVIDENCE)),
+        ]
+    if "break the release build" in q:
+        return [
+            ("start", {"session": "s-red", "run": "r-red", "model": "mock", "prior_turns": 0}),
+            ("edit", {"path": "src/app.js", "old": "a = 1\n", "new": "a = 3\n"}),
+            ("verification_evidence", {"evidence": FAILED_EVIDENCE}),
+            ("done", dict(DONE_BASE, session="s-red", run="r-red",
+                          answer="Changed the loader.",
+                          error="required check failed: pytest -q (exit 1)", canceled=False,
+                          stop_reason="error", completed=False, edited=True, verified=False,
+                          verification_evidence=FAILED_EVIDENCE)),
         ]
     if "readme" in q:
         return [
@@ -793,6 +837,70 @@ def test_required_verification_still_says_when_no_check_ran(ui):
     assert ui.gate_visible()
     assert ui.gate_state() == "missing"
     assert "Required check did not run" in ui.page.inner_text("#gateStatus")
+
+
+# ---------------------------------------------------------------- exit 0, certifies nothing
+# The receipt distinguishes "the command exited 0" (`command_passed`) from "and that result
+# covers the files that exist now" (`passed`). The evidence card, the timeline row and the
+# run's own error line all used to read only `passed`, so a green check that wrote its own
+# build output into the workspace it graded was announced as a failure — with "exit 0"
+# printed beside it. Those two claims cannot both be shown to a person at once.
+def test_an_exit_zero_check_that_certifies_nothing_is_not_called_a_failure(ui):
+    ui.ask("Bundle the release assets")
+
+    assert ui.gate_visible()
+    assert ui.gate_state() == "inconclusive", "not a pass, and not a failure either"
+    status = ui.page.inner_text("#gateStatus")
+    assert "Check did not certify this result" in status
+    assert "failed" not in status.lower(), status
+    sub = ui.page.inner_text("#gateSub")
+    assert "npm run build" in sub, "the card still names the command that ran"
+    assert "exit 0 does not certify this result" in sub
+    assert "the workspace changed while it was running" in sub
+
+
+def test_the_timeline_row_says_what_the_uncertified_check_established(ui):
+    ui.ask("Bundle the release assets")
+    ui.page.click("#tabTimeline") if ui.page.query_selector("#tabTimeline") else None
+    timeline = ui.page.inner_text("#timeline")
+
+    assert "did not certify this result" in timeline
+    assert "proposed check failed" not in timeline, timeline
+    # The old row printed "· exit 0" next to the word "failed"; the reason replaces it.
+    assert "the workspace changed while it was running" in timeline
+
+
+def test_a_check_that_really_failed_is_still_reported_as_a_failure(ui):
+    """The repair must not turn every unmet check into a softer word."""
+    ui.ask("Break the release build")
+
+    assert ui.gate_state() == "fail"
+    assert "Check failed" in ui.page.inner_text("#gateStatus")
+    assert "proposed check failed" in ui.page.inner_text("#timeline")
+    assert "required check failed: pytest -q (exit 1)" in ui.log_text()
+
+
+def test_a_reopened_thread_restates_the_uncertified_check_from_its_receipt(ui, monkeypatch):
+    """The durable receipt carries both facts, so reopening must not re-flatten them."""
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [
+            {"role": "user", "content": "Bundle the release assets"},
+            {"role": "assistant", "content": "Bundled the release assets."},
+        ],
+        "run_receipts": [{"run": "r-unc", "stop_reason": "error", "completed": False,
+                          "edited": True, "verified": False, "canceled": False,
+                          "error": UNCERTIFIED_ERROR,
+                          "verification_evidence": UNCERTIFIED_EVIDENCE,
+                          "decision": {"intent": "build", "verification": "required"}}],
+    })
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_function(
+        "() => document.getElementById('gate').getAttribute('data-state') === 'inconclusive'",
+        timeout=8000)
+
+    assert "Check did not certify this result" in ui.page.inner_text("#gateStatus")
+    assert "npm run build" in ui.page.inner_text("#gateSub")
+    assert not _Fixture.stream_requests, "reopening a thread must not execute a turn"
 
 
 def test_turn_limit_keeps_output_and_offers_one_resume(ui):

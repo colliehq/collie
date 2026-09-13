@@ -530,10 +530,14 @@
   /* Work happened but nothing executable confirmed it. That is a neutral fact, not a failure —
      and not the same thing as a task that never needed a check (which hides the card entirely). */
   .gate[data-state="unverified"]::before { background: var(--amber); }
+  /* The command exited 0 but its receipt could not be bound to the files that exist now.
+     Amber, like "unverified": nothing is broken, and nothing is confirmed either. */
+  .gate[data-state="inconclusive"]::before { background: var(--amber); }
   .gate[data-state="missing"]::before    { background: var(--coral); }
   .gate[data-state="pass"]  { border-color: color-mix(in srgb, var(--meadow) 40%, var(--line)); }
   .gate[data-state="fail"]  { border-color: color-mix(in srgb, var(--coral) 40%, var(--line)); }
   .gate[data-state="unverified"] { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
+  .gate[data-state="inconclusive"] { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
   .gate[data-state="missing"]    { border-color: color-mix(in srgb, var(--coral) 34%, var(--line)); }
 
   .ring { width: 38px; height: 38px; position: relative; flex: none; }
@@ -548,6 +552,7 @@
   .gate[data-state="idle"]      .ring .prog { stroke-dashoffset: 264; stroke: var(--faint); }
   .gate[data-state="none"]      .ring .prog { stroke-dashoffset: 0;   stroke: var(--azure); opacity: .5; }
   .gate[data-state="unverified"] .ring .prog { stroke-dashoffset: 0;  stroke: var(--amber); animation: none; }
+  .gate[data-state="inconclusive"] .ring .prog { stroke-dashoffset: 0; stroke: var(--amber); animation: none; }
   .gate[data-state="missing"]    .ring .prog { stroke-dashoffset: 0;  stroke: var(--coral); animation: none; }
   .gate[data-state="working"]   .ring .prog,
   .gate[data-state="pending"]   .ring .prog { stroke: var(--azure); animation: spin 1.7s linear infinite; }
@@ -5532,6 +5537,10 @@
     working:   ["Working…", "Collie will record the checks selected for this task and what they cover."],
     verifying: ["Checking evidence…", "Running the named check against the current result."],
     fail:      ["✗ Check failed", "The recorded check did not pass; Collie must repair the result or report it as inconclusive."],
+    // Exit 0, but the receipt could not be bound to the bytes on disk. Reporting that as a
+    // failure sends a person hunting for a broken test that does not exist, and reporting it
+    // as a pass would certify files the check never saw. It is its own answer.
+    inconclusive:["Check did not certify this result", "The command exited 0, but its result does not cover the files that exist now."],
     pass:      ["✓ Check passed", "The named check passed. Open Run details to inspect its scope and evidence."],
     // Files changed and nothing executable confirmed them. A plain fact, stated neutrally — not a
     // failure, and not the same as a task that had nothing to check.
@@ -5548,6 +5557,30 @@
     $("gateStatus").textContent = t(pair[0]);
     $("gateSub").innerHTML = subOverride ? esc(subOverride) : t(pair[1]);
   }
+  // Why an executed check can be "not passed" without having failed. The receipt already carried
+  // both facts — `command_passed` is the exit code, `passed` additionally requires that the
+  // workspace did not move under the check — but every surface here collapsed them into pass/fail.
+  // A check that writes its own build output into the tree it grades (cargo test → target/,
+  // npm run build → dist/, make build) hits this on every GREEN run, and was reported as a
+  // failure with "exit 0" printed beside it.
+  var UNCERTIFIED_WHY = {
+    changed_during_check: "the workspace changed while it was running",
+    process_tree_cleanup_failed: "something it started may still be writing files",
+    caller_marked_stale: "it was already recorded as stale before it started",
+    unknown: "the workspace could not be fingerprinted completely"
+  };
+  function checkUncertified(ev) {
+    return !!(ev && ev.executed !== false && !ev.cancelled &&
+              ev.passed !== true && ev.command_passed === true);
+  }
+  // The one line the card and the timeline both show: the command, and the reason its exit
+  // code does not settle anything. Never "failed", and never a bare "exit 0" on its own.
+  function uncertifiedDetail(ev) {
+    var why = UNCERTIFIED_WHY[String((ev && ev.freshness) || "")] ||
+              "its result could not be bound to the files that exist now";
+    return ((ev && (ev.command || ev.cmd)) || "") + " · " +
+      t("exit 0 does not certify this result: {why}").replace("{why}", t(why));
+  }
   // One rule for "what did this run's verification actually establish", used both live at the end of
   // a run and when a finished thread is reopened. `idle` is display:none — a read-only informational
   // answer has nothing to verify, so it gets no card rather than an empty one that reads as failure.
@@ -5559,8 +5592,11 @@
       setGate("stopped", ev.command || ev.cmd); return "stopped";
     }
     if (ev && ev.executed !== false && (ev.command || ev.cmd)) {
-      setGate(ev.passed === true ? "pass" : "fail", ev.command || ev.cmd);
-      return ev.passed === true ? "pass" : "fail";
+      if (ev.passed === true) { setGate("pass", ev.command || ev.cmd); return "pass"; }
+      if (checkUncertified(ev)) {
+        setGate("inconclusive", uncertifiedDetail(ev)); return "inconclusive";
+      }
+      setGate("fail", ev.command || ev.cmd); return "fail";
     }
     if (o.verified === true) { setGate("pass"); return "pass"; }
     if (o.checkFailed) { setGate("fail", o.checkCommand || undefined); return "fail"; }
@@ -11167,6 +11203,15 @@
         return;
       }
       sawRepro = true; lastReproPass = !!d.passed; runVerified = !!d.passed;
+      // Not passed is not the same claim as failed. An exit-zero check whose receipt could not
+      // be bound to the current files gets the row that says exactly that, rather than a red
+      // "proposed check failed" with "exit 0" printed next to it.
+      if (checkUncertified(d)) {
+        addEvent("repro", "flag", t("proposed check did not certify this result"),
+                 uncertifiedDetail(d));
+        setGate("inconclusive", uncertifiedDetail(d));
+        return;
+      }
       addEvent("repro", d.passed ? "ok" : "bad",
         d.passed ? "proposed check passed" : "proposed check failed",
         (d.command || "") + (d.exit_code == null ? "" : " · exit " + d.exit_code),

@@ -6227,8 +6227,9 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         res.verified = bool(verification_evidence["passed"] and not res.error)
                         if not verification_evidence["passed"]:
-                            check_error = "required check failed: %s (exit %s)" % (
-                                verify_command, verification_evidence.get("exit_code"))
+                            from .verification import check_result_reason
+                            check_error = check_result_reason(
+                                verification_evidence, verify_command)
                             res.error = ((res.error + "; ") if res.error else "") + check_error
                 # A stop read from the run registry is the run's own verdict, not
                 # just this thread's view of it.  Record it on the result before
@@ -6650,8 +6651,9 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         res.verified = bool(verification_evidence["passed"] and not res.error)
                         if not verification_evidence["passed"]:
-                            check_error = "required check failed: %s (exit %s)" % (
-                                verify_command, verification_evidence.get("exit_code"))
+                            from .verification import check_result_reason
+                            check_error = check_result_reason(
+                                verification_evidence, verify_command)
                             res.error = ((res.error + "; ") if res.error else "") + check_error
                         h.settle_run_memory(
                             res, bool(res.verified), verification_evidence,

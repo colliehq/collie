@@ -2249,8 +2249,10 @@ def _cmd_run_owned(args, sid, lease):
                     res.verified = bool(
                         verification_evidence["passed"] and not res.error)
                     if not verification_evidence["passed"]:
-                        check_error = "required check failed: %s (exit %s)" % (
-                            verify_command, verification_evidence.get("exit_code"))
+                        # An exit-zero check whose freshness binding failed did not
+                        # fail; say which of the two happened.
+                        check_error = _verification.check_result_reason(
+                            verification_evidence, verify_command)
                         res.error = ((res.error + "; ") if res.error else "") + check_error
                     h.settle_run_memory(
                         res, bool(res.verified), verification_evidence,
