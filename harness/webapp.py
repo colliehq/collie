@@ -954,6 +954,79 @@ def _perm(item) -> dict:
             "state": item.state}
 
 
+class _TerminalGate:
+    """One finishing turn's terminal announcements, held until the turn is over.
+
+    ``done`` is what a caller waits on before sending the next request, and it
+    used to be written while the execution manager still held the lease —
+    settlement, hand-over and ``lease.release()`` all happen *after*
+    ``_run_stream`` returns — so an immediate second ``GET /api/stream`` was
+    refused for work already finished.  Order is the other half: two runs of one
+    conversation share the mirror and live feeds, and an old ``done`` behind the
+    new run's ``start`` ends the wrong run on every watching window and drops its
+    backlog too.  So the *shared* feeds go first and are what the next turn waits
+    behind; this turn's own socket and optional phone buzz go after and hold
+    nobody up.  A turn still announcing when that bounded wait runs out is
+    *superseded*, not believed: what it has not published is dropped where those
+    feeds are written.
+    """
+
+    __slots__ = ("session", "_lock", "_shared", "_local", "_open", "stale", "_settled")
+
+    def __init__(self, session):
+        self.session = session
+        self._lock = threading.Lock()
+        self._shared = []           # the feeds the next run publishes to as well
+        self._local = []            # this turn's own socket and its own notifier
+        self._open = True
+        self.stale = False          # a newer turn owns the session's feeds now
+        self._settled = threading.Event()
+
+    def defer(self, publish, shared=True):
+        """Hold one announcement.  False means the turn is already announcing."""
+        with self._lock:
+            if not self._open:
+                return False
+            (self._shared if shared else self._local).append(publish)
+            return True
+
+    def flush(self):
+        """Publish what was held: the shared feeds, then this turn's own I/O."""
+        with self._lock:
+            if not self._open:
+                return
+            self._open = False
+            shared, self._shared = self._shared, []
+            local, self._local = self._local, []
+        try:
+            self._publish(shared)
+        finally:
+            # The shared feeds carry this turn's ending in order now, which is the
+            # only part of the announcement anyone else is behind.
+            self._settled.set()
+        self._publish(local)
+
+    @staticmethod
+    def _publish(announcements):
+        for publish in announcements:
+            try:
+                publish()
+            except Exception:
+                # A terminal announcement is the last thing this turn does; a
+                # dead socket or a full queue must not become its verdict.
+                pass
+
+    def supersede(self):
+        """Hand the session on, marking what is left stale: a wedged socket costs
+        the next turn a bounded wait and never its ordering."""
+        self.stale = True
+        self._settled.set()
+
+    def await_published(self, timeout):
+        """Wait out a turn still announcing its ending on the shared feeds."""
+        return self._settled.wait(timeout)
+
+
 class Handler(BaseHTTPRequestHandler):
     # HTTP/1.0 (the default) closes the connection when the handler returns, which is exactly
     # what we want for SSE: after the `done` event we return and the socket closes cleanly. The
@@ -1010,6 +1083,72 @@ class Handler(BaseHTTPRequestHandler):
     _runs: dict = {}
     _cancel_events: dict = {}       # sid -> (run id, Event), never exposed in JSON snapshots
     _RUNS_KEEP = 30                 # finished runs stay listable so the list can show a verdict
+
+    # Terminal announcements that must not be made while this turn still owns the
+    # session: armed once the execution manager holds the lease, flushed after
+    # settlement and after the lease is released or handed on.
+    _terminal_lock = threading.Lock()
+    _terminal_gates: dict = {}      # sid -> the gate of the turn currently finishing
+    _TERMINAL_HANDOVER_S = 10.0     # cap on waiting out a predecessor's announcement
+
+    @classmethod
+    def _terminal_arm(cls, sid, handler=None):
+        """Take the session's terminal ownership, behind the turn that held it:
+        this turn is about to publish a ``start`` on feeds where its predecessor
+        may still hold a ``done``, so that one is waited out, not overwritten —
+        and if the wait runs out, superseded rather than believed."""
+        deadline = time.monotonic() + cls._TERMINAL_HANDOVER_S
+        while True:
+            with cls._terminal_lock:
+                previous = cls._terminal_gates.get(sid)
+                if previous is None or previous.await_published(0):   # nothing left
+                    gate = cls._terminal_gates[sid] = _TerminalGate(sid)
+                    break
+            if not previous.await_published(deadline - time.monotonic()):
+                previous.supersede()
+        if handler is not None:
+            # The stream's own writer is reached by instance, not by session: a
+            # handler holds exactly one turn and must not defer onto another's.
+            handler._terminal_gate = gate
+        return gate
+
+    @classmethod
+    def _terminal_release(cls, sid, gate):
+        """Publish what this turn held back; the successor's gate is left alone.
+        The slot goes as ``flush`` finishes, never before: a successor arming
+        mid-publication must find the session owned, not free."""
+        if gate is None:
+            return
+        try:
+            gate.flush()
+        finally:
+            with cls._terminal_lock:
+                if cls._terminal_gates.get(sid) is gate:
+                    cls._terminal_gates.pop(sid, None)
+
+    @classmethod
+    def _terminal_defer(cls, sid, build, shared=True):
+        """True when the turn that owns `sid` held `build(gate)` for its release."""
+        if not sid:
+            return False
+        with cls._terminal_lock:
+            gate = cls._terminal_gates.get(sid)
+        return bool(gate is not None and gate.defer(build(gate), shared=shared))
+
+    @classmethod
+    def _terminal_orphan(cls, sid, publish):
+        """Announce an ending whose own gate is gone — unless a newer turn owns
+        the session, in which case this old finalizer stays quiet.
+
+        Deciding and announcing is one step: a successor arming in between would
+        take this ending into *its* gate and publish its ``start`` first, ending
+        the new run.  ``publish`` is handed a gate of its own for that reason (a
+        held announcement is never offered to another) and enqueues only."""
+        with cls._terminal_lock:
+            if cls._terminal_gates.get(sid) is not None:
+                return False
+            publish(_TerminalGate(sid))
+        return True
 
     @classmethod
     def _run_begin(cls, sid, ask, cwd):
@@ -1288,14 +1427,23 @@ class Handler(BaseHTTPRequestHandler):
             return cls._ide_contexts.pop(iid, None)
 
     @classmethod
-    def _live_pub(cls, kind, data):
+    def _live_pub(cls, kind, data, held=None):
+        if kind == "done" and held is None and isinstance(data, dict) and cls._terminal_defer(
+                data.get("session"),
+                lambda gate: lambda: cls._live_pub(kind, data, held=gate)):
+            return
         with cls._live_lock:
-            subs = list(cls._live_subs)
-        for q in subs:
-            try:
-                q.put_nowait((kind, data))
-            except queue.Full:
-                pass          # a stalled listener drops frames rather than blocking the run
+            if held is not None and held.stale:
+                return        # a newer run owns this bus; an older ending is noise
+            # The enqueues are what a window reads in order, so they happen under
+            # the lock the check above is taken with: a superseded ending paused
+            # between the two would otherwise land behind the new run's `start`.
+            # `put_nowait` never blocks, so nothing here waits on a reader.
+            for q in list(cls._live_subs):
+                try:
+                    q.put_nowait((kind, data))
+                except queue.Full:
+                    pass      # a stalled listener drops frames rather than blocking the run
 
     # A run that outlives the person's attention is the whole reason the phone exists. Short runs are
     # not worth a buzz — you are still looking at the screen — so this only fires past a threshold, or
@@ -1345,8 +1493,15 @@ class Handler(BaseHTTPRequestHandler):
             lease.release()
 
     @staticmethod
-    def _notify_done(sid, res, wall_ms=None):
+    def _notify_done(sid, res, wall_ms=None, replay=False):
         if REMOTE is None:
+            return
+        # A phone buzz invites the next request, so it waits for the release like
+        # the frame — but off the shared feeds: a dead notifier delays this turn
+        # only.
+        if not replay and Handler._terminal_defer(
+                sid, lambda gate: lambda: Handler._notify_done(sid, res, wall_ms, replay=True),
+                shared=False):
             return
         failed = bool(getattr(res, "error", None))
         if not failed and (wall_ms or 0) < Handler.NOTIFY_AFTER_MS:
@@ -1385,9 +1540,18 @@ class Handler(BaseHTTPRequestHandler):
                     pass
 
     @classmethod
-    def _mirror_pub(cls, sid, kind, data):
+    def _mirror_pub(cls, sid, kind, data, held=None):
         """Fan one event of session `sid`'s run to every window mirroring that session."""
+        # A mirroring window reads `done` as the initiating one does, so it waits
+        # behind the same release; the backlog drop below is part of the
+        # announcement and moves with it.  `held` is the gate publishing what it
+        # kept: never offered to a gate again, and dropped if it was superseded.
+        if kind == "done" and held is None and cls._terminal_defer(
+                sid, lambda gate: lambda: cls._mirror_pub(sid, kind, data, held=gate)):
+            return
         with cls._mirror_lock:
+            if held is not None and held.stale:
+                return
             subs = list(cls._mirror_subs.get(sid, ()))
             # Keep a short tail so a window that joins mid-run is not shown a blank screen under a
             # note saying work is happening. Structural events only: the token firehose would blow
@@ -1400,11 +1564,12 @@ class Handler(BaseHTTPRequestHandler):
                     del buf[:-cls._MIRROR_BACKLOG]
             if kind == "done":
                 cls._mirror_backlog.pop(sid, None)   # the thread on disk is the record now
-        for q in subs:
-            try:
-                q.put_nowait((kind, data))
-            except queue.Full:
-                pass
+            # Inside the lock with the check above, for the reason given there.
+            for q in subs:
+                try:
+                    q.put_nowait((kind, data))
+                except queue.Full:
+                    pass
 
     def _serve_mirror(self, sid):
         """GET /api/mirror?session=<sid> -> SSE feed of that session's live run (tokens + structural),
@@ -1609,7 +1774,15 @@ class Handler(BaseHTTPRequestHandler):
     def _sse(self, event: str, data) -> None:
         """Write one SSE frame and flush it onto the wire immediately. When a heartbeat thread is
         active (_serve_stream), a per-request lock serializes writes so a ping can't interleave
-        mid-frame with the run's token/tool events and corrupt the stream."""
+        mid-frame with the run's token/tool events and corrupt the stream.
+
+        A managed turn's `done` is held by its gate until the execution manager
+        has settled and released: writing it under the lease is what made the
+        next request race a turn that was already finished."""
+        if event == "done":
+            gate = getattr(self, "_terminal_gate", None)
+            if gate is not None and gate.defer(lambda: self._sse(event, data), shared=False):
+                return
         payload = "event: %s\ndata: %s\n\n" % (
             event, json.dumps(data, ensure_ascii=False, default=str))
         buf = payload.encode("utf-8")
@@ -5416,6 +5589,9 @@ class Handler(BaseHTTPRequestHandler):
                                "error": "this session already has an active run" +
                                         cleanup_error})
             return
+        # The row this turn owns, where a detached finalizer can find it: ending a
+        # run by session alone ends whichever one is current, successors included.
+        self._run_id = run_id
         # The request is now committed to a run, so the one-shot editor context
         # ids it referenced may finally be consumed: a stale selection cannot
         # reach a later run, and nothing was destroyed by a refusal above.

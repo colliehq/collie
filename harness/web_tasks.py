@@ -907,9 +907,18 @@ def _run_detached(sink, session, owner, entry):
                          kind="scheduled_run")
         try:
             from .webapp import Handler
-            Handler._run_end(session, error=error)
-            Handler._mirror_pub(session, "done", {"session": session, "answer": "",
-                                                  "error": error, "canceled": False})
+            run_id = getattr(sink, "_run_id", None)
+            if run_id is not None:
+                # Only the row this turn recorded when it began.  By the time a
+                # failure surfaces here the lease may be a successor's, and
+                # ending "the run of this session" would fail the wrong one.
+                Handler._run_end(session, error=error, run_id=run_id)
+            # This turn's gate went with the frame it never wrote, so its ending
+            # is an orphan: never adopted by a successor's gate, and dropped
+            # outright once a successor owns the session.
+            Handler._terminal_orphan(session, lambda gate: Handler._mirror_pub(
+                session, "done", {"session": session, "answer": "",
+                                  "error": error, "canceled": False}, held=gate))
         except Exception:
             pass
         successor = scheduled(session)
@@ -1019,7 +1028,14 @@ def serve_managed_stream(handler, qs, *, owner=None, entry=None):
                                   "busy": True, "owner": session_owner.describe(sid)["owner"]})
             return None
     handed = False
+    gate = None
     try:
+        # Everything terminal is held from here to the tail of this function:
+        # `done` is what a caller waits on before sending the next request, which
+        # until settlement and release would be refused for work that is over.
+        # Arming waits on the turn before this one, so it sits inside the block
+        # that returns the lease however this ends.
+        gate = webapp.Handler._terminal_arm(sid, handler)
         # A turn is starting for this conversation, so the last queue failure is
         # no longer the newest thing that happened to it.  If this one fails too,
         # it will say so itself.
@@ -1057,13 +1073,16 @@ def serve_managed_stream(handler, qs, *, owner=None, entry=None):
         webapp.Handler._run_stream(handler, qs)
     finally:
         try:
-            handed = _settle_and_schedule(handler, sid, lease, entry)
+            handed = _settle_and_schedule(handler, sid, lease, entry, gate)
         except Exception:
             # Whatever went wrong in bookkeeping, the lease must not leak: a held
             # lease nobody is using locks the conversation for this process's life.
             handed = False
         if not handed:
             lease.release()
+        # Released, or held by the follow-up already running on it: either way
+        # "can the next turn be admitted?" now answers truthfully.
+        webapp.Handler._terminal_release(sid, gate)
     return None
 
 
@@ -1075,7 +1094,7 @@ def release_undelivered(session, owner, ids, reason):
         pass
 
 
-def _settle_and_schedule(handler, sid, lease, entry):
+def _settle_and_schedule(handler, sid, lease, entry, gate=None):
     """Reconcile this run's claims, then schedule at most one follow-up turn.
 
     Settlement is a precondition, not a courtesy.  If what this turn delivered
@@ -1084,6 +1103,10 @@ def _settle_and_schedule(handler, sid, lease, entry):
     on top of it would be building on a guess.  In that case nothing is started,
     the failure is published where the surface can show it, and every accepted
     request stays exactly where it is, waiting for an explicit Start.
+
+    The follow-up is the one successor that never waits for a release: it
+    inherits the lease, so this turn's ending is announced (``gate``) before the
+    follow-up exists, never after it has started reporting.
     """
     outcome = getattr(handler, "_stream_outcome", None) or {}
     claimed = [entry["id"]] if entry else []
@@ -1143,6 +1166,12 @@ def _settle_and_schedule(handler, sid, lease, entry):
         release_undelivered(sid, lease, [nxt["id"]], "the run finished without delivering it")
         return False
     try:
+        # Settled, and the lease goes to this turn straight from here rather
+        # than back on the market — so the ending turn announces itself now, and
+        # must: after `schedule` the follow-up is publishing its own start into
+        # the same backlog and feeds, where a late `done` would end *its* run.
+        from . import webapp
+        webapp.Handler._terminal_release(sid, gate)
         schedule(sid, lease, nxt)
         return True
     except Exception:

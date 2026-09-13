@@ -15,6 +15,7 @@ lease, the store, the HTTP server, the threads — is the real thing.
 import http.client
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -240,7 +241,7 @@ def _wait_for(predicate, timeout=20, what="a condition"):
     raise AssertionError("timed out waiting for " + what)
 
 
-def _stream(bench, **params):
+def _stream(bench, on_event=None, **params):
     url = bench.base + "/api/stream?token=" + bench.token + "&" + urllib.parse.urlencode(params)
     events, kind = [], None
     with urllib.request.urlopen(url, timeout=60) as response:
@@ -250,6 +251,8 @@ def _stream(bench, **params):
                 kind = line[7:]
             elif line.startswith("data: "):
                 events.append((kind, json.loads(line[6:])))
+                if on_event is not None:
+                    on_event(*events[-1])     # on the reader's thread, as it arrives
     return events
 
 
@@ -944,3 +947,308 @@ def test_a_finished_runs_save_is_never_overwritten_by_a_racing_second_run(lab, m
     stored = sessions.load(session)["messages"]
     assert [m["content"] for m in stored][:3] == [
         "first request", "answer for 'first request'", "second request"]
+
+
+# ----------------------------------------- a terminal frame vs. admission state
+def _stream_probing_on_done(lab, monkeypatch, on_done=None, **params):
+    """Read one managed stream and, the instant ``done`` lands, ask what a caller
+    asks next: can this conversation start another turn?  ``try_acquire`` is what
+    ``serve_managed_stream`` admits with, taken in the same breath as the frame.
+    The settlement hook is a barrier, not a timing guess: it holds open the work
+    that runs between ``_run_stream`` and the release."""
+    session = params["session"]
+    probed, probe, barrier_used = threading.Event(), {}, []
+    real_settle = web_tasks.settle_run_claims
+
+    def _settle_claims(sid, owner, entry_ids, **kw):
+        if sid == session and not barrier_used:
+            barrier_used.append(True)
+            probed.wait(0.75)
+        return real_settle(sid, owner, entry_ids, **kw)
+
+    def _on_event(kind, data):
+        if kind != "done" or probe:
+            return
+        probe["owner"] = session_owner.describe(session)["owner"]   # sidecar first
+        lease = session_owner.try_acquire(session, label="next-turn")
+        probe["admitted"] = lease is not None
+        if lease is not None:
+            lease.release()
+        if on_done is not None:
+            probe["next"] = on_done()
+        probed.set()
+
+    monkeypatch.setattr(web_tasks, "settle_run_claims", _settle_claims)
+    try:
+        events = _stream(lab, on_event=_on_event, **params)
+    finally:
+        probed.set()
+    assert probe, "the stream ended without a done frame"
+    return events, probe
+
+
+@pytest.mark.parametrize("ending", ["completed", "error", "canceled", "crashed"])
+def test_done_means_the_next_turn_can_be_admitted(lab, monkeypatch, ending):
+    """A terminal frame is a statement about the session, not about one socket: a
+    caller doing the one thing it invites was refused for work already finished,
+    and every ending owes the same promise."""
+    session = "admit-after-" + ending
+    def _explode(record):
+        raise RuntimeError("the worker died mid-turn")
+    outcome = {"error": _Result(answer="", error="the provider refused"),
+               "canceled": _Result(answer="partial", canceled=True),
+               "crashed": _explode}.get(ending)
+    if outcome is not None:
+        lab.results.append(outcome)
+    # On a clean ending, do the whole thing: send again on the frame itself.
+    after = (lambda: _stream(lab, q="second request", session=session)) \
+        if ending == "completed" else None
+    events, probe = _stream_probing_on_done(lab, monkeypatch, q="first request",
+                                            session=session, on_done=after)
+    assert [kind for kind, _ in events].count("done") == 1
+    assert events[-1][0] == "done"
+    if ending == "completed":
+        assert events[-1][1]["error"] in ("", None)
+    else:
+        assert events[-1][1].get("error") or events[-1][1].get("canceled")
+    # The lease was let go before the frame that invites the next request, and
+    # says so in its own sidecar — as the field refusal did, microseconds late.
+    assert probe["owner"].get("released"), "done was announced under the session lease"
+    assert probe["admitted"] is True, "the next turn was refused for finished work"
+    from harness import webapp
+    with webapp.Handler._terminal_lock:
+        assert session not in webapp.Handler._terminal_gates
+    if ending != "completed":
+        return
+    # And end to end: the request sent on that frame ran, on the same history.
+    _settle()
+    assert probe["next"][-1][1]["error"] in ("", None), "the second request was refused"
+    assert [call["message"] for call in lab.calls] == ["first request", "second request"]
+    assert [m["content"] for m in sessions.load(session)["messages"]] == [
+        "first request", "answer for 'first request'",
+        "second request", "answer for 'second request'"]
+
+
+# ------------------------------------- two runs of one conversation, in order
+def _watch(session, make=lambda: queue.Queue(maxsize=1024)):
+    """The two feeds a session's runs share: a mirroring window, and a live Map."""
+    from harness import webapp
+    mirror, live = make(), make()
+    with webapp.Handler._mirror_lock:
+        webapp.Handler._mirror_subs.setdefault(session, []).append(mirror)
+    with webapp.Handler._live_lock:
+        webapp.Handler._live_subs.append(live)
+    return mirror, live
+
+
+def _unwatch(session, mirror, live):
+    """Leave the feeds, leaving no gate of this test's own behind."""
+    from harness import webapp
+    with webapp.Handler._mirror_lock:
+        webapp.Handler._mirror_subs.get(session, []).remove(mirror)
+    with webapp.Handler._live_lock:
+        webapp.Handler._live_subs.remove(live)
+    with webapp.Handler._terminal_lock:
+        left = webapp.Handler._terminal_gates.pop(session, None)
+    if left:
+        left.flush()
+
+
+def _received(q):
+    """What one feed was handed, in order: (kind, the run it was about)."""
+    with q.mutex:
+        out, q.queue = list(q.queue), type(q.queue)()
+    return [(kind, data.get("run")) for kind, data in out]
+
+
+def test_a_hand_over_ends_the_old_run_before_the_new_one_starts(lab, monkeypatch):
+    """Two runs, one conversation, one pair of feeds — so order is the contract.
+    A follow-up is handed the lease and publishes while the turn that scheduled
+    it is still finishing; out of order, that turn's ``done`` ends the *new* run
+    on every watching window and drops the backlog of a run that is alive."""
+    from harness import webapp
+    session = "mirror-handover"
+    _accept(lab, session, "follow-1", "second request")
+    started, hold, runs = threading.Event(), threading.Event(), {}
+
+    def _hold_the_follow_up(harness, record):
+        if record["message"] == "second request":
+            with webapp.Handler._runs_lock:
+                runs["second"] = webapp.Handler._runs[session]["run"]
+            started.set()
+            hold.wait(10)
+    lab.during_run = _hold_the_follow_up
+    real_schedule = web_tasks.schedule
+
+    def _schedule_and_let_it_run(sid, owner, entry):
+        # One legal schedule, forced: the follow-up reaches its run before the
+        # thread that started it carries on, so what the ending turn owes its
+        # feeds must have happened before this returns, not after it.
+        out = real_schedule(sid, owner, entry)
+        assert started.wait(10), "the follow-up never started"
+        return out
+    monkeypatch.setattr(web_tasks, "schedule", _schedule_and_let_it_run)
+    mirror, live = _watch(session)
+    try:
+        events, probe = _stream_probing_on_done(lab, monkeypatch, q="first request",
+                                                session=session)
+        assert [kind for kind, _ in events].count("done") == 1, "the frame was swallowed"
+        assert probe["admitted"] is False, "a follow-up really is running on that lease"
+        runs["first"] = events[-1][1]["run"]
+        for feed in (_received(mirror), _received(live)):
+            assert feed.count(("done", runs["first"])) == 1, feed
+            assert feed.index(("done", runs["first"])) < feed.index(("start", runs["second"])), (
+                "a watching window was shown the new run ending before it began: %r" % (feed,))
+        # And what a window arriving now is replayed: the running run's start.
+        with webapp.Handler._mirror_lock:
+            backlog = [(k, d.get("run")) for k, d
+                       in webapp.Handler._mirror_backlog.get(session, [])]
+        assert ("start", runs["second"]) in backlog, backlog
+        assert ("done", runs["first"]) not in backlog, backlog
+    finally:
+        hold.set()
+        lab.during_run = None
+        _unwatch(session, mirror, live)
+    _settle()
+    assert [call["message"] for call in lab.calls] == ["first request", "second request"]
+    assert _states(session) == {"follow-1": "consumed"}
+
+
+@pytest.mark.parametrize("bus", ["mirror", "live"])
+@pytest.mark.parametrize("patience", ["spent", "kept", "dropped"])
+def test_a_successor_cannot_publish_through_an_ending_turn(lab, monkeypatch, bus, patience):
+    """The next turn arrives while the one before it is still announcing — with
+    that turn's gate to take first (``kept``), or past the bounded wait, which
+    supersedes it either mid-enqueue (``spent``) or before it published at all
+    (``dropped``).  Publishing is the enqueue, not the decision to enqueue: an
+    old ``done`` must never land behind the new run's ``start``, which is what
+    tells a window which run ended, and a superseded one lands not at all."""
+    from harness import webapp
+    session = "feed-order-%s-%s" % (bus, patience)
+    entered, release, published = (threading.Event(), threading.Event(), threading.Event())
+
+    class _Paused(queue.Queue):
+        def put_nowait(self, item):
+            if item[1].get("run") == "old" and patience != "dropped":
+                entered.set()
+                assert release.wait(10)
+            return super().put_nowait(item)
+
+    if patience != "kept":
+        monkeypatch.setattr(webapp.Handler, "_TERMINAL_HANDOVER_S", 0.05)
+    mirror, live = _watch(session, _Paused)
+    feed = mirror if bus == "mirror" else live
+    publish = ((lambda kind, data: webapp.Handler._mirror_pub(session, kind, data))
+               if bus == "mirror" else webapp.Handler._live_pub)
+    ending = webapp.Handler._terminal_arm(session)
+    publish("done", {"session": session, "run": "old"})
+    assert not _received(feed), "an ending turn is held until its release"
+
+    def _the_next_turn():
+        webapp.Handler._terminal_arm(session)      # its first act, holding the lease
+        publish("start", {"session": session, "run": "new"})
+        published.set()
+
+    flushing = threading.Thread(target=webapp.Handler._terminal_release,
+                                args=(session, ending), daemon=True)
+    successor = threading.Thread(target=_the_next_turn, name="next-turn", daemon=True)
+    try:
+        if patience == "dropped":
+            successor.start()                      # takes the session unopposed
+            successor.join(10)
+            flushing.start()                       # too late to be heard at all
+        else:
+            flushing.start()
+            assert entered.wait(10), "the held ending never reached the feed"
+            successor.start()
+            assert not published.wait(0.3), "the next run published over the ending one"
+            release.set()
+        flushing.join(10)
+        successor.join(10)
+        assert published.is_set(), "the next run never got the session"
+        order = _received(feed)
+        assert order[-1:] == [("start", "new")], (
+            "an old ending overtook the run that replaced it: %r" % (order,))
+        assert patience != "dropped" or order == [("start", "new")], (
+            "a superseded ending was published anyway: %r" % (order,))
+        with webapp.Handler._mirror_lock:
+            backlog = [(k, d.get("run")) for k, d
+                       in webapp.Handler._mirror_backlog.get(session, [])]
+        assert ("done", "old") not in backlog and ending.stale == (patience != "kept"), backlog
+    finally:
+        release.set()
+        flushing.join(10)
+        successor.join(10)
+        _unwatch(session, mirror, live)
+
+
+def test_an_orphaned_ending_is_never_adopted_by_the_turn_after_it(lab):
+    """A detached turn whose bookkeeping broke has no gate to flush.  Announcing
+    its ending is one step with checking for a successor: deciding first and
+    publishing after hands that ``done`` to the new turn's gate, which publishes
+    it at the end of a run it never belonged to."""
+    from harness import webapp
+    session = "orphan-late"
+    old = lambda gate: webapp.Handler._mirror_pub(
+        session, "done", {"session": session, "run": "old"}, held=gate)
+    mirror, live = _watch(session)
+    armed, publishing, hold = threading.Event(), threading.Event(), threading.Event()
+
+    def _announcing(gate):
+        publishing.set()
+        assert not armed.wait(0.3), "a successor took the session mid-announcement"
+        hold.wait(10)
+        old(gate)
+
+    orphan = threading.Thread(
+        target=lambda: webapp.Handler._terminal_orphan(session, _announcing), daemon=True)
+    next_turn = threading.Thread(
+        target=lambda: (webapp.Handler._terminal_arm(session), armed.set()), daemon=True)
+    try:
+        assert webapp.Handler._terminal_orphan(session, old) is True   # nobody owns it
+        assert _received(mirror) == [("done", "old")]
+        orphan.start()
+        assert publishing.wait(10)
+        next_turn.start()
+        hold.set()
+        orphan.join(10)
+        next_turn.join(10)
+        assert armed.is_set() and _received(mirror) == [("done", "old")]
+        # The successor owns the session now, so a late ending is dropped where
+        # it stands — not held for, and published by, that turn's own release.
+        assert webapp.Handler._terminal_orphan(session, old) is False
+        webapp.Handler._terminal_release(session, webapp.Handler._terminal_gates[session])
+        assert not _received(mirror), "the old ending was adopted by the next turn"
+    finally:
+        hold.set()
+        _unwatch(session, mirror, live)
+
+
+def test_a_queued_turn_that_fails_late_ends_its_own_run_and_no_other(lab, monkeypatch):
+    """A detached turn reports its own failure, but the registry row it ends must
+    be the one it recorded when it began: by the time the failure surfaces the
+    lease may be a successor's, and "end this session's run" would fail that."""
+    from harness import webapp
+    session = "late-failure"
+
+    def _explode(handler, qs, owner=None, entry=None):
+        raise RuntimeError("the bookkeeping broke")
+    monkeypatch.setattr(web_tasks, "serve_managed_stream", _explode)
+    successor_run = webapp.Handler._run_begin(session, "second request", os.getcwd())
+    try:
+        # No run of its own, so it ends none — and still reports the failure.
+        web_tasks._run_detached(web_tasks.DetachedSink(session), session, None, {"id": "q1"})
+        with webapp.Handler._runs_lock:
+            row = dict(webapp.Handler._runs[session])
+        assert (row["run"], row["ended"]) == (successor_run, None), row
+        assert "bookkeeping" in (web_tasks.queue_error(session) or {}).get("error", "")
+        sink = web_tasks.DetachedSink(session)
+        sink._run_id = successor_run          # its own row, recorded as the run began
+        web_tasks._run_detached(sink, session, None, {"id": "q2"})
+        with webapp.Handler._runs_lock:
+            assert webapp.Handler._runs[session]["ended"] is not None
+    finally:
+        with webapp.Handler._runs_lock:
+            webapp.Handler._runs.pop(session, None)
+            webapp.Handler._cancel_events.pop(session, None)
+        web_tasks.clear_queue_error(session)
