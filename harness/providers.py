@@ -1909,7 +1909,16 @@ def resolve_speed_tier(name: str, model: str | None, requested: str | None) -> t
 
 def make_provider(name: str, model: str | None = None, effort: str | None = None,
                   speed: str = "standard", *,
-                  subscription_only: bool = False) -> ModelProvider:
+                  subscription_only: bool = False,
+                  structured_repair: bool = True) -> ModelProvider:
+    """Build a provider.
+
+    ``structured_repair`` is the Claude Agent SDK route's compatibility switch:
+    the host's single corrective turn after a refused response envelope is sent
+    in the SDK's provider-enforced schema mode.  Setting it False restores the
+    free-text corrective turn for a controlled comparison; every other provider
+    ignores it, because only this one has a schema transport to escalate to.
+    """
     chosen_model = model or provider_default_model(name)
     resolved_speed, _caps = resolve_speed_tier(name, chosen_model, speed)
     if name == "mock":
@@ -1933,7 +1942,8 @@ def make_provider(name: str, model: str | None = None, effort: str | None = None
         from .claude_agent_sdk import ClaudeAgentSdkProvider
         return ClaudeAgentSdkProvider(
             model=chosen_model, effort=effort,
-            subscription_only=subscription_only)
+            subscription_only=subscription_only,
+            structured_repair=structured_repair)
     if name == "ollama":
         return OllamaProvider(model=chosen_model)
     if name in OPENAI_COMPAT_PRESETS:

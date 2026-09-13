@@ -61,6 +61,13 @@ _STRUCTURED_SYSTEM_SUFFIX = (
     "Do not call an executor tool directly and do not emit its JSON envelope "
     "as plain text. The host will execute a validated action after this response."
 )
+# Harness's own corrective turn, identified by the metadata loop.py stamps on
+# the nudge it builds -- host data, never anything read out of a model reply.
+# It is the one call in a run that is already known to follow a refused
+# envelope, and the only one this transport escalates to the provider-enforced
+# schema; see ``_repair_escalation``.
+_REPAIR_SOURCE = "harness"
+_REPAIR_KIND = "format_repair"
 
 
 # Provider-rejection categories the worker may report (the SDK's stable
@@ -432,30 +439,44 @@ class ClaudeAgentSdkProvider(ModelProvider):
 
     def __init__(self, model: str | None = None, timeout: int = 180,
                  effort: str | None = None, subscription_only: bool = False,
-                 structured_output: bool = False):
+                 structured_output: bool = False, structured_repair: bool = True):
         model = model or provider_default_model(self.name)
         self.model = "claude-agent-sdk:" + model
         self._model = model
         self.timeout = int(timeout)
         self.effort = effort or "default"
         self.subscription_only = bool(subscription_only)
-        # Structured formatting remains opt-in: coding trials found formatter
-        # refusals even after a host repair. The default uses the host-validated
-        # text envelope. Opt-in tool-bearing calls enforce Collie's {tool|answer}
-        # envelope as a response schema.  The opt-out exists only for controlled
-        # legacy comparison: it restores the free-text envelope which sometimes
-        # arrived with extra keys and cost a whole corrective turn.
+        # Structured formatting for EVERY turn remains opt-in: the recorded
+        # comparison on identical source (bench/experiments/2026-09-08, two
+        # tasks x two repetitions) ended cleanly 4/4 on the plain envelope and
+        # 2/4 with the native formatter, and both structured losses happened
+        # after an already-correct patch.  So the default still sends the
+        # host-validated text envelope, and opting every turn in stays a
+        # controlled comparison switch rather than a product default.
         self.structured_output = bool(structured_output)
+        # ...and every ordinary turn keeps that default.  The one exception is
+        # the host's single corrective turn: the free-text envelope has already
+        # missed the contract there, and a repair that misses again ends the
+        # run (observed live: repair, extra_keys, terminal).  That one turn is
+        # issued in the same provider-enforced mode instead, so a repair which
+        # the formatter accepts cannot come back with extra keys or a
+        # non-envelope object at all.  It spends no additional request and no
+        # additional repair: it is the already-budgeted corrective call.
+        self.structured_repair = bool(structured_repair)
         self._process_condition = threading.Condition(threading.RLock())
         self._active_runs: dict[str, dict] = {}
 
-    def _prompt(self, messages, tool_schemas) -> str:
+    def _prompt(self, messages, tool_schemas, structured=None) -> str:
         # ContextComposer already chooses which tool results to keep or elide.
         # A second, silent 2,000-character cut here hid recent file/error tails
         # and even the composer's omission markers from the model.
+        # ``structured`` is the mode this particular call is actually sending,
+        # so the instructions can never describe a different protocol than the
+        # request carries.
         return ClaudeCliProvider._prompt(
             self, messages, tool_schemas, tool_result_limit=None,
-            structured_response=self.structured_output)
+            structured_response=(self.structured_output if structured is None
+                                 else bool(structured)))
 
     @staticmethod
     def _plain_prompt(messages) -> str:
@@ -475,7 +496,7 @@ class ClaudeAgentSdkProvider(ModelProvider):
         lines.append("\nRespond to the latest user message according to the system prompt.")
         return "\n".join(lines)
 
-    def _payload(self, messages, tool_schemas):
+    def _payload(self, messages, tool_schemas, structured=None):
         """The model-facing prompt: a plain string, or ordered content blocks.
 
         Text-only conversations share the same serializer as the text portions
@@ -483,11 +504,11 @@ class ClaudeAgentSdkProvider(ModelProvider):
         """
         entries = _attachments(messages)
         if not entries:
-            return (self._prompt(messages, tool_schemas) if tool_schemas
+            return (self._prompt(messages, tool_schemas, structured) if tool_schemas
                     else self._plain_prompt(messages))
         _apply_attachment_budget(entries)
         marked = _marked_messages(messages, entries, uuid.uuid4().hex)
-        text = (self._prompt(marked, tool_schemas) if tool_schemas
+        text = (self._prompt(marked, tool_schemas, structured) if tool_schemas
                 else self._plain_prompt(marked))
         if not any(entry.get("token") for entry in entries):
             # Reachable only when the current turn attached nothing and every
@@ -497,14 +518,36 @@ class ClaudeAgentSdkProvider(ModelProvider):
             return text
         return _spliced_blocks(text, entries)
 
-    def _structured_tools(self, tool_schemas):
+    def _repair_escalation(self, messages) -> bool:
+        """True only for Harness's own corrective turn after a refused envelope.
+
+        The marker is the ``source``/``kind`` metadata loop.py stamps on the
+        nudge it appends; it is host-owned, it is never persisted into the
+        conversation, and no assistant text is inspected to find it.  Only the
+        last message counts, so an ordinary turn can never inherit the mode from
+        an earlier repair.
+        """
+        if not self.structured_repair:
+            return False
+        last = messages[-1] if messages else None
+        return (isinstance(last, dict) and last.get("role") == "user"
+                and last.get("source") == _REPAIR_SOURCE
+                and last.get("kind") == _REPAIR_KIND)
+
+    def _structured_tools(self, tool_schemas, messages=None):
         """The response-schema tool allowlist, or ``None`` to stay in plain mode.
 
         The names are Collie's own executor tools; nothing else may appear in a
         provider-enforced enum.  Argument schemas stay owned by the host
         executor, so no argument restriction is invented here.
+
+        Tool-less calls (Mission's planner owns its own action contract) stay
+        plain in every mode: the allowlist a response schema would need does not
+        exist, and imposing this envelope would fail a valid plan closed.
         """
-        if not self.structured_output or not tool_schemas:
+        if not tool_schemas:
+            return None
+        if not (self.structured_output or self._repair_escalation(messages)):
             return None
         names = []
         for schema in tool_schemas:
@@ -906,8 +949,9 @@ class ClaudeAgentSdkProvider(ModelProvider):
                     cancel_scope = request_id
                     self._set_pending_scope(registration, cancel_scope)
 
-            structured_tools = self._structured_tools(tool_schemas)
-            payload = self._payload(messages, tool_schemas)
+            structured_tools = self._structured_tools(tool_schemas, messages)
+            payload = self._payload(messages, tool_schemas,
+                                    structured_tools is not None)
             data = self._run_worker(
                 self._worker_request(system, payload, structured_tools),
                 cancel_scope=cancel_scope, registration=registration)
