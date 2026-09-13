@@ -215,9 +215,20 @@ class ContextComposer:
         meta = ComposeMeta()
 
         # ---- STABLE -------------------------------------------------------
+        # The verify contract stays mandatory; what satisfies it is the project's business.
+        # The old wording said "run the tests (python -m pytest -q)" unconditionally, which on a
+        # data/config/prose deliverable asks for a suite that does not exist — so the check is
+        # uninformed, costs a turn, and can leave runner artifacts in a workspace that never
+        # authorized them. This line is deliberately free of workspace state: it sits in the
+        # STABLE cached prefix, so it must stay byte-identical for the whole session. The
+        # workspace-specific command is named later, by loop.verify_nudge_for, in an appended
+        # reminder that does not disturb the prefix.
         act_role = ("MODE: Act — use tools to gather facts and make changes. "
-                    "Prefer edit_file for small changes. After editing code, run "
-                    "the tests (python -m pytest -q) to verify before you answer.")
+                    "Prefer edit_file for small changes. After editing, verify with a check "
+                    "this project actually supports: run its existing test suite (e.g. "
+                    "python -m pytest -q) when it has one; when it has none, validate the "
+                    "artifact you produced rather than installing or inventing a test project. "
+                    "Report what your check did and did not establish.")
         # unknown/typo'd mode -> ACT (never silently drop the tool-usage + verify contract).
         mode_role = {
             "act": act_role,

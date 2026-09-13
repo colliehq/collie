@@ -101,14 +101,70 @@ def format_repair_nudge(reason: str = "", tool_names=()) -> str:
     return FORMAT_REPAIR_NUDGE + ((" " + hint) if hint else "")
 
 
+# Wording shared by every post-edit reminder, so the run-hygiene rule and the "answer the
+# user, not the reminder" rule cannot drift apart between the variants below.
+_VERIFY_HYGIENE = ("Run the check directly, without piping to head/tail, appending echo, or "
+                   "hiding its exit status; the tool already bounds long output. ")
+_VERIFY_TAIL = ("This is an internal verification reminder for the original task, not a new "
+                "user request. Then answer the original request in the user's requested format "
+                "and level of detail, briefly noting the result and any remaining limitations.")
+
 VERIFY_NUDGE = ("Before finalizing, use the bash tool to run the project's relevant tests "
                 "(`python -m pytest -q`, `npm test`, `go test ./...`, `cargo test`, or this "
                 "repository's equivalent). If anything fails, read the error, fix it, and re-run. "
-                "Run the check directly, without piping to head/tail, appending echo, or hiding "
-                "its exit status; the tool already bounds long output. This is an internal "
-                "verification reminder for the original task, not a new user request. "
-                "Then answer the original request in the user's requested format and level of "
-                "detail, briefly noting the result and any remaining limitations.")
+                + _VERIFY_HYGIENE + _VERIFY_TAIL)
+
+# The same reminder when the host could look at the workspace and found NO check to run.
+# A JSON/CSV/Markdown deliverable has no suite, and naming pytest anyway is what makes a model
+# run a test runner in a directory it has just confirmed holds no tests — which costs a turn and
+# leaves a .pytest_cache behind in a workspace whose task never authorized one.  This text must
+# not imply the cheap check is the grade: parsing a file proves it is well-formed and nothing
+# more, so the model is asked to say which requirements remain unverified.
+_NO_CHECK_VERIFY_NUDGE = (
+    "Before finalizing: the host did not detect a supported test, build or typecheck command "
+    "in this workspace. Follow any project instructions or existing applicable checks; the "
+    "detector does not recognize every project layout. When no applicable suite exists, do "
+    "not install a toolchain or create a test project just to run a check, and do not invoke "
+    "a test runner known to collect nothing. Check what you actually produced%s in its "
+    "own form — parse the JSON or CSV, confirm the fields, values and ordering the request "
+    "named — using a command that writes nothing into this workspace. "
+    "Parsing proves only that the file is well-formed; it does not prove the request was "
+    "satisfied, so state briefly which of the request's requirements you checked and which "
+    "remain unverified. " + _VERIFY_HYGIENE + _VERIFY_TAIL)
+
+_VERIFY_EDITED_NAMES = 4
+
+
+def verify_nudge_for(cwd, edited_paths=()) -> str:
+    """The post-edit reminder, chosen from what this workspace can actually verify.
+
+    ``detect_verification_commands`` is the product's existing evidence-based answer to "what
+    check does this project own?" — it reads markers, executes nothing, and is already what the
+    UI proposes and what Test mode allowlists.  The loop simply never asked it, so the advisory
+    named pytest first on every task, including ones with no code in them at all.
+
+    This selects *wording* only.  Whether a finish is accepted stays with the verify gate and
+    with the host check receipt; neither is consulted or relaxed here.
+    """
+    if not cwd:
+        return VERIFY_NUDGE
+    try:
+        from .verification import detect_verification_commands
+        candidates = detect_verification_commands(str(cwd))
+    except Exception:
+        # Detection is an optimization, never a precondition: an unreadable or exotic
+        # workspace keeps the original generic reminder rather than losing the reminder.
+        return VERIFY_NUDGE
+    if candidates:
+        first = candidates[0]
+        return (("Before finalizing, use the bash tool to run this project's own check: `%s` "
+                 "(detected from %s), or this repository's equivalent. If anything fails, read "
+                 "the error, fix it, and re-run. ") % (first["command"], first["source"])
+                + _VERIFY_HYGIENE + _VERIFY_TAIL)
+    names = [str(p) for p in (edited_paths or []) if str(p).strip()]
+    listed = (" (%s)" % ", ".join(sorted(names)[:_VERIFY_EDITED_NAMES])) if names else ""
+    return _NO_CHECK_VERIFY_NUDGE % listed
+
 
 # Evidence-gated verify (SWE): after an edit, don't accept "done" until a reproduction has
 # actually been RUN on the fixed code and didn't error. This is the loop lever the audit +
@@ -2888,7 +2944,11 @@ class Harness:
                             did_edit, last_edit_turn, last_repro_turn,
                             last_repro_failed, last_repro_asserted)
                         if not repro_ok and verify_rounds < self.verify_max:
-                            nudge = ((self.verify_nudge or VERIFY_NUDGE)
+                            # Gate semantics are untouched: Required still refuses this finish
+                            # until a reproduction has actually run. Only which check the text
+                            # names is workspace-selected.
+                            nudge = ((self.verify_nudge
+                                      or verify_nudge_for(self.cwd, edited_files))
                                      if last_repro_turn < last_edit_turn
                                      else (self.repair_nudge or REPAIR_NUDGE))
                             session["messages"].append({"role": "assistant", "content": comp.text})
@@ -2902,7 +2962,9 @@ class Harness:
                             last_repro_failed, last_repro_asserted):
                         session["messages"].append({"role": "assistant", "content": comp.text})
                         session["messages"].append(
-                            {"role": "user", "content": self.verify_nudge or VERIFY_NUDGE,
+                            {"role": "user",
+                             "content": (self.verify_nudge
+                                         or verify_nudge_for(self.cwd, edited_files)),
                              "source": "harness", "kind": "verification_reminder"})
                         verified = True
                         res.turns = turn + 1
