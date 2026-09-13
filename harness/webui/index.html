@@ -2922,6 +2922,11 @@
   var IDE_QUERY = new URLSearchParams(location.search);
   var INITIAL_SESSION = IDE_QUERY.get("session") || "";
   var INITIAL_MISSION = IDE_QUERY.get("mission") || "";
+  // Today and New task both live at the root, so a reload used to drop anyone who had opened the
+  // task canvas back onto Today — with their unsent draft still in the composer, one surface away
+  // from where they wrote it. `view=new` is the explicit marker for that choice; no marker means
+  // Today, which keeps a first visit landing where it always has.
+  var INITIAL_VIEW = IDE_QUERY.get("view") === "new" ? "new" : "";
   var IDE_EMBED = IDE_QUERY.has("vscode_embed");
   var IDE_SURFACE = IDE_QUERY.get("surface") || "";
   var NATIVE_SHELL = IDE_QUERY.get("native_shell") === "1";
@@ -8607,7 +8612,9 @@
     try {
       var address = new URL(location.href);
       address.searchParams.delete("mission");
-      if (id) address.searchParams.set("session", id);
+      // A named session identifies the view on its own; a leftover `view=new` beside it would only
+      // be a second, weaker opinion about the same page.
+      if (id) { address.searchParams.set("session", id); address.searchParams.delete("view"); }
       else address.searchParams.delete("session");
       history.replaceState(null, "", address.href);
     } catch (_) {}
@@ -9072,15 +9079,28 @@
       });
   }
   function prepareTaskCanvas() {
+    // Anything that swaps Today for the task canvas is the same choice the New task button makes;
+    // a thread that already has a session is identified by `session` instead.
+    if (!currentSession) rememberView("new");
     if (!$("todayDashboard")) { setProductNav("home"); return; }
     currentSession = null; currentRun = null; currentTitle = "";
     $("log").innerHTML = WELCOME_HTML; applyLang(); renderCollieIdentity(); setProductNav("home");
+  }
+  // Record the chosen root view in the address the same way an opened session is recorded: replace,
+  // never push, so the page's own view switches stay out of the back stack. Only the `view` key is
+  // touched, which leaves token, vscode_embed and the rest of the address exactly as they were.
+  function rememberView(view) {
+    try {
+      var address = new URL(location.href);
+      if (view) address.searchParams.set("view", view); else address.searchParams.delete("view");
+      history.replaceState(null, "", address.href);
+    } catch (_) {}
   }
   function showToday(userRequested) {
     switchComposerDraft(null);
     if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun(); currentSession = null; currentRun = null; currentTitle = ""; loadTaskQueue();
-    rememberSession(null);
+    rememberSession(null); rememberView("");
     clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
     setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
@@ -9144,7 +9164,7 @@
     if (window.switchTaskSetup) window.switchTaskSetup(null);
     detachRun();                         // start a second thing while the first one runs
     currentSession = null; currentRun = null; currentTitle = "";
-    rememberSession(null);
+    rememberSession(null); rememberView("new");
     loadTaskQueue();
     $("log").innerHTML = WELCOME_HTML; applyLang(); clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
     setProductNav("home"); setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
@@ -9265,7 +9285,11 @@
   window.addEventListener("focus", function () {
     if (document.body.getAttribute("data-surface") === "today") loadToday(true);
   });
-  showToday(true);
+  // Open on the surface the address asks for. A session or mission deep link paints its own canvas
+  // in the final bootstrap below, so only the plain `view=new` case skips Today — and skipping it
+  // means Today's sources are never fetched for a page that was never going to show them.
+  if (INITIAL_VIEW === "new" && !INITIAL_SESSION && !INITIAL_MISSION) newThread(false);
+  else showToday(true);
 
   // Starter cards in the empty state: click one to drop a ready-made prompt into the composer (so a
   // first-timer sees what Collie is FOR). Delegated on #log so it works for both the initial welcome
