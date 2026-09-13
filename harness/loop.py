@@ -2204,7 +2204,14 @@ class Harness:
                 # --- output truncation (point 1): the response hit the output-token limit, so any
                 # tool-call arguments may be silently incomplete. FAIL every call wholesale (you
                 # can't tell which one was cut) and never execute them; for a truncated plain answer,
-                # nudge to continue. Bounded by trunc_rounds (like verify_max) so it can't spin.
+                # nudge to continue. Bounded by trunc_rounds so it can't spin.
+                # Counted per EPISODE, like the structured-response repair above: a completion that
+                # did not stop at the output limit is real forward progress — its tool results or
+                # text are already durable history — so it restores the allowance. A run-global
+                # count ended a long, healthy run on its third SEPARATED truncation and threw away
+                # every recovered turn in between, reporting a "loop" that had never happened.
+                if comp.stop_reason != "length":
+                    trunc_rounds = 0
                 if comp.stop_reason == "length":
                     trunc_rounds += 1
                     if comp.tool_calls:
@@ -2224,10 +2231,12 @@ class Harness:
                     # KEY: retrying at the SAME output ceiling truncates again -> the loop the user hit.
                     # Give the retry real room by escalating the cap (x2, bounded). A task that legit
                     # needs a big output finishes; a runaway is still stopped by the round bound below.
+                    ceiling = 0
                     try:
                         cur = int(getattr(self.provider, "max_tokens", 0) or 0)
                         if 0 < cur < 32768:
                             self.provider.max_tokens = min(32768, cur * 2)
+                        ceiling = int(getattr(self.provider, "max_tokens", 0) or 0)
                     except (TypeError, ValueError):
                         pass
                     if trunc_rounds >= 3 or not _has_next_turn(turn):
@@ -2235,7 +2244,18 @@ class Harness:
                         if not comp.tool_calls and (comp.text or "").strip():
                             answer = comp.text
                         else:
-                            res.error = res.error or "output-limit truncation loop"
+                            # Name the ceiling that actually stopped this run. One string said
+                            # "truncation loop" for both a genuine repeat and a single truncation
+                            # that happened to land on the last available turn, and quoted no
+                            # number a reader could raise.
+                            res.error = res.error or (
+                                "output-limit truncation: %s; its tool calls were not executed "
+                                "because truncated arguments are unsafe to run%s" % (
+                                    ("%d consecutive responses hit the output-token limit"
+                                     % trunc_rounds) if trunc_rounds >= 3 else
+                                    "the response hit the output-token limit on the last "
+                                    "available turn",
+                                    (" (output ceiling now %d tokens)" % ceiling) if ceiling else ""))
                         break
                     continue
 
