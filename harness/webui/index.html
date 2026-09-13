@@ -583,6 +583,8 @@
   .gate[data-state="fail"] .g-status { color: var(--coral); }
   .gate[data-state="pass"] .g-status { color: var(--meadow); }
   .gate[data-state="unverified"] .g-status { color: var(--amber); }
+  /* An inconclusive result uses the same caution styling as other unverified results. */
+  .gate[data-state="inconclusive"] .g-status { color: var(--amber); }
   .gate[data-state="missing"] .g-status { color: var(--coral); }
   .gate .g-sub { color: var(--muted); font-size: 11px; line-height: 1.35;
                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -3300,6 +3302,16 @@
     "Checking evidence…": "正在检查证据…", "Running the named check against the current result.": "正在针对当前结果运行具名检查。",
     "✗ Check failed": "✗ 检查失败", "The recorded check did not pass; Collie must repair the result or report it as inconclusive.": "记录的检查未通过；Collie 必须修复结果，或明确报告无法得出结论。",
     "✓ Check passed": "✓ 检查通过", "The named check passed. Open Run details to inspect its scope and evidence.": "具名检查已通过。打开运行详情可查看它的范围与证据。",
+    // 命令退出码是 0，但这个结果绑不到现在的文件上。说清楚"没有证实什么"，不要说成"失败"。
+    "Check did not certify this result": "当前结果尚未通过验证",
+    "The command exited 0, but its result does not cover the files that exist now.": "命令已正常结束，但检查结果无法对应当前文件。",
+    "proposed check did not certify this result": "建议的检查尚未确认当前结果",
+    "exit 0 does not certify this result: {why}": "命令已正常结束，但结果仍待确认：{why}",
+    "the workspace changed while it was running": "它运行期间工作区发生了变化",
+    "something it started may still be writing files": "它启动的进程可能还在写文件",
+    "it was already recorded as stale before it started": "它开始之前就已被记为过期",
+    "the workspace could not be fingerprinted completely": "工作区的状态没能完整记录下来",
+    "its result could not be bound to the files that exist now": "它的结果对应不上现在的文件",
     "No executed check": "没有已执行的检查", "This run made no code edit or no relevant executable check was selected.": "本次运行没有修改代码，或没有选择相关的可执行检查。",
     "Changes save automatically.": "修改会自动保存。", "Close": "关闭",
     "Meet your Collie": "认识你的 Collie", "Companion name": "伙伴名字", "Continue": "继续",
@@ -3682,6 +3694,16 @@
     "Checking evidence…": "正在檢查證據…", "Running the named check against the current result.": "正在針對目前結果執行具名檢查。",
     "✗ Check failed": "✗ 檢查失敗", "The recorded check did not pass; Collie must repair the result or report it as inconclusive.": "記錄的檢查未通過；Collie 必須修復結果，或明確回報無法得出結論。",
     "✓ Check passed": "✓ 檢查通過", "The named check passed. Open Run details to inspect its scope and evidence.": "具名檢查已通過。開啟執行詳情可查看它的範圍與證據。",
+    // 指令退出碼是 0，但這個結果綁不到現在的檔案上。要說清楚「沒有證實什麼」，而不是說成「失敗」。
+    "Check did not certify this result": "目前結果尚未通過驗證",
+    "The command exited 0, but its result does not cover the files that exist now.": "指令已正常結束，但檢查結果無法對應目前檔案。",
+    "proposed check did not certify this result": "建議的檢查尚未確認目前結果",
+    "exit 0 does not certify this result: {why}": "指令已正常結束，但結果仍待確認：{why}",
+    "the workspace changed while it was running": "它執行期間工作區發生了變化",
+    "something it started may still be writing files": "它啟動的程序可能還在寫檔案",
+    "it was already recorded as stale before it started": "它開始之前就已被記為過期",
+    "the workspace could not be fingerprinted completely": "工作區的狀態沒能完整記錄下來",
+    "its result could not be bound to the files that exist now": "它的結果對應不上現在的檔案",
     "No executed check": "沒有已執行的檢查", "This run made no code edit or no relevant executable check was selected.": "本次執行沒有修改程式碼，或沒有選擇相關的可執行檢查。",
     "Changes save automatically.": "變更會自動儲存。", "Close": "關閉",
     "Meet your Collie": "認識你的 Collie", "Companion name": "夥伴名字", "Continue": "繼續",

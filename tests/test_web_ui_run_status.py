@@ -903,6 +903,66 @@ def test_a_reopened_thread_restates_the_uncertified_check_from_its_receipt(ui, m
     assert not _Fixture.stream_requests, "reopening a thread must not execute a turn"
 
 
+def test_the_uncertified_headline_is_amber_like_unverified_not_failure_red(ui):
+    """An inconclusive check has its own caution styling, separate from a failed check.
+
+    The dot and the border were already amber; the headline had no rule of its own, so the
+    one line a person reads stayed default-coloured beside them.
+    """
+    ui.ask("Bundle the release assets")
+
+    colors = ui.page.evaluate("""() => {
+        const probe = (v) => {
+          const el = document.createElement('span');
+          el.style.color = 'var(--' + v + ')';
+          document.body.appendChild(el);
+          const c = getComputedStyle(el).color; el.remove(); return c;
+        };
+        return {status: getComputedStyle(document.getElementById('gateStatus')).color,
+                amber: probe('amber'), coral: probe('coral')};
+    }""")
+
+    assert colors["status"] == colors["amber"], colors
+    assert colors["status"] != colors["coral"], "inconclusive is not a failed-check verdict"
+
+
+@pytest.mark.parametrize("lang,headline,why,row", [
+    ("zh", "当前结果尚未通过验证", "它运行期间工作区发生了变化", "建议的检查尚未确认当前结果"),
+    ("zh-tw", "目前結果尚未通過驗證", "它執行期間工作區發生了變化", "建議的檢查尚未確認目前結果"),
+])
+def test_the_uncertified_check_speaks_the_reader_s_language(server, browser, lang, headline,
+                                                            why, row):
+    """A Chinese reader got the English sentence, which is the same failure in a new place:
+    the one surface that explains why exit 0 settled nothing was unreadable to them."""
+    _reset_fixture_state()
+    _Fixture.lang = lang
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        page.wait_for_timeout(300)
+        page.fill("#input", "Bundle the release assets")
+        page.press("#input", "Enter")
+        await_run(page)
+
+        assert page.get_attribute("#gate", "data-state") == "inconclusive"
+        assert page.inner_text("#gateStatus") == headline
+        sub = page.inner_text("#gateSub")
+        assert "npm run build" in sub, "the command itself is not translated away"
+        assert why in sub
+        assert "certify" not in sub and "exit 0" not in sub, sub
+        timeline = page.inner_text("#timeline")
+        assert row in timeline and why in timeline
+        assert "did not certify" not in timeline, timeline
+        assert errors == [], "JS errors: %r" % errors
+    finally:
+        _Fixture.lang = "en"
+        context.close()
+
+
 def test_turn_limit_keeps_output_and_offers_one_resume(ui):
     ui.ask("Migrate every module to the new config loader")
     text = ui.log_text()

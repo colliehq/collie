@@ -1428,12 +1428,23 @@ def _bind_check_evidence(evidence, baseline_digest="", *, patch_attributed=False
     evidence["patch_attributed"] = current_patch_attributed
     verified = bool(
         evidence.get("passed") and boundary_matches and current_patch_attributed)
+    # A receipt that is not ``passed`` has not necessarily failed.  A check that
+    # writes its own build output into the tree it grades exits 0 and still
+    # cannot be bound to the bytes that exist now; calling that "configured check
+    # failed (exit 0)" sends a reader hunting for a broken test that does not
+    # exist.  ``check_result_state``/``check_result_reason`` are the receipt's own
+    # words, already used by the CLI and web endings, so the Mission line cannot
+    # disagree with them about the same evidence.  A genuine non-zero exit keeps
+    # the sentence it always had.
+    from .verification import check_result_reason, check_result_state
     detail = ("configured host check passed against the current Mission patch" if verified else
               "check passed but the Mission produced no attributed patch"
               if evidence.get("passed") and boundary_matches else
               "workspace changed between the agent boundary and host verification"
               if evidence.get("passed") and not boundary_matches else
-              "configured check failed (exit %s)" % evidence.get("exit_code"))
+              "configured check failed (exit %s)" % evidence.get("exit_code")
+              if check_result_state(evidence) == "failed" else
+              check_result_reason(evidence))
     return {"verified": verified, "detail": detail, "evidence": evidence}
 
 

@@ -26,9 +26,14 @@ from pathlib import Path
 import pytest
 
 from harness import cli, sessions, verification
+from harness.mission import code_stop_report
+from harness.primitives import _live_code
 
 from test_verification_cancel import (  # the real CLI/Web endings, already wired
     PYTHON, _WebHarness, _cli_args, _answered, _pin_cli, _spaces, _web_isolate,
+)
+from test_mission_code_dispatch import (  # the real Mission code slice, already wired
+    _fake_harness, _run_result,
 )
 
 
@@ -159,3 +164,58 @@ def test_cli_run_reports_an_uncertified_check_in_its_own_words(monkeypatch,
     assert payload["answer"].startswith("rewrote the tokenizer")
     saved = sessions.load(payload["session"])
     assert saved["run_receipts"][-1]["verified"] is False
+
+
+# --------------------------------------------------------------------------- #
+# the Mission ending
+# --------------------------------------------------------------------------- #
+# The fourth site for the same receipt.  A Mission's host check binds its result
+# to the agent boundary, and every not-``passed`` receipt fell through to
+# "configured check failed (exit %s)" — so the build-output case reached the
+# Mission's one-screen report as a failure with "exit=0" printed beside it.
+def _mission_slice(tmp_path, monkeypatch, name, command):
+    """One real code slice: real workspace, real host check, staged worker."""
+    workspace = tmp_path / name
+    workspace.mkdir()
+    check = command(workspace)
+    monkeypatch.setenv("COLLIE_MISSION_CODE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    _fake_harness(monkeypatch, _run_result(
+        answer="bundled the release assets",
+        messages=[{"role": "assistant", "content": "bundled the release assets"}]))
+    return _live_code("bundle the release assets", str(workspace),
+                      mission_id="mission-" + name, session_id="mission-code-" + name,
+                      verify_command=check)
+
+
+def test_mission_host_check_does_not_call_an_exit_zero_receipt_a_failure(
+        tmp_path, monkeypatch):
+    out = _mission_slice(tmp_path, monkeypatch, "build", _build_output_check)
+
+    evidence = out["verification"]["evidence"]
+    assert evidence["executed"] is True and evidence["cancelled"] is False
+    assert evidence["exit_code"] == 0 and evidence["command_passed"] is True
+    assert evidence["passed"] is False, "...and still certifies nothing"
+    assert evidence["freshness"] == "changed_during_check"
+
+    detail = out["verification"]["detail"]
+    assert "did not certify this result" in detail
+    assert "the workspace changed while it was running" in detail
+    assert "failed" not in detail, detail
+    # The Mission's own one-screen receipt is where a person reads this.
+    report = code_stop_report("the coding run stopped", out)
+    assert "did not certify this result" in report
+    assert "configured check failed" not in report, report
+    # Nothing about the verdict is softened.
+    assert out["verified"] is False
+
+
+def test_mission_host_check_still_reports_a_real_failure_as_a_failure(
+        tmp_path, monkeypatch):
+    """The repair must not turn every unmet Mission check into a softer word."""
+    out = _mission_slice(tmp_path, monkeypatch, "red", _failing_check)
+
+    assert out["verification"]["evidence"]["exit_code"] == 1
+    assert out["verification"]["detail"] == "configured check failed (exit 1)"
+    assert out["verified"] is False
+    assert "configured check failed (exit 1)" in code_stop_report("stopped", out)
