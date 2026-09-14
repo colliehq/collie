@@ -42,6 +42,9 @@
   .step { font-size:12.5px; color:var(--dim); display:flex; gap:7px; align-items:baseline; }
   .step .v { color:var(--brand); font-weight:600; }
   .step.bad .v { color:var(--bad); }
+  /* A check that was stopped, timed out, never ran, or exited 0 without being bindable to the
+     files on disk is not a failure and must not be painted as one; it is also not a pass. */
+  .step.warn .v { color:var(--warn); }
   .md p { margin:0 0 8px; } .md p:last-child { margin-bottom:0; }
   .md pre { background:#0b0e1a; border:1px solid var(--line); border-radius:9px; padding:10px; overflow-x:auto; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; margin:8px 0; }
   .md code { background:#0b0e1a; border-radius:5px; padding:1px 5px; font:13px ui-monospace,monospace; }
@@ -352,6 +355,15 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "working…":"运行中…","stopping…":"正在停止…",
   "Attempt":"尝试","queued":"等待中","error":"错误","check failed":"检查失败","verified":"已验证",
   "check passed":"检查通过","ran":"已运行","winner":"胜出","No winner":"没有胜出结果","Pack stopped":"Pack 已停止",
+  "check stopped":"检查已停止","check ran out of time":"检查超时中止","check did not run":"未运行检查",
+  "check did not certify this result":"检查尚未确认当前结果","exit {n}":"退出码 {n}",
+  "stopped after {n}s without finishing":"运行 {n} 秒未完成，已中止","stopped before it finished":"还没跑完就被中止",
+  "exit 0 does not certify this result: {why}":"命令已正常结束，但结果仍待确认：{why}",
+  "the workspace changed while it was running":"它运行期间工作区发生了变化",
+  "something it started may still be writing files":"它启动的进程可能还在写文件",
+  "it was already recorded as stale before it started":"它开始之前就已被记为过期",
+  "the workspace could not be fingerprinted completely":"工作区的状态没能完整记录下来",
+  "its result could not be bound to the files that exist now":"它的结果对应不上现在的文件",
   "applied to files":"已应用到文件","apply failed — winner was not written":"应用失败——胜出结果未写入",
   "not applied (preview only)":"未应用（仅预览）","stopped":"已停止",
   "Open Activity":"打开活动与恢复","Activity & recovery":"活动与恢复","Refresh":"刷新","Close Activity":"关闭活动与恢复",
@@ -423,6 +435,15 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "working…":"執行中…","stopping…":"正在停止…",
   "Attempt":"嘗試","queued":"等待中","error":"錯誤","check failed":"檢查失敗","verified":"已驗證",
   "check passed":"檢查通過","ran":"已執行","winner":"勝出","No winner":"沒有勝出結果","Pack stopped":"Pack 已停止",
+  "check stopped":"檢查已停止","check ran out of time":"檢查逾時中止","check did not run":"未執行檢查",
+  "check did not certify this result":"檢查尚未確認目前結果","exit {n}":"結束碼 {n}",
+  "stopped after {n}s without finishing":"執行 {n} 秒未完成，已中止","stopped before it finished":"還沒跑完就被中止",
+  "exit 0 does not certify this result: {why}":"指令已正常結束，但結果仍待確認：{why}",
+  "the workspace changed while it was running":"它執行期間工作區發生了變化",
+  "something it started may still be writing files":"它啟動的程序可能還在寫檔案",
+  "it was already recorded as stale before it started":"它開始之前就已被記為過期",
+  "the workspace could not be fingerprinted completely":"工作區的狀態沒能完整記錄下來",
+  "its result could not be bound to the files that exist now":"它的結果對應不上現在的檔案",
   "applied to files":"已套用到檔案","apply failed — winner was not written":"套用失敗——勝出結果未寫入",
   "not applied (preview only)":"未套用（僅預覽）","stopped":"已停止",
   "Open Activity":"開啟活動與復原","Activity & recovery":"活動與復原","Refresh":"重新整理","Close Activity":"關閉活動與復原",
@@ -766,7 +787,9 @@ function addAsst(){ var d=document.createElement('div'); d.className='turn asst'
   var avatar=d.querySelector('.who img');avatar.src=IDENTITY.avatar===LOGO?LOGO:api(IDENTITY.avatar);avatar.onerror=function(){this.onerror=null;this.src=LOGO;};
   $("log").appendChild(d); scrollDown(); return d; }
 function setMd(turn,text){ turn.querySelector('.md').innerHTML=md(text); scrollDown(); }
-function addStep(turn,verb,target,bad){ var s=document.createElement('div'); s.className='step'+(bad?' bad':'');
+// `tone` stays a boolean for every caller that only had "did this go wrong": true is still the red
+// `bad` row. A string names its own tone instead ('warn'), for the endings that are neither.
+function addStep(turn,verb,target,tone){ var s=document.createElement('div'); s.className='step'+(tone?' '+(tone===true?'bad':tone):'');
   s.innerHTML='<span class="v">'+esc(verb)+'</span><span>'+esc(target||"")+'</span>'; turn.querySelector('.steps').appendChild(s); scrollDown(); }
 function endCursor(turn){ var c=turn&&turn.querySelector('.cursor'); if(c) c.remove(); }
 function md(t){ t=t||""; var out=[],parts=t.split(/```/);
@@ -900,6 +923,53 @@ function mobileRunPlanSummary(plan){
   return summary+(limits.length?" — "+limits.join("; "):"");
 }
 
+// ---- what one check receipt actually established -------------------------
+// `passed` alone cannot carry this. The same `false` covers a check that failed, one the user
+// stopped, one killed at its deadline, one that never ran at all, and one that exited 0 whose
+// result could not be bound to the files that exist now. Only the first is a failure, and the
+// phone is often the only place the result is read — painting the other four red sends a person
+// hunting for a broken test nothing here has evidence of.
+//
+// The order is harness.verification.check_result_state's order, so this receipt cannot be read one
+// way on the phone and another way by the desktop, the CLI or the durable receipt it came from.
+// "Did not execute" outranks everything, and a stopped or timed-out check never certifies the
+// workspace even if a stale `passed:true` rode along with it.
+function mobileCheckState(ev){
+  ev=ev&&typeof ev==="object"?ev:{};
+  if(ev.executed===false)return "not_run";
+  if(ev.cancelled)return "cancelled";
+  if(ev.timed_out)return "timed_out";
+  if(ev.passed===true)return "passed";
+  if(ev.command_passed===true)return "inconclusive";
+  return "failed";               // including older evidence that carries nothing but `passed:false`
+}
+var MOBILE_CHECK_WHY={
+  changed_during_check:"the workspace changed while it was running",
+  process_tree_cleanup_failed:"something it started may still be writing files",
+  caller_marked_stale:"it was already recorded as stale before it started",
+  unknown:"the workspace could not be fingerprinted completely"};
+// The one row the step list shows: the verb, the command it is about, and the fact that explains
+// why the exit code does not settle anything. A deadline prints the seconds it hit; a missing exit
+// code prints nothing at all rather than "exit null".
+function mobileCheckRow(ev){
+  ev=ev&&typeof ev==="object"?ev:{};
+  var state=mobileCheckState(ev),cmd=String(ev.command||ev.cmd||""),detail=cmd;
+  function add(x){ detail=detail?detail+" · "+x:x; }
+  if(state==="failed"&&ev.exit_code!=null)add(t("exit {n}").replace("{n}",ev.exit_code));
+  else if(state==="timed_out")add(typeof ev.timeout_s==="number"&&ev.timeout_s>0?
+    t("stopped after {n}s without finishing").replace("{n}",ev.timeout_s):
+    t("stopped before it finished"));
+  else if(state==="cancelled")add(t("stopped before it finished"));
+  else if(state==="not_run"&&ev.skipped_reason)add(String(ev.skipped_reason));
+  else if(state==="inconclusive")add(t("exit 0 does not certify this result: {why}")
+    .replace("{why}",t(MOBILE_CHECK_WHY[String(ev.freshness||"")]||
+                       "its result could not be bound to the files that exist now")));
+  return {verb:t({passed:"check passed",failed:"check failed",cancelled:"check stopped",
+                  timed_out:"check ran out of time",not_run:"check did not run",
+                  inconclusive:"check did not certify this result"}[state]),
+          detail:detail,tone:state==="passed"?false:(state==="failed"?true:"warn"),state:state};
+}
+
 function onEvent(kind,data,sourceSession){
   if(kind==="permission"){addPermission(data,sourceSession||currentSession);return;}
   if(kind==="permission_resolved"){
@@ -927,8 +997,9 @@ function onEvent(kind,data,sourceSession){
   else if(kind==="steer"){ if(curTurn) addStep(curTurn,t('Steer'),(data.text||"").slice(0,80)); }
   else if(kind==="pack_start")packStart(data);
   else if(kind==="pack_attempt")packAttempt(data);
-  else if(kind==="verification_evidence"){ if(!curTurn)curTurn=addAsst();var ev=data.evidence||data;
-    addStep(curTurn,ev.passed?t('check passed'):t('check failed'),ev.command||'',!ev.passed); }
+  else if(kind==="verification_evidence"){ if(!curTurn)curTurn=addAsst();
+    var row=mobileCheckRow(data.evidence||data);
+    addStep(curTurn,row.verb,row.detail,row.tone); }
   else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.pack)packDone(data);if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.canceled)addStep(curTurn,t('Stop run'),t('Run stopped.'),false);else if(data.error)addStep(curTurn,t('Error'),data.error,true);else{var stopped=mobileStopNote(data);if(stopped)addStep(curTurn,t(stopped[0]),t(stopped[1]),false);}endCursor(curTurn);curTurn=null;packRows=[]; }
 }
 // A run halted by a turn, budget or output cap is terminal but NOT finished, and the phone is often
