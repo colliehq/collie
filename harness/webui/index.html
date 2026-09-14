@@ -5753,15 +5753,36 @@
     caller_marked_stale: "it was already recorded as stale before it started",
     unknown: "the workspace could not be fingerprinted completely"
   };
-  function checkUncertified(ev) {
-    return !!(ev && ev.executed !== false && !ev.cancelled && !ev.timed_out &&
-              ev.passed !== true && ev.command_passed === true);
+  // Receipt fields are data from the run, so a table lookup keyed by one may only ever find a key
+  // this file wrote: `freshness: "constructor"` has to reach the fallback sentence rather than
+  // Object's own property, which reaches the reader as a literal, unreplaced "{why}".
+  function own(map, key) {
+    return Object.prototype.hasOwnProperty.call(map, String(key == null ? "" : key))
+      ? map[String(key)] : null;
   }
+  // What ONE check receipt established, in one word, in harness.verification.check_result_state's
+  // order — so a receipt cannot mean one thing here and another in the CLI, the phone or the
+  // durable record it came from. The order carries as much as the words: a check that never
+  // executed outranks everything, and a stopped or timed-out check certifies nothing even when a
+  // stale `passed: true` from an earlier attempt rode along in the same receipt.
+  function checkState(ev) {
+    ev = (ev && typeof ev === "object") ? ev : {};
+    if (ev.executed === false) return "not_run";
+    if (ev.cancelled) return "cancelled";
+    if (ev.timed_out) return "timed_out";
+    if (ev.passed === true) return "passed";
+    if (ev.command_passed === true) return "inconclusive";
+    return "failed";                  // including older receipts carrying only `passed: false`
+  }
+  // The three endings that establish nothing at all about the files on disk. A `verified` boolean
+  // arriving beside one of them is older than the receipt that contradicts it, and may not be
+  // allowed to speak for it.
+  var CERTIFIES_NOTHING = {not_run: true, cancelled: true, timed_out: true};
+  function certifiesNothing(state) { return !!own(CERTIFIES_NOTHING, state); }
+  function checkUncertified(ev) { return checkState(ev) === "inconclusive"; }
   // A check killed at its deadline reports no exit code at all, so it used to fall through to
   // "failed" and print "· exit null" beside the command. It did not fail — it never finished.
-  function checkTimedOut(ev) {
-    return !!(ev && ev.executed !== false && !ev.cancelled && ev.timed_out);
-  }
+  function checkTimedOut(ev) { return checkState(ev) === "timed_out"; }
   function timedOutDetail(ev) {
     var limit = ev && ev.timeout_s;
     return ((ev && (ev.command || ev.cmd)) || "") + " · " +
@@ -5772,7 +5793,7 @@
   // The one line the card and the timeline both show: the command, and the reason its exit
   // code does not settle anything. Never "failed", and never a bare "exit 0" on its own.
   function uncertifiedDetail(ev) {
-    var why = UNCERTIFIED_WHY[String((ev && ev.freshness) || "")] ||
+    var why = own(UNCERTIFIED_WHY, (ev && ev.freshness) || "") ||
               "its result could not be bound to the files that exist now";
     return ((ev && (ev.command || ev.cmd)) || "") + " · " +
       t("exit 0 does not certify this result: {why}").replace("{why}", t(why));
@@ -5783,22 +5804,34 @@
   // Nothing here is inferred from the model's prose; only executed checks and observed edits count.
   function settleGate(o) {
     o = o || {};
-    var ev = o.evidence;
-    if (ev && ev.cancelled && ev.executed !== false) {
+    var ev = o.evidence, state = ev ? checkState(ev) : "";
+    if (state === "cancelled") {
       setGate("stopped", ev.command || ev.cmd); return "stopped";
     }
-    if (ev && ev.executed !== false && (ev.command || ev.cmd)) {
-      if (ev.passed === true) { setGate("pass", ev.command || ev.cmd); return "pass"; }
-      if (checkTimedOut(ev)) {
+    if (state && state !== "not_run" && (ev.command || ev.cmd)) {
+      // In the receipt's own order, NOT in the order of the flags it happens to carry: a deadline
+      // or a cancellation is read before `passed`, so a stale pass flag left on an interrupted
+      // receipt can no longer certify a check that judged nothing.
+      if (state === "timed_out") {
         setGate("timeout", timedOutDetail(ev)); return "timeout";
       }
-      if (checkUncertified(ev)) {
+      if (state === "inconclusive") {
         setGate("inconclusive", uncertifiedDetail(ev)); return "inconclusive";
       }
+      if (state === "passed") { setGate("pass", ev.command || ev.cmd); return "pass"; }
       setGate("fail", ev.command || ev.cmd); return "fail";
     }
-    if (o.verified === true) { setGate("pass"); return "pass"; }
-    if (o.checkFailed) { setGate("fail", o.checkCommand || undefined); return "fail"; }
+    // Nothing executable settled this run here, so the run's own `verified` flag is all that is
+    // left to go on — unless the receipt beside it already said the check never ran, was stopped
+    // or ran out of time, in which case the flag is stale and may not paint this green.
+    if (o.verified === true && !certifiesNothing(state || o.checkState)) {
+      setGate("pass"); return "pass";
+    }
+    // Symmetrically: a check that was never run, stopped or cut off at its deadline did not fail
+    // either, so the bookkeeping that only knew "not a pass" may not call it one.
+    if (o.checkFailed && !certifiesNothing(state || o.checkState)) {
+      setGate("fail", o.checkCommand || undefined); return "fail";
+    }
     if (o.required && !o.canceled) { setGate("missing"); return "missing"; }
     if (o.edited) { setGate("unverified"); return "unverified"; }
     setGate("idle"); return "idle";
@@ -11210,9 +11243,11 @@
     if (thisLaunch !== streamLaunchToken || !running) { retainUnsent(); return; }
     preLaunchSettled = true;                     // handed over to the stream's own handle
     var sawEdit = false, sawRepro = false, lastReproPass = false, runVerified = false,
+        lastEvidence = null,                 // the last check receipt this run actually delivered
         packCardEl = null, packRows = [];
     settleCanceledGate = function () {
       settleGate({canceled:true, edited:sawEdit, verified:runVerified,
+                  checkState:lastEvidence?checkState(lastEvidence):"",
                   checkFailed:sawEdit&&sawRepro&&!lastReproPass});
     };
     var delegateEl = null, delegateActs = 0, compactEl = null;
@@ -11522,6 +11557,10 @@
         return;
       }
       setReceipt(d);
+      // `verified` is a boolean, not evidence. Where this run's own check receipt said the check
+      // never ran, was stopped, or ran out of time, that receipt already settled the card and a
+      // flag disagreeing with it is stale — neither green nor a red "check failed" belongs here.
+      if (certifiesNothing(checkState(lastEvidence))) return;
       if (d.verified) { runVerified = true; setGate("pass"); }
       else if (sawEdit && sawRepro && !lastReproPass) setGate("fail");
     });
@@ -11573,17 +11612,24 @@
 
     on("verification_evidence", function (e) {
       var payload = JSON.parse(e.data), d = payload.evidence || payload;
-      if (d.cancelled && d.executed !== false) {
+      lastEvidence = d;
+      // Read what this receipt established BEFORE anything here believes `passed`: an interrupted
+      // check that still carries a pass flag from an earlier attempt must not mark the run
+      // verified, or the terminal frame will paint green over its own deadline.
+      var state = checkState(d);
+      if (state === "not_run") {
+        runVerified = false;
+        addEvent("meta", "flag", t("Check was not run"), d.skipped_reason || d.output || d.command || "");
+        return;
+      }
+      if (state === "cancelled") {
         runVerified = false;
         addEvent("meta", "flag", t("Check stopped"), d.command || "");
         setGate("stopped", d.command || undefined);
         return;
       }
-      if (d.executed === false) {
-        addEvent("meta", "flag", t("Check was not run"), d.skipped_reason || d.output || d.command || "");
-        return;
-      }
-      sawRepro = true; lastReproPass = !!d.passed; runVerified = !!d.passed;
+      sawRepro = true;
+      lastReproPass = state === "passed"; runVerified = state === "passed";
       // Not passed is not the same claim as failed. An exit-zero check whose receipt could not
       // be bound to the current files gets the row that says exactly that, rather than a red
       // "proposed check failed" with "exit 0" printed next to it.
@@ -11776,9 +11822,12 @@
           // external workers are covered by the edit/write events this window actually saw.
           edited: !!d.edited || sawEdit,
           verified: runVerified || !!d.verified,
+          // The terminal frame's own receipt where it carries one; otherwise the receipt this run
+          // already delivered on the stream, so a `verified` flag in the frame cannot outlive the
+          // check that never finished.
           evidence: (d.verification_evidence &&
                      (d.verification_evidence.command || d.verification_evidence.cmd))
-                    ? d.verification_evidence : null,
+                    ? d.verification_evidence : lastEvidence,
           checkFailed: sawEdit && sawRepro && !lastReproPass,
           required: runRequiresCheck(runConfig)
         });
