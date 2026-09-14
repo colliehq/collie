@@ -6865,16 +6865,42 @@ class Handler(BaseHTTPRequestHandler):
                     pass
 
 
+# How many connections the kernel may park while the accept loop is busy. socketserver's default
+# request_queue_size is 5, and that is the listen() backlog for BOTH startup paths below. The UI
+# opens far more sockets than that in one beat — the page, its long-lived SSE stream, the sidebar
+# poll, assets, a phone reconnecting through the relay — so past the fifth waiter the kernel
+# refuses or drops the rest and the browser has to wait out a TCP retry before the UI paints.
+# 64 waiters is a few KB of kernel state and still a bound, not an unbounded queue.
+# This is ADMISSION only: it changes how many clients may WAIT to be served, never how many runs
+# execute concurrently — task and session execution stays owned by the run layer, untouched here.
+LISTEN_BACKLOG = 64
+
+
+class CollieHTTPServer(ThreadingHTTPServer):
+    """The threading HTTP server both startup paths bind.
+
+    Scoped to collie on purpose: setting these attributes on `http.server.ThreadingHTTPServer`
+    itself would reconfigure every other stdlib server in the process (browserbridge, jobsweb,
+    progtool, tests) as an invisible side effect of importing this module. `request_queue_size`
+    has to be right BEFORE the socket starts listening — TCPServer.__init__ calls
+    server_activate()/listen() — which a class attribute guarantees and a post-bind assignment
+    could not."""
+
+    # A just-closed server's TIME_WAIT socket must not block an immediate restart.
+    allow_reuse_address = True
+    # Never shrink a stdlib/platform default that is already more generous than ours.
+    request_queue_size = max(ThreadingHTTPServer.request_queue_size, LISTEN_BACKLOG)
+
+
 def bind_server(port=8787):
     """Bind the local GUI server on 127.0.0.1, scanning a few ports if the preferred one is busy.
     Returns (httpd, actual_port). Used by `collie web --remote`, which needs the httpd + chosen port
     up front (to serve in a background thread while the relay client runs), and which always wants
     loopback — the relay client replays a phone's requests to 127.0.0.1. main() has its own inline
     bind because `--lan` can widen it to 0.0.0.0; the two are otherwise the same."""
-    ThreadingHTTPServer.allow_reuse_address = True
     for cand in range(port, port + 12):
         try:
-            httpd = ThreadingHTTPServer(("127.0.0.1", cand), Handler)
+            httpd = CollieHTTPServer(("127.0.0.1", cand), Handler)
             try:
                 from .native_notifications import ensure_personal_started, ensure_started
                 ensure_started()
@@ -6919,9 +6945,8 @@ def main(argv=None, on_bound=None):
         print("warning: %s not found — GET / will 500 until it exists" % INDEX_HTML)
 
     # Bind gracefully: if the port is taken (a stale `collie web`, or the user re-launching),
-    # try the next few ports instead of crashing with a raw traceback. allow_reuse_address so a
-    # just-closed server's TIME_WAIT socket doesn't block an immediate restart.
-    ThreadingHTTPServer.allow_reuse_address = True
+    # try the next few ports instead of crashing with a raw traceback. CollieHTTPServer carries the
+    # allow_reuse_address (TIME_WAIT restarts) and listen-backlog settings bind_server() also uses.
     requested = port
     httpd = None
     # Default: loopback only — nothing on the network can even connect. `--lan` is the opt-in a phone
@@ -6932,7 +6957,7 @@ def main(argv=None, on_bound=None):
     LAN_HOSTS.update(lan_ips)
     for cand in range(requested, requested + 12):
         try:
-            httpd = ThreadingHTTPServer((bind, cand), Handler)
+            httpd = CollieHTTPServer((bind, cand), Handler)
             port = cand
             break
         except OSError as e:
