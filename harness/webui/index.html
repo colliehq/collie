@@ -12465,7 +12465,27 @@
     input.style.overflowY = input.scrollHeight > 180 ? "auto" : "hidden";
     updateSlashMenu(); saveComposerDraft();
   });
+  // An IME (pinyin, kana, hangul…) confirms the candidate it is offering with Enter, and walks its
+  // candidate list with the same arrows, Tab and Escape this composer reads. Those keystrokes
+  // belong to the keyboard until the composition is committed: acting on one would send, queue,
+  // steer or run a slash command on the half-typed romanisation — `说明：pinyin` — and empty the
+  // box before the person had chosen a character. `isComposing` is the signal in Blink/Gecko (the
+  // keydown arrives before compositionend); WebKit and older keyboards end the composition first
+  // and/or report only the legacy keyCode 229, so all three are read. No timer: the state ends on
+  // compositionend, or on the first input event that is not composing, so the very next Enter
+  // sends normally.
+  var composerComposing = false;
+  input.addEventListener("compositionstart", function () { composerComposing = true; });
+  input.addEventListener("compositionend", function () { composerComposing = false; });
+  input.addEventListener("input", function (e) { if (!e.isComposing) composerComposing = false; });
   input.addEventListener("keydown", function (e) {
+    if (e.isComposing || e.keyCode === 229 || composerComposing) {
+      // The keystroke is the keyboard's, not the composer's: no send, no queue/steer shortcut, no
+      // slash-menu choice. The confirming Enter is swallowed so it cannot leave a stray newline in
+      // the middle of the word either; every other key keeps its candidate-list meaning.
+      if (e.key === "Enter" && !e.shiftKey) e.preventDefault();
+      return;
+    }
     if (slashMenu && !slashMenu.hidden) {
       var opts = slashOptions();
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
