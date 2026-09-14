@@ -45,6 +45,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 
@@ -118,9 +119,25 @@ SUMMARY_SYSTEM = (
     "claim something passed unless the transcript shows it passing. Be specific and dense, "
     "under 600 words. Output the summary itself — no preamble, no tool calls, no questions.")
 
-# Expected handoff structure. A well-structured but oversized reply is still rejected.
+# Required handoff structure — enforced, not merely requested. A well-structured but oversized
+# reply is still rejected; so is a well-sized reply that is not a handoff at all.
 SUMMARY_HEADINGS = ("GOALS", "USER CONSTRAINTS", "DECISIONS", "CHANGED FILES AND ACTIONS",
                     "CHECK RESULTS", "INCOMPLETE WORK", "NEXT STEPS")
+
+# Structure, not formatting: "GOALS —", "## Goals", "**USER CONSTRAINTS:**" and
+# "Changed  Files  and  Actions" are all the heading that was asked for. Matching this loosely
+# is deliberate — the check exists to catch a reply that is not a handoff, and a spurious
+# rejection costs a request and leaves the thread uncompacted.
+_HEADING_PATTERNS = tuple(
+    (heading, re.compile(r"\b%s\b" % r"\s+".join(re.escape(w) for w in heading.split()),
+                         re.IGNORECASE))
+    for heading in SUMMARY_HEADINGS)
+
+
+def missing_headings(text) -> list:
+    """Which of the seven required handoff headings a reply does not carry, in order."""
+    s = text if isinstance(text, str) else str(text or "")
+    return [heading for heading, pattern in _HEADING_PATTERNS if not pattern.search(s)]
 
 
 # --------------------------------------------------------------------------- #
@@ -726,6 +743,17 @@ def validate_summary(completion, policy: CompactionPolicy):
     one, and the material it silently omitted is gone from the model's view. An OVERSIZED
     reply is rejected as a whole. Keeping a section's heading does not prove that
     its final lines contain no decisions, constraints or unfinished work.
+
+    ``stop_reason`` is not enough to detect half a summary, because several of the providers
+    Collie drives never report one. ``ClaudeCLIProvider`` returns whatever prose the CLI
+    produced as a plain ``end_turn`` ("fallback: prose"), so a refusal, a clarifying question,
+    a bare preamble or a reply cut off part-way all arrive looking exactly like a finished
+    handoff. Adopting one replaces a real span of the conversation — the constraints stated
+    inside it, the work already done, the checks that failed — with text that records none of
+    it, and the projection then asserts in the user's face that this is the only record of
+    that span. So the reply must actually carry the structure it was asked for; when it does
+    not, the compaction is refused, the failure gate bounds the retries, and the full
+    transcript keeps being sent, which is the honest failure.
     """
     if completion is None:
         return False, "", "no response"
@@ -740,9 +768,16 @@ def validate_summary(completion, policy: CompactionPolicy):
     if len(text) < policy.min_summary_chars:
         return False, "", "summary was empty or too short"
     limit = max(policy.min_summary_chars, min(int(policy.summary_max_chars), MAX_SUMMARY_CHARS))
-    if len(text) <= limit:
-        return True, text, ""
-    return False, "", "summary was %d characters, over the %d-character limit" % (len(text), limit)
+    if len(text) > limit:
+        return False, "", ("summary was %d characters, over the %d-character limit"
+                           % (len(text), limit))
+    missing = missing_headings(text)
+    if missing:
+        # Content-free: the heading names are this module's own constants, never transcript text.
+        return False, "", ("summary is not a handoff: %d of the %d required headings are "
+                           "missing (first: %s)" % (len(missing), len(SUMMARY_HEADINGS),
+                                                    missing[0]))
+    return True, text, ""
 
 
 # --------------------------------------------------------------------------- #

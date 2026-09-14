@@ -74,6 +74,20 @@ def _policy(**over):
     return CompactionPolicy(**base)
 
 
+def _handoff_text(tail="", **sections):
+    """A structurally valid handoff summary, standing in for a real one.
+
+    ``validate_summary`` requires all seven headings, so a fixture that is meant to be
+    ADOPTED has to carry them. Individual sections are overridden by keyword, which is how a
+    test writes a summary that is well-formed but wrong — a different failure from a reply
+    that was never a handoff at all.
+    """
+    body = {heading: "none." for heading in compaction.SUMMARY_HEADINGS}
+    for key, value in sections.items():
+        body[key.replace("_", " ").upper()] = value
+    return "\n".join("%s — %s" % (h, body[h]) for h in compaction.SUMMARY_HEADINGS) + tail
+
+
 class _Provider:
     """Scripted provider that can tell a loop turn from a compaction summary request.
 
@@ -878,8 +892,9 @@ def test_user_constraints_and_the_latest_request_survive_the_cut(tmp_path, monke
     provider = _Provider(
         lambda n, m: _busy_turn(n, m, stop_after=18),
         summary=lambda n, digest: Completion(
-            # a summary that forgot the constraint entirely
-            text="GOALS — do the work. NEXT STEPS — continue. " + "x" * 80,
+            # a well-formed summary that forgot the constraint entirely
+            text=_handoff_text("\n" + "x" * 80, goals="do the work.",
+                               user_constraints="none stated.", next_steps="continue."),
             stop_reason="end_turn", usage=Usage(input_tokens=5)))
     h.provider = provider
     res = h.run("compact_pin", "port the exporter to the new API")
@@ -1061,7 +1076,7 @@ def test_compaction_requests_are_accounted_like_any_other(tmp_path, monkeypatch)
     h.shared_budget = budget
     provider = _Provider(
         lambda n, m: _busy_turn(n, m, stop_after=16),
-        summary=lambda n, d: Completion(text="GOALS — g. NEXT STEPS — n. " + "y" * 60,
+        summary=lambda n, d: Completion(text=_handoff_text("\n" + "y" * 60),
                                         stop_reason="end_turn",
                                         usage=Usage(input_tokens=111, output_tokens=13),
                                         request_count=2))
@@ -1490,6 +1505,87 @@ def test_an_oversized_summary_is_never_clipped_mid_instruction():
     assert not ok and "over" in why
 
 
+def test_a_reply_that_is_not_a_handoff_never_becomes_the_conversations_memory():
+    """``stop_reason`` cannot detect half a summary, because several providers never send one.
+
+    ``ClaudeCLIProvider`` returns whatever prose the CLI produced as a plain ``end_turn``
+    ("fallback: prose"), so a refusal, a bare preamble or a reply cut off part-way arrives
+    looking exactly like a finished handoff. Each is long enough to clear the minimum and
+    small enough to clear the ceiling, so size checks pass it straight through.
+    """
+    policy = _policy()
+
+    refusal = ("I'm sorry, but I can't help with summarizing this conversation. Let me know "
+               "if there is something else I can do for you instead.")
+    preamble = "Sure! Here is the handoff summary you asked me to write for the next model:"
+    # "Half a summary reads as a complete one": a reply cut off after DECISIONS keeps the
+    # sections a continuing run is actually steered by out of the memory entirely.
+    half = "\n".join("%s — handled." % h for h in compaction.SUMMARY_HEADINGS[:3])
+
+    for reply in (refusal, preamble, half):
+        assert policy.min_summary_chars < len(reply) <= policy.summary_max_chars
+        ok, text, why = compaction.validate_summary(
+            Completion(text=reply, stop_reason="end_turn"), policy)
+        assert not ok and text == "", reply[:40]
+        assert "heading" in why, why
+    # the reason names how much is missing without quoting any transcript content
+    _ok, _text, why = compaction.validate_summary(
+        Completion(text=half, stop_reason="end_turn"), policy)
+    assert "4 of the 7" in why and "CHANGED FILES AND ACTIONS" in why
+    assert compaction.missing_headings(half) == list(compaction.SUMMARY_HEADINGS[3:])
+
+    # ...and the gate is about structure, not formatting: a real handoff is still adopted
+    # however the model decorated its headings, so this cannot become a retry storm on
+    # summaries that are perfectly usable.
+    decorated = "\n".join("## **%s:**\nhandled." % h.title()
+                          for h in compaction.SUMMARY_HEADINGS)
+    ok, text, why = compaction.validate_summary(
+        Completion(text=decorated, stop_reason="end_turn"), policy)
+    assert ok and text == decorated and why == ""
+    assert compaction.missing_headings(decorated) == []
+
+
+def test_a_refused_summary_never_replaces_the_span_it_could_not_describe(tmp_path, monkeypatch):
+    """The workflow cost: the handoff claims to be the ONLY record of the compacted span.
+
+    Adopting a reply that describes none of it destroys the run's memory of that span —
+    the constraints stated inside it, the work done, the checks that failed — and
+    ``improved`` then marks the shrink a success, so every later generation does it again.
+    The honest outcome is to refuse, keep sending the real thread, and stop after the
+    bounded number of attempts.
+    """
+    h = _harness(tmp_path, monkeypatch, "compact_refusal")
+    _fake_bash(h)
+    seen = _events(h)
+    refusal = ("I'm sorry, but I can't help with summarizing this conversation. Let me know "
+               "if there is something else I can do for you instead.")
+    provider = _Provider(
+        lambda n, m: _busy_turn(n, m, stop_after=20),
+        summary=lambda n, d: Completion(text=refusal, stop_reason="end_turn",
+                                        usage=Usage(input_tokens=7, output_tokens=3)))
+    h.provider = provider
+    constraint = "NEVER touch anything under vendor/, not even to read it."
+    pending = [constraint]
+    h.steering = lambda: [pending.pop(0)] if pending else []
+    res = h.run("compact_refusal", "carry on")
+
+    assert res.answer == "all done" and not res.error, (res.answer, res.error)
+    assert res.steer_count == 1
+    failed = _compaction_events(seen, "failed")
+    assert failed and "heading" in failed[0]["reason"], failed
+    assert not _compaction_events(seen, "applied")
+
+    sent = json.dumps(provider.turn_calls, default=str)
+    assert refusal not in sent, "a non-handoff reply became the model's memory"
+    assert not any(m.get("compaction") for view in provider.turn_calls for m in view)
+    # the transcript and the user's later constraint are untouched by the failed attempt
+    assert refusal not in json.dumps(res.messages, default=str)
+    assert constraint in json.dumps(provider.turn_calls[-1], default=str)
+    assert len([m for m in res.messages if m.get("role") == "tool"]) == 19
+    assert len(provider.summary_digests) <= h.compaction.max_failures, \
+        "bounded attempts, no retry storm: %d" % len(provider.summary_digests)
+
+
 def test_a_summary_that_would_not_fit_the_handoff_is_refused_before_adoption():
     """make_checkpoint is the last gate: an over-budget handoff is never stored."""
     policy = _policy()
@@ -1555,7 +1651,7 @@ def test_a_cancellation_during_the_summary_pays_for_it_and_adopts_nothing(tmp_pa
 
     def summary(n, digest):
         state["canceled"] = True                 # the user hits stop mid-request
-        return Completion(text="GOALS — g. NEXT STEPS — n. " + "y" * 80,
+        return Completion(text=_handoff_text("\n" + "y" * 80),
                           stop_reason="end_turn", usage=Usage(input_tokens=9, output_tokens=3))
 
     provider = _Provider(lambda n, m: _busy_turn(n, m, stop_after=40), summary=summary)
