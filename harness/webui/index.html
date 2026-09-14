@@ -1962,6 +1962,10 @@
   .mode-item.is-active { background:var(--meadow-bg); }
   .mi-name { font-size:12.5px; }
   .mi-desc,.mode-group-help { display:none; }
+  /* Keep reported run facts visible while secondary option explanations stay compact. */
+  #modeMenu #savedWorkerDesc, #modeMenu [data-worker-status], #modeMenu #runFastHelp {
+    display:block; white-space:normal; overflow-wrap:anywhere; line-height:1.45;
+  }
 
   /* Model picker is a command palette, not a catalog of badges. */
   .model-overlay { padding:8vh 16px 24px; align-items:flex-start; }
