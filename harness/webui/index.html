@@ -12714,7 +12714,48 @@
       if (e.key === "Escape" && !menu.hidden) { open(false); trig.focus(); }
     });
     window.addEventListener("resize", function () { if (!menu.hidden) positionMenu(); });
-    window.refreshRunSetup = function () { paint(); paintWorkspace(); };
+    // The last answer that actually applied. The conservative view a failed read falls back to is
+    // not one, so a language change after it leaves the static placeholder rather than sounding
+    // like a report about the route in force.
+    var reported = null;
+    // What the capability answer reports — the sentence under Fast, the saved worker's identity, and
+    // each external worker's availability and quota — is drawn onto nodes that also carry data-i18n,
+    // because that is what they say before anything has been read. A language change repaints every
+    // data-i18n node from the dictionary, so it used to put those generic placeholders back and lose
+    // the facts: the worker ID, this provider/model's own Fast explanation, and the probe/quota line.
+    // Draw them again from the answer this page already holds. Phrases the UI owns go through t();
+    // backend-reported text and identifiers are printed as they came. This reads held state only —
+    // it fetches nothing, writes nothing, and changes no selection.
+    function paintCapabilityText() {
+      if (!reported) return;        // nothing read yet, so the static placeholder is still the truth
+      var help = $("runFastHelp");
+      if (help) help.textContent = t(reported.fast_note ||
+        "Fast appears only for a provider/model with a reported same-model tier.");
+      var saved = $("savedWorkerDesc");
+      if (saved) saved.textContent = t("Use the worker selected in Settings") + ": " +
+        (reported.worker_default || "collie");
+      (reported.workers || []).forEach(function (row) {
+        var status = menu.querySelector('[data-worker-status="' + row.key + '"]');
+        if (!status || !row.probe) return;
+        var signal = (reported.worker_signals || {})[row.key] || {};
+        var quota = signal.quota || {}, windows = [quota.primary, quota.secondary].filter(Boolean);
+        var worst = windows.slice().sort(function (a, b) {
+          return Number(b.used_percent || 0) - Number(a.used_percent || 0);
+        })[0] || null;
+        var used = worst ? Number(worst.used_percent || 0) : null;
+        var resetAt = worst && Number(worst.resets_at || 0);
+        var resetNote = resetAt ? t("quota resets") + " " +
+          new Date(resetAt * 1000).toLocaleString() : "";
+        var base = row.key === "collie"
+          ? t("Native tools, approvals, streaming, and steering")
+          : t(row.probe.availability ||
+              (row.probe.runnable ? "ready" : (row.probe.detail || "unavailable")));
+        status.textContent = base + (used === null ? "" : " · " + used + "% " + t("quota used"));
+        status.title = [row.probe.detail || "", signal.error || "", resetNote]
+          .filter(Boolean).join(" · ");
+      });
+    }
+    window.refreshRunSetup = function () { paint(); paintWorkspace(); paintCapabilityText(); };
     window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); paintWorkspace(); };
     // A capability answer describes the model that was current when it was *asked for*, so only the
     // latest question may answer it — in either direction. The read this page starts at load is still
@@ -12727,7 +12768,7 @@
       var request = ++capabilityRequest;
       return fetch("/api/run-capabilities").then(function (r) { return r.json(); }).then(function (caps) {
         if (request !== capabilityRequest) return capabilities;   // a later read already answered
-        capabilities = caps || {};
+        capabilities = reported = caps || {};
         var fast = $("runFastItem"), tiers = capabilities.speed_tiers || [];
         if (fast) fast.hidden = tiers.indexOf("fast") < 0;
         if (!window.runExplicitAxes.speed) {
@@ -12736,32 +12777,7 @@
         } else if (tiers.indexOf("fast") < 0 && fields.speed.value === "fast") {
           fields.speed.value = "standard"; delete window.runExplicitAxes.speed;
         }
-        var help = $("runFastHelp");
-        if (help) help.textContent = t(capabilities.fast_note ||
-          "Fast appears only for a provider/model with a reported same-model tier.");
-        var saved = $("savedWorkerDesc");
-        if (saved) saved.textContent = t("Use the worker selected in Settings") + ": " +
-          (capabilities.worker_default || "collie");
-        (capabilities.workers || []).forEach(function (row) {
-          var status = menu.querySelector('[data-worker-status="' + row.key + '"]');
-          if (!status || !row.probe) return;
-          var signal = (capabilities.worker_signals || {})[row.key] || {};
-          var quota = signal.quota || {}, windows = [quota.primary, quota.secondary].filter(Boolean);
-          var worst = windows.slice().sort(function (a, b) {
-            return Number(b.used_percent || 0) - Number(a.used_percent || 0);
-          })[0] || null;
-          var used = worst ? Number(worst.used_percent || 0) : null;
-          var resetAt = worst && Number(worst.resets_at || 0);
-          var resetNote = resetAt ? t("quota resets") + " " +
-            new Date(resetAt * 1000).toLocaleString() : "";
-          var base = row.key === "collie"
-            ? t("Native tools, approvals, streaming, and steering")
-            : t(row.probe.availability ||
-                (row.probe.runnable ? "ready" : (row.probe.detail || "unavailable")));
-          status.textContent = base + (used === null ? "" : " · " + used + "% " + t("quota used"));
-          status.title = [row.probe.detail || "", signal.error || "", resetNote]
-            .filter(Boolean).join(" · ");
-        });
+        paintCapabilityText();
         paint();
         return capabilities;
       }).catch(function () {
@@ -12769,7 +12785,7 @@
         // Unchanged fallback: a lookup that did not answer leaves the conservative view, which is
         // not a report that this route lacks the tier.
         var fast = $("runFastItem"); if (fast) fast.hidden = true;
-        capabilities = { reasoning_efforts: [], speed_tiers: ["standard"] }; paint();
+        capabilities = { reasoning_efforts: [], speed_tiers: ["standard"] }; reported = null; paint();
       });
     };
     window.refreshVerificationCandidates = function () {
