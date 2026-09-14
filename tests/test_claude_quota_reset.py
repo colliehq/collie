@@ -239,6 +239,228 @@ def test_planner_quota_backoff_is_bounded_by_the_elapsed_budget(tmp_path):
         actions.close()
 
 
+# ── the same ceiling, when the binding budget belongs to an ancestor ────────
+_ELAPSED_LINEAGE = (("grandparent", -1800), ("parent", -900), ("child", 0))
+
+
+def _staggered_lineage(store, now, budgets, child_case=None, child_may=None,
+                       child_goal="child work"):
+    """Create grandparent -> parent -> child, each created at a different time.
+
+    Delegated work is not created all at once: a root has usually been running
+    for a while before it spawns the branch that spawns the worker, and every
+    level's elapsed budget is measured from its *own* creation.  Ancestry is
+    written through the store's real creation path, so the durable
+    ``parent_mission_id`` authority - not the case snapshot - is what the
+    budget walk later reads back.
+    """
+    from unittest.mock import patch
+    from harness.mission import create_mission, world_leash
+    parent = ""
+    for level, offset in _ELAPSED_LINEAGE:
+        case = dict(child_case or {}) if level == "child" else {}
+        if parent:
+            case["_parent_mission_id"] = parent
+        may = child_may if level == "child" else None
+        leash = world_leash(may=may, autonomous=True,
+                            max_elapsed_seconds=budgets[level],
+                            **({"workspace_mode": "isolated"} if may else {}))
+        goal = child_goal if level == "child" else level + " work"
+        with patch("harness.mission.time.time", return_value=now + offset):
+            create_mission(store, level, goal, case=case, leash=leash,
+                           lane="specialist" if parent else "mission")
+        parent = level
+    return {level: store.get(level).created_at + budgets[level]
+            for level, _ in _ELAPSED_LINEAGE}
+
+
+@pytest.mark.parametrize("tight", ["child", "parent", "grandparent", "none"])
+def test_code_quota_wake_stops_at_the_tightest_ceiling_in_the_lineage(tmp_path, tight):
+    """Elapsed time is charged to every ancestor, so any of them can bind first.
+
+    The Mission's own ceiling was clamped; an ancestor's was not.  A code child
+    on a day-long leash under an hour-long parent therefore parked its quota
+    timer on the provider's five-hour reset and advertised a resumption the
+    parent's budget had already refused - the honest stop arrived hours late.
+    """
+    from unittest.mock import patch
+    from harness.jobs import NEEDS_YOU, WAITING
+    from test_mission_code_dispatch import GOAL, _dedicated_case, _driver
+    now = int(time.time())
+    reset = now + 18000
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    seen = []
+
+    def runner(goal, **_context):
+        seen.append(goal)
+        return {"answer": "HTTP 429: Claude Code rate limit", "verified": False,
+                "error": "HTTP 429: Claude Code rate limit",
+                "continue_needed": True, "transient": True, "retry_at": reset,
+                "retry_after_seconds": 60, "turns": 1,
+                "session_id": "mission-code-dispatch-test",
+                "slice_mutated": False, "patch_attributed": False}
+
+    budgets = {level: 3600 if level == tight else 86400
+               for level, _ in _ELAPSED_LINEAGE}
+    store, actions, driver = _driver(tmp_path, runner)
+    try:
+        ceilings = _staggered_lineage(store, now, budgets,
+                                      child_case=_dedicated_case(workspace),
+                                      child_may=["code"], child_goal=GOAL)
+        binding = min(ceilings.values())
+        expected = binding if tight != "none" else reset + 3
+        if tight != "none":
+            # Each control really is bound by a different Mission's clock.
+            assert ceilings[tight] == binding < min(
+                value for level, value in ceilings.items() if level != tight)
+        assert driver.advance("child") == WAITING
+        assert seen == [GOAL]
+        assert store.next_wait("child")["fire_at"] == expected
+        assert not store.due_waits(expected - 1) and store.due_waits(expected)
+        reason = store.budget_reason("child", now=expected)
+        if tight == "child":
+            assert reason == "mission elapsed-time budget exhausted"
+        elif tight == "none":
+            # The reset fits inside every bound, so it stays authoritative.
+            assert not reason and expected < binding
+        else:
+            assert reason == ("ancestor %s: mission elapsed-time budget exhausted"
+                              % tight)
+    finally:
+        store.close()
+        actions.close()
+
+    # The timer and the authority that bounds it both have to survive a restart:
+    # the daemon that fires this wake is a different process from the one that
+    # scheduled it, and it re-reads the lineage from disk.
+    store, actions, driver = _driver(tmp_path, runner)
+    try:
+        assert store.next_wait("child")["fire_at"] == expected
+        assert store.elapsed_ceiling_epoch("child") == binding
+        if tight == "none":
+            assert driver.wake("child", now=expected, force=False) == WAITING
+            assert seen == [GOAL, GOAL]
+        else:
+            with patch("harness.mission.time.time", return_value=expected):
+                assert driver.wake("child", now=expected, force=False) == NEEDS_YOU
+            # Stopped by the binding budget, without a second coding slice.
+            assert seen == [GOAL]
+            result = store.get("child").result
+            assert "elapsed-time budget exhausted" in result
+            assert ("ancestor %s:" % tight in result) == (tight != "child")
+    finally:
+        store.close()
+        actions.close()
+
+
+def test_planner_quota_backoff_stops_at_the_binding_ancestor_ceiling(tmp_path):
+    """The mixed-work path ModelDecider's quota WAIT lands in, same authority."""
+    from unittest.mock import patch
+    from harness.actions import ActionStore
+    from harness.jobs import NEEDS_YOU, WAITING
+    from harness.mission import MissionDriver, MissionStore
+    now = int(time.time())
+    reset = now + 18000
+    calls = []
+
+    def decide(*_args, **_kwargs):
+        calls.append(True)
+        return {"action": "wait",
+                "args": {"seconds": reset - int(time.time()) + 3, "transient": True},
+                "reason": "provider quota exhausted; resume after its reset"}
+
+    store = MissionStore(str(tmp_path / "missions.db"))
+    actions = ActionStore(str(tmp_path / "actions.db"))
+    try:
+        driver = MissionDriver(store, actions, decide, [])
+        ceilings = _staggered_lineage(
+            store, now, {"grandparent": 3600, "parent": 86400, "child": 86400})
+        expected = ceilings["grandparent"]
+        assert driver.advance("child") == WAITING
+        assert calls == [True]
+        assert store.next_wait("child")["fire_at"] == expected < reset + 3
+        assert not store.due_waits(expected - 1) and store.due_waits(expected)
+        with patch("harness.mission.time.time", return_value=expected):
+            assert driver.wake("child", now=expected, force=False) == NEEDS_YOU
+        # One planning call in total: the wake stops the Mission, it does not
+        # buy another round of quota-blocked planning.
+        assert calls == [True]
+        assert store.get("child").result == \
+            "ancestor grandparent: mission elapsed-time budget exhausted"
+    finally:
+        store.close()
+        actions.close()
+
+
+@pytest.mark.parametrize("shape", ["missing_ancestor", "unreadable_leash"])
+def test_corrupt_lineage_never_buys_an_unbounded_quota_timer(tmp_path, shape):
+    """A lineage the store cannot vouch for is not permission to sleep on it."""
+    from harness.jobs import NEEDS_YOU
+    from test_mission_code_dispatch import _dedicated_case, _driver
+    now = int(time.time())
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    seen = []
+
+    def runner(goal, **_context):
+        seen.append(goal)
+        return {"answer": "HTTP 429: Claude Code rate limit", "verified": False,
+                "continue_needed": True, "transient": True,
+                "retry_at": now + 18000, "retry_after_seconds": 60, "turns": 1,
+                "session_id": "mission-code-dispatch-test"}
+
+    store, actions, driver = _driver(tmp_path, runner)
+    try:
+        _staggered_lineage(store, now, {"grandparent": 86400, "parent": 86400,
+                                        "child": 86400},
+                           child_case=_dedicated_case(workspace),
+                           child_may=["code"])
+        with store._lock:
+            if shape == "missing_ancestor":
+                store.db.execute("DELETE FROM mission_runtime WHERE mission_id='parent'")
+                store.db.execute("DELETE FROM missions WHERE mission_id='parent'")
+            else:
+                store.db.execute(
+                    "UPDATE missions SET leash_json=? WHERE mission_id='parent'",
+                    ('{"max_elapsed_seconds":NaN}',))
+            store.db.commit()
+        probe = now + 30
+        # Fail closed at the probe instant: never 0, which reads as "unbounded".
+        assert store.elapsed_ceiling_epoch("child", now=probe) == probe
+        assert driver.advance("child") == NEEDS_YOU
+        assert seen == []
+        assert store.next_wait("child") is None
+        assert store.get("child").result == {
+            "missing_ancestor": "mission budget lineage is corrupt or incomplete",
+            "unreadable_leash": "ancestor Mission durable leash is corrupt"}[shape]
+    finally:
+        store.close()
+        actions.close()
+
+
+def test_an_unusable_elapsed_bound_is_not_an_unbounded_elapsed_bound(tmp_path):
+    """``world_leash`` validates positive integers; hand-built leashes may not.
+
+    An ancestor bound no arithmetic can read is exactly the case that must not
+    quietly become "no ceiling" for a child's durable timer.
+    """
+    from harness.mission import MissionStore
+    now = int(time.time())
+    store = MissionStore(str(tmp_path / "missions.db"))
+    try:
+        _staggered_lineage(store, now, {"grandparent": 86400, "parent": 86400,
+                                        "child": 86400})
+        with store._lock:
+            store.db.execute(
+                "UPDATE missions SET leash_json=? WHERE mission_id='grandparent'",
+                ('{"max_elapsed_seconds":"soon"}',))
+            store.db.commit()
+        assert store.elapsed_ceiling_epoch("child", now=now + 5) == now + 5
+    finally:
+        store.close()
+
+
 def test_automatic_wake_resumes_the_original_goal_only_after_reset(tmp_path):
     from harness.jobs import WAITING
     from harness.mission import create_mission, world_leash

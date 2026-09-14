@@ -1085,6 +1085,19 @@ def _jl(s):
         return {_INVALID_DURABLE_JSON: True}
 
 
+def _elapsed_budget_seconds(leash):
+    """The elapsed-time bound this leash enforces, in seconds; <=0 is unenforced.
+
+    One reading of ``max_elapsed_seconds`` for everything that has to agree with
+    the budget check itself.  ``world_leash`` validates the key as a positive
+    integer and always writes a 30-day default, so an absent key is bounded, not
+    unbounded; only the leash-wide zero/negative "not enforced" convention lifts
+    it.  A value no arithmetic can read raises here exactly as it does in the
+    budget check, so nothing downstream can read it as permission to run on.
+    """
+    return int((leash or {}).get("max_elapsed_seconds", 2_592_000))
+
+
 def _compact_event(value, limit=4000):
     """Bound an append-only ledger row so a long campaign cannot grow explosively."""
     try:
@@ -1488,9 +1501,8 @@ class MissionStore:
              int(rt.get("active_wall_ms", 0)) >=
              int(leash.get("max_active_wall_seconds", 21600)) * 1000,
              "mission active wall-time budget exhausted"),
-            (int(leash.get("max_elapsed_seconds", 2592000)) > 0 and
-             now - int(created_at or now) >=
-             int(leash.get("max_elapsed_seconds", 2592000)),
+            (_elapsed_budget_seconds(leash) > 0 and
+             now - int(created_at or now) >= _elapsed_budget_seconds(leash),
              "mission elapsed-time budget exhausted"),
             (int(leash.get("max_retries", 128)) > 0 and
              int(rt.get("retry_count", 0)) >= int(leash.get("max_retries", 128)),
@@ -1549,6 +1561,40 @@ class MissionStore:
         now = int(now if now is not None else time.time())
         with self._lock:
             return self._budget_reason_locked(mission_id, now)
+
+    def elapsed_ceiling_epoch(self, mission_id, now=None):
+        """Return the earliest epoch an elapsed-time budget stops this Mission.
+
+        The elapsed check in ``_runtime_budget_reason`` runs against this
+        Mission *and* every ancestor, each measured from its own ``created_at``,
+        so the budget that ends a child's day can be its parent's hour.  This is
+        the same walk over the same durable ``parent_mission_id`` authority the
+        budget refusal uses -- never the caller-editable case snapshot -- so a
+        timer scheduled against it cannot outlive the refusal it is waiting for.
+
+        ``0`` means no Mission in the lineage bounds elapsed time.  A corrupt or
+        incomplete lineage, an unreadable leash, and an unusable bound all fail
+        closed at ``now``: such a Mission may not hold a long unattended timer,
+        and the budget check that owns that refusal runs at the next wake.
+        """
+        now = int(now if now is not None else time.time())
+        with self._lock:
+            lineage, error = self._lineage_locked(mission_id)
+            if error:
+                return now
+            ceilings = []
+            for row in lineage:
+                leash = _jl(row["leash_json"])
+                if _json_invalid(leash):
+                    return now
+                try:
+                    budget = _elapsed_budget_seconds(leash)
+                except (TypeError, ValueError, OverflowError):
+                    return now
+                created = row["created_at"]
+                if budget > 0 and isinstance(created, int) and created > 0:
+                    ceilings.append(created + budget)
+            return min(ceilings) if ceilings else 0
 
     def remaining_active_wall_seconds(self, mission_id):
         """Return the tightest remaining active-time allowance in the lineage.
@@ -4246,23 +4292,6 @@ class MissionDriver:
         except (TypeError, ValueError, OverflowError):
             raise ValueError("Mission leash expires is invalid") from None
 
-    @staticmethod
-    def _elapsed_ceiling_epoch(mission):
-        """When this Mission's own elapsed-time budget runs out, or 0 if unbounded."""
-        leash = getattr(mission, "leash", None) or {}
-        created = getattr(mission, "created_at", 0)
-        if isinstance(created, bool) or not isinstance(created, int) or created <= 0:
-            return 0
-        budget = leash.get("max_elapsed_seconds", 2_592_000)
-        if isinstance(budget, bool):
-            return 0
-        try:
-            budget = int(budget)
-        except (TypeError, ValueError, OverflowError):
-            return 0
-        # A zero/negative bound is "not enforced" everywhere else in the leash.
-        return created + budget if budget > 0 else 0
-
     def _wake_ceiling(self, mission):
         """The last epoch a scheduled wake could still do this Mission's work.
 
@@ -4276,10 +4305,19 @@ class MissionDriver:
         instead of stopping when the Mission said to stop.  Waking at the
         earliest ceiling keeps the reset authoritative whenever it fits inside
         the bounds, and keeps the bounds authoritative when it does not.
+
+        The elapsed ceiling is a *lineage* property, because the elapsed check
+        is charged to every ancestor too: a code or planner child on a one-day
+        leash under a one-hour parent is stopped by the parent's hour, and
+        parking its timer on a five-hour provider reset promised a resumption
+        that the parent's budget had already refused.  ``expires`` stays the
+        advancing Mission's own hard stop, which is the only Mission whose
+        deadline the driver enforces when that wake arrives.
         """
         stops = [value for value in
                  (self._deadline_epoch(getattr(mission, "leash", None) or {}),
-                  self._elapsed_ceiling_epoch(mission)) if value]
+                  self.store.elapsed_ceiling_epoch(
+                      str(getattr(mission, "mission_id", "") or ""))) if value]
         return min(stops) if stops else 0
 
     def _active_step_timeout(self, mission_id, leash):
