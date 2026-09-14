@@ -2810,27 +2810,30 @@
   <section class="model-dialog" role="dialog" aria-modal="true" aria-labelledby="modelTitle" aria-describedby="modelCaption">
     <div class="model-head">
       <div class="model-head-copy">
-        <h2 id="modelTitle">Choose a model</h2>
-        <p id="modelCaption">Switches immediately and applies to your next message.</p>
+        <h2 id="modelTitle" data-i18n="Choose a model">Choose a model</h2>
+        <p id="modelCaption" data-i18n="Switches immediately and applies to your next message.">Switches immediately and applies to your next message.</p>
       </div>
       <span class="model-shortcut" id="modelShortcut">⌘ K</span>
-      <button class="tbtn" id="modelClose" title="close model picker" aria-label="close model picker">
+      <button class="tbtn" id="modelClose" title="close model picker" aria-label="close model picker"
+              data-i18n-title="close model picker" data-i18n-aria-label="close model picker">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
     <div class="model-toolbar">
       <div class="model-search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
-        <input id="modelSearch" type="search" autocomplete="off" placeholder="Search models, providers, or capabilities" aria-controls="modelList" aria-activedescendant="">
+        <input id="modelSearch" type="search" autocomplete="off" placeholder="Search models, providers, or capabilities"
+               data-i18n-placeholder="Search models, providers, or capabilities" aria-controls="modelList" aria-activedescendant="">
       </div>
-      <label class="model-discover"><input id="modelDiscover" type="checkbox"> Discover live</label>
+      <!-- the text is its own node: applyLang writes textContent, which would delete the checkbox -->
+      <label class="model-discover"><input id="modelDiscover" type="checkbox"> <span data-i18n="Discover live">Discover live</span></label>
     </div>
-    <div class="model-list" id="modelList" role="listbox" aria-label="Available models">
-      <div class="model-empty">Loading available models…</div>
+    <div class="model-list" id="modelList" role="listbox" aria-label="Available models" data-i18n-aria-label="Available models">
+      <div class="model-empty" data-i18n="Loading available models…">Loading available models…</div>
     </div>
     <div class="model-foot">
       <span class="model-status" id="modelStatus" aria-live="polite"></span>
-      <span class="model-foot-note">↑ ↓ to browse · Enter to select</span>
+      <span class="model-foot-note" data-i18n="↑ ↓ to browse · Enter to select">↑ ↓ to browse · Enter to select</span>
     </div>
   </section>
 </div>
@@ -3209,6 +3212,32 @@
     "No sessions yet.": "还没有对话。", "Loading model…": "正在加载模型…", "Model unavailable": "模型不可用",
     "idle": "空闲", "running": "运行中", "stopping": "正在停止",
     "Auto — Collie chooses per task": "自动 — Collie 按任务选择", "task-aware routing": "按任务智能路由",
+    "Choose a model": "选择模型",
+    "Switches immediately and applies to your next message.": "立即切换，并从你的下一条消息开始生效。",
+    "close model picker": "关闭模型选择器",
+    "Search models, providers, or capabilities": "搜索模型、提供方或能力",
+    "Discover live": "实时发现", "Available models": "可用模型",
+    "Loading available models…": "正在加载可用模型…",
+    "↑ ↓ to browse · Enter to select": "↑ ↓ 浏览 · Enter 选择",
+    "Login-backed": "登录账号",
+    "Availability and billing depend on the selected route": "可用性与计费取决于所选路由",
+    "Metered API": "按量计费 API", "Billed by the connected provider": "由已连接的提供方计费",
+    "Local": "本地", "Runs on this machine": "在这台电脑上运行",
+    "Sign in required": "需要登录", "API key required": "需要 API key", "Unavailable": "不可用",
+    "Plan login · billing unverified": "订阅登录 · 计费未验证", "$0 marginal": "边际成本 $0",
+    "Price unavailable": "价格不可用", "per M": "每百万 token",
+    "{n} model available": "共 {n} 个模型可用", "{n} models available": "共 {n} 个模型可用",
+    "{n} matching model": "{n} 个匹配的模型", "{n} matching models": "{n} 个匹配的模型",
+    "No models match that search.": "没有匹配该搜索的模型。",
+    "No models are available right now.": "当前没有可用的模型。",
+    "Discovering authenticated providers…": "正在发现已登录的提供方…",
+    "Could not load the model catalog.": "无法加载模型列表。",
+    "Switching to {model}…": "正在切换到 {model}…",
+    "Switched · applies to your next message": "已切换 · 下一条消息生效",
+    "model switch failed": "模型切换失败", "Could not switch model.": "无法切换模型。",
+    "switch model (Ctrl/⌘ K)": "切换模型（Ctrl/⌘ K）",
+    "Current model {model} · switch model (Ctrl/⌘ K)": "当前模型 {model} · 切换模型（Ctrl/⌘ K）",
+    "Current model {model}. Switch model.": "当前模型 {model}。切换模型。",
     "Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.": "已安装的技能、连接、钩子、模板与资源。启用某个版本，即明确批准该版本的精确摘要与声明权限。",
     "Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.": "Collie 可以使用的一切：内置能力、技能、连接、已录制工作流和已审查的扩展包。",
     "Add capability": "添加能力", "Add a capability": "添加一项能力",
@@ -3603,6 +3632,32 @@
     "No sessions yet.": "還沒有對話。", "Loading model…": "正在載入模型…", "Model unavailable": "模型無法使用",
     "idle": "閒置", "running": "執行中", "stopping": "正在停止",
     "Auto — Collie chooses per task": "自動 — Collie 依任務選擇", "task-aware routing": "依任務智慧路由",
+    "Choose a model": "選擇模型",
+    "Switches immediately and applies to your next message.": "立即切換，並從你的下一則訊息開始生效。",
+    "close model picker": "關閉模型選擇器",
+    "Search models, providers, or capabilities": "搜尋模型、供應商或能力",
+    "Discover live": "即時探索", "Available models": "可用模型",
+    "Loading available models…": "正在載入可用模型…",
+    "↑ ↓ to browse · Enter to select": "↑ ↓ 瀏覽 · Enter 選取",
+    "Login-backed": "登入帳號",
+    "Availability and billing depend on the selected route": "可用性與計費取決於所選路由",
+    "Metered API": "按量計費 API", "Billed by the connected provider": "由已連線的供應商計費",
+    "Local": "本機", "Runs on this machine": "在這台電腦上執行",
+    "Sign in required": "需要登入", "API key required": "需要 API key", "Unavailable": "無法使用",
+    "Plan login · billing unverified": "訂閱登入 · 計費未驗證", "$0 marginal": "邊際成本 $0",
+    "Price unavailable": "價格無法取得", "per M": "每百萬 token",
+    "{n} model available": "共 {n} 個模型可用", "{n} models available": "共 {n} 個模型可用",
+    "{n} matching model": "{n} 個相符的模型", "{n} matching models": "{n} 個相符的模型",
+    "No models match that search.": "沒有符合該搜尋的模型。",
+    "No models are available right now.": "目前沒有可用的模型。",
+    "Discovering authenticated providers…": "正在探索已登入的供應商…",
+    "Could not load the model catalog.": "無法載入模型清單。",
+    "Switching to {model}…": "正在切換到 {model}…",
+    "Switched · applies to your next message": "已切換 · 下一則訊息生效",
+    "model switch failed": "模型切換失敗", "Could not switch model.": "無法切換模型。",
+    "switch model (Ctrl/⌘ K)": "切換模型（Ctrl/⌘ K）",
+    "Current model {model} · switch model (Ctrl/⌘ K)": "目前模型 {model} · 切換模型（Ctrl/⌘ K）",
+    "Current model {model}. Switch model.": "目前模型 {model}。切換模型。",
     "Installed skills, connections, hooks, templates and assets. Enabling a version is an explicit approval of its exact digest and declared authority.": "已安裝的技能、連線、鉤子、範本與資源。啟用某個版本，即明確批准該版本的精確摘要與聲明權限。",
     "Everything Collie can use: built-in capabilities, Skills, connections, recorded workflows, and reviewed extension packages.": "Collie 可以使用的一切：內建能力、技能、連線、已錄製工作流程和已審查的擴充套件。",
     "Add capability": "新增能力", "Add a capability": "新增一項能力",
@@ -4647,6 +4702,12 @@
     // lands after they exist. They are relabelled in place — not reloaded — because the rename and
     // delete controls live in them; see relabelThreads.
     if (typeof relabelThreads === "function") relabelThreads();
+    // The model picker's rows, group headings, capability/pricing labels and count are drawn from
+    // the catalog, so chrome-only translation left them English on a Chinese page — and the picker
+    // may be open, with a search half-typed, when the answer lands. relabelModelPicker redraws only
+    // the labels: the search text, caret, composition, focus, highlight, live-discovery box and the
+    // current selection are left exactly as they are, and nothing is refetched or POSTed.
+    if (typeof relabelModelPicker === "function") relabelModelPicker();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -11722,27 +11783,56 @@
     { kind: "local", title: "Local", caption: "Runs on this machine" }
   ];
 
+  // The status line carries two different kinds of text. The page's own sentences ("2 models
+  // available", "Switching to …") have to follow the language, so each one is kept as the function
+  // that draws it and is simply drawn again when the language changes. A detail the backend wrote —
+  // a refusal reason, a provider error — is shown exactly as it arrived and `modelStatusOwn` is
+  // cleared, so a late language never replaces the reason with a generic translation of it.
+  var modelStatusOwn = null;
+  function paintModelStatus(draw, className) {     // `draw` writes the line in the current language
+    modelStatusOwn = draw;
+    draw();
+    modelStatus.className = className || "model-status";
+  }
+  function showBackendModelStatus(text, className) {
+    modelStatusOwn = null;
+    modelStatus.textContent = text;
+    modelStatus.className = className || "model-status";
+  }
+
+  // A provider's own name, a model id and anything the backend wrote are identifiers: they are shown
+  // exactly as they arrived in every language. Only the page's own words are translated, and the
+  // capability, billing-route and pricing distinctions keep saying the same thing in all of them.
   function modelAuthLabel(authState) {
-    if (authState === "ok") return "Ready";
-    if (authState === "not-logged-in") return "Sign in required";
-    if (authState === "missing-key") return "API key required";
-    return "Unavailable";
+    if (authState === "ok") return t("Ready");
+    if (authState === "not-logged-in") return t("Sign in required");
+    if (authState === "missing-key") return t("API key required");
+    return t("Unavailable");
   }
 
   function modelPriceLabel(entry) {
     var inputPrice = Number(entry.price_in || 0), outputPrice = Number(entry.price_out || 0);
-    if (entry.kind === "local") return "Local · $0";
+    var rate = "$" + inputPrice.toFixed(2) + "/$" + outputPrice.toFixed(2) + " " + t("per M");
+    if (entry.kind === "local") return t("Local") + " · $0";
     if (entry.kind === "subscription") {
-      if (entry.provider === "anthropic-oauth") return "Plan login · billing unverified";
-      if (!inputPrice && !outputPrice) return "$0 marginal";
-      return "$0 · ≈$" + inputPrice.toFixed(2) + "/$" + outputPrice.toFixed(2) + " per M";
+      // Nothing here invents a subscription price: an unpriced plan says so instead of guessing.
+      if (entry.provider === "anthropic-oauth") return t("Plan login · billing unverified");
+      if (!inputPrice && !outputPrice) return t("$0 marginal");
+      return "$0 · ≈" + rate;
     }
-    if (!inputPrice && !outputPrice) return "Price unavailable";
-    return "$" + inputPrice.toFixed(2) + "/$" + outputPrice.toFixed(2) + " per M";
+    if (!inputPrice && !outputPrice) return t("Price unavailable");
+    return rate;
   }
 
+  // The synthetic Auto row is the page's own sentence, so it is stored in English and translated at
+  // render time — a language that arrives later relabels it like any other chrome. Catalog entries
+  // keep the label the backend gave them.
+  function modelEntryLabel(entry) { return entry.auto ? t(entry.label) : entry.label; }
+  function modelEntryVia(entry) { return entry.auto ? t(entry.via) : entry.via; }
+
   function modelSearchText(entry) {
-    return [entry.label, entry.provider, entry.model, entry.via].concat(entry.tags || []).join(" ").toLowerCase();
+    return [modelEntryLabel(entry), entry.label, entry.provider, entry.model, modelEntryVia(entry), entry.via]
+      .concat(entry.tags || []).join(" ").toLowerCase();
   }
 
   function modelOptions() {
@@ -11769,15 +11859,16 @@
     var currentEntry = modelEntries.find(function (entry) { return entry.id === modelCurrentId; });
     if (!currentEntry) {
       var currentParts = modelCurrentId.split(":");
-      var fallbackLabel = currentParts.slice(1).join(":") || currentParts[0] || "Choose a model";
+      var fallbackLabel = currentParts.slice(1).join(":") || currentParts[0] || t("Choose a model");
       modelTriggerLabel.textContent = fallbackLabel;
-      modelTrigger.title = "Current model " + fallbackLabel + " · switch model (Ctrl/⌘ K)";
-      modelTrigger.setAttribute("aria-label", "Current model " + fallbackLabel + ". Switch model.");
+      modelTrigger.title = t("Current model {model} · switch model (Ctrl/⌘ K)").replace("{model}", fallbackLabel);
+      modelTrigger.setAttribute("aria-label", t("Current model {model}. Switch model.").replace("{model}", fallbackLabel));
       return;
     }
-    modelTriggerLabel.textContent = currentEntry.label;
-    modelTrigger.title = currentEntry.label + " · " + currentEntry.via + " · switch model (Ctrl/⌘ K)";
-    modelTrigger.setAttribute("aria-label", "Current model " + currentEntry.label + ". Switch model.");
+    var currentLabel = modelEntryLabel(currentEntry);
+    modelTriggerLabel.textContent = currentLabel;
+    modelTrigger.title = currentLabel + " · " + modelEntryVia(currentEntry) + " · " + t("switch model (Ctrl/⌘ K)");
+    modelTrigger.setAttribute("aria-label", t("Current model {model}. Switch model.").replace("{model}", currentLabel));
   }
 
   function renderModelEntries() {
@@ -11794,9 +11885,9 @@
       groupElement.className = "model-group";
       var title = document.createElement("div");
       title.className = "model-group-title";
-      title.appendChild(document.createTextNode(group.title));
+      title.appendChild(document.createTextNode(t(group.title)));
       var caption = document.createElement("span");
-      caption.textContent = group.caption;
+      caption.textContent = t(group.caption);
       title.appendChild(caption);
       groupElement.appendChild(title);
 
@@ -11810,16 +11901,16 @@
         option.setAttribute("role", "option");
         option.setAttribute("aria-selected", current ? "true" : "false");
         option.disabled = entry.auth !== "ok";
-        option.title = entry.label + " · " + entry.via + " · " + modelAuthLabel(entry.auth);
+        option.title = modelEntryLabel(entry) + " · " + modelEntryVia(entry) + " · " + modelAuthLabel(entry.auth);
 
         var main = document.createElement("span");
         main.className = "model-option-main";
         var label = document.createElement("span");
         label.className = "model-option-label";
-        label.textContent = entry.label;
+        label.textContent = modelEntryLabel(entry);
         var metadata = document.createElement("span");
         metadata.className = "model-option-meta";
-        metadata.textContent = entry.via + " · " + entry.model;
+        metadata.textContent = modelEntryVia(entry) + " · " + entry.model;
         main.appendChild(label);
         main.appendChild(metadata);
         if ((entry.tags || []).length || entry.source === "live") {
@@ -11861,14 +11952,19 @@
     if (!optionCount) {
       var empty = document.createElement("div");
       empty.className = "model-empty";
-      empty.textContent = query ? "No models match that search." : "No models are available right now.";
+      empty.textContent = t(query ? "No models match that search." : "No models are available right now.");
       modelList.appendChild(empty);
     }
     var currentOptionIndex = modelOptions().findIndex(function (option) { return option.dataset.modelId === modelCurrentId; });
     setModelActive(currentOptionIndex >= 0 ? currentOptionIndex : 0);
     if (modelCatalogLoaded && !modelBusy) {
-      modelStatus.textContent = optionCount + (query ? " matching models" : " models available");
-      modelStatus.className = "model-status";
+      // One model is "1 model available", not "1 models available"; Chinese counts the same row with
+      // a measure word and no plural form at all, so the count is a whole sentence per language.
+      paintModelStatus(function () {
+        modelStatus.textContent = optionCount === 1
+          ? t(query ? "{n} matching model" : "{n} model available").replace("{n}", optionCount)
+          : t(query ? "{n} matching models" : "{n} models available").replace("{n}", optionCount);
+      });
     }
   }
 
@@ -11880,8 +11976,9 @@
   }
 
   function loadModelCatalog(discoverLive) {
-    modelStatus.textContent = discoverLive ? "Discovering authenticated providers…" : "Loading available models…";
-    modelStatus.className = "model-status";
+    paintModelStatus(function () {
+      modelStatus.textContent = t(discoverLive ? "Discovering authenticated providers…" : "Loading available models…");
+    });
     var query = discoverLive ? "?discover=1" : "";
     return fetch("/api/models" + query).then(function (response) {
       if (!response.ok) throw new Error("model catalog request failed");
@@ -11893,7 +11990,7 @@
       if (autoProvider) {
         var providerEntry = modelEntries.find(function (entry) { return entry.provider === autoProvider; });
         modelEntries.unshift({ id: autoProvider + ":", provider: autoProvider, model: "auto",
-          label: t("Auto — Collie chooses per task"), via: t("task-aware routing"),
+          label: "Auto — Collie chooses per task", via: "task-aware routing",
           tags: ["recommended", "adaptive effort"], source: "synthetic", auto: true,
           auth: providerEntry ? providerEntry.auth : "ok",
           kind: providerEntry ? providerEntry.kind : "subscription", price_in: 0, price_out: 0 });
@@ -11902,10 +11999,31 @@
       updateModelTrigger();
       renderModelEntries();
     }).catch(function () {
-      modelStatus.textContent = "Could not load the model catalog.";
-      modelStatus.className = "model-status err";
+      paintModelStatus(function () {
+        modelStatus.textContent = t("Could not load the model catalog.");
+      }, "model-status err");
       if (!modelCatalogLoaded) modelTriggerLabel.textContent = t("Model unavailable");
     });
+  }
+
+  // A language can arrive — or change — while the picker is open. Everything the person is in the
+  // middle of lives either in the search box (their text, their caret, an open IME composition and
+  // the focus) or in the highlight, so the rows are redrawn in the new language and the highlight is
+  // put back on the same model, while the field itself is never written to, refocused or refiltered.
+  // A backend-written status keeps the backend's words; nothing is refetched, selected or POSTed.
+  function relabelModelPicker() {
+    if (!modelList || !modelStatus) return;
+    var active = modelOptions()[modelActiveIndex];
+    var activeModelId = active ? active.dataset.modelId : "";
+    var ownStatus = modelStatusOwn, backendStatus = modelStatus.textContent, statusClass = modelStatus.className;
+    updateModelTrigger();
+    renderModelEntries();
+    if (activeModelId) {
+      var index = modelOptions().findIndex(function (option) { return option.dataset.modelId === activeModelId; });
+      if (index >= 0) setModelActive(index);
+    }
+    if (!ownStatus) showBackendModelStatus(backendStatus, statusClass);
+    else if (modelStatusOwn === ownStatus) paintModelStatus(ownStatus, statusClass);
   }
 
   function openModelPicker() {
@@ -11929,28 +12047,43 @@
   function selectModel(entry) {
     if (modelBusy || !entry || entry.auth !== "ok") return;
     setModelBusy(true);
-    modelStatus.textContent = "Switching to " + entry.label + "…";
-    modelStatus.className = "model-status";
+    paintModelStatus(function () {          // the model's own name is carried through untranslated
+      modelStatus.textContent = t("Switching to {model}…").replace("{model}", modelEntryLabel(entry));
+    });
     fetch("/api/model?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(entry.auto ? { auto: true } : { id: entry.id })
     }).then(function (response) {
       return response.json().then(function (payload) { return { ok: response.ok, payload: payload }; });
     }).then(function (result) {
-      if (!result.ok || !result.payload.ok) throw new Error((result.payload || {}).error || "model switch failed");
+      if (!result.ok || !result.payload.ok) {
+        // What the server actually said about this route is the answer; it is kept apart from the
+        // page's own fallback so it is shown verbatim and never translated away.
+        var detail = (result.payload || {}).error;
+        var failure = new Error(detail || "model switch failed");
+        failure.backendDetail = detail || "";
+        throw failure;
+      }
       modelCurrentId = result.payload.provider + ":" + result.payload.model;
       updateModelTrigger();
       if (window.refreshRunCapabilities) window.refreshRunCapabilities();
-      modelStatus.textContent = "Switched · applies to your next message";
-      modelStatus.className = "model-status ok";
+      paintModelStatus(function () {
+        modelStatus.textContent = t("Switched · applies to your next message");
+      }, "model-status ok");
       window.setTimeout(function () {
         setModelBusy(false);
         closeModelPicker();
       }, 260);
     }).catch(function (error) {
       setModelBusy(false);
-      modelStatus.textContent = error.message || "Could not switch model.";
-      modelStatus.className = "model-status err";
+      var detail = error && error.backendDetail;
+      if (detail) { showBackendModelStatus(detail, "model-status err"); return; }
+      // Page and transport wording: t() translates what the page wrote and falls through for the
+      // rest, so an untranslated browser message is still shown exactly as it reads today.
+      var message = (error && error.message) || "";
+      paintModelStatus(function () {
+        modelStatus.textContent = message ? t(message) : t("Could not switch model.");
+      }, "model-status err");
     });
   }
 
