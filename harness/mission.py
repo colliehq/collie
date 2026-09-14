@@ -4246,6 +4246,42 @@ class MissionDriver:
         except (TypeError, ValueError, OverflowError):
             raise ValueError("Mission leash expires is invalid") from None
 
+    @staticmethod
+    def _elapsed_ceiling_epoch(mission):
+        """When this Mission's own elapsed-time budget runs out, or 0 if unbounded."""
+        leash = getattr(mission, "leash", None) or {}
+        created = getattr(mission, "created_at", 0)
+        if isinstance(created, bool) or not isinstance(created, int) or created <= 0:
+            return 0
+        budget = leash.get("max_elapsed_seconds", 2_592_000)
+        if isinstance(budget, bool):
+            return 0
+        try:
+            budget = int(budget)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        # A zero/negative bound is "not enforced" everywhere else in the leash.
+        return created + budget if budget > 0 else 0
+
+    def _wake_ceiling(self, mission):
+        """The last epoch a scheduled wake could still do this Mission's work.
+
+        ``expires`` is the operator's hard stop; ``max_elapsed_seconds`` is the
+        same kind of explicit ceiling, measured from creation, and it is the one
+        the Web surface and the overnight coding profile actually set.  A
+        provider quota window can be longer than either: a weekly Claude window
+        published a reset days away, and parking the durable timer on that reset
+        advertised a "next check" the user's own limit had already ruled out,
+        then delivered "elapsed-time budget exhausted" a whole window later
+        instead of stopping when the Mission said to stop.  Waking at the
+        earliest ceiling keeps the reset authoritative whenever it fits inside
+        the bounds, and keeps the bounds authoritative when it does not.
+        """
+        stops = [value for value in
+                 (self._deadline_epoch(getattr(mission, "leash", None) or {}),
+                  self._elapsed_ceiling_epoch(mission)) if value]
+        return min(stops) if stops else 0
+
     def _active_step_timeout(self, mission_id, leash):
         """Clamp one blocking boundary to the campaign's remaining active time."""
         configured = max(0.05, float((leash or {}).get("max_step_seconds", 600)))
@@ -4662,8 +4698,12 @@ class MissionDriver:
             secs = 3600
         now = int(time.time())
         deadline = self._deadline_epoch(mission.leash)
-        if deadline:
-            secs = max(1, min(secs, max(1, deadline - now)))
+        # A provider-reset backoff is the wait that can outlast the Mission's own
+        # bounds, so the sleep is clamped to the earliest of them, not only to
+        # ``expires``.
+        ceiling = self._wake_ceiling(mission)
+        if ceiling:
+            secs = max(1, min(secs, max(1, ceiling - now)))
         args["seconds"] = secs
         request = _followup_request(args, reason)
         if request and deadline:
@@ -6196,9 +6236,9 @@ class MissionDriver:
                                 wake_at = reset + 3  # let the provider's reset boundary pass
                             self.store.account_runtime(
                                 mission_id, token, retries=1)
-                        deadline = self._deadline_epoch(self.store.get(mission_id).leash)
-                        if deadline:
-                            wake_at = min(wake_at, deadline)
+                        ceiling = self._wake_ceiling(self.store.get(mission_id))
+                        if ceiling:
+                            wake_at = min(wake_at, ceiling)
                         self.store.schedule_wait(mission_id, wake_at)
                         self.store.record_event(
                             mission_id, "control", "nested_slice_yielded", nonce,

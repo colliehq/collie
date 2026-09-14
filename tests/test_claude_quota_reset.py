@@ -153,6 +153,92 @@ def test_code_wait_survives_store_reopen_and_respects_the_task_deadline(tmp_path
     restored.close()
 
 
+@pytest.mark.parametrize("elapsed_budget", [None, 3600, 86400])
+def test_quota_wake_never_parks_past_the_tasks_own_elapsed_ceiling(tmp_path, elapsed_budget):
+    """A published reset is authoritative only while it fits the user's own bounds.
+
+    ``expires`` was clamped; ``max_elapsed_seconds`` — the ceiling the Web
+    surface and the overnight coding profile actually set — was not.  A weekly
+    Claude window resetting days out therefore parked the durable timer days
+    out: the task card advertised a "next check" the user's own limit had
+    already ruled out, and the honest "elapsed-time budget exhausted" stop
+    arrived a whole quota window late instead of at the ceiling.
+    """
+    from harness.jobs import WAITING
+    from harness.mission import create_mission, world_leash
+    from test_mission_code_dispatch import GOAL, _dedicated_case, _driver
+    now = int(time.time())
+    reset = now + 18000
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    seen = []
+
+    def runner(goal, **_context):
+        seen.append(goal)
+        return {"answer": "HTTP 429: Claude Code rate limit", "verified": False,
+                "error": "HTTP 429: Claude Code rate limit",
+                "continue_needed": True, "transient": True,
+                "retry_at": reset, "retry_after_seconds": 60,
+                "session_id": "mission-code-dispatch-test", "turns": 1,
+                "slice_mutated": False, "patch_attributed": False}
+
+    store, actions, driver = _driver(tmp_path, runner)
+    try:
+        bounds = {"max_elapsed_seconds": elapsed_budget} if elapsed_budget else {}
+        create_mission(store, "ceiling", GOAL, case=_dedicated_case(workspace),
+                       leash=world_leash(may=["code"], autonomous=True,
+                                         workspace_mode="isolated", **bounds))
+        assert driver.advance("ceiling") == WAITING
+        assert seen == [GOAL]
+        created = store.get("ceiling").created_at
+        fire_at = store.next_wait("ceiling")["fire_at"]
+        if elapsed_budget == 3600:
+            # The reset is five hours out and the task may only live one, so the
+            # wake lands exactly where the Mission can state its own limit.
+            assert fire_at == created + elapsed_budget < reset + 3
+            assert not store.due_waits(fire_at - 1) and store.due_waits(fire_at)
+            assert (store.budget_reason("ceiling", now=fire_at) ==
+                    "mission elapsed-time budget exhausted")
+        else:
+            # A ceiling the reset fits inside (or none at all) leaves the
+            # provider's own boundary authoritative: no early, useless wake.
+            assert fire_at == reset + 3
+            assert not store.budget_reason("ceiling", now=fire_at)
+    finally:
+        store.close()
+        actions.close()
+
+
+def test_planner_quota_backoff_is_bounded_by_the_elapsed_budget(tmp_path):
+    """The same clamp on the mixed-work path ModelDecider's quota WAIT lands in."""
+    from harness.actions import ActionStore
+    from harness.jobs import WAITING
+    from harness.mission import (MissionDriver, MissionStore, create_mission,
+                                 world_leash)
+    now = int(time.time())
+    reset = now + 18000
+    store = MissionStore(str(tmp_path / "missions.db"))
+    actions = ActionStore(str(tmp_path / "actions.db"))
+    try:
+        decide = lambda *_a, **_k: {
+            "action": "wait",
+            "args": {"seconds": reset - int(time.time()) + 3, "transient": True},
+            "reason": "provider quota exhausted; resume after its reset"}
+        driver = MissionDriver(store, actions, decide, [])
+        create_mission(store, "planned", "do the thing",
+                       leash=world_leash(autonomous=True, max_elapsed_seconds=3600))
+        assert driver.advance("planned") == WAITING
+        mission = store.get("planned")
+        assert mission.result == "provider quota exhausted; resume after its reset"
+        fire_at = store.next_wait("planned")["fire_at"]
+        assert fire_at == mission.created_at + 3600 < reset + 3
+        assert (store.budget_reason("planned", now=fire_at) ==
+                "mission elapsed-time budget exhausted")
+    finally:
+        store.close()
+        actions.close()
+
+
 def test_automatic_wake_resumes_the_original_goal_only_after_reset(tmp_path):
     from harness.jobs import WAITING
     from harness.mission import create_mission, world_leash
