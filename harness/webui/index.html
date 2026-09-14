@@ -11964,8 +11964,27 @@
   modelOverlay.addEventListener("click", function (event) {
     if (event.target === modelOverlay) closeModelPicker();
   });
+  // This search box takes CJK text, so an IME (pinyin, kana, hangul…) walks its candidate list with
+  // the very arrows that move the highlight here, confirms the candidate it is offering with Enter,
+  // and closes that list with Escape — the three keys this picker reads as move, switch and close.
+  // Until the composition is committed those keystrokes belong to the keyboard: acting on one
+  // switches the model whose name happens to match the half-typed romanisation ("yun"), or throws
+  // the whole picker away mid-word. `isComposing` on the keydown is the signal in Blink/Gecko (the
+  // keydown arrives before compositionend); keyboards that end the composition first and/or report
+  // only the legacy keyCode 229 are covered by the tracked flag. No timer: the flag clears on
+  // compositionend, or on the first input event that is not composing, so the very next arrows move,
+  // the very next Enter switches and the very next Escape closes exactly as before.
+  var modelSearchComposing = false;
+  function modelKeyIsComposition(event) { return event.isComposing || event.keyCode === 229 || modelSearchComposing; }
+  modelSearch.addEventListener("compositionstart", function () { modelSearchComposing = true; });
+  modelSearch.addEventListener("compositionend", function () { modelSearchComposing = false; });
+  modelSearch.addEventListener("input", function (event) { if (!event.isComposing) modelSearchComposing = false; });
   modelSearch.addEventListener("input", renderModelEntries);
   modelSearch.addEventListener("keydown", function (event) {
+    // The keystroke is the keyboard's, not the picker's: no move, no switch. The confirming Enter is
+    // swallowed so it cannot reach the search field either; every other key keeps its candidate-list
+    // meaning, and the list still filters on the text as it is composed.
+    if (modelKeyIsComposition(event)) { if (event.key === "Enter") event.preventDefault(); return; }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setModelActive(modelActiveIndex + 1);
@@ -11984,6 +12003,9 @@
       event.preventDefault();
       openModelPicker();
     } else if (event.key === "Escape" && modelOverlay.classList.contains("open")) {
+      // An Escape aimed at the IME's candidate list reaches the page still marked as composition;
+      // only the search field can be composing here, so the guard stops at that one control.
+      if (event.target === modelSearch && modelKeyIsComposition(event)) return;
       closeModelPicker();
     }
   });
