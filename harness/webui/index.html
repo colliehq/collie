@@ -5372,7 +5372,7 @@
       // telling you it failed both times.
       if (!p.ok) { cta.textContent = (p.error || "Failed") + " — try again →"; return; }
       try {
-        modelCurrentId = p.provider + ":" + p.model; updateModelTrigger();
+        adoptCurrentModel(p.provider, p.model);   // same adoption the picker does, same invalidation
         obClose();
         // next steps: ambient desktop (Windows) → connect browser; each is optional and self-chains
         if (window.collieAmbientStep) window.collieAmbientStep();
@@ -12148,6 +12148,18 @@
     dialogClosed(modelOverlay, modelTrigger);
   }
 
+  // A save the backend acknowledged IS the current model from that moment on, whoever asked for it —
+  // the picker's rows or the first-run welcome cards. The id and the generation move together here
+  // precisely because they are read together in loadModelCatalog: a catalog answer asked for before
+  // this point describes the model that used to be current and may not put it back. Onboarding used
+  // to write only the id, so its accepted choice was silently reverted in the trigger (and in the
+  // trigger's aria-label) by the page's own first catalog read landing a moment later.
+  function adoptCurrentModel(provider, model) {
+    modelCurrentId = provider + ":" + model;
+    modelCurrentGeneration += 1;
+    updateModelTrigger();
+  }
+
   function selectModel(entry) {
     if (modelBusy || !entry || entry.auth !== "ok") return;
     // Only a model the catalog still offers may be switched to: a row drawn from an answer that has
@@ -12171,9 +12183,7 @@
         failure.backendDetail = detail || "";
         throw failure;
       }
-      modelCurrentId = result.payload.provider + ":" + result.payload.model;
-      modelCurrentGeneration += 1;
-      updateModelTrigger();
+      adoptCurrentModel(result.payload.provider, result.payload.model);
       if (window.refreshRunCapabilities) window.refreshRunCapabilities();
       paintModelStatus(function () {
         modelStatus.textContent = t("Switched · applies to your next message");
