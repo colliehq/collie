@@ -3993,6 +3993,7 @@
     "Cloud image and media workflows.":"云端图像与媒体工作流。","Private visual workflows on this computer.":"这台电脑上的私密视觉工作流。",
     "Available when a task needs it.":"任务需要时即可使用。","Untitled task":"未命名任务",
     "Today":"今天","Yesterday":"昨天","Earlier":"更早","Your recent work will appear here.":"你最近的工作会显示在这里。",
+    "Open thread":"打开对话","Rename":"重命名","Rename thread":"重命名对话","Delete":"删除","Delete thread":"删除对话",
     "Task":"任务","Good morning.":"早上好。","Good noon.":"中午好。","Good afternoon.":"下午好。","Good evening.":"晚上好。",
     "Bringing today into focus…":"正在整理今天…","Checking…":"正在检查…","Refresh Today":"刷新今天",
     "Today's focus":"今日重点","Needs attention":"需要处理","For you":"为你准备","Kept deliberately short":"只保留重要内容",
@@ -4184,6 +4185,7 @@
     "Cloud image and media workflows.":"雲端圖像與媒體工作流程。","Private visual workflows on this computer.":"這台電腦上的私密視覺工作流程。",
     "Available when a task needs it.":"任務需要時即可使用。","Untitled task":"未命名任務",
     "Today":"今天","Yesterday":"昨天","Earlier":"更早","Your recent work will appear here.":"你最近的工作會顯示在這裡。",
+    "Open thread":"開啟對話","Rename":"重新命名","Rename thread":"重新命名對話","Delete":"刪除","Delete thread":"刪除對話",
     "Task":"任務","Good morning.":"早安。","Good noon.":"午安。","Good afternoon.":"下午好。","Good evening.":"晚安。",
     "Bringing today into focus…":"正在整理今天…","Checking…":"正在檢查…","Refresh Today":"重新整理今天",
     "Today's focus":"今日重點","Needs attention":"需要處理","For you":"為你準備","Kept deliberately short":"只保留重要內容",
@@ -4641,6 +4643,10 @@
     // restored them. Re-render from the state we already hold: this reads state only and
     // sends, saves, discards or clears nothing.
     if (typeof renderTaskQueue === "function") renderTaskQueue();
+    // The sidebar rows are drawn from run and queue state too, and the settings answer normally
+    // lands after they exist. They are relabelled in place — not reloaded — because the rename and
+    // delete controls live in them; see relabelThreads.
+    if (typeof relabelThreads === "function") relabelThreads();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -8707,13 +8713,16 @@
         var group = recentThreadGroup(s.updated);
         if (group !== lastGroup) {
           var heading = document.createElement("div"); heading.className = "thread-group";
+          // The English group name stays on the node, so a language that lands later can
+          // retranslate this heading in place instead of redrawing the list under the cursor.
+          heading.setAttribute("data-i18n", group);
           heading.textContent = t(group); box.appendChild(heading); lastGroup = group;
         }
         var threadTitle = cleanThreadTitle(s.title || s.last);
         var el = document.createElement("div");
         el.className = "thread" + (s.id === currentSession ? " active" : "");
         el.setAttribute("role", "button"); el.tabIndex = 0;
-        el.setAttribute("aria-label", "Open thread " + threadTitle);
+        el.setAttribute("aria-label", t("Open thread") + " " + threadTitle);
         if (s.id === currentSession) el.setAttribute("aria-current", "true");
         var rs = liveRuns[s.id];
         var waitingInput = QUEUED_SESSIONS.filter(function (row) { return row.session === s.id; })[0];
@@ -8727,8 +8736,18 @@
           (waitingInput ? '<div class="t-state queued-input">' + esc(queuedSessionLabel(waitingInput)) + '</div>' : '') +
           '<div class="t-turns">' + (s.turns || 0) + ' ' + esc(t(s.turns === 1 ? "turn" : "turns")) + '</div>' +
           '<div class="t-acts">' +
-          '<button class="t-act" data-a="rename" title="Rename" aria-label="Rename thread">✎</button>' +
-          '<button class="t-act" data-a="delete" title="Delete" aria-label="Delete thread">✕</button></div>';
+          '<button class="t-act" data-a="rename" title="' + esc(t("Rename")) + '" aria-label="' +
+            esc(t("Rename thread")) + '" data-i18n-title="Rename" data-i18n-aria-label="Rename thread">✎</button>' +
+          '<button class="t-act" data-a="delete" title="' + esc(t("Delete")) + '" aria-label="' +
+            esc(t("Delete thread")) + '" data-i18n-title="Delete" data-i18n-aria-label="Delete thread">✕</button></div>';
+        // What this row was actually drawn from, kept so a later language can rewrite its labels
+        // without a refetch or a rebuild. Copied, because liveRuns is replaced on every poll.
+        el._threadLabels = { id: s.id, turns: Number(s.turns || 0), title: threadTitle,
+          untitled: !String(s.title || s.last || "").trim(),
+          run: rs ? { run: rs.run, state: rs.state, stop_reason: rs.stop_reason, verified: rs.verified,
+                      canceled: rs.canceled, error: rs.error, turns: rs.turns, max_turns: rs.max_turns,
+                      turns_exhausted: rs.turns_exhausted, budget_exhausted: rs.budget_exhausted } : null,
+          queued: waitingInput || null };
         function showThreadError(message) {
           THREAD_ACTION_ERRORS[s.id] = message || "";
           var note = el.querySelector(".thread-error");
@@ -8773,6 +8792,40 @@
         box.appendChild(el);
       });
     }).catch(function () {});
+  }
+
+  // Retranslate the sidebar rows that are already on screen.
+  //
+  // The saved language arrives from /api/settings after the list has been drawn, and rebuilding the
+  // list here would take the rename/delete button the person is aiming at — and its focus — out from
+  // under them, which is exactly why pollRuns only redraws when a run actually moved. So each label
+  // is rewritten on the node that already exists: this reads state only, fetches nothing, and sends,
+  // renames or deletes nothing.
+  function relabelThreads() {
+    var box = $("threads");
+    if (!box) return;
+    box.querySelectorAll(".thread").forEach(function (row) {
+      var drawn = row._threadLabels;
+      if (!drawn) return;                     // not a row this renderer owns: leave it untouched
+      // Prefer what the run registry says now, but only while it is still the same run this row was
+      // drawn from. A row whose run has moved on, or whose session the server no longer reports, is
+      // redrawn wholesale by the next poll; relabelling it from newer state would put a fresh label
+      // on the classes and badges of an older one.
+      var live = liveRuns[drawn.id];
+      var run = (drawn.run && live && live.run === drawn.run.run) ? live : drawn.run;
+      var state = row.querySelector(".t-state:not(.queued-input)");
+      if (state && run) state.textContent = runLabel(run);
+      var badge = row.querySelector(".t-state.queued-input");
+      var queued = QUEUED_SESSIONS.filter(function (r) { return r.session === drawn.id; })[0];
+      if (badge) badge.textContent = queuedSessionLabel(queued || drawn.queued || {});
+      var turns = row.querySelector(".t-turns");
+      if (turns) turns.textContent = drawn.turns + " " + t(drawn.turns === 1 ? "turn" : "turns");
+      // Only the placeholder a nameless thread was given is ours to translate. A title the person
+      // (or the server) wrote is their words, in whatever language they wrote them.
+      var title = row.querySelector(".t-last");
+      if (title && drawn.untitled) { drawn.title = t("Untitled task"); title.textContent = drawn.title; }
+      row.setAttribute("aria-label", t("Open thread") + " " + drawn.title);
+    });
   }
 
   // Leaving a conversation no longer ends it.
