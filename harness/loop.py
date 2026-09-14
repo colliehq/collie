@@ -1893,7 +1893,11 @@ class Harness:
                 try:
                     child_result, payload = run_child(
                         self, task, limit, budget, max(0, cap - model_calls) if cap else 0,
-                        parent_run_id=rid, parent_request=safe_user_msg)
+                        parent_run_id=rid, parent_request=safe_user_msg,
+                        # The policy THIS turn is running under, not a fresh read of
+                        # the panel: an accepted request's frozen grants bind the
+                        # subtasks it spawns too, exactly as its ceilings do above.
+                        capabilities=getattr(ctx, "capabilities", None))
                 except DelegatedInterrupt as exc:
                     model_calls += exc.result.model_calls
                     raise

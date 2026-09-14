@@ -7,7 +7,7 @@ import pytest
 from harness import capability_policy, cli, settings
 from harness.providers import AnthropicProvider, OpenAICompatProvider, Completion, ToolCall, Usage
 from harness.recorder import RunResult, run_outcome
-from harness.tools import Tool
+from harness.tools import ReadFileTool, Tool
 
 
 def test_an_unset_generation_limit_replays_the_provider_default(monkeypatch):
@@ -157,6 +157,139 @@ def test_real_harness_tools_receive_the_accepted_capability_policy(tmp_path, mon
         assert seen == [False], "another request's grant must not arm this accepted task"
     finally:
         harness.memory.close(); harness.recorder.close()
+
+
+def test_a_delegated_subtask_investigates_under_the_parents_accepted_policy(
+        tmp_path, monkeypatch):
+    """Delegation owns a fresh conversation, never a fresh permission grant.
+
+    ``delegate`` runs a CHILD harness inside the parent's turn.  The child used to
+    build its own ToolCtx, whose default is a fresh read of the Settings panel — so a
+    capability switched on while a queued request waited was correctly refused to the
+    parent's tools and quietly handed to the child's, which is the one place an
+    accepted policy could be stepped around without anybody accepting anything.  The
+    parent's spending ceilings already travel down this path (``shared_budget`` carries
+    ``_active_limits``); the capability policy has to travel with them.
+
+    Read through the SHIPPED ``read_file`` tool — the real object the child registry
+    inherits — so what is asserted is what a capability check inside a child tool call
+    would actually see, not a value the test arranged for itself.  Fully offline: mock
+    provider, temp data dir, and one temp file.
+    """
+    from harness import delegate                      # noqa: F401  (exercised via the tool)
+
+    panel = {key: "off" for key in capability_policy.KEYS}
+    monkeypatch.setattr(settings, "get", lambda key, default=None: panel.get(key, default))
+    accepted = capability_policy.from_payload(capability_policy.freeze())
+    panel["SCREEN_CAPTURE"] = "on"      # ... another tab enables it while the request waits
+    note = tmp_path / "note.txt"
+    note.write_text("evidence", encoding="utf-8")
+
+    seen = []
+    original = ReadFileTool.run
+
+    def watched(self, args, ctx):
+        seen.append(capability_policy.allowed("SCREEN_CAPTURE", ctx))
+        return original(self, args, ctx)
+
+    monkeypatch.setattr(ReadFileTool, "run", watched)
+
+    class Provider:
+        """Parent reads a file then delegates; the child reads the same file."""
+        name, model, reports_cache = "mock", "mock", False
+        calls = 0
+
+        def complete(self, system, messages, tool_schemas, on_text=None):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(tool_calls=[
+                    ToolCall("parent-read", "read_file", {"path": "note.txt"}),
+                    ToolCall("parent-delegate", "delegate",
+                             {"task": "read note.txt and report what it says"}),
+                ], usage=Usage(10, 10))
+            if self.calls == 2:
+                return Completion(
+                    tool_calls=[ToolCall("child-read", "read_file", {"path": "note.txt"})],
+                    usage=Usage(10, 10))
+            return Completion(text="done", usage=Usage(10, 10))
+
+    monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(cli, "make_provider", lambda *a, **kw: Provider())
+    harness = cli.make_harness(str(tmp_path), provider="mock", embed="bm25",
+                               delegate=True, capabilities=accepted)
+    try:
+        result = harness.run("delegated-policy", "Investigate the note", consolidate=False)
+        assert not result.error, result.error
+    finally:
+        harness.memory.close(); harness.recorder.close()
+
+    assert len(seen) == 2, "the parent and its child each made one real tool call: %r" % (seen,)
+    assert seen == [False, False], (
+        "a capability enabled after this request was accepted must not reach the "
+        "subtask it delegates either: %r" % (seen,))
+
+
+def test_a_delegated_subtask_still_holds_what_the_parent_was_accepted_with(
+        tmp_path, monkeypatch):
+    """The other direction: inheriting a policy must still GRANT what it holds.
+
+    A child that is simply never given anything satisfies the refusal above too, and
+    would quietly break every subtask of a run that legitimately holds a capability.
+    """
+    panel = {key: "off" for key in capability_policy.KEYS}
+    panel["SCREEN_CAPTURE"] = "on"                    # accepted with it on ...
+    monkeypatch.setattr(settings, "get", lambda key, default=None: panel.get(key, default))
+    accepted = capability_policy.from_payload(capability_policy.freeze())
+    note = tmp_path / "note.txt"                      # ... and nobody touched the panel since
+    note.write_text("evidence", encoding="utf-8")
+
+    seen = []
+    original = ReadFileTool.run
+
+    def watched(self, args, ctx):
+        seen.append(capability_policy.allowed("SCREEN_CAPTURE", ctx))
+        return original(self, args, ctx)
+
+    monkeypatch.setattr(ReadFileTool, "run", watched)
+
+    class Provider:
+        name, model, reports_cache = "mock", "mock", False
+        calls = 0
+
+        def complete(self, system, messages, tool_schemas, on_text=None):
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    tool_calls=[ToolCall("parent-delegate", "delegate",
+                                         {"task": "read note.txt"})],
+                    usage=Usage(10, 10))
+            if self.calls == 2:
+                return Completion(
+                    tool_calls=[ToolCall("child-read", "read_file", {"path": "note.txt"})],
+                    usage=Usage(10, 10))
+            return Completion(text="done", usage=Usage(10, 10))
+
+    monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(cli, "make_provider", lambda *a, **kw: Provider())
+    harness = cli.make_harness(str(tmp_path), provider="mock", embed="bm25",
+                               delegate=True, capabilities=accepted)
+    try:
+        result = harness.run("delegated-grant", "Investigate the note", consolidate=False)
+        assert not result.error, result.error
+    finally:
+        harness.memory.close(); harness.recorder.close()
+
+    assert seen == [True], "an accepted grant that is still enabled must reach the subtask"
+
+    # And revocation stays a standing gate rather than a value the child replays.
+    panel["SCREEN_CAPTURE"] = "off"
+    assert capability_policy.allowed("SCREEN_CAPTURE",
+                                     _StubCtx(dict(accepted))) is False
+
+
+class _StubCtx:
+    def __init__(self, capabilities):
+        self.capabilities = capabilities
 
 
 def test_native_pack_freezes_one_policy_and_budget_for_all_candidates(tmp_path, monkeypatch):

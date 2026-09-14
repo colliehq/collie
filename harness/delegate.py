@@ -56,7 +56,7 @@ class DelegatedInterrupt(KeyboardInterrupt):
 
 
 def run_child(parent, task, max_turns, budget, model_call_limit=0, parent_run_id=None,
-              parent_request=""):
+              parent_request="", capabilities=None):
     from .loop import Harness
     from .tools import ReadFileTool, GlobTool, GrepTool, MemorySearchTool
     from .codeindex import CodeSearchTool
@@ -88,6 +88,20 @@ def run_child(parent, task, max_turns, budget, model_call_limit=0, parent_run_id
     child.shared_budget = budget
     child.cancelled = parent._cancel_requested
     child.gate = _InheritedGate(parent.gate) if parent.gate is not None else None
+    # A subtask is a fresh conversation, never a fresh permission grant.  Without
+    # this the child built its own ToolCtx, whose default is a fresh read of the
+    # Settings panel — so a capability switched on while a queued request waited was
+    # refused to the parent's tools and handed to the child's.  ``capabilities`` is
+    # the policy the parent's own turn is running under (the snapshot frozen when
+    # the request was accepted, plus anything the user consented to during it), for
+    # the same reason ``DelegationBudget`` carries the parent's frozen ceilings.
+    # Live revocation still wins on top: ``capability_policy.allowed`` requires the
+    # current setting as well.  The harness-level fallback keeps an embedder that
+    # calls ``run_child`` directly from silently widening the policy.
+    inherited = (capabilities if capabilities is not None
+                 else getattr(parent, "capabilities", None))
+    if inherited is not None:
+        child.capabilities = dict(inherited)
     child.approve = parent.approve
     child.audit = parent.audit
     child._secret_vault = parent._secret_vault
