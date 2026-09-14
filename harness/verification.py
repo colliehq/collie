@@ -582,6 +582,12 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
     started = datetime.now(timezone.utc).isoformat()
     before = _git_snapshot(cwd)
     t0 = time.monotonic()
+    # The deadline belongs in the receipt: "it ran out of time" is only useful to
+    # a reader who is told how much time that was.
+    try:
+        timeout_seconds = max(0, int(timeout))
+    except (TypeError, ValueError, OverflowError):
+        timeout_seconds = 0
     evidence = {
         "command": command,
         "exit_code": None,
@@ -600,6 +606,7 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         "tree_digest": before.get("tree_digest", ""),
         "snapshot_complete": bool(before.get("snapshot_complete")),
         "executed": False, "cancelled": False, "process_tree_terminated": False,
+        "timed_out": False, "timeout_s": timeout_seconds,
     }
     if not command:
         evidence["output"] = "no verification command"
@@ -617,6 +624,7 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
 
     executed = False
     cancelled_flag = False
+    timed_out_flag = False
     cancel_reason = ""
     cancel_probe_error = ""
     watcher = None
@@ -770,6 +778,7 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         evidence["output"] = (evidence.get("output") or "")[-3500:]
     except subprocess.TimeoutExpired as e:
         executed = True
+        timed_out_flag = True
         # ``Popen.communicate`` does not kill its child on timeout.  More importantly, killing
         # only the shell leaves backgrounded test runners holding the output pipe and editing the
         # workspace after their receipt was issued.  The process was started in its own group so
@@ -882,12 +891,16 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         "working_tree_changed_during_check": (not unchanged) if comparable else None,
         # A stopped check never ran to completion, so it cannot certify the tree
         # it was pointed at, however clean that tree happens to look afterwards.
+        # A check killed at its deadline is in exactly that position: it was cut
+        # off mid-run, and a tree that happens to be untouched afterwards is not
+        # evidence that the check covered it.
         "ran_after_last_edit": bool(
             executed and tree_cleanup_ok and after_last_edit and unchanged and
-            not cancelled_flag),
+            not cancelled_flag and not timed_out_flag),
         "freshness": ("not_run" if not executed else
                       "process_tree_cleanup_failed" if not tree_cleanup_ok else
                       "cancelled" if cancelled_flag else
+                      "timed_out" if timed_out_flag else
                       "caller_marked_stale" if not after_last_edit else "fresh" if unchanged else
                       "changed_during_check" if comparable else "unknown"),
         "snapshot_kind": before.get("snapshot_kind", "unknown"),
@@ -895,6 +908,7 @@ def run_verification_command(command: str, cwd: str, timeout: int = 300,
         "post_snapshot_complete": bool(after.get("snapshot_complete")),
         "executed": executed,
         "cancelled": cancelled_flag,
+        "timed_out": timed_out_flag,
         "cancel_reason": cancel_reason,
         "cancel_probe_error": cancel_probe_error,
         "process_tree_terminated": bool(proc is not None and tree_cleanup_ok),
@@ -951,15 +965,23 @@ _UNCERTIFIED_DEFAULT = ("its result could not be bound to the files that exist "
 def check_result_state(evidence) -> str:
     """Classify one check receipt: what did it establish, in one word?
 
-    ``passed``, ``failed``, ``inconclusive``, ``cancelled`` or ``not_run``.
-    ``inconclusive`` is the exit-zero-but-unbindable case above; every caller
-    that only knew "passed or not" reported it as a failure.
+    ``passed``, ``failed``, ``inconclusive``, ``timed_out``, ``cancelled`` or
+    ``not_run``.  ``inconclusive`` is the exit-zero-but-unbindable case above;
+    every caller that only knew "passed or not" reported it as a failure.
+
+    ``timed_out`` is the same mistake one step further along.  A check killed at
+    its deadline has no exit code at all, so it fell through to ``failed`` and
+    was announced as "required check failed: pytest -q (exit None)" — a sentence
+    that sends a reader (or a repair round) hunting for a broken test nobody has
+    evidence of.  The command did not fail; it never finished.
     """
     ev = evidence if isinstance(evidence, dict) else {}
     if ev.get("executed") is False:
         return "not_run"
     if ev.get("cancelled"):
         return "cancelled"
+    if ev.get("timed_out"):
+        return "timed_out"
     if ev.get("passed") is True:
         return "passed"
     if ev.get("command_passed") is True:
@@ -983,6 +1005,13 @@ def check_result_reason(evidence, command="") -> str:
         return "required check did not run: %s" % command
     if state == "cancelled":
         return "required check was stopped before it finished: %s" % command
+    if state == "timed_out":
+        limit = ev.get("timeout_s")
+        return ("required check ran out of time: %s was stopped after %ss without "
+                "finishing, so it judged nothing" % (command, limit)
+                if isinstance(limit, int) and limit > 0 else
+                "required check ran out of time: %s was stopped before it "
+                "finished, so it judged nothing" % command)
     if state == "inconclusive":
         return ("required check did not certify this result: %s exited 0, but %s"
                 % (command, _UNCERTIFIED_FRESHNESS.get(

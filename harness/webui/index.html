@@ -533,11 +533,15 @@
   /* The command exited 0 but its receipt could not be bound to the files that exist now.
      Amber, like "unverified": nothing is broken, and nothing is confirmed either. */
   .gate[data-state="inconclusive"]::before { background: var(--amber); }
+  /* Stopped at its deadline with no exit code. Amber for the same reason: nothing is broken,
+     and nothing is confirmed either. */
+  .gate[data-state="timeout"]::before { background: var(--amber); }
   .gate[data-state="missing"]::before    { background: var(--coral); }
   .gate[data-state="pass"]  { border-color: color-mix(in srgb, var(--meadow) 40%, var(--line)); }
   .gate[data-state="fail"]  { border-color: color-mix(in srgb, var(--coral) 40%, var(--line)); }
   .gate[data-state="unverified"] { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
   .gate[data-state="inconclusive"] { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
+  .gate[data-state="timeout"] { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
   .gate[data-state="missing"]    { border-color: color-mix(in srgb, var(--coral) 34%, var(--line)); }
 
   .ring { width: 38px; height: 38px; position: relative; flex: none; }
@@ -553,6 +557,7 @@
   .gate[data-state="none"]      .ring .prog { stroke-dashoffset: 0;   stroke: var(--azure); opacity: .5; }
   .gate[data-state="unverified"] .ring .prog { stroke-dashoffset: 0;  stroke: var(--amber); animation: none; }
   .gate[data-state="inconclusive"] .ring .prog { stroke-dashoffset: 0; stroke: var(--amber); animation: none; }
+  .gate[data-state="timeout"] .ring .prog { stroke-dashoffset: 0; stroke: var(--amber); animation: none; }
   .gate[data-state="missing"]    .ring .prog { stroke-dashoffset: 0;  stroke: var(--coral); animation: none; }
   .gate[data-state="working"]   .ring .prog,
   .gate[data-state="pending"]   .ring .prog { stroke: var(--azure); animation: spin 1.7s linear infinite; }
@@ -585,6 +590,7 @@
   .gate[data-state="unverified"] .g-status { color: var(--amber); }
   /* An inconclusive result uses the same caution styling as other unverified results. */
   .gate[data-state="inconclusive"] .g-status { color: var(--amber); }
+  .gate[data-state="timeout"] .g-status { color: var(--amber); }
   .gate[data-state="missing"] .g-status { color: var(--coral); }
   .gate .g-sub { color: var(--muted); font-size: 11px; line-height: 1.35;
                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -3336,6 +3342,12 @@
     "The command exited 0, but its result does not cover the files that exist now.": "命令已正常结束，但检查结果无法对应当前文件。",
     "proposed check did not certify this result": "建议的检查尚未确认当前结果",
     "exit 0 does not certify this result: {why}": "命令已正常结束，但结果仍待确认：{why}",
+    // 检查到点被中止，根本没有退出码，所以它对代码没有任何结论——不要说成"失败"。
+    "Check ran out of time": "检查超时中止",
+    "The check was stopped before it finished, so it did not judge this result.": "检查还没跑完就被中止，因此没有对这个结果作出判断。",
+    "proposed check ran out of time": "建议的检查超时中止",
+    "stopped after {n}s without finishing": "运行 {n} 秒未完成，已中止",
+    "stopped before it finished": "还没跑完就被中止",
     "the workspace changed while it was running": "它运行期间工作区发生了变化",
     "something it started may still be writing files": "它启动的进程可能还在写文件",
     "it was already recorded as stale before it started": "它开始之前就已被记为过期",
@@ -3755,6 +3767,12 @@
     "The command exited 0, but its result does not cover the files that exist now.": "指令已正常結束，但檢查結果無法對應目前檔案。",
     "proposed check did not certify this result": "建議的檢查尚未確認目前結果",
     "exit 0 does not certify this result: {why}": "指令已正常結束，但結果仍待確認：{why}",
+    // 檢查到點被中止，根本沒有結束代碼，所以它對程式碼沒有任何結論——不要說成「失敗」。
+    "Check ran out of time": "檢查逾時中止",
+    "The check was stopped before it finished, so it did not judge this result.": "檢查還沒跑完就被中止，因此沒有對這個結果作出判斷。",
+    "proposed check ran out of time": "建議的檢查逾時中止",
+    "stopped after {n}s without finishing": "執行 {n} 秒未完成，已中止",
+    "stopped before it finished": "還沒跑完就被中止",
     "the workspace changed while it was running": "它執行期間工作區發生了變化",
     "something it started may still be writing files": "它啟動的程序可能還在寫檔案",
     "it was already recorded as stale before it started": "它開始之前就已被記為過期",
@@ -5668,6 +5686,9 @@
     // failure sends a person hunting for a broken test that does not exist, and reporting it
     // as a pass would certify files the check never saw. It is its own answer.
     inconclusive:["Check did not certify this result", "The command exited 0, but its result does not cover the files that exist now."],
+    // Killed at its deadline: no exit code, no verdict. Reporting that as a failed check sends a
+    // person looking for a broken test that nothing here has evidence of.
+    timeout:   ["Check ran out of time", "The check was stopped before it finished, so it did not judge this result."],
     pass:      ["✓ Check passed", "The named check passed. Open Run details to inspect its scope and evidence."],
     // Files changed and nothing executable confirmed them. A plain fact, stated neutrally — not a
     // failure, and not the same as a task that had nothing to check.
@@ -5697,8 +5718,20 @@
     unknown: "the workspace could not be fingerprinted completely"
   };
   function checkUncertified(ev) {
-    return !!(ev && ev.executed !== false && !ev.cancelled &&
+    return !!(ev && ev.executed !== false && !ev.cancelled && !ev.timed_out &&
               ev.passed !== true && ev.command_passed === true);
+  }
+  // A check killed at its deadline reports no exit code at all, so it used to fall through to
+  // "failed" and print "· exit null" beside the command. It did not fail — it never finished.
+  function checkTimedOut(ev) {
+    return !!(ev && ev.executed !== false && !ev.cancelled && ev.timed_out);
+  }
+  function timedOutDetail(ev) {
+    var limit = ev && ev.timeout_s;
+    return ((ev && (ev.command || ev.cmd)) || "") + " · " +
+      (typeof limit === "number" && limit > 0
+        ? t("stopped after {n}s without finishing").replace("{n}", limit)
+        : t("stopped before it finished"));
   }
   // The one line the card and the timeline both show: the command, and the reason its exit
   // code does not settle anything. Never "failed", and never a bare "exit 0" on its own.
@@ -5720,6 +5753,9 @@
     }
     if (ev && ev.executed !== false && (ev.command || ev.cmd)) {
       if (ev.passed === true) { setGate("pass", ev.command || ev.cmd); return "pass"; }
+      if (checkTimedOut(ev)) {
+        setGate("timeout", timedOutDetail(ev)); return "timeout";
+      }
       if (checkUncertified(ev)) {
         setGate("inconclusive", uncertifiedDetail(ev)); return "inconclusive";
       }
@@ -11515,6 +11551,11 @@
       // Not passed is not the same claim as failed. An exit-zero check whose receipt could not
       // be bound to the current files gets the row that says exactly that, rather than a red
       // "proposed check failed" with "exit 0" printed next to it.
+      if (checkTimedOut(d)) {
+        addEvent("repro", "flag", t("proposed check ran out of time"), timedOutDetail(d));
+        setGate("timeout", timedOutDetail(d));
+        return;
+      }
       if (checkUncertified(d)) {
         addEvent("repro", "flag", t("proposed check did not certify this result"),
                  uncertifiedDetail(d));

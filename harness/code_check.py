@@ -142,6 +142,25 @@ def render_check_result(evidence) -> str:
     elif not evidence.get("executed"):
         headline = ("VERIFICATION DID NOT RUN: the command never started, so "
                     "nothing here says anything about the code.")
+    elif evidence.get("timed_out"):
+        # A killed check has no exit code, and the old headline printed that as
+        # "exited None" under the word FAILED — which spends a repair round
+        # hunting for a broken test nobody has evidence of.  The partial output
+        # below is a transcript of an unfinished run: what it already printed
+        # happened, what it never reached is simply unknown.  Older receipts
+        # carry no deadline, and "stopped after Nones" would be worse than
+        # saying only what is known.
+        limit = evidence.get("timeout_s")
+        stopped = ("was stopped after %ss without finishing" % limit
+                   if isinstance(limit, int) and not isinstance(limit, bool)
+                   and limit > 0 else "was stopped before it finished")
+        headline = ("VERIFICATION TIMED OUT: the check %s, so it did not judge "
+                    "this code. Failures the partial output below already "
+                    "prints are real — fix those. The check never reached the "
+                    "rest, so its silence there is neither a pass nor a "
+                    "failure: do not invent a cause for one. If nothing shown "
+                    "is fixable, make the check cheaper to run, or say plainly "
+                    "that it needs longer than this Mission allows." % stopped)
     elif evidence.get("passed"):
         headline = "VERIFICATION PASSED: the configured check exited 0 on these exact bytes."
     elif evidence.get("command_passed"):
