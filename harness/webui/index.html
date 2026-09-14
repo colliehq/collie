@@ -12207,6 +12207,12 @@
     modelCurrentId = provider + ":" + model;
     modelCurrentGeneration += 1;
     updateModelTrigger();
+    // Capabilities are read per provider/model — the speed tiers a route reports, the reasoning
+    // efforts it takes, its default worker, the sentence under Fast — so the view of them belongs to
+    // whichever model is current, not to whoever asked for the change. Re-reading here, once, is why
+    // first-run onboarding now finishes showing the brain it just connected: it was the only accepted
+    // save that adopted a model without asking again, and the picker was the only one that did.
+    if (window.refreshRunCapabilities) window.refreshRunCapabilities();
   }
 
   function selectModel(entry) {
@@ -12233,7 +12239,6 @@
         throw failure;
       }
       adoptCurrentModel(result.payload.provider, result.payload.model);
-      if (window.refreshRunCapabilities) window.refreshRunCapabilities();
       paintModelStatus(function () {
         modelStatus.textContent = t("Switched · applies to your next message");
       }, "model-status ok");
@@ -12671,8 +12676,17 @@
     window.addEventListener("resize", function () { if (!menu.hidden) positionMenu(); });
     window.refreshRunSetup = function () { paint(); paintWorkspace(); };
     window.setRunSetupLocked = function (value) { setupLocked = !!value; paint(); paintWorkspace(); };
+    // A capability answer describes the model that was current when it was *asked for*, so only the
+    // latest question may answer it — in either direction. The read this page starts at load is still
+    // travelling while a first-run choice is made and re-read off the back of it; landing late, it
+    // used to put the previous model's tiers back, and landing late as a *failure* it used to drop to
+    // the conservative view and hide a Fast item the person had deliberately selected, leaving
+    // runSpeed on a tier the menu no longer showed. Neither is news about the model in force.
+    var capabilityRequest = 0;
     window.refreshRunCapabilities = function () {
+      var request = ++capabilityRequest;
       return fetch("/api/run-capabilities").then(function (r) { return r.json(); }).then(function (caps) {
+        if (request !== capabilityRequest) return capabilities;   // a later read already answered
         capabilities = caps || {};
         var fast = $("runFastItem"), tiers = capabilities.speed_tiers || [];
         if (fast) fast.hidden = tiers.indexOf("fast") < 0;
@@ -12711,6 +12725,9 @@
         paint();
         return capabilities;
       }).catch(function () {
+        if (request !== capabilityRequest) return capabilities;
+        // Unchanged fallback: a lookup that did not answer leaves the conservative view, which is
+        // not a report that this route lacks the tier.
         var fast = $("runFastItem"); if (fast) fast.hidden = true;
         capabilities = { reasoning_efforts: [], speed_tiers: ["standard"] }; paint();
       });
