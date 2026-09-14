@@ -8,11 +8,13 @@ back is a message the store agreed to write. They are written against
 ``sessions``/``task_inbox``/``input_assets`` behaviour, not against how
 ``_atomic_dump`` happens to encode.
 """
+import errno
 import json
 import math
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -39,6 +41,34 @@ def _in_another_process(store, body, timeout=120):
                             timeout=timeout, **plat.no_window_kwargs())
     assert result.returncode == 0, (result.stdout, result.stderr)
     return result.stdout.strip()
+
+
+def _holding_the_journal_lock(store, sid, seconds):
+    """A separate process that owns ``sid``'s journal lock for ``seconds``.
+
+    Returns once the lock is actually held, so the caller's own write is
+    guaranteed to queue behind it rather than racing it.
+    """
+    env = dict(os.environ)
+    env["COLLIE_SESSIONS_DIR"] = store
+    env["PYTHONPATH"] = ROOT + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", """
+import sys, time
+from harness import sessions
+with sessions._locked(sessions._path(%r)):
+    sys.stdout.write("held\\n"); sys.stdout.flush()
+    time.sleep(%f)
+""" % (sid, seconds)],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        **plat.no_window_kwargs())
+    try:
+        assert proc.stdout.readline().strip() == "held"
+    except BaseException:
+        proc.kill(); proc.wait(timeout=30)
+        raise
+    return proc
 
 
 def _nested(depth):
@@ -398,6 +428,205 @@ def test_a_branch_keeps_growing_from_its_closed_prefix(store):
     assert [m["content"] for m in after[-3:]] == \
         ["branch turn 0", "branch turn 1", "branch turn 2"]
     assert _anthropic_orphans(after) == []
+
+
+# --------------------------------------------- queuing behind another writer
+
+
+# Longer than ``msvcrt.locking(LK_LOCK, …)``'s ten one-second retries, which is the
+# point at which Windows stopped waiting and failed the write outright.
+_SLOW_WRITER_SECONDS = 12.0
+
+
+def test_a_checkpoint_waits_for_a_slow_writer_instead_of_failing(store):
+    """Losing a race to a slower writer must cost time, not the run.
+
+    The web sidebar, a mission worker and the running loop all write the same
+    journal, and a hold can be long on purpose — a workspace claim spans a whole
+    worktree copy.  ``_locked`` promises to serialize those transactions, so the
+    late writer's job is to WAIT.  When it instead raised, the execution loop
+    read the failed checkpoint as "crash recovery could not be fenced" and
+    refused to run the next tool, so an unattended run ended mid-task because a
+    sibling surface happened to be mid-write.
+    """
+    opening = [{"role": "user", "content": "start the long job"}]
+    sessions.checkpoint("contended", opening, run_id="r", turn=0, state="turn_boundary")
+
+    holder = _holding_the_journal_lock(store, "contended", _SLOW_WRITER_SECONDS)
+    try:
+        started = time.monotonic()
+        sessions.checkpoint("contended", opening + [{"role": "assistant", "content": "step two"}],
+                            run_id="r", turn=1, state="tool_complete")
+        waited = time.monotonic() - started
+    finally:
+        holder.wait(timeout=60)
+        holder.stdout.close()
+
+    # It really queued behind the other writer rather than slipping in beside it.
+    assert waited >= _SLOW_WRITER_SECONDS / 2, "the write did not wait for the lock at all"
+    assert [m["content"] for m in sessions.load("contended")["messages"]] == \
+        ["start the long job", "step two"]
+    assert sessions.recovery_state("contended")["turn"] == 1
+
+
+def test_a_transaction_does_not_wait_on_a_lock_it_already_holds(store):
+    """One process re-entering one journal must not contend with itself.
+
+    A byte-range lock belongs to the handle that took it, so a second handle in
+    this same process is a competitor: waiting on it is a deadlock that no other
+    writer can ever clear.  Run in a child process so a regression here is a
+    failure with a traceback rather than a hung suite.
+    """
+    printed = _in_another_process(store, """
+from harness import sessions
+sessions.checkpoint("reentrant", [{"role": "user", "content": "go"}],
+                    run_id="r", turn=0, state="turn_boundary")
+path = sessions._path("reentrant")
+with sessions._locked(path):
+    # A nested writer, exactly as a helper called inside a transaction would be.
+    sessions.append_run_receipt("reentrant", {"kind": "verify", "ok": True})
+loaded = sessions.load("reentrant")
+print(len(loaded["messages"]), loaded["run_receipts"][-1]["kind"])
+""", timeout=60)
+
+    assert printed.splitlines()[-1] == "1 verify"
+
+
+# ------------------------------------- when the OS refuses the lock call itself
+
+
+# What the platform reports for "another handle holds this byte".
+_BUSY = errno.EACCES if os.name == "nt" else errno.EWOULDBLOCK
+
+
+def _lock_calls_failing_with(patcher, codes):
+    """Make the next lock ATTEMPTS fail with ``codes``, then behave normally.
+
+    Only the acquiring call is intercepted: unlocking still runs for real, so
+    release and handle cleanup are exercised rather than faked. Returns the list
+    of descriptors the attempts were made on, for checking they were closed.
+    """
+    attempted = []
+    pending = list(codes)
+
+    def next_failure(fd):
+        attempted.append(fd)
+        return pending.pop(0) if pending else None
+
+    if os.name == "nt":
+        import msvcrt
+        real = msvcrt.locking
+
+        def locking(fd, mode, count):
+            if mode == msvcrt.LK_UNLCK:
+                return real(fd, mode, count)
+            code = next_failure(fd)
+            if code is not None:
+                raise OSError(code, "injected lock failure")
+            return real(fd, mode, count)
+
+        patcher.setattr(msvcrt, "locking", locking)
+    else:
+        import fcntl
+        real = fcntl.flock
+
+        def flock(fd, operation):
+            if operation & fcntl.LOCK_UN:
+                return real(fd, operation)
+            code = next_failure(fd)
+            if code is not None:
+                raise OSError(code, "injected lock failure")
+            return real(fd, operation)
+
+        patcher.setattr(fcntl, "flock", flock)
+    return attempted
+
+
+def _still_open(descriptors):
+    open_now = []
+    for fd in descriptors:
+        try:
+            os.fstat(fd)
+            open_now.append(fd)
+        except OSError:
+            pass
+    return open_now
+
+
+def test_a_lock_error_that_is_not_contention_is_reported_not_waited_on(store, monkeypatch):
+    """A permanent lock failure must reach the caller, not become a forever-wait.
+
+    Waiting without a deadline is right for a lock somebody else is holding, and
+    wrong for every other reason a lock call can fail: a bad descriptor or a
+    request the platform rejects never becomes available, so a writer that reads
+    them as contention hangs the run silently instead of reporting what the OS
+    said. Nothing may be written under a lock that was never taken.
+    """
+    def no_waiting(delay):
+        raise AssertionError("backed off as if the lock were merely busy")
+
+    monkeypatch.setattr(sessions.time, "sleep", no_waiting)
+    attempted = _lock_calls_failing_with(monkeypatch, [errno.EINVAL] * 50)
+
+    with pytest.raises(OSError) as failure:
+        sessions.checkpoint("hard-fail", [{"role": "user", "content": "go"}],
+                            run_id="r", turn=0, state="turn_boundary")
+
+    assert failure.value.errno == errno.EINVAL
+    assert len(attempted) == 1, "a permanent error was retried"
+    assert not os.path.exists(os.path.join(store, "hard-fail.json"))
+    assert _still_open(attempted) == [], "the lock file handle outlived the failure"
+
+
+def test_a_busy_lock_is_still_waited_for(store, monkeypatch):
+    """The contention errno keeps its patient behaviour: retry, then write."""
+    attempted = _lock_calls_failing_with(monkeypatch, [_BUSY, _BUSY, _BUSY])
+
+    sessions.checkpoint("busy", [{"role": "user", "content": "queued behind someone"}],
+                        run_id="r", turn=2, state="tool_complete")
+
+    assert len(attempted) == 4, "the busy lock was not retried until it freed"
+    assert sessions.load("busy")["messages"][0]["content"] == "queued behind someone"
+    assert sessions.recovery_state("busy")["turn"] == 2
+
+
+def test_an_interrupted_lock_call_is_asked_again_rather_than_reported(store, monkeypatch):
+    """EINTR is not a verdict about the lock, so it is neither raised nor backed off."""
+    def no_waiting(delay):
+        raise AssertionError("treated a signal as contention")
+
+    monkeypatch.setattr(sessions.time, "sleep", no_waiting)
+    attempted = _lock_calls_failing_with(monkeypatch, [errno.EINTR])
+
+    sessions.append_exchange("signalled", "open Xcode", "opened it")
+
+    assert len(attempted) == 2
+    assert sessions.load("signalled")["last_answer"] == "opened it"
+
+
+def test_the_journal_is_writable_again_after_a_permanent_lock_error(store, monkeypatch):
+    """The failed attempt must leave no held lock and no counted depth behind.
+
+    A transaction that never started must not look like one that is still open,
+    or every later writer in this process waits on bookkeeping instead of a lock.
+    """
+    sessions.append_exchange("recovers", "first", "done")
+
+    with monkeypatch.context() as patched:
+        attempted = _lock_calls_failing_with(patched, [errno.EBADF])
+        with pytest.raises(OSError) as failure:
+            sessions.append_exchange("recovers", "during the outage", "never stored")
+    assert failure.value.errno == errno.EBADF
+
+    tracked = sessions._lock_for(sessions._path("recovers"))
+    assert tracked.depth == 0 and tracked.handle is None
+    assert _still_open(attempted) == []
+
+    sessions.append_exchange("recovers", "after the outage", "stored")
+    stored = sessions.load("recovers")
+    assert [m["content"] for m in stored["messages"]] == \
+        ["first", "done", "after the outage", "stored"]
+    assert sessions._lock_for(sessions._path("recovers")).depth == 0
 
 
 # ------------------------------------------------------- surviving a restart

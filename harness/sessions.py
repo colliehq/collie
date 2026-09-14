@@ -6,16 +6,28 @@ keeps a long thread from bloating the prefix, so sessions can grow safely.
 """
 import ast
 import contextlib
+import errno
 import hashlib
 import json
 import math
 import os
+import random
 import threading
 import time
 
 
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
+
+# The errnos that mean "another handle holds this byte, ask again" for the two
+# lock calls below — and only those.  ``msvcrt.locking(LK_NBLCK, …)`` reports a
+# locking violation as EACCES (and EDEADLOCK when a blocking mode gave up after
+# its ten retries); ``flock(LOCK_NB)`` reports a held lock as EWOULDBLOCK/EAGAIN,
+# while lock implementations layered on fcntl ranges report it as EACCES.
+_BUSY_LOCK_ERRNOS = frozenset(code for code in (
+    errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK,
+    getattr(errno, "EDEADLOCK", None) if os.name == "nt" else None,
+) if code is not None)
 
 
 def _reject_json_constant(value):
@@ -92,41 +104,135 @@ def store_root(state_dir=None):
     return os.path.join(requested, "data", "sessions")
 
 
+class _PathLock:
+    """Per-path, per-process bookkeeping for one journal's file lock.
+
+    An OS byte-range lock belongs to the HANDLE that took it, so a second handle
+    opened by this same process contends with the first rather than nesting.
+    Counting depth here means a transaction that re-enters this path waits for
+    nothing: the lock it would wait for is already ours.
+    """
+
+    __slots__ = ("local", "handle", "depth", "pid")
+
+    def __init__(self, pid):
+        self.local = threading.RLock()
+        self.handle = None
+        self.depth = 0
+        self.pid = pid
+
+
+def _lock_for(p):
+    key = os.path.realpath(p)
+    pid = os.getpid()
+    with _LOCKS_GUARD:
+        entry = _LOCKS.get(key)
+        if entry is None or entry.pid != pid:
+            # Inherited across os.fork(): the depth, the RLock and the open
+            # handle all describe the parent, which is still inside the block.
+            entry = _LOCKS[key] = _PathLock(pid)
+        return entry
+
+
+def _try_lock(fh):
+    """Take the exclusive byte-range lock if it is free right now.
+
+    Returns False for CONTENTION only.  ``_acquire_file`` waits without a
+    deadline, so "somebody else holds it" is the one answer it may keep asking
+    about; a descriptor that is not lockable at all (EBADF), a request the
+    platform rejects (EINVAL), a filesystem with no lock support — none of those
+    become true by asking again, and swallowing them turns a permanent OS
+    failure into a silent forever-wait for a writer that will never arrive.
+    Those are raised so the caller sees the real error, as the pre-wait code did.
+    """
+    fh.seek(0)
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in _BUSY_LOCK_ERRNOS:
+                return False
+            if exc.errno == errno.EINTR:
+                # A signal arrived before the call reached a verdict about the
+                # lock, so this is not contention and must not be backed off:
+                # ask again immediately, which is what the interrupted call was
+                # about to do.  (PEP 475 already retries inside ``flock``, so
+                # this is only reachable when a Python handler ran in between.)
+                continue
+            raise
+        return True
+
+
+def _acquire_file(lock_path):
+    """Wait for the exclusive OS lock, however long the other writer needs.
+
+    ``msvcrt.locking(LK_LOCK, …)`` is not a blocking lock: it gives up after ten
+    one-second retries and raises ``OSError`` (errno 36, "Resource deadlock
+    avoided").  A writer that merely queued behind a slower one therefore FAILED
+    on Windows — and the execution loop reads a failed checkpoint as "crash
+    recovery could not be fenced" and stops running tools, so an unattended run
+    ends because a sibling surface was mid-write.  Holds are legitimately long
+    (a workspace claim spans a whole worktree copy), so this waits like
+    ``flock`` instead of inventing a deadline the callers cannot honour.
+    """
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    # Byte-range locks work beyond EOF. Writing an initialization byte before
+    # owning the lock races another cold-start writer.
+    fh = open(lock_path, "a+b")
+    delay = 0.0005
+    try:
+        while not _try_lock(fh):
+            # Jitter keeps several waiting writers from retrying in lockstep.
+            time.sleep(delay * (0.5 + random.random()))
+            delay = min(0.02, delay * 2)
+    except BaseException:
+        fh.close()
+        raise
+    return fh
+
+
+def _unlock_file(fh):
+    try:
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        fh.close()
+
+
 @contextlib.contextmanager
 def _locked(p):
     """Serialize a session's complete read/modify/write transaction across threads and processes."""
-    with _LOCKS_GUARD:
-        local = _LOCKS.setdefault(os.path.realpath(p), threading.RLock())
-    with local:
-        lock_path = p + ".lock"
-        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-        fh = open(lock_path, "a+b")
-        acquired = False
+    lock = _lock_for(p)
+    holder = os.getpid()
+    with lock.local:
+        outermost = lock.depth == 0
+        if outermost:
+            lock.handle = _acquire_file(p + ".lock")
+        lock.depth += 1
         try:
-            fh.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                if os.path.getsize(lock_path) == 0:
-                    fh.write(b"\0"); fh.flush()
-                fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            acquired = True
             yield
         finally:
-            try:
-                if acquired:
-                    fh.seek(0)
-                    if os.name == "nt":
-                        import msvcrt
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                    else:
-                        import fcntl
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            finally:
-                fh.close()
+            # A different pid here means ``os.fork`` ran inside the block and
+            # this is the child: it acquired nothing, and releasing would free a
+            # lock the parent is still holding.
+            if os.getpid() == holder:
+                lock.depth -= 1
+                if outermost:
+                    fh, lock.handle = lock.handle, None
+                    if fh is not None:
+                        _unlock_file(fh)
 
 
 def new_id():
