@@ -5610,7 +5610,21 @@
           setStatus.textContent = t("applied"); setStatus.className = "set-status ok";
           setTimeout(function () { if (setStatus.textContent === t("applied")) setStatus.textContent = ""; }, 1400);
           if (key === "LANG") { UI_LANG = resolveLang(saved.LANG); applyLang(); }
-          if (key === "PROVIDER" || key === "MODEL") loadModelCatalog(false);
+          if (key === "PROVIDER" || key === "MODEL") {
+            // Writing either of these changes which model runs, exactly as the picker’s own save
+            // does. Capabilities are read per provider/model — the speed tiers that route reports,
+            // the reasoning efforts it takes, its default worker, the sentence under Fast — so the
+            // view of them belonged to the pair that was current until this moment and describes
+            // nothing afterwards; reloading the catalog alone left all of it on screen. The
+            // acknowledgement already carries the effective pair (a refusal and an
+            // environment-held value have both returned above, so neither reaches here), and it is
+            // adopted through the one path the picker and first-run already use: nothing is
+            // re-POSTed, and the generation that adoption bumps still fences a catalog answer
+            // asked for before it.
+            if (saved.PROVIDER !== undefined && saved.MODEL !== undefined)
+              adoptCurrentModel(String(saved.PROVIDER), String(saved.MODEL));
+            loadModelCatalog(false);
+          }
           return true;
         }).catch(function () {
           el.classList.remove("saving");
