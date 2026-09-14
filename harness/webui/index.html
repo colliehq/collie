@@ -10221,7 +10221,7 @@
     if (data.run && currentRun && data.run !== currentRun) return;
     var state = queueState(), entry = state.entries.filter(function (entry) { return entry.id === data.id; })[0];
     var text = entry ? entry.text : (data.text || "");
-    if (entry) entry.state = "consumed";
+    if (entry) { entry.state = "consumed"; queueConfirmed(state); }
     if (flowEl && text) {
       sealText();
       var note = document.createElement("div"); note.className = "steer-note";
@@ -10235,9 +10235,16 @@
   }
   function queueState() {
     if (!taskQueueState || taskQueueState.session !== currentSession)
-      taskQueueState = {session:currentSession, entries:[], active:false, notice:"", editor:null, loading:false, starting:false};
+      taskQueueState = {session:currentSession, entries:[], active:false, notice:"", editor:null, loading:false, starting:false,
+        revision:0, readRevision:0, refresh:false};
     return taskQueueState;
   }
+  // A listing read leaves before its answer arrives, so anything confirmed in between — an
+  // accepted, edited or canceled request, a notice — makes that answer a picture of the past.
+  // Count those confirmations: a read that comes back against a different count is dropped
+  // instead of painting the old rows back, and one fresh read is asked for. Only the listing
+  // is read again; nothing is re-sent and no request is started.
+  function queueConfirmed(state) { state.revision = (state.revision || 0) + 1; }
   function queuePost(path, body) {
     return fetch(path + "?token=" + encodeURIComponent(CT), {
       method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
@@ -10251,7 +10258,7 @@
   function queueNotice(message, sid) {
     if (currentSession !== sid) return;
     var state = queueState();
-    state.notice = message; renderTaskQueue();
+    state.notice = message; queueConfirmed(state); renderTaskQueue();
   }
   // An IME composition belongs to the live textarea node: the characters still being
   // composed are not in .value, so a snapshot of text and caret cannot carry them to a
@@ -10385,15 +10392,24 @@
   function loadTaskQueue() {
     var state = queueState(), sid = state.session;
     if (!sid) { renderTaskQueue(); return Promise.resolve(); }
-    if (state.loading) return Promise.resolve();
+    // A read already in flight cannot answer for anything confirmed since it left, so the
+    // refresh it would swallow is remembered and run once that read has settled.
+    if (state.loading) {
+      if (state.revision !== state.readRevision) state.refresh = true;
+      return Promise.resolve();
+    }
     if (!state.loaded) renderTaskQueue();
-    state.loading = true;
+    state.loading = true; state.readRevision = state.revision;
+    var revision = state.revision;
     return fetch("/api/task-inbox?session=" + encodeURIComponent(sid) + "&token=" + encodeURIComponent(CT))
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       }).then(function (data) {
         if (queueState() !== state) return;
+        // Older than the queue state on screen: it would undo a confirmed change, hide a new
+        // request, bring a canceled one back or write over a newer notice. Read again instead.
+        if (state.revision !== revision) { state.refresh = true; return; }
         if (!Array.isArray(data.entries)) throw new Error(data.error || t("Could not load pending requests"));
         var active = !!data.active || data.owner_busy === true;
         var changed = JSON.stringify(state.entries) !== JSON.stringify(data.entries) || state.active !== active;
@@ -10425,11 +10441,16 @@
         })) state.editor = null;
         if (changed) renderTaskQueue();
       }).catch(function (error) {
-        if (queueState() === state) {
-          state.loadError = t("Could not load pending requests") + ": " + error.message;
-          queueNotice(state.loadError, sid);
-        }
-      }).then(function () { state.loading = false; });
+        if (queueState() !== state) return;
+        // A failure of a read that is already out of date says nothing about the state now,
+        // and its notice would sit on top of a newer one.
+        if (state.revision !== revision) { state.refresh = true; return; }
+        state.loadError = t("Could not load pending requests") + ": " + error.message;
+        queueNotice(state.loadError, sid);
+      }).then(function () {
+        state.loading = false;
+        if (state.refresh && queueState() === state) { state.refresh = false; loadTaskQueue(); }
+      });
   }
   function mutateQueuedRequest(path, body, clearEditor) {
     var state = queueState(); state.mutating = true;
@@ -10439,7 +10460,7 @@
       if (queueState() === state) {
         state.entries = state.entries.map(function (entry) { return entry.id === data.entry.id ? data.entry : entry; });
         if (clearEditor) state.editor = null;
-        state.notice = "";
+        state.notice = ""; queueConfirmed(state);
       }
     }).catch(function (error) { queueNotice(error.message, state.session); })
       .then(function () { state.mutating = false; if (queueState() === state) { renderTaskQueue(); loadTaskQueue(); } });
@@ -10458,7 +10479,7 @@
     queuePost("/api/task-inbox/start", {session:state.session}).then(function (data) {
       if (queueState() !== state) return;
       if (!data.started) throw new Error(data.reason || t("No pending request was started"));
-      state.notice = t("Starting the next request…");
+      state.notice = t("Starting the next request…"); queueConfirmed(state);
       pollRuns(); loadTaskQueue();
     }).catch(function (error) { queueNotice(error.message, state.session); })
       .then(function () { state.starting = false; if (queueState() === state) renderTaskQueue(); });
@@ -10539,7 +10560,7 @@
         }
         var state = queueState();
         state.entries = state.entries.filter(function (entry) { return entry.id !== data.entry.id; }).concat([data.entry]);
-        state.entries.sort(function (a,b) { return a.seq - b.seq; }); state.notice = "";
+        state.entries.sort(function (a,b) { return a.seq - b.seq; }); state.notice = ""; queueConfirmed(state);
         // A slow ACK must never erase words or attachments added in the meantime.
         if ($("input").value === originalDraft && queueDraftRevision === originalRevision) { $("input").value = ""; $("input").style.height = "auto"; }
         attached = attached.filter(function (image) { return imgs.indexOf(image) < 0; }); renderAttached();
