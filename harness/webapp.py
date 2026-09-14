@@ -2549,8 +2549,7 @@ class Handler(BaseHTTPRequestHandler):
                                                "before deleting it"}, 409)
                 try:
                     try:
-                        waiting = task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES)
-                        if any(row["state"] == "claimed" for row in waiting):
+                        if task_inbox.list_entries(sid, states=("claimed",), limit=1):
                             # We hold the lease, so nothing is executing this
                             # conversation and a claim standing here belongs to a
                             # process that is gone.  Settle it from the journal
@@ -2560,8 +2559,6 @@ class Handler(BaseHTTPRequestHandler):
                             # belonged to and keep the deleted session in the
                             # waiting-work listing for good.
                             web_tasks.reconcile_open_claims(sid, lease)
-                            waiting = task_inbox.list_entries(
-                                sid, states=task_inbox.OPEN_STATES)
                     except (task_inbox.InboxError, session_owner.OwnershipRequired,
                             OSError) as exc:
                         return self._send_json(
@@ -2570,36 +2567,71 @@ class Handler(BaseHTTPRequestHandler):
                                                    "deleted: %s" % exc}, 409)
                     discard = urllib.parse.parse_qs(parsed.query).get(
                         "discard_pending", ["0"])[0] in ("1", "true", "on")
-                    if waiting and not discard:
+                    # Everything that decides this delete now happens in one
+                    # transaction with the acceptance path, and the mark it
+                    # leaves outlives this process.  Reading the queue here and
+                    # deleting the journal afterwards could not be made safe by
+                    # reading it again: another surface accepts into a different
+                    # file, so any gap between the look and the removal is a
+                    # request acknowledged into a conversation about to vanish.
+                    journal_before = sessions.load_checked(sid)["status"] != "missing"
+                    try:
+                        with task_inbox.closing(sid, lease, discard=discard,
+                                                reason="session deleted") as closure:
+                            # Whatever this answers, the close is settled from the
+                            # transcript itself: a delete can unlink the journal
+                            # and *then* fail at its own bookkeeping, and taking
+                            # "False" for "nothing happened" would reopen a
+                            # conversation that no longer exists.
+                            removed = sessions.delete(sid)
+                            if removed:
+                                closure.completed()
+                    except task_inbox.CloseBlocked as exc:
+                        if exc.unwithdrawable:
+                            # The transcript is still here, and it is the only
+                            # evidence about what became of a request nothing can
+                            # withdraw.  Deleting it would trade a recoverable
+                            # conversation for a record nobody can settle.
+                            return self._send_json(
+                                {"ok": False, "pending": len(exc.unwithdrawable),
+                                 "canceled": [],
+                                 "error": "%d accepted request(s) in this conversation "
+                                          "could not be withdrawn, so it was not deleted; "
+                                          "open it and clear them first"
+                                          % len(exc.unwithdrawable)}, 409)
                         return self._send_json(
-                            {"ok": False, "pending": len(waiting),
-                             "entries": [web_tasks.public_entry(e) for e in waiting],
+                            {"ok": False, "pending": len(exc.entries),
+                             "entries": [web_tasks.public_entry(e) for e in exc.entries],
                              "error": "%d accepted request(s) are still waiting in this "
                                       "conversation; cancel them or repeat with "
-                                      "discard_pending=1" % len(waiting)}, 409)
-                    canceled = []
-                    for row in waiting:
-                        # Recorded as canceled, never silently dropped.
-                        try:
-                            task_inbox.cancel(sid, row["id"], reason="session deleted")
-                            canceled.append(row["id"])
-                        except (task_inbox.InboxError, OSError):
-                            pass
-                    if len(canceled) != len(waiting):
-                        # The transcript is still here, and it is the only evidence
-                        # about what became of a request nothing can withdraw.
-                        # Deleting it would trade a recoverable conversation for a
-                        # record nobody can settle, so the delete is refused and
-                        # says which requests are in the way.
+                                      "discard_pending=1" % len(exc.entries)}, 409)
+                    except (task_inbox.InboxError, session_owner.OwnershipRequired,
+                            OSError) as exc:
+                        if journal_before and sessions.load_checked(sid)["status"] == "missing":
+                            # The failure came after the journal went.  Saying it
+                            # was not deleted would be inventing a conversation.
+                            return self._send_json(
+                                {"ok": False, "deleted": True,
+                                 "error": "this conversation's transcript was removed "
+                                          "before the deletion failed, so it stays "
+                                          "deleted: %s" % exc}, 500)
                         return self._send_json(
-                            {"ok": False, "pending": len(waiting) - len(canceled),
-                             "canceled": canceled,
-                             "error": "%d accepted request(s) in this conversation could "
-                                      "not be withdrawn, so it was not deleted; open it "
-                                      "and clear them first"
-                                      % (len(waiting) - len(canceled))}, 409)
-                    return self._send_json({"ok": sessions.delete(sid),
-                                            "canceled": canceled})
+                            {"ok": False, "error": "this conversation's accepted requests "
+                                                   "could not be read, so it was not "
+                                                   "deleted: %s" % exc}, 409)
+                    if removed or not closure.removed:
+                        # Either it plainly worked, or the transcript is still
+                        # there and the conversation is open again.
+                        return self._send_json({"ok": removed,
+                                                "canceled": closure.canceled})
+                    # The transcript is gone but the delete reported failure, so
+                    # the receipt may not say the conversation was preserved: it
+                    # stays closed and refuses new input.
+                    return self._send_json(
+                        {"ok": False, "deleted": True, "canceled": closure.canceled,
+                         "error": "this conversation's transcript was removed, but the "
+                                  "deletion could not be completed; it stays deleted and "
+                                  "will not accept new input"}, 500)
                 finally:
                     lease.release()
             if path.startswith("/api/rename/"):
@@ -4988,6 +5020,11 @@ class Handler(BaseHTTPRequestHandler):
             sid = web_tasks.check_session_id(qs.get("session", [""])[0])
             web_tasks.recover_abandoned_claims(sid)
             entries = web_tasks.list_public(sid)
+            # "open" for an id nothing has created yet as much as for a live
+            # conversation; "closed" only for one a delete finished on.  A
+            # surface that shows an empty transcript needs to tell those apart
+            # before it offers to send anything.
+            life = task_inbox.lifecycle(sid)
         except web_tasks.WebInputError as exc:
             return self._send_json({"error": str(exc)}, exc.status)
         except task_inbox.InboxError as exc:
@@ -4998,6 +5035,7 @@ class Handler(BaseHTTPRequestHandler):
         busy = web_tasks.owner_busy(sid)
         return self._send_json({
             "session": sid, "entries": entries, "active": active,
+            "lifecycle": life["state"], "journal": life["journal"],
             "owner_busy": True if active else busy,
             "owner": session_owner.describe(sid)["owner"] or None,
             "queue_error": web_tasks.queue_error(sid),

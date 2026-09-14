@@ -454,6 +454,12 @@ def accept(session, *, entry_id, text, mode="steer", config=None, images=(),
     try:
         return task_inbox.enqueue(session, entry_id, text, mode=mode, metadata=metadata,
                                   config=config, client=client)
+    except task_inbox.SessionClosed as exc:
+        # Not a transport failure and not a validation error: the conversation
+        # this was addressed to is going away.  Refusing is the one answer that
+        # keeps the acknowledgement true — storing it would leave the person's
+        # words waiting on a transcript nothing can restore.
+        raise WebInputError(str(exc), 409) from None
     except task_inbox.IdConflict as exc:
         raise WebInputError(str(exc), 409) from None
     except task_inbox.InboxFull as exc:

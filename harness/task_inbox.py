@@ -58,10 +58,35 @@ append per claimed entry, and the append happens *before* the acknowledgement::
 ``loop.py:1242`` and ``:2181``).  A callback wired to the sequence above must
 therefore return ``[]``, or the same instruction is inserted twice.  Only one of
 the two may append.  See ``DRAIN_CONTRACT``.
+
+Deleting the conversation
+-------------------------
+Acceptance and deletion are two writers to two different files — this store and
+the journal — so "is anything waiting?" answered before the journal is removed is
+a read that another process can invalidate one instruction later.  Rechecking is
+not a fix; it moves the window.  ``begin_close`` closes it by putting the
+conversation's own lifecycle *in this store*, under the same transaction that
+accepts input::
+
+    with task_inbox.closing(sid, lease, discard=flag) as closure:  # one transaction
+        if sessions.delete(sid):                                   # journal removed
+            closure.completed()                                    # -> "closed"
+
+Every acceptance loads this file first, so an enqueue is either ordered before
+the mark (and ``begin_close`` sees it waiting and refuses, or cancels it when the
+person asked to discard) or after it (and is refused, storing nothing).  There is
+no third interleaving: both writers hold the same cross-process lock on the same
+path.
+
+Which mark the close ends on is never decided by ``delete``'s answer — that call
+can remove the journal and then fail at its own bookkeeping.  It is decided by
+the journal: whether one existed when the close began, and whether one exists
+now.  See ``_close_outcome`` and ``closing``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -77,6 +102,10 @@ VERSION = 1
 MODES = ("steer", "follow_up")
 STATES = ("pending", "claimed", "consumed", "canceled")
 OPEN_STATES = ("pending", "claimed")
+# The conversation's own lifecycle, as opposed to one request's.  Absent is the
+# normal state: this id is open for input (including ids no journal exists for
+# yet — the first request of a new conversation is accepted before it runs).
+LIFECYCLE_STATES = ("closing", "closed")
 
 # Caps are explicit and enforced at accept time, because the alternative to an
 # error is dropping something a person was told had been accepted.
@@ -138,6 +167,35 @@ class StateConflict(InboxError):
 
 class UnknownEntry(InboxError, KeyError):
     """No entry (and no tombstone) with that id in this session."""
+
+
+class SessionClosed(InboxError):
+    """This conversation is being deleted, or already was.  Nothing was stored.
+
+    Deliberately *not* raised for a session id that merely has no journal: the
+    first request of a new conversation is accepted before anything runs, so
+    "no transcript" is a normal state.  This is raised only when a delete under
+    the run lease recorded that this id is going away.
+    """
+
+    def __init__(self, message, *, state="closed"):
+        super().__init__(message)
+        self.state = state
+
+
+class CloseBlocked(InboxError):
+    """Accepted requests stand between this conversation and its deletion.
+
+    ``entries`` is every open request, as the caller may show them.
+    ``unwithdrawable`` names the ones ``cancel`` cannot take back (a claim is the
+    executor's, not ours), which is a different refusal: the person can withdraw
+    the first kind and has to settle the second.
+    """
+
+    def __init__(self, message, entries=(), *, unwithdrawable=()):
+        super().__init__(message)
+        self.entries = list(entries)
+        self.unwithdrawable = list(unwithdrawable)
 
 
 class StoreCorrupt(InboxError):
@@ -261,7 +319,7 @@ def store_path(session, directory=None, *, root=None):
 
 def _blank(session):
     return {"version": VERSION, "session": session, "updated": 0.0,
-            "next_seq": 1, "entries": [], "tombstones": []}
+            "next_seq": 1, "entries": [], "tombstones": [], "lifecycle": None}
 
 
 def _load(path, session):
@@ -380,12 +438,42 @@ def _validate_store(doc, session):
     if (isinstance(next_seq, bool) or not isinstance(next_seq, int)
             or not 1 <= next_seq <= _MAX_COUNTER):
         raise _corrupt(session, "has a malformed sequence")
+    _validate_lifecycle(doc.get("lifecycle"), session)
     seqs, ids = set(), set()
     for entry in entries:
         _validate_entry(entry, session, next_seq, seqs, ids)
     for tomb in tombs:
         _validate_tombstone(tomb, session, next_seq, ids)
     return doc
+
+
+def _validate_lifecycle(record, session):
+    """Structure only, on purpose.
+
+    The mark is checked like every other field — state, owner, pid, timestamps —
+    but an *open entry sitting next to it* is deliberately not corruption.
+    ``StoreCorrupt`` is never repaired automatically, so rejecting that
+    combination would answer "a request may have been stranded by a delete" with
+    "you may no longer read this store", hiding the evidence a person needs.
+    """
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        raise _corrupt(session, "has a malformed lifecycle record")
+    if record.get("state") not in LIFECYCLE_STATES:
+        raise _corrupt(session, "has a lifecycle record in state %r", record.get("state"))
+    holder = record.get("owner")
+    if not isinstance(holder, str) or not 0 < len(holder) <= 128:
+        # The owner is what later tells an abandoned close from a live one.
+        raise _corrupt(session, "has a lifecycle record closed by nobody nameable")
+    _check_stored_int(record.get("pid", 0), session, "lifecycle pid")
+    _check_stored_time(record.get("at"), session, "lifecycle")
+    if not isinstance(record.get("journal", True), bool):
+        raise _corrupt(session, "has a lifecycle record with a malformed journal fact")
+    for field in ("reason", "note"):
+        if not isinstance(record.get(field, ""), str):
+            raise _corrupt(session, "has a lifecycle record with a malformed %s" % field)
+    return record
 
 
 # Every field the code below (and edit/cancel/ack/_compact) indexes directly. A
@@ -608,6 +696,319 @@ def _public(entry):
     return out
 
 
+# ----------------------------------------------------------- conversation life
+
+def _journal_exists(session, root):
+    """Does a transcript file exist for this id right now?
+
+    Existence, not validity: a torn journal is a conversation that needs
+    inspection, not one that was deleted, and treating the two alike would let a
+    bad parse silence a person's input.
+    """
+    path = sessions._path(session, root)
+    return bool(path) and os.path.exists(path)
+
+
+def _closer_still_holds_the_lease(session, record, root):
+    """Is the close recorded here still being carried out?
+
+    A close is authoritative only while the process doing it is alive, and the
+    run lease answers that without a timeout guess: the kernel releases it when
+    its holder dies.  Two facts, in the order that cannot give a false negative:
+
+    * A *different* owner id in the lease's identity record means the lock was
+      taken again after our closer had it, so that closer is gone.  Identity, not
+      busyness — refusing input merely because *somebody* holds the lease would
+      make steering a live run impossible.
+    * Otherwise ask the OS.  ``probe_busy`` never waits; ``None`` means it could
+      not tell, which is no evidence that nobody is deleting this conversation,
+      so it counts as held.
+    """
+    holder = record.get("owner")
+    try:
+        current = (session_owner.describe(session, root) or {}).get("owner") or {}
+    except (ValueError, OSError):
+        current = {}
+    live = current.get("owner")
+    if isinstance(live, str) and live and holder and live != holder:
+        return False
+    return session_owner.probe_busy(session, root) is not False
+
+
+def _close_outcome(session, record, root):
+    """Did this close actually remove a conversation?  Ask the disk, not the caller.
+
+    Two facts decide it, and only two, because they are the only ones that
+    separate *removed* from *never existed*:
+
+    * ``journal`` in the mark — whether a transcript was there when the close
+      began, recorded before anything could unlink it;
+    * whether a transcript is there now.
+
+    Present now means nothing was removed, whatever the delete returned, so the
+    conversation is open.  Absent now, and present at the start, means the
+    transcript is genuinely gone: closed, regardless of which step afterwards
+    failed.  Absent in both means this id never named a conversation — the first
+    request of a new one must still be accepted, so it stays open.
+    """
+    if _journal_exists(session, root):
+        return "open"
+    return "closed" if record.get("journal", True) else "open"
+
+
+def _settle_lifecycle(doc, session, root):
+    """The effective state of this conversation, with a dead mark cleared.
+
+    Mutates ``doc`` when the record no longer describes reality; the caller is
+    inside the transaction and decides whether that is worth a write.  A closer
+    that did not survive leaves the question to ``_close_outcome``, which reads
+    the journal it was removing.
+    """
+    record = doc.get("lifecycle")
+    if not isinstance(record, dict):
+        return "open"
+    state = record.get("state")
+    if state == "closing":
+        if _closer_still_holds_the_lease(session, record, root):
+            return "closing"
+        if _close_outcome(session, record, root) == "open":
+            doc["lifecycle"] = None
+            return "open"
+        doc["lifecycle"] = dict(record, state="closed", at=time.time(),
+                                note="closer did not survive; the journal is gone")
+        return "closed"
+    if state == "closed":
+        if _journal_exists(session, root):
+            # The id names a conversation again — something re-created it under
+            # the same name.  Refusing its input would be refusing a transcript
+            # that exists.
+            doc["lifecycle"] = None
+            return "open"
+        return "closed"
+    return "open"
+
+
+def _refuse_if_closed(doc, session, root):
+    state = _settle_lifecycle(doc, session, root)
+    if state == "closing":
+        raise SessionClosed(
+            "conversation %s is being deleted right now; this request was not stored "
+            "— send it to a new conversation" % session, state=state)
+    if state == "closed":
+        raise SessionClosed(
+            "conversation %s was deleted; this request was not stored — send it to a "
+            "new conversation" % session, state=state)
+    return state
+
+
+def lifecycle(session, *, directory=None):
+    """Whether this id is open, being deleted, or deleted — and what backs it.
+
+    ``state`` is settled the same way every writer settles it, so a surface and
+    an acceptance never disagree.  ``journal`` separates the two things that both
+    look like "no conversation": ``missing`` with state ``open`` is an id nothing
+    has created yet, while ``closed`` is one a delete finished on.
+    """
+    root = _root(directory)
+    path = store_path(session, root=root)
+    with sessions._locked(path):
+        doc = _load(path, session)
+        state = _settle_lifecycle(doc, session, root)
+        record = doc.get("lifecycle")
+    return {"session": session, "state": state,
+            "record": dict(record) if isinstance(record, dict) else None,
+            "journal": sessions.load_checked(session, root)["status"]}
+
+
+def begin_close(session, owner, *, discard=False, reason="", directory=None):
+    """Stop accepting input for this conversation, so its journal can be removed.
+
+    One transaction does all of it: read what is waiting, decide, withdraw it if
+    the person asked to, and record the mark.  That is the whole point — an
+    acceptance racing this either lands first and is *seen* here, or lands after
+    and is refused by ``enqueue``, which reads the mark under the same lock.
+
+    Refusals, both of which leave the store exactly as it was:
+
+    * open requests and no ``discard`` — the person is waiting on them, and a
+      delete is not consent to drop them;
+    * ``discard`` with a *claimed* request — cancelling is refused once an
+      executor owns it, and the caller settles that against the journal (which
+      is about to be deleted) before trying again.
+
+    Requires the run lease, which the delete already holds for its own reason:
+    it proves nothing is executing this conversation.  Accepting input never
+    asks for the lease, so only *deletion* is made exclusive with acceptance.
+    """
+    root = _root(directory)
+    owner = _require_owner(owner, session, root)
+    path = store_path(session, root=root)
+    with sessions._locked(path):
+        doc = _load(path, session)
+        open_entries = [e for e in doc["entries"] if e["state"] in OPEN_STATES]
+        if open_entries and not discard:
+            raise CloseBlocked("%d accepted request(s) are still waiting"
+                               % len(open_entries), [_public(e) for e in open_entries])
+        stuck = [e for e in open_entries if e["state"] != "pending"]
+        if stuck:
+            raise CloseBlocked(
+                "%d accepted request(s) are claimed by an executor and cannot be "
+                "withdrawn" % len(stuck), [_public(e) for e in open_entries],
+                unwithdrawable=[e["id"] for e in stuck])
+        now = time.time()
+        canceled = []
+        for entry in open_entries:
+            entry.update(state="canceled", updated=now,
+                         canceled={"at": now, "reason": str(reason or "session deleted")[:500]})
+            canceled.append(entry["id"])
+        # ``journal`` is the fact that later distinguishes a conversation this
+        # close removed from an id that never had one.  It has to be taken here,
+        # under the lock, before anything can unlink it: afterwards nobody can
+        # tell the two apart, and a delete's own return value is not evidence —
+        # it can report failure for bookkeeping that ran *after* the removal.
+        doc["lifecycle"] = {"state": "closing", "owner": owner.owner_id,
+                            "pid": os.getpid(), "at": now,
+                            "journal": _journal_exists(session, root),
+                            "reason": str(reason or "")[:200]}
+        _compact(doc)
+        _save(doc, path)
+        return {"session": session, "canceled": canceled,
+                "lifecycle": dict(doc["lifecycle"])}
+
+
+def finish_close(session, owner, *, directory=None):
+    """Record that the journal is gone.  Only the lease that began the close may.
+
+    ``closed`` is the durable half of the fix: it survives the process, so a
+    restarted server refuses a late acknowledgement instead of storing a request
+    nothing can ever run.
+    """
+    root = _root(directory)
+    owner = _require_owner(owner, session, root)
+    path = store_path(session, root=root)
+    with sessions._locked(path):
+        doc = _load(path, session)
+        record = doc.get("lifecycle") or {}
+        if record.get("owner") != owner.owner_id or record.get("state") not in LIFECYCLE_STATES:
+            raise StateConflict("conversation %s is not being closed by this lease"
+                                % session)
+        if record.get("state") == "closed":
+            return dict(record)                      # idempotent
+        record = dict(record, state="closed", at=time.time())
+        doc["lifecycle"] = record
+        _save(doc, path)
+        return dict(record)
+
+
+def abort_close(session, owner, *, reason="", directory=None):
+    """Take the mark back: the journal is still here, so the conversation is open.
+
+    What this does *not* undo is a discard.  A request cancelled on the way into
+    a close stays cancelled, with its reason, because cancellation is the record
+    the person was shown — silently resurrecting it would be inventing an
+    instruction they were told had been withdrawn.
+    """
+    root = _root(directory)
+    owner = _require_owner(owner, session, root)
+    path = store_path(session, root=root)
+    with sessions._locked(path):
+        doc = _load(path, session)
+        record = doc.get("lifecycle") or {}
+        if record.get("owner") != owner.owner_id or record.get("state") not in LIFECYCLE_STATES:
+            raise StateConflict("conversation %s is not being closed by this lease"
+                                % session)
+        doc["lifecycle"] = None
+        _save(doc, path)
+        return {"session": session, "state": "open",
+                "reason": str(reason or "")[:200]}
+
+
+class _Closure:
+    """The handle ``closing`` yields, and the receipt it leaves behind.
+
+    ``completed()`` is what the caller *believes* happened; ``outcome`` is what
+    the disk says, filled in on the way out and the only one a route may report.
+    ``settled`` is False when neither mark could be written, which is not a
+    silent failure: the ``closing`` mark is still there and the next reader
+    settles it from the journal the same way.
+    """
+
+    __slots__ = ("session", "canceled", "done", "outcome", "journal", "settled", "error")
+
+    def __init__(self, session, canceled):
+        self.session = session
+        self.canceled = list(canceled)
+        self.done = False
+        self.outcome = "closing"
+        self.journal = None
+        self.settled = False
+        self.error = None
+
+    def completed(self):
+        """The journal is gone; make the close permanent on exit."""
+        self.done = True
+
+    @property
+    def removed(self):
+        """Is the conversation actually gone?  True only with no journal left."""
+        return self.outcome == "closed"
+
+
+@contextlib.contextmanager
+def closing(session, owner, *, discard=False, reason="", directory=None):
+    """Hold a conversation closed for exactly as long as its deletion takes.
+
+    The mark is settled on *every* way out — return, ``False`` from the delete,
+    or an exception — and always from ``_close_outcome``, never from what the
+    body reported.  A delete that removes the journal and then fails at its own
+    bookkeeping reports failure for work done after the transcript was gone;
+    believing it would clear the tombstone and reopen a conversation nothing can
+    run.
+
+    Durability:
+
+    * ``closing`` is on disk before the journal is touched, and is authoritative
+      only while the lease that wrote it is held.  A process killed mid-delete
+      cannot silence a conversation: the next writer sees the lease is gone and
+      settles the mark by the same rule.
+    * ``closed`` is permanent for as long as no journal exists under that id.
+      That receipt is what a restarted process reads, and it is why a delete
+      deliberately leaves ``<sessions>/inbox/<id>.json`` behind.
+    * A genuinely failed delete — journal still present — rolls the mark back;
+      requests discarded on the way in stay cancelled.
+    * If neither mark can be written, ``closing`` stands and is settled the same
+      way once the lease drops.  All three failure orders converge.
+    """
+    root = _root(directory)
+    started = begin_close(session, owner, discard=discard, reason=reason,
+                          directory=directory)
+    closure = _Closure(session, started["canceled"])
+    try:
+        yield closure
+    except BaseException:
+        _settle_closure(closure, started, owner, root, directory, "delete failed")
+        raise
+    _settle_closure(closure, started, owner, root, directory,
+                    reason or "delete did not happen")
+
+
+def _settle_closure(closure, started, owner, root, directory, reason):
+    """Write the mark the journal calls for, and record what was really done."""
+    record = started["lifecycle"]
+    closure.journal = _journal_exists(closure.session, root)
+    closure.outcome = _close_outcome(closure.session, record, root)
+    try:
+        if closure.outcome == "closed":
+            finish_close(closure.session, owner, directory=directory)
+        else:
+            abort_close(closure.session, owner, reason=reason, directory=directory)
+        closure.settled = True
+    except (InboxError, OSError) as exc:
+        # Not swallowed: the caller gets the reason, and the ``closing`` mark that
+        # is still on disk is settled from the journal by the next reader.
+        closure.settled, closure.error = False, exc
+
+
 # -------------------------------------------------------------- accepting
 
 
@@ -676,6 +1077,13 @@ def enqueue(session, entry_id, text, *, mode="steer", metadata=None, config=None
                                  % entry_id)
             return {"id": entry_id, "session": session, "state": tomb.get("state"),
                     "digest": digest, "duplicate": True, "compacted": True}
+        # Only now, for the same reason the duplicate check comes first: a retry
+        # of a request this conversation already holds is answered with the
+        # record that exists — including the cancellation a delete gave it —
+        # rather than turned into "you never sent that".  What a closing or
+        # closed conversation refuses is *new* input, which is the thing that
+        # would otherwise be acknowledged into a conversation being removed.
+        _refuse_if_closed(doc, session, root)
         # Caps are checked after the duplicate check on purpose: a retry of an
         # already-accepted request must not start failing because the inbox
         # filled up afterwards.
@@ -1058,18 +1466,23 @@ def status(session, *, directory=None):
     the run starts), so "missing" is not an error.  It does mean this id is not
     yet an executable session, and a caller listing work to resume should treat
     "missing" and "invalid" differently from "ok" rather than launching either.
+
+    ``lifecycle`` is the other half of that question and the one that separates a
+    session id nothing has created yet from one a delete finished on: ``open``,
+    ``closing`` or ``closed``.
     """
     root = _root(directory)
     path = store_path(session, root=root)
     exists = os.path.exists(path)
     with sessions._locked(path):
         doc = _load(path, session)
+        life = _settle_lifecycle(doc, session, root)
     counts = {state: 0 for state in STATES}
     for entry in doc["entries"]:
         counts[entry["state"]] += 1
     open_entries = [e for e in doc["entries"] if e["state"] in OPEN_STATES]
     return {
-        "session": session, "exists": exists, "counts": counts,
+        "session": session, "exists": exists, "counts": counts, "lifecycle": life,
         "open_bytes": sum(_payload_bytes(e) for e in open_entries),
         "tombstones": len(doc["tombstones"]), "next_seq": doc["next_seq"],
         "updated": doc.get("updated") or 0.0,
