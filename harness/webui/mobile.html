@@ -320,7 +320,9 @@ var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New
   "worker cannot accept steering during this run":"此工作进程在本次运行中不支持插话","worker cannot pause for Collie approval round-trips":"此工作进程无法暂停并等待 Collie 审批","worker has no supported cancellation channel":"此工作进程没有受支持的取消通道","worker default":"工作进程默认模型",
   "Connection interrupted — retrying…":"连接中断，正在重试…","The run is still starting; try again in a moment.":"任务仍在启动，请稍后再试。",
   "The run is still starting; wait for its session id before stopping.":"任务仍在启动，请拿到会话编号后再停止。",
-  "Steer not delivered":"补充要求未送达","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任务已停止。",
+  "Steer not delivered":"补充要求未送达","Steer unconfirmed — it may have arrived; your words are kept":"补充要求未确认——可能已送达；文字已为你保留",
+  "Earlier steer not delivered":"较早的那条补充要求未送达","Earlier steer unconfirmed — it may have arrived":"较早的那条补充要求未确认——可能已送达",
+  "Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任务已停止。",
   "Could not stop the run":"无法停止任务","Open chat":"打开对话",
   "Stopped at the turn limit":"在轮次上限处停下",
   "The work above may be partway through — send “continue” to carry on.":"上面的内容可能只完成了一部分——发送“继续”即可接着做。",
@@ -389,7 +391,9 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "worker cannot accept steering during this run":"此工作程序在本次執行中不支援補充要求","worker cannot pause for Collie approval round-trips":"此工作程序無法暫停並等待 Collie 核准","worker has no supported cancellation channel":"此工作程序沒有受支援的取消通道","worker default":"工作程序預設模型",
   "Connection interrupted — retrying…":"連線中斷，正在重試…","The run is still starting; try again in a moment.":"任務仍在啟動，請稍後再試。",
   "The run is still starting; wait for its session id before stopping.":"任務仍在啟動，請取得工作階段編號後再停止。",
-  "Steer not delivered":"補充要求未送達","Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任務已停止。",
+  "Steer not delivered":"補充要求未送達","Steer unconfirmed — it may have arrived; your words are kept":"補充要求未確認——可能已送達；文字已為你保留",
+  "Earlier steer not delivered":"較早的那條補充要求未送達","Earlier steer unconfirmed — it may have arrived":"較早的那條補充要求未確認——可能已送達",
+  "Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任務已停止。",
   "Could not stop the run":"無法停止任務","Open chat":"開啟對話",
   "Stopped at the turn limit":"在輪次上限處停下",
   "The work above may be partway through — send “continue” to carry on.":"上面的內容可能只完成了一部分——傳送「繼續」即可接著做。",
@@ -976,21 +980,47 @@ function subscribeMirror(sid){ if(mirrorES){ mirrorES.close(); mirrorES=null; } 
 }
 var bannerEl=null;
 function showBanner(x){ hideBanner(); bannerEl=document.createElement('div'); bannerEl.className='banner'; bannerEl.textContent=x; $("log").appendChild(bannerEl); scrollDown(); }
-function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} }
+function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} steerBannerSeq=0; }
 function setSendMode(){ var b=$("send"), active=running||externalRunning;
   b.classList.toggle('stop',active);b.textContent=cancelling?'…':(active?'■':'↑');b.disabled=!!cancelling;
   b.setAttribute('aria-label',active?t('Stop run'):t('Send')); b.title=active?t('Stop run'):t('Send');
   $("input").placeholder=active?(runCapabilitiesKnown?(runCanSteer?t('Steer while Collie works…'):t('This worker cannot be steered — stop it or wait')):t('Waiting for worker capabilities…')):t('Message Collie…'); setRunSetupDisabled(active);paintOperationalState(); }
-function doSend(){ var inp=$("input"); var qv=inp.value.trim(); if(!qv) return;
+// Words typed into the composer belong to the person who typed them until the server says it took
+// them: a refusal, a dropped POST or an answer without a receipt must leave them editable here. The
+// draft is therefore remembered by its raw text (whitespace and newlines included) and by the screen
+// it was typed on, so the clear-on-receipt can never swallow newer typing and a late answer can
+// never write over a chat the user has already moved to. Nothing is ever re-POSTed on its own — an
+// interrupted request may already have been accepted upstream, so only the user resends.
+// Feedback is owned the same way. Answers arrive in whatever order the network gives them, so each
+// steer carries a number: a receipt only takes back the banner its own request (or an older one) put
+// there, and a failure that lost the race no longer speaks as if it were the latest attempt — it
+// names the sentence it belongs to instead. Three counters, no queue and no replay.
+var steerInFlight={}, steerSeq=0, steerAnswered=0, steerBannerSeq=0;
+function doSend(){ var inp=$("input"); var raw=inp.value, qv=raw.trim(); if(!qv) return;
   if(running||externalRunning){
     if(!currentSession){ showBanner(t('The run is still starting; try again in a moment.')); return; }
     if(!runCapabilitiesKnown||!runCanSteer){showBanner(t(runCapabilitiesKnown?'This worker cannot be steered — stop it or wait':'Waiting for worker capabilities…'));return;}
-    inp.value=''; autosize();
+    var key=currentSession+'\n'+qv; if(steerInFlight[key]) return;   // a second Enter on the same words is a slip, not a second request
+    steerInFlight[key]=true; var token=navigationToken, turn=curTurn, refused=false, seq=++steerSeq;
     fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,q:qv})})
-      .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+      .then(function(r){refused=!r.ok;return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
       .then(function(x){ if(!x.ok||!x.d||!x.d.queued) throw new Error((x.d&&(x.d.error||x.d.message))||'not delivered');
-        if(curTurn) addStep(curTurn,t('Steer'),qv.slice(0,80)); hideBanner(); })
-      .catch(function(e){ if(curTurn) addStep(curTurn,t('Error'),t('Steer not delivered')+': '+e.message,true); showBanner(t('Steer not delivered')); });
+        if(token!==navigationToken) return;                        // this receipt answers a screen that is gone
+        if(inp.value===raw){ inp.value=''; autosize(); }            // clear only the very draft that was accepted
+        if(turn) addStep(turn,t('Steer'),qv.slice(0,80));
+        if(steerBannerSeq<=seq) hideBanner();                       // take back this steer's complaint, never a newer one's
+        steerAnswered=Math.max(steerAnswered,seq); })
+      .catch(function(e){ if(token!==navigationToken) return;
+        // A refusal is proof it did not arrive; a request that never came back is only unproven. A
+        // failure a newer steer already outran is still reported, but as that earlier sentence —
+        // its words are no longer the ones in the composer, so it must not claim they were kept.
+        var late=seq<steerAnswered, excerpt='“'+qv.slice(0,40)+'”';
+        var note=refused?t(late?'Earlier steer not delivered':'Steer not delivered')
+                        :t(late?'Earlier steer unconfirmed — it may have arrived':'Steer unconfirmed — it may have arrived; your words are kept');
+        if(turn) addStep(turn,t('Error'),note+' '+excerpt+': '+e.message,true);
+        if(steerBannerSeq<=seq){ showBanner(late?note+': '+excerpt:note); steerBannerSeq=seq; }
+        steerAnswered=Math.max(steerAnswered,seq); })
+      .then(function(){ delete steerInFlight[key]; });
   } else { if(!validateRunSetup())return; inp.value=''; autosize(); runStream(qv); } }
 var cancelling=false;
 function watchCancel(){var watchSession=currentSession,watchRun=currentRun;clearTimeout(cancelTimer);cancelTimer=setTimeout(function poll(){fetch(api('/api/runs')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){var row=(d.runs||[]).find(function(x){return x.session===watchSession&&x.run===watchRun;});if(row&&['canceled','done','failed'].indexOf(row.state)>=0){var terminal={session:row.session,run:row.run,canceled:row.state==='canceled',error:row.state==='failed'?row.error:''};if(!terminalWasHandled(terminal))onEvent('done',terminal,watchSession);endRun(terminal);if(row.state!=='canceled')showBanner(row.state==='failed'?(row.error||'Run failed'):'The run finished before it could be stopped.');return;}cancelTimer=setTimeout(poll,700);}).catch(function(){cancelTimer=setTimeout(poll,1200);});},700);}
