@@ -3342,6 +3342,62 @@ class MissionStore:
                  "payload": _jl(r["payload_json"]), "at": r["at"]}
                 for r in reversed(rows)]
 
+    def optional_skip(self, mission_id, skip_id):
+        """Return one durable omission record by identity, or None.
+
+        The bounded ``case["skipped_steps"]`` projection is a model-facing view
+        that rolls; the journal is the authoritative history.  Idempotence for a
+        repeated optional skip must be decided here so an old identical decision
+        is not recorded or executed a second time after the projection rolled.
+        The mission_id predicate keeps one Mission's history out of another's.
+        """
+        if not skip_id:
+            return None
+        with self._lock:
+            row = self.db.execute(
+                "SELECT payload_json,at FROM mission_events WHERE mission_id=? AND "
+                "kind='intervention' AND name='optional_skipped' AND nonce=? "
+                "ORDER BY event_id LIMIT 1", (mission_id, str(skip_id))).fetchone()
+        if row is None:
+            return None
+        payload = _jl(row["payload_json"])
+        if not isinstance(payload, dict) or payload.get("truncated"):
+            # A compacted ledger row still proves the decision happened.
+            payload = {"id": str(skip_id)}
+        record = dict(payload)
+        record.setdefault("id", str(skip_id))
+        record["at"] = int(record.get("at") or row["at"] or 0)
+        return record
+
+    def optional_skips(self, mission_id, limit=200, offset=0):
+        """Read the durable omission history oldest-first with its true total.
+
+        Returns ``(rows, total)`` so a caller can show a bounded page and still
+        say honestly how many omissions exist.  Nothing here reaches a model
+        prompt: this is the user/report-facing durable record.
+        """
+        limit, offset = max(0, int(limit)), max(0, int(offset))
+        with self._lock:
+            total = int(self.db.execute(
+                "SELECT COUNT(*) FROM mission_events WHERE mission_id=? AND "
+                "kind='intervention' AND name='optional_skipped'",
+                (mission_id,)).fetchone()[0] or 0)
+            rows = self.db.execute(
+                "SELECT nonce,payload_json,at FROM mission_events WHERE mission_id=? AND "
+                "kind='intervention' AND name='optional_skipped' "
+                "ORDER BY event_id LIMIT ? OFFSET ?",
+                (mission_id, limit, offset)).fetchall() if limit else []
+        out = []
+        for r in rows:
+            payload = _jl(r["payload_json"])
+            if not isinstance(payload, dict) or payload.get("truncated"):
+                payload = {"id": r["nonce"]}
+            record = dict(payload)
+            record.setdefault("id", r["nonce"])
+            record["at"] = int(record.get("at") or r["at"] or 0)
+            out.append(record)
+        return out, total
+
     def do_not_repeat(self, mission_id, limit=20):
         """Describe consequential actions protected by durable semantic keys.
 
@@ -4951,9 +5007,14 @@ class MissionDriver:
                for x in case.get("pending_authorizations", [])):
             return None
         skipped = [dict(x) for x in case.get("skipped_steps", []) if isinstance(x, dict)]
-        previous = next((x for x in skipped if x.get("id") == item["id"]), None)
+        projected = next((x for x in skipped if x.get("id") == item["id"]), None)
+        # The case projection is bounded and rolls; the journal is authoritative.
+        # Consult it so an identical skip decided before the roll stays a no-op
+        # instead of being recorded as a new step.  Identity is the exact
+        # request/summary digest, so a changed requirement is still a new skip.
+        previous = projected or self.store.optional_skip(mission_id, item["id"])
         item["at"] = (previous or {}).get("at") or int(time.time())
-        if not previous:
+        if not projected:
             skipped.append(item)
         case["skipped_steps"] = skipped[-40:]
         # Skips never enter resolved_authorizations: they grant no permission.

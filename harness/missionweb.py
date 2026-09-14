@@ -373,12 +373,93 @@ def _mission_summary(mission, steps, receipts, runtime, inbox, next_wait,
     }
 
 
-def _mission_report(mission, summary, activity, receipts, runtime):
+# A user report may list far more omissions than the bounded model-facing case
+# projection holds.  This page bound protects the feed, and any overflow is
+# stated in the report instead of being presented as the complete list.
+OMISSION_REPORT_LIMIT = 200
+
+# The rendered Markdown has always been capped at this many characters.  Long
+# omission summaries can exceed it, so the cap is applied by dropping whole
+# bullet lines and saying so, never by silently cutting a list that the text
+# claims is complete.
+REPORT_MARKDOWN_LIMIT = 32000
+
+
+def _markdown_short_notice(shown, total, limit=REPORT_MARKDOWN_LIMIT):
+    """Return the banner announcing that this Markdown text itself was cut."""
+    detail = ("it lists %d of %d recorded omissions below"
+              % (shown, total) if total else "some sections below are cut short")
+    return ["",
+            "> **Shortened text.** This Markdown summary is capped at %d "
+            "characters, so %s. The report's `skipped_steps` rows and "
+            "`skipped_steps_total` remain complete and authoritative "
+            "(`markdown_truncated` is true)." % (limit, detail)]
+
+
+def _render_report_markdown(head, omission_intro, omission_items, tail,
+                            total_omissions, limit=REPORT_MARKDOWN_LIMIT):
+    """Join one report's Markdown within ``limit`` characters, honestly.
+
+    ``omission_intro(shown)`` renders the section heading for however many
+    bullets survive.  The omission list is the only unbounded part of this
+    document, so it is the part that gives way: entries are dropped from the end
+    until the banner, the closing note and the trailing sections all fit.
+    Returns ``(markdown, truncated)``.
+    """
+    whole = "\n".join(head + omission_intro(len(omission_items)) +
+                      omission_items + tail)
+    if len(whole) <= limit:
+        return whole, False
+    for kept in range(len(omission_items), -1, -1):
+        dropped = len(omission_items) - kept
+        note = ["", "_%d further omission line%s left out of this text; the "
+                "report's `skipped_steps` rows list them all._"
+                % (dropped, " is" if dropped == 1 else "s are")] if dropped else []
+        text = "\n".join(
+            head[:1] + _markdown_short_notice(kept, total_omissions, limit) +
+            head[1:] + omission_intro(kept) + omission_items[:kept] + note + tail)
+        if len(text) <= limit:
+            return text, True
+    # Even with no omission bullets the rest overruns; keep the banner, which
+    # sits at the top, and cut the tail rather than overstate what is here.
+    return text[:limit], True
+
+
+def _omission_history(store, mission, limit=OMISSION_REPORT_LIMIT):
+    """Return ``(newest page of omissions, honest total)`` for one Mission.
+
+    The journal is authoritative.  A legacy Mission may still carry case skips
+    that were never journalled; dropping those would lose real omissions, so
+    each case row with no journal record of its own is appended and counted.
+    """
+    mission_id = getattr(mission, "mission_id", mission)
+    case = getattr(mission, "case", None) or {}
+    rows, total = store.optional_skips(mission_id, limit=limit)
+    if total > limit:
+        rows, total = store.optional_skips(mission_id, limit=limit, offset=total - limit)
+    legacy, seen = [], set()
+    for row in case.get("skipped_steps", []):
+        if not isinstance(row, dict):
+            continue
+        marker = row.get("id") or (row.get("branch") or "", row.get("summary") or "")
+        if marker in seen or store.optional_skip(mission_id, row.get("id")):
+            continue
+        seen.add(marker)
+        legacy.append(row)
+    return rows + legacy, total + len(legacy)
+
+
+def _mission_report(mission, summary, activity, receipts, runtime, omissions=None):
     """Return a stable, redacted progress feed suitable for UI and integrations.
 
     The report deliberately derives from coverage, the compact activity ledger,
     receipts, and runtime counters.  It never exports raw Mission case, model
     messages, browser args, credentials, or checkpoint payloads.
+
+    ``omissions`` is the ``(rows, total)`` durable omission history from the
+    Mission journal.  The case only keeps a bounded model-facing projection, so
+    without it this report can only show that projection and says so rather than
+    presenting a truncated list as the complete one.
     """
     case = mission.case or {}
     coverage = _campaign_coverage(case)
@@ -414,6 +495,14 @@ def _mission_report(mission, summary, activity, receipts, runtime):
         "uncertain": sum(1 for x in receipts if x.get("verdict") == "inconclusive"),
         "execution_attempted": sum(1 for x in receipts if x.get("fired")),
     }
+    if omissions is None:
+        # No durable history supplied: fall back to the bounded case projection,
+        # which the totals below then describe honestly as possibly incomplete.
+        omission_rows = [x for x in case.get("skipped_steps", []) if isinstance(x, dict)]
+        omission_total = len(omission_rows)
+    else:
+        omission_rows, omission_total = omissions
+    omission_total = max(int(omission_total), len(omission_rows))
     completed = sum(1 for x in coverage if x.get("status") == "completed")
     closed = sum(1 for x in coverage if x.get("status") in terminal)
     revision = int(runtime.get("progress_seq") or 0)
@@ -446,7 +535,10 @@ def _mission_report(mission, summary, activity, receipts, runtime):
         "skipped_steps": [{"summary": _short(x.get("summary"), 1000),
                            "reason": _short(x.get("reason"), 1000),
                            "branch": _short(x.get("branch"), 180)}
-                          for x in case.get("skipped_steps", []) if isinstance(x, dict)],
+                          for x in omission_rows],
+        "skipped_steps_total": omission_total,
+        "skipped_steps_shown": len(omission_rows),
+        "skipped_steps_truncated": omission_total > len(omission_rows),
         "log": log,
         "runtime": {
             "model_calls": int(runtime.get("model_calls") or 0),
@@ -485,22 +577,44 @@ def _mission_report(mission, summary, activity, receipts, runtime):
             detail = (" — " + item["summary"]) if item["summary"] else ""
             lines.append("- [%s] %s%s" %
                          (item["status"], item["branch"] or "Unnamed branch", detail))
-    if report["skipped_steps"]:
-        lines.extend(["", "## Optional steps skipped"])
-        for item in report["skipped_steps"]:
-            lines.append("- %s: %s" % (item["summary"], item["reason"]))
+    omission_items = ["- %s: %s" % (item["summary"], item["reason"])
+                      for item in report["skipped_steps"]]
+
+    def omission_intro(shown):
+        """Head the omission section for the ``shown`` bullets this text keeps."""
+        if not omission_items:
+            return []
+        intro = ["", "## Optional steps skipped"]
+        if report["skipped_steps_truncated"]:
+            intro.append(
+                "Showing the %d most recent of %d recorded omissions; the earlier %d "
+                "stay in this Mission's durable journal and can be read in full there."
+                % (report["skipped_steps_shown"], report["skipped_steps_total"],
+                   report["skipped_steps_total"] - report["skipped_steps_shown"]))
+        if shown < len(omission_items):
+            # Never claim a complete list when this text had to drop lines.
+            intro.append(
+                "This text is shortened and spells out %d of those %d entries; the "
+                "report's `skipped_steps` rows carry every one."
+                % (shown, len(omission_items)))
+        elif not report["skipped_steps_truncated"]:
+            intro.append("All %d recorded omissions are listed."
+                         % report["skipped_steps_total"])
+        return intro
+    tail = []
     if needs_you:
-        lines.extend(["", "## Needs you"])
+        tail.extend(["", "## Needs you"])
         for item in needs_you:
             scope = (item["domain"] + ": ") if item["domain"] else ""
             suffix = " (blocking)" if item["blocking"] else " (non-blocking)"
-            lines.append("- %s%s%s" % (scope, item["summary"], suffix))
+            tail.append("- %s%s%s" % (scope, item["summary"], suffix))
     if log:
-        lines.extend(["", "## Recent activity"])
+        tail.extend(["", "## Recent activity"])
         for item in log[-12:]:
-            lines.append("- [%s] %s" % (item["status"], item["summary"] or
-                         item["capability"] or "Activity recorded"))
-    report["markdown"] = "\n".join(lines)[:32000]
+            tail.append("- [%s] %s" % (item["status"], item["summary"] or
+                        item["capability"] or "Activity recorded"))
+    report["markdown"], report["markdown_truncated"] = _render_report_markdown(
+        lines, omission_intro, omission_items, tail, report["skipped_steps_total"])
     return report
 
 
@@ -3556,7 +3670,8 @@ class MissionService:
             "created_at": m.created_at, "updated_at": m.updated_at,
             "case": _clean(m.case),
             "summary": summary,
-            "report": _mission_report(m, summary, activity, receipts, runtime),
+            "report": _mission_report(m, summary, activity, receipts, runtime,
+                                      omissions=_omission_history(self.store, m)),
             "steps": steps,
             "activity": activity,
             "recent_events": recent_events,
@@ -3658,6 +3773,22 @@ class MissionService:
         if status.get("error"):
             return status
         return status.get("report") or {"error": "progress report unavailable"}
+
+    def omissions(self, mid: str, limit: int = OMISSION_REPORT_LIMIT,
+                  offset: int = 0) -> dict:
+        """Page the durable omission history when a report had to truncate it.
+
+        The progress report shows the newest page; this is the truthful way to
+        reach the rest without unbounding either the report or a model prompt.
+        ``total`` counts journalled omissions only, so a legacy Mission's
+        un-journalled case skips appear in the report but not in this paging.
+        """
+        rows, total = self.store.optional_skips(mid, limit=limit, offset=offset)
+        return {"mission_id": mid, "total": total, "offset": max(0, int(offset)),
+                "skipped_steps": [{"summary": _short(x.get("summary"), 1000),
+                                   "reason": _short(x.get("reason"), 1000),
+                                   "branch": _short(x.get("branch"), 180),
+                                   "at": int(x.get("at") or 0)} for x in rows]}
 
     def missions(self) -> list:
         rows = []
