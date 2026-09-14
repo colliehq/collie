@@ -14,6 +14,14 @@ sessions, and revoked permissions coming back are all the same bug.
 * Re-entrancy.  Nested calls on one thread must not try to lock the same byte again on a second
   handle — Windows refuses that outright and POSIX ``flock`` on a second description deadlocks.
   The OS lock is taken once, at the outermost nesting level.
+* One deadline for both locks.  ``timeout`` is a promise to the caller, and every caller here
+  turns a timeout into an answer a person sees ("this bundle is in use", HTTP 409) rather than
+  into a wait.  A waiting *thread* is exactly as much of a second writer as a waiting *process*,
+  so it gets the same answer: the ``RLock`` is taken with the caller's own deadline, not
+  unconditionally.  Waiting on it forever while the OS lock had a deadline made one operation
+  behave two different ways depending on where the other writer happened to live — and in the
+  threaded web server, where both writers are usually local, it wedged the request thread.
+  Re-entry on the owning thread still costs nothing and can never time out.
 * Crash release.  The kernel drops the lock when a holder exits, so a killed process cannot
   strand the file.  ``claim``/``unclaim`` expose the same property as a liveness probe: if you
   can take another owner's claim file, that owner is gone.  This is trustworthy process identity,
@@ -181,15 +189,42 @@ def _acquire(path: str, timeout: float):
         delay = min(0.02, delay * 2)
 
 
+def _acquire_local(lock: _PathLock, deadline: float) -> None:
+    """Take the process-local ``RLock`` within the caller's own deadline.
+
+    Re-entry on the owning thread returns immediately whichever call is used, so a nested
+    transaction never spends budget here and never raises.  Anyone else pays the same deadline
+    the OS lock charges a competing process: a caller that asked for ten seconds must not be
+    parked for ten minutes because the other writer turned out to be a sibling thread.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        # ``Lock.acquire`` rejects a timeout above TIMEOUT_MAX outright, and a caller passing a
+        # very large budget means "wait", not "raise OverflowError instead of waiting".
+        taken = lock.local.acquire(timeout=min(remaining, threading.TIMEOUT_MAX))
+    else:
+        # An exhausted budget still owes the owning thread its re-entry, and owes everyone
+        # else one honest attempt; ``acquire(timeout=0)`` and blocking=False agree on both.
+        taken = lock.local.acquire(blocking=False)
+    if not taken:
+        raise StateLockTimeout("state lock is still held by another writer: %s" % lock.path)
+
+
 @contextlib.contextmanager
 def transaction(path, *, timeout: float = DEFAULT_TIMEOUT):
-    """Serialize a whole read-modify-write of ``path`` across threads and processes."""
+    """Serialize a whole read-modify-write of ``path`` across threads and processes.
+
+    ``timeout`` is the total budget for becoming the writer, spent across the process-local
+    lock and then the OS lock, and ``StateLockTimeout`` is raised rather than waiting past it.
+    """
     lock = _lock_for(path)
     holder = os.getpid()
-    with lock.local:
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    _acquire_local(lock, deadline)
+    try:
         outermost = lock.depth == 0
         if outermost:
-            lock.handle = _acquire(lock.path, timeout)
+            lock.handle = _acquire(lock.path, deadline - time.monotonic())
         lock.depth += 1
         try:
             yield
@@ -203,6 +238,11 @@ def transaction(path, *, timeout: float = DEFAULT_TIMEOUT):
                     handle, lock.handle = lock.handle, None
                     if handle is not None:
                         _unlock(handle)
+    finally:
+        # Unconditional, exactly as the previous ``with lock.local`` was: after a fork inside
+        # the block this object is already off ``_LOCKS``, and the child's copy of the RLock is
+        # its own to drop.
+        lock.local.release()
 
 
 class Claim:
