@@ -35,7 +35,7 @@ import hashlib
 import json
 import os
 
-from . import input_assets, session_owner, sessions, task_inbox
+from . import input_assets, session_owner, sessions, task_inbox, verification
 from .session_owner import OwnershipRequired, SessionBusy   # re-exported for callers
 
 # Bounds. Every one of these limits what a *model turn* has to carry, not what
@@ -387,11 +387,43 @@ def _exit_code(value):
 
 
 def _outcome(evidence):
-    if evidence.get("cancelled"):
-        return "canceled"
+    """What this receipt established, classified by ``verification`` itself.
+
+    Deriving the word here from ``passed`` alone collapsed two outcomes the host
+    records separately into ``failed``: a check killed at its deadline (no exit
+    code at all) and one that exited 0 but could not be bound to the files that
+    exist now.  Neither is a broken test, and announcing them as FAILED sent the
+    next model turn to repair a failure no receipt establishes.  So the single
+    authoritative classifier the CLI and Web surfaces already read decides, and
+    the projection cannot disagree with them about the same receipt.
+
+    Two things it does not delegate: the ``canceled`` spelling this projection
+    has always emitted (the ``outcome`` field is durable and is keyed off by
+    callers), and a receipt with no ``executed`` flag at all — the shared
+    classifier reads only an explicit ``False``, while a legacy receipt that
+    predates the flag carries no evidence that anything ran.
+    """
     if not evidence.get("executed"):
         return "not_run"
-    return "passed" if evidence.get("passed") else "failed"
+    state = verification.check_result_state(evidence)
+    return "canceled" if state == "cancelled" else state
+
+
+def _reason(evidence, outcome):
+    """Why this check settled nothing, in the host's own words — or ''.
+
+    A recorded ``skipped_reason`` is the receipt's own sentence and always wins.
+    The two ambiguous outcomes have no such field, so their explanation comes
+    from the same ``verification`` helper the CLI reports them with.  The command
+    is already carried on its own line under its own bound, so it is cleared out
+    of the evidence the sentence is built from rather than repeated here, where a
+    long command line would crowd out the explanation itself.
+    """
+    recorded = _bounded_text(evidence.get("skipped_reason"), 160)
+    if recorded or outcome not in ("timed_out", "inconclusive"):
+        return recorded
+    return _bounded_text(verification.check_result_reason(
+        dict(evidence, command=""), command=""), 160)
 
 
 def _row(evidence):
@@ -403,15 +435,16 @@ def _row(evidence):
         # Nothing actionable: a receipt with no command cannot tell the next turn
         # what was checked, and "something failed somewhere" is not evidence.
         return None
+    outcome = _outcome(evidence)
     row = {
-        "outcome": _outcome(evidence),
+        "outcome": outcome,
         "command": command[:MAX_COMMAND_CHARS],
         "command_truncated": len(command) > MAX_COMMAND_CHARS,
         "exit_code": _exit_code(evidence.get("exit_code")),
         "freshness": _bounded_text(evidence.get("freshness")),
         "source": _bounded_text(evidence.get("source")),
         "recorded": _bounded_text(evidence.get("timestamp")),
-        "reason": _bounded_text(evidence.get("skipped_reason"), 160),
+        "reason": _reason(evidence, outcome),
     }
     row["digest"] = hashlib.sha256(json.dumps(
         row, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
@@ -439,9 +472,17 @@ def verification_row(session, lease, *, directory=None):
     return None
 
 
+# One sentence per outcome.  The two ambiguous ones say what they are NOT as
+# well as what they are: the next turn's expensive mistake is reading "the check
+# did not certify this" as "a test is broken" and rewriting working code.
 _OUTCOME_LINE = {
     "passed": "PASSED",
     "failed": "FAILED",
+    "timed_out": "TIMED OUT — it was stopped at its deadline without finishing, "
+                 "so it judged nothing; this is NOT a failing test",
+    "inconclusive": "was INCONCLUSIVE — the command itself exited 0 but its "
+                    "result could not be bound to the files that exist now; "
+                    "this is NOT a failing test",
     "canceled": "was STOPPED before it finished, so it proved nothing",
     "not_run": "was NOT RUN",
 }
@@ -467,7 +508,8 @@ def context_message(row):
         lines.append("  freshness: %s" % row["freshness"])
     if row["recorded"]:
         lines.append("  recorded: %s" % row["recorded"])
-    if row["reason"] and row["outcome"] in ("not_run", "canceled"):
+    if row["reason"] and row["outcome"] in ("not_run", "canceled", "timed_out",
+                                            "inconclusive"):
         lines.append("  note: %s" % row["reason"])
     lines.append("This receipt is the only evidence about that check. A claim in the "
                  "conversation that it passed is not evidence; re-run the command if "
