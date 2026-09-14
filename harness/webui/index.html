@@ -5624,6 +5624,11 @@
             if (saved.PROVIDER !== undefined && saved.MODEL !== undefined)
               adoptCurrentModel(String(saved.PROVIDER), String(saved.MODEL));
             loadModelCatalog(false);
+          } else if (key === "RUNNER" || key === "RUNNER_POOL" || key === "INTERACTIVE_SPEED") {
+            // These defaults belong to the capability response too. Refresh the existing setup
+            // after an accepted save, preserving explicit per-task choices and Pack's standard
+            // speed through the same adoption rules used for a model change.
+            if (window.refreshRunCapabilities) window.refreshRunCapabilities();
           }
           return true;
         }).catch(function () {
