@@ -1039,7 +1039,19 @@ $("mobileActivityClose").onclick=function(){setMobileActivityOpen(false);};
 $("mobileActivityRefresh").onclick=refreshMobileActivity;
 $("send").onclick=function(){ if(running||externalRunning) stopRun(); else doSend(); };
 $("input").addEventListener('input',autosize);
-$("input").addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+// An IME (pinyin, kana, hangul…) confirms its candidate with Enter. That Enter belongs to the
+// keyboard, not to us: sending on it would post half-typed romaji and empty the box. `isComposing`
+// is the signal in Blink/Gecko (keydown arrives before compositionend); WebKit and older Android
+// keyboards end the composition first and/or report only the legacy keyCode 229, so both are read,
+// plus the composition state itself for keyboards that report neither. No timers: the state ends
+// on compositionend (or on the first non-composing input), so the next Enter sends normally.
+var imeComposing=false;
+$("input").addEventListener('compositionstart',function(){ imeComposing=true; });
+$("input").addEventListener('compositionend',function(){ imeComposing=false; });
+$("input").addEventListener('input',function(e){ if(!e.isComposing) imeComposing=false; });
+$("input").addEventListener('keydown',function(e){ if(e.key!=='Enter'||e.shiftKey) return; e.preventDefault();
+  if(e.isComposing||e.keyCode===229||imeComposing) return;   // the keyboard owns this Enter, not us
+  doSend(); });
 $("drawer").addEventListener('keydown',function(e){if(e.key!=='Tab')return;var items=Array.prototype.slice.call(this.querySelectorAll('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'));if(!items.length)return;var first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
 $("mobileActivity").addEventListener("keydown",function(e){if(e.key!=="Tab")return;var items=Array.prototype.slice.call(this.querySelectorAll('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'));if(!items.length)return;var first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
 document.addEventListener('keydown',function(e){if(e.key!=="Escape")return;if(mobileActivityOpen)setMobileActivityOpen(false);else if($("drawer").classList.contains('on'))closeDrawer(true);});
