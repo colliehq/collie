@@ -510,8 +510,18 @@ def public_entry(entry):
     return out
 
 
-def list_public(session, *, limit=200):
-    return [public_entry(row) for row in task_inbox.list_entries(session, limit=limit)]
+def list_public(session, *, limit=200, include_open=True):
+    """The listing a surface renders: history up to ``limit``, plus everything open.
+
+    A queue panel shows what is waiting, so a long-running conversation whose
+    retained history already fills ``limit`` must not answer "nothing is
+    queued" for a request the store is still holding.  ``include_open`` keeps
+    that guarantee here rather than leaving each caller to rediscover it; the
+    extra rows are capped by the store's own ``MAX_PENDING``, and no finished
+    entry is dropped to make room for them.
+    """
+    return [public_entry(row) for row in
+            task_inbox.list_entries(session, limit=limit, include_open=include_open)]
 
 
 # -------------------------------------------------------------------- delivery

@@ -1438,8 +1438,23 @@ def get(session, entry_id, *, directory=None):
         return dict(tomb, compacted=True, session=session) if tomb else None
 
 
-def list_entries(session, *, states=None, modes=None, limit=200, directory=None):
-    """Accepted entries in acceptance order, surviving any restart."""
+def list_entries(session, *, states=None, modes=None, limit=200, include_open=False,
+                 directory=None):
+    """Accepted entries in acceptance order, surviving any restart.
+
+    ``limit`` cuts the oldest-first listing, which is the right shape for a page
+    of history but the wrong one for work still waiting: a session that has
+    filled its retained history (``MAX_TERMINAL_RETAINED``) spends the whole
+    budget on finished entries, and a request accepted afterwards falls off the
+    end of the listing while the store still holds it as ``pending``.
+
+    ``include_open`` is for the surfaces that answer "what is queued": entries
+    in ``OPEN_STATES`` that the cut would have dropped are added back, still in
+    acceptance order.  The result stays bounded — the store already refuses more
+    than ``MAX_PENDING`` open entries, and that cap is applied here too rather
+    than trusted — so this adds at most ``MAX_PENDING`` rows to ``limit`` and
+    never trades away history to make room.
+    """
     if states is not None:
         states = {s for s in states}
         unknown = states - set(STATES)
@@ -1455,7 +1470,12 @@ def list_entries(session, *, states=None, modes=None, limit=200, directory=None)
                 if (states is None or e["state"] in states)
                 and (modes is None or e["mode"] in modes)]
     rows.sort(key=lambda e: e["seq"])
-    return [_public(e) for e in rows[:max(0, int(limit))]]
+    kept = rows[:max(0, int(limit))]
+    if include_open and len(kept) < len(rows):
+        dropped_open = [e for e in rows[len(kept):] if e["state"] in OPEN_STATES]
+        if dropped_open:
+            kept = sorted(kept + dropped_open[:MAX_PENDING], key=lambda e: e["seq"])
+    return [_public(e) for e in kept]
 
 
 def status(session, *, directory=None):

@@ -4995,7 +4995,11 @@ class Handler(BaseHTTPRequestHandler):
         """GET /api/task-inbox?session=SID — every request accepted for a conversation.
 
         Reads the store, not this process's memory, so a page reloaded after a
-        restart still shows what the person is waiting on.
+        restart still shows what the person is waiting on.  That promise is why
+        the listing is open-inclusive (see ``web_tasks.list_public``): the queue
+        panel filters this array for pending and claimed work and hides itself
+        when none is left, so a conversation old enough to fill its retained
+        history would otherwise stop showing the request it is waiting on.
 
         Three different facts, kept apart because they answer different
         questions.  ``active`` is "is *this* server running it", which only this
