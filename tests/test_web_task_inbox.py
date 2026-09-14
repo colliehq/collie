@@ -720,3 +720,75 @@ def test_a_live_runs_claim_is_never_taken_away_from_it(web):
         assert code == 409 and "claimed" in refused["error"]
     finally:
         child.terminate(); child.wait(timeout=30)
+
+
+def test_deleting_a_conversation_settles_a_delivered_claim_from_its_journal(web):
+    """Delete is the last moment the transcript can answer "was this delivered?".
+
+    A crash between journalling a request and acknowledging it leaves a
+    ``claimed`` entry, and ``claimed`` is the state nothing can withdraw: cancel
+    is refused precisely because an executor is supposed to be delivering it.
+    Deleting the conversation used to remove the journal anyway, which threw away
+    the only evidence that could ever settle that claim — the entry stayed
+    claimed for good, the answer reported it as cancelled, and the deleted
+    conversation kept appearing in the waiting-work listing with a request
+    nobody could run, correct or withdraw.
+
+    The delete already holds the run lease, which is exactly the authority
+    recovery needs, so the journal decides first: this request is in the
+    transcript, so it is delivered history rather than waiting work, and the
+    conversation deletes without being asked to discard anything.
+    """
+    from harness import sessions, task_inbox
+
+    base, token, state = web
+    sid = "inbox-delete-delivered"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "finish the migration")
+
+    assert _claim_then_die(state, sid, journal=True) == ["req-1"]
+    assert task_inbox.get(sid, "req-1")["state"] == "claimed", "the crash is real"
+
+    code, gone = _get(base, token, "/api/delete/" + sid)
+    assert code == 200 and gone["ok"] is True
+    assert gone["canceled"] == [], "a delivered request was never waiting to be discarded"
+    assert sessions.load(sid) is None
+    settled = task_inbox.get(sid, "req-1")
+    assert settled["state"] == "consumed" and settled["delivery"]["recovered"] is True
+
+    # And the deleted conversation does not haunt the list of work still waiting.
+    code, pending = _get(base, token, "/api/task-inbox/pending")
+    assert code == 200 and [row["session"] for row in pending["sessions"]] == []
+
+
+def test_deleting_a_conversation_withdraws_an_undelivered_claim(web):
+    """The other half of the same crash, and the same rule: the journal decides.
+
+    Here the request never reached the transcript, so it is genuinely still
+    waiting — the delete is refused until the person says to discard it, and
+    then it is *recorded* as cancelled rather than left claimed by a process that
+    no longer exists.
+    """
+    from harness import sessions, task_inbox
+
+    base, token, state = web
+    sid = "inbox-delete-undelivered"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "finish the migration")
+
+    assert _claim_then_die(state, sid) == ["req-1"]
+    assert task_inbox.get(sid, "req-1")["state"] == "claimed"
+
+    code, refused = _get(base, token, "/api/delete/" + sid)
+    assert code == 409 and refused["ok"] is False and refused["pending"] == 1
+    assert [row["id"] for row in refused["entries"]] == ["req-1"]
+    assert sessions.load(sid) is not None, "nothing was deleted"
+
+    code, gone = _get(base, token, "/api/delete/" + sid + "?discard_pending=1")
+    assert code == 200 and gone["ok"] is True and gone["canceled"] == ["req-1"]
+    assert sessions.load(sid) is None
+    assert task_inbox.get(sid, "req-1")["state"] == "canceled"
+    assert task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES) == []
+
+    code, pending = _get(base, token, "/api/task-inbox/pending")
+    assert code == 200 and [row["session"] for row in pending["sessions"]] == []

@@ -2550,7 +2550,20 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     try:
                         waiting = task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES)
-                    except task_inbox.InboxError as exc:
+                        if any(row["state"] == "claimed" for row in waiting):
+                            # We hold the lease, so nothing is executing this
+                            # conversation and a claim standing here belongs to a
+                            # process that is gone.  Settle it from the journal
+                            # *now*: deleting the journal removes the only thing
+                            # that can ever decide it, and a claim cannot be
+                            # cancelled, so it would outlive the conversation it
+                            # belonged to and keep the deleted session in the
+                            # waiting-work listing for good.
+                            web_tasks.reconcile_open_claims(sid, lease)
+                            waiting = task_inbox.list_entries(
+                                sid, states=task_inbox.OPEN_STATES)
+                    except (task_inbox.InboxError, session_owner.OwnershipRequired,
+                            OSError) as exc:
                         return self._send_json(
                             {"ok": False, "error": "this conversation's accepted requests "
                                                    "could not be read, so it was not "
@@ -2564,14 +2577,29 @@ class Handler(BaseHTTPRequestHandler):
                              "error": "%d accepted request(s) are still waiting in this "
                                       "conversation; cancel them or repeat with "
                                       "discard_pending=1" % len(waiting)}, 409)
+                    canceled = []
                     for row in waiting:
                         # Recorded as canceled, never silently dropped.
                         try:
                             task_inbox.cancel(sid, row["id"], reason="session deleted")
-                        except task_inbox.InboxError:
+                            canceled.append(row["id"])
+                        except (task_inbox.InboxError, OSError):
                             pass
+                    if len(canceled) != len(waiting):
+                        # The transcript is still here, and it is the only evidence
+                        # about what became of a request nothing can withdraw.
+                        # Deleting it would trade a recoverable conversation for a
+                        # record nobody can settle, so the delete is refused and
+                        # says which requests are in the way.
+                        return self._send_json(
+                            {"ok": False, "pending": len(waiting) - len(canceled),
+                             "canceled": canceled,
+                             "error": "%d accepted request(s) in this conversation could "
+                                      "not be withdrawn, so it was not deleted; open it "
+                                      "and clear them first"
+                                      % (len(waiting) - len(canceled))}, 409)
                     return self._send_json({"ok": sessions.delete(sid),
-                                            "canceled": [r["id"] for r in waiting]})
+                                            "canceled": canceled})
                 finally:
                     lease.release()
             if path.startswith("/api/rename/"):
