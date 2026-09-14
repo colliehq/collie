@@ -5207,12 +5207,32 @@
       .finally(function () { button.disabled = false; button.textContent = t("Continue"); });
   }
   function nameOnboardOpen() {
-    $("nameInput").value = "Rowan"; $("nameError").textContent = "";
+    $("nameInput").value = "Rowan"; $("nameError").textContent = ""; nameComposing = false;
     $("namePreview").src = "/api/avatar.png?preview=Rowan&token=" + encodeURIComponent(CT);
     nameOverlay.classList.add("open"); dialogOpened(nameOverlay, "#nameInput");
   }
+  // This field takes CJK text, so an IME (pinyin, kana, hangul…) confirms the candidate it is
+  // offering with Enter and closes its candidate list with Escape — the same two keys this dialog
+  // reads as Continue and Skip. Until the composition is committed those keystrokes belong to the
+  // keyboard: acting on one saves the half-typed romanisation ("小yun") as the companion's name, or
+  // skips naming for good, before any character was chosen. `isComposing` on the keydown is the
+  // signal in Blink/Gecko (the keydown arrives before compositionend); keyboards that end the
+  // composition first and/or report only the legacy keyCode 229 are covered by the tracked flag.
+  // No timer: the flag clears on compositionend, or on the first input event that is not composing,
+  // so the very next Enter continues and the very next Escape skips exactly as before.
+  var nameComposing = false;
+  function nameKeyIsComposition(e) { return e.isComposing || e.keyCode === 229 || nameComposing; }
+  $("nameInput").addEventListener("compositionstart", function () { nameComposing = true; });
+  $("nameInput").addEventListener("compositionend", function () { nameComposing = false; });
+  $("nameInput").addEventListener("input", function (e) { if (!e.isComposing) nameComposing = false; });
   $("nameInput").addEventListener("input", previewCompanionName);
-  $("nameInput").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); continueWithCompanionName(); } });
+  $("nameInput").addEventListener("keydown", function (e) {
+    // The confirming Enter is swallowed so it cannot leave a stray newline either; every other key
+    // keeps its candidate-list meaning. Nothing else about the dialog changes — the preview still
+    // follows the text in the box, including while it is being composed.
+    if (nameKeyIsComposition(e)) { if (e.key === "Enter") e.preventDefault(); return; }
+    if (e.key === "Enter") { e.preventDefault(); continueWithCompanionName(); }
+  });
   $("nameContinue").addEventListener("click", continueWithCompanionName);
   $("nameSkip").addEventListener("click", nameOnboardSkipped);
   nameOverlay.addEventListener("click", function (e) { if (e.target === nameOverlay) nameOnboardSkipped(); });
@@ -5426,7 +5446,12 @@
   amOverlay.addEventListener("click", function (ev) { if (ev.target === amOverlay) amNext(); });
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (nameOverlay.classList.contains("open")) { e.preventDefault(); nameOnboardSkipped(); }
+    if (nameOverlay.classList.contains("open")) {
+      // An Escape aimed at the IME's candidate list reaches the page still marked as composition;
+      // only the name field can be composing here, so the guard stops at that one control.
+      if (e.target === $("nameInput") && nameKeyIsComposition(e)) return;
+      e.preventDefault(); nameOnboardSkipped();
+    }
     else if (amOverlay.classList.contains("open")) { e.preventDefault(); amNext(); }
     else if (brOverlay.classList.contains("open")) { e.preventDefault(); brFinish(); }
     else if (obOverlay.classList.contains("open")) { e.preventDefault(); obSkipped(); }
