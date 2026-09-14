@@ -5406,8 +5406,19 @@ class Handler(BaseHTTPRequestHandler):
         # a snapshot by writing Settings or the environment would change every
         # other run in this process, including ones the person is watching.
         configured_model = (frozen["model"] if "model" in frozen else settings.get("MODEL", "")) or None
-        effort_request = qs.get("effort", [frozen.get("reasoning_effort") or
-                                           settings.get("REASONING_EFFORT", "auto") or "auto"])[0]
+        # "Auto by task" is the composer's UNTOUCHED state, and every client sends it
+        # as effort=auto on every request — which is why the axis is absent from
+        # explicit_axes.  Reading that as a literal selection made it outrank the
+        # panel's "Default reasoning effort" and, for a request that waited in the
+        # inbox, the default frozen when it was accepted: the knob worked at the
+        # prompt and nowhere in the browser, and a queued request silently followed
+        # whatever another tab saved while it waited.  A level the request actually
+        # named still wins, including an explicitly chosen Auto.
+        effort_request = (qs.get("effort", [""])[0] or "").strip()
+        if not effort_request or (effort_request.lower() in ("auto", "default")
+                                  and "effort" not in explicit_axes):
+            effort_request = (frozen.get("reasoning_effort") or
+                              settings.get("REASONING_EFFORT", "auto") or "auto")
         if "speed" in explicit_axes:
             # An explicit Fast/Standard choice is literal, including its billing
             # consequence and any clean unsupported-provider refusal.

@@ -153,15 +153,26 @@ def decision(entry, provider, model, history, receipts):
     frozen = config.get("frozen") or {}
     if frozen.get("provider") and frozen["provider"] != provider:
         raise QueueError("this request was accepted for %s; reopen that provider or use the Web queue" % frozen["provider"])
+    axes = tuple(axis for axis in (config.get("explicit_axes") or "").split(",")
+                 if axis and axis != "none")
+    # The same rule the Web queue applies to the same durable entry: the composer
+    # sends effort=auto whenever its Reasoning-effort group was left alone, so that
+    # value is the absence of a choice and must not outrank the default frozen at
+    # acceptance.  Where a person pressed Start cannot decide how much reasoning
+    # they pay for.
+    effort = str(config.get("effort") or "").strip()
+    if not effort or (effort.lower() in ("auto", "default") and "effort" not in axes):
+        from . import settings
+        effort = (frozen.get("reasoning_effort") or
+                  settings.get("REASONING_EFFORT", "auto") or "auto")
     return resolve_run_decision(
         entry["text"], provider=provider,
         model=(frozen["model"] or None) if "model" in frozen else model,
-        effort=config.get("effort") or frozen.get("reasoning_effort") or "auto",
+        effort=effort,
         speed=config.get("speed") or "standard", route_kind=config.get("route_kind") or None,
         intent=config.get("intent") or "build", quality=config.get("quality") or "balanced",
         verification=config.get("verification") or "auto", workspace="current", strategy="single",
-        explicit_axes=tuple(axis for axis in (config.get("explicit_axes") or "").split(",")
-                            if axis and axis != "none"), history=history, receipts=receipts)
+        explicit_axes=axes, history=history, receipts=receipts)
 
 
 def notice(session):

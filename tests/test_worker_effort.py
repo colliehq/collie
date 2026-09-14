@@ -232,6 +232,149 @@ def test_web_accepted_request_effort_reaches_the_native_worker(monkeypatch, tmp_
     assert receipt["effort"] == "high"
 
 
+def _panel(monkeypatch, **values):
+    """The Settings panel as one dict the test can move under a waiting request."""
+    values.setdefault("MODEL", "claude-opus-5")
+    monkeypatch.setattr(settings, "get",
+                        lambda key, default=None: values.get(key, default))
+    return values
+
+
+def _web_config(**over):
+    """What the composer sends with its Reasoning-effort group left untouched."""
+    raw = {"intent": "build", "quality": "balanced", "verification": "auto",
+           "workspace": "current", "strategy": "single", "speed": "standard",
+           "runner": "claude-code", "explicit_axes": "runner"}
+    raw.update(over)
+    return raw
+
+
+def test_the_panels_default_effort_reaches_the_worker_when_the_composer_is_untouched(
+        monkeypatch, tmp_path):
+    """"Default reasoning effort: High" has to mean something on the Web too.
+
+    Every client sends ``effort=auto`` — that is the composer's UNTOUCHED state,
+    not a choice, which is why the axis is absent from ``explicit_axes``.  Read as
+    a literal selection it silently outranked the Settings panel, so the knob
+    worked at the prompt (``cli.resolve_turn_decision``) and nowhere in the
+    browser.  Driven through the real stream entry point, so the evidence is the
+    worker's own command line.
+    """
+    _isolate(monkeypatch, tmp_path)
+    _panel(monkeypatch, REASONING_EFFORT="high")
+    transport = FakeTransport()
+    built = _instrument(monkeypatch, transport)
+
+    events = []
+    webapp.Handler._serve_stream(_handler(events), {
+        "q": ["fix the parser"], "session": ["web-effort-panel"],
+        "intent": ["build"], "quality": ["balanced"], "verification": ["auto"],
+        "workspace": ["current"], "strategy": ["single"], "speed": ["standard"],
+        "effort": ["auto"], "runner": ["claude-code"], "explicit_axes": ["runner"]})
+
+    start = next(data for kind, data in events if kind == "start")
+    assert start["effort"] == "high"
+    assert built and built[0]["effort"] == "high"
+    assert _flag(transport.argv(0), "--effort") == "high"
+
+
+def test_an_explicitly_chosen_auto_still_outranks_the_panel_default(monkeypatch,
+                                                                   tmp_path):
+    """The other direction: a person who picked "Auto by task" gets Auto.
+
+    ``explicit_axes`` is what separates the two, so the composer's default must
+    not be able to impersonate a selection and a selection must not be ignored.
+    """
+    _isolate(monkeypatch, tmp_path)
+    _panel(monkeypatch, REASONING_EFFORT="high")
+    transport = FakeTransport()
+    _instrument(monkeypatch, transport)
+
+    events = []
+    webapp.Handler._serve_stream(_handler(events), {
+        "q": ["fix the parser"], "session": ["web-effort-explicit-auto"],
+        "intent": ["build"], "quality": ["balanced"], "verification": ["auto"],
+        "workspace": ["current"], "strategy": ["single"], "speed": ["standard"],
+        "effort": ["auto"], "runner": ["claude-code"],
+        "explicit_axes": ["effort,runner"]})
+
+    start = next(data for kind, data in events if kind == "start")
+    # Auto resolves per task (balanced work asks for medium); the panel's High is
+    # a default, and a default does not override the thing it is a default for.
+    assert start["decision"]["sources"]["effort"] == "task-policy"
+    assert start["effort"] == "medium"
+    assert _flag(transport.argv(0), "--effort") == "medium"
+
+
+def test_a_queued_request_keeps_the_default_effort_it_was_accepted_under(monkeypatch,
+                                                                         tmp_path):
+    """A request that waited runs at the default frozen for it, not today's.
+
+    ``freeze_config`` records ``reasoning_effort`` at acceptance for exactly this
+    moment, and the managed stream resolves it locally — the panel is read, never
+    written, so a save made while this request waited moves no other run either.
+
+    ``_run_stream`` is entered directly with the snapshot the execution manager
+    hands it, which is what ``serve_managed_stream`` does once it holds the lease
+    on a claimed inbox entry; the rest of the run is the real one.
+    """
+    _isolate(monkeypatch, tmp_path)
+    panel = _panel(monkeypatch, REASONING_EFFORT="high")
+    transport = FakeTransport()
+    built = _instrument(monkeypatch, transport)
+
+    config = web_tasks.freeze_config(
+        _web_config(), provider="anthropic-oauth", model="claude-opus-5",
+        reasoning_effort=panel["REASONING_EFFORT"])
+    assert config["effort"] == "auto"                        # composer untouched
+    assert config["frozen"]["reasoning_effort"] == "high"    # the panel at acceptance
+
+    panel["REASONING_EFFORT"] = "low"     # ... another tab lowers it while it waits
+
+    handler = _handler(events := [])
+    handler._run_config_frozen = config["frozen"]
+    query = web_tasks.stream_query("web-effort-frozen", config)
+    query["q"] = ["fix the parser"]
+    webapp.Handler._run_stream(handler, query)
+
+    start = next(data for kind, data in events if kind == "start")
+    assert start["effort"] == "high"
+    assert built and built[0]["effort"] == "high"
+    assert _flag(transport.argv(0), "--effort") == "high"
+    assert panel["REASONING_EFFORT"] == "low", "replay reads the panel, never writes it"
+
+
+def test_next_starts_the_same_entry_at_the_same_effort_as_the_web_queue(monkeypatch,
+                                                                       tmp_path):
+    """``/next`` is the other door onto one durable entry; it must agree.
+
+    The terminal claims the very same record, so an accepted default resolved one
+    way in the browser and another at the prompt would make where a person pressed
+    Start decide how much reasoning they paid for.
+    """
+    from harness import terminal_queue
+
+    _isolate(monkeypatch, tmp_path)
+    panel = _panel(monkeypatch, REASONING_EFFORT="high")
+    config = web_tasks.freeze_config(
+        _web_config(runner=""), provider="anthropic-oauth", model="claude-opus-5",
+        reasoning_effort=panel["REASONING_EFFORT"])
+
+    panel["REASONING_EFFORT"] = "low"     # the panel moves while the request waits
+
+    decision = terminal_queue.decision(
+        {"text": "fix the parser", "config": config},
+        "anthropic-oauth", "claude-opus-5", [], [])
+    assert decision.effort == "high"
+
+    chosen = web_tasks.freeze_config(
+        _web_config(runner="", effort="low", explicit_axes="effort"),
+        provider="anthropic-oauth", model="claude-opus-5", reasoning_effort="high")
+    assert terminal_queue.decision(
+        {"text": "fix the parser", "config": chosen},
+        "anthropic-oauth", "claude-opus-5", [], []).effort == "low"
+
+
 # --- `collie run --runner claude-code --effort high` --------------------------
 def test_cli_run_carries_the_selected_effort_into_the_worker(monkeypatch, tmp_path,
                                                              capsys):
