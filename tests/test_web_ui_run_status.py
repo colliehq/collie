@@ -623,23 +623,121 @@ def server():
     httpd.shutdown()
 
 
+# --------------------------------------------------------------- run observation
+# Installed into every context this module hands out, before the page's own scripts run, so it is
+# already watching when a send happens. It records the state pill's live/idle edges *as the page
+# makes them* — the same signal the driver always used, and still only the pill's `live` class,
+# read from outside. Nothing is asked of the page's own code, and nothing here changes it: a
+# lifecycle the driver used to sample after the fact is simply written down while it happens, so a
+# run that starts and finishes between two Playwright calls is still there to be found afterwards.
+_RUN_OBSERVER_JS = r"""
+(() => {
+  if (window.__runObserver) return;
+  var seq = 0, gesture = 0, runs = [], pill = null, live = false;
+  function hasLive(cls) { return (" " + (cls || "") + " ").indexOf(" live ") >= 0; }
+  function note(now) {                       // one run = one live stretch; they never overlap
+    if (now === live) return;
+    live = now;
+    if (now) runs.push({start: ++seq, end: 0, taken: false});
+    else if (runs.length) runs[runs.length - 1].end = ++seq;
+  }
+  function watch() {
+    pill = document.getElementById("statePill");
+    if (!pill) return false;
+    note(hasLive(pill.className));
+    new MutationObserver(function (records) {
+      // Replay each record's prior value before reading the current one: a run that went live and
+      // idle again within a single task must still be two edges, not a callback that saw nothing.
+      records.forEach(function (r) { note(hasLive(r.oldValue)); });
+      note(hasLive(pill.className));
+    }).observe(pill, {attributes: true, attributeFilter: ["class"], attributeOldValue: true});
+    return true;
+  }
+  // The send itself, as the page sees it: whatever the person (or the test acting as one) pressed.
+  ["keydown", "pointerdown", "click"].forEach(function (type) {
+    document.addEventListener(type, function () { gesture = ++seq; }, true);
+  });
+  window.__runObserver = {
+    ready: function () { return !!pill; },
+    mark: function (sent) {
+      return {seq: sent ? gesture : ++seq,
+              open: (runs.length && !runs[runs.length - 1].end) ? runs.length - 1 : -1};
+    },
+    settled: function (tok) {          // the oldest ending that belongs to this send and is unspent
+      for (var i = 0; i < runs.length; i++) {
+        if (!runs[i].end || runs[i].taken) continue;
+        if (i === tok.open || runs[i].start > tok.seq) return i;
+      }
+      return -1;
+    },
+    take: function (i) { if (runs[i]) runs[i].taken = true; }
+  };
+  if (!watch()) document.addEventListener("DOMContentLoaded", watch);
+})();
+"""
+
+
+class _ObservedBrowser:
+    """The launched browser, handing out contexts that are already watching for runs.
+
+    `await_run` can only be sure it saw *this* send's run if the page was watching before the send.
+    Several suites open their own context from this fixture and then call `await_run` straight
+    after a click, so the arming belongs here, where every page passes, rather than in one fixture.
+    """
+
+    def __init__(self, browser):
+        self._browser = browser
+
+    def new_context(self, **kwargs):
+        context = self._browser.new_context(**kwargs)
+        context.add_init_script(_RUN_OBSERVER_JS)
+        return context
+
+    def new_page(self, **kwargs):
+        page = self._browser.new_page(**kwargs)
+        page.add_init_script(_RUN_OBSERVER_JS)
+        return page
+
+    def __getattr__(self, name):
+        return getattr(self._browser, name)
+
+
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as p:
         br = p.chromium.launch()
-        yield br
+        yield _ObservedBrowser(br)
         br.close()
 
 
-def await_run(page):
-    """Wait for a run to actually start before waiting for it to end.
+def mark_run(page, after_send=False):
+    """Arm this page's observer for one send, and say which run may answer for it.
 
-    A single "not running any more" wait could pass before the run had begun. The pill's `live` class
-    is the signal rather than its text, which is translated.
+    `after_send` is for callers that have already clicked: the receipt is dated from the gesture
+    the page itself saw, so the run that gesture started still counts even if it is over already.
     """
-    live = "() => document.getElementById('statePill').classList.contains('live')"
-    page.wait_for_function(live, timeout=8000)
-    page.wait_for_function("() => !(" + live[6:] + ")", timeout=8000)
+    assert page.evaluate("() => !!(window.__runObserver && window.__runObserver.ready())"), \
+        "no run observer on this page: its context must come from the `browser` fixture"
+    return page.evaluate("sent => window.__runObserver.mark(sent)", after_send)
+
+
+def await_run(page, token=None):
+    """Wait for the run this send started to finish — that run, and not some other one.
+
+    A single "not running any more" wait could pass before the run had begun, so this used to wait
+    for the pill's `live` class to appear and then to go away (the class rather than its text,
+    which is translated). Both halves are samples taken after the send: a run whose whole stream is
+    already in the response, or an ordinary run on a busy host, can start *and* finish before the
+    first sample, and then waiting for `live` means waiting for a state that has been and gone —
+    a timeout reported over a run that completed. The observer above records those same two edges
+    when the page makes them, so this waits for this send's own recorded ending, whenever it was
+    observed. An ending answers once: the run before this one has already been spent, and a page
+    that is merely idle has nothing to offer at all.
+    """
+    token = mark_run(page, after_send=True) if token is None else token
+    page.wait_for_function("tok => window.__runObserver.settled(tok) >= 0",
+                           arg=token, timeout=8000)
+    page.evaluate("tok => window.__runObserver.take(window.__runObserver.settled(tok))", token)
     page.wait_for_timeout(200)
 
 
@@ -652,8 +750,9 @@ class Page:
 
     def ask(self, text):
         self.page.fill("#input", text)
+        token = mark_run(self.page)     # armed before the send, so a fast run cannot slip past it
         self.page.press("#input", "Enter")
-        await_run(self.page)
+        await_run(self.page, token)
 
     def title(self):
         return self.page.inner_text("#pageTitle")
