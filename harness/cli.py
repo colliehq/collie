@@ -745,6 +745,11 @@ def cmd_repl(args):
     print("collie repl · session %s · %s · %d prior turns · /exit to quit, /new for a fresh thread"
           % (sid, provider, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness")))
     fenced = ""
+    # The session whose RECOVERY boundary produced `fenced`, so the prompt can
+    # ask whether that boundary is still open. Empty means the fence is not one
+    # `collie recovery reconcile` can close (a journal refusing writes), and it
+    # therefore stays until /new.
+    fence_session = ""
     try:
         while True:
             try:
@@ -757,6 +762,7 @@ def cmd_repl(args):
                 break
             if line == "/new":
                 history, receipts, sid, fenced = [], [], sess.new_id(), ""
+                fence_session = ""
                 h.checkpoint_scope = "session:" + sid
                 print("  [new session %s]" % sid)
                 continue
@@ -765,6 +771,11 @@ def cmd_repl(args):
             if line == "/help":
                 print("/exit /new /queue /queue show <id> /queue remove <id> /next")
                 continue
+            if fence_session and recovery_fence_lifted(fence_session):
+                # Reconciled from another terminal, exactly as the notice asked.
+                # The thread is usable again, so say so and run the typed line.
+                print("  [recovery closed for %s — continuing this thread]" % fence_session)
+                fenced, fence_session = "", ""
             if fenced:
                 # Continuing here would ask a model to reason about a thread whose
                 # last action has an unknown outcome. Refuse the turn, not the user.
@@ -784,7 +795,7 @@ def cmd_repl(args):
                     state, refusal = owned_turn_state(sid, lease, cwd)
                     if refusal:
                         if state["recovery"]:
-                            fenced = refusal
+                            fenced, fence_session = refusal, sid
                         print("\n" + refusal)
                         continue
                     history = state["messages"] or history
@@ -833,6 +844,7 @@ def cmd_repl(args):
                               "recorded" % len(history))
                         fenced = (recovery_notice(sid, recovered["recovery"])
                                   if recovered["blocked"] else "")
+                        fence_session = sid if fenced else ""
                         if fenced:
                             print("\n" + fenced)
                         continue
@@ -857,6 +869,9 @@ def cmd_repl(args):
                                   "%s, then /new for a fresh thread" % (
                                       redact_text("%s: %s" % (type(exc).__name__, exc),
                                                   500), sid))
+                        # Not a recovery boundary: `collie recovery reconcile` has
+                        # nothing to close here, so this fence stays until /new.
+                        fence_session = ""
                         print("\n" + fenced)
                         continue
                     if saved_sid:
@@ -873,7 +888,7 @@ def cmd_repl(args):
                         print(waiting)
                     after = sess.recovery_state(sid)
                     if after and after.get("recovery_required"):
-                        fenced = recovery_notice(sid, after)
+                        fenced, fence_session = recovery_notice(sid, after), sid
                         print("\n" + fenced)
             except terminal_queue.QueueError as exc:
                 print("\n" + str(exc))
@@ -884,7 +899,11 @@ def cmd_repl(args):
                               "collie cannot take ownership of %s: %s" % (sid, exc)))
     finally:
         h.memory.close(); h.recorder.close()
-        # A fenced thread would refuse that resume, so say why instead of inviting it.
+        # A fenced thread would refuse that resume, so say why instead of inviting it
+        # — but only if the boundary is still open. Someone who reconciled and then
+        # quit gets the resume line they earned, not a refusal that is no longer true.
+        if fence_session and recovery_fence_lifted(fence_session):
+            fenced = ""
         print("\nsession %s cannot be resumed yet — %s" % (sid, fenced) if fenced else
               "\nsession saved: %s  ·  resume: collie repl --resume %s" % (sid, sid))
     return 0
@@ -2841,6 +2860,42 @@ def owned_turn_state(sid, lease, cwd):
     if recovery and recovery.get("recovery_required"):
         return state, recovery_notice(sid, recovery)
     return state, "collie refused this turn on %s: %s" % (sid, state["refusal"])
+
+
+def recovery_fence_lifted(sid):
+    """Has the reconcile a fenced prompt asked for actually landed on disk?
+
+    ``recovery_notice`` tells the person to run ``collie recovery reconcile``,
+    which they necessarily do in ANOTHER terminal — this one is sitting at the
+    prompt that is refusing them.  An interactive surface keeps the refusal as a
+    string so it can answer instantly, and that copy used to outlive the durable
+    fact it describes: the boundary was closed, the journal said so, and every
+    line typed here still got the same paragraph back.  The only remaining way
+    out was ``/new``, which abandons the conversation the person had just
+    finished inspecting.
+
+    This is a cache check, not the authority.  The turn that follows still
+    re-derives the fence under its execution lease (``owned_turn_state``), so a
+    boundary that is genuinely still open refuses the turn there and arms the
+    notice again.  Anything unreadable answers False — unknown is not lifted.
+    """
+    from . import sessions as sess
+    try:
+        state = sess.recovery_state(sid)
+        if state and state.get("recovery_required"):
+            return False
+        # Only an existing, readable journal can carry the evidence that closed
+        # this boundary.  A MISSING one is not that evidence: the fence cached
+        # here was raised from a journal that did exist, so its file being gone
+        # means the durable record was lost — deleted, pruned, or pointed at
+        # another store — not that somebody inspected the effect.  Reading the
+        # absence as "reconciled" invites the person back into a thread whose
+        # last action is still unaccounted for, and everything downstream of the
+        # lease then treats the same absence as a fresh conversation and
+        # continues from this process's memory.  Unknown is not lifted.
+        return sess.load_checked(sid).get("status") == "ok"
+    except Exception:
+        return False
 
 
 def recovery_notice(sid, state, fresh="/new to start a fresh thread"):

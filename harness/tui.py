@@ -552,7 +552,8 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
     from .cli import (apply_accepted_capabilities, apply_accepted_limits,
                       apply_turn_decision, make_harness, owned_turn_state,
-                      recovery_notice, resolve_turn_decision, turn_decision_receipt)
+                      recovery_fence_lifted, recovery_notice, resolve_turn_decision,
+                      turn_decision_receipt)
     from . import run_ownership, terminal_queue
     from . import sessions as sess
 
@@ -619,6 +620,10 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
 
     saved = bool(history)          # a resumed session already has a file; a fresh one has nothing yet
     fenced = ""                    # set while an uninspected effect blocks the next turn
+    # The session whose RECOVERY boundary raised that fence, so the prompt can ask
+    # whether it is still open. Empty means no `collie recovery reconcile` can close
+    # it (a journal refusing writes), and it stays until /new or /resume.
+    fence_session = ""
 
     def say(text, style="dim"):
         console.print(text, style=style, markup=False) if have_rich else print(text)
@@ -642,6 +647,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                 ui.sessions(sess.recent(10)); continue
             if line == "/new":
                 history, receipts, sid, fenced = [], [], sess.new_id(), ""
+                fence_session = ""
                 saved = False
                 h.checkpoint_scope = "session:" + sid
                 if have_rich:
@@ -671,7 +677,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     history, receipts, sid = (s.get("messages") or [],
                                               list(s.get("run_receipts") or []), rid)
                     h.checkpoint_scope = "session:" + sid
-                    saved, fenced = True, ""
+                    saved, fenced, fence_session = True, "", ""
                     msg = "resumed %s (%d prior turns) · %s" % (
                         sid, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness"), cwd)
                 else:
@@ -733,6 +739,12 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
 
             if terminal_queue.handle_command(line, sid, say):
                 continue
+            if fence_session and recovery_fence_lifted(fence_session):
+                # Reconciled from another terminal, exactly as the notice asked.
+                # The boundary is closed, so run the line instead of repeating it.
+                say("recovery closed for %s — continuing this thread" % fence_session,
+                    "green")
+                fenced, fence_session = "", ""
             if fenced:
                 # An uninspected effect is not something the next prompt can route
                 # around: refuse the turn and say exactly how to close the boundary.
@@ -754,7 +766,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                     state, refusal = owned_turn_state(sid, lease, cwd)
                     if refusal:
                         if state["recovery"]:
-                            fenced = refusal
+                            fenced, fence_session = refusal, sid
                         say(refusal, "yellow")
                         continue
                     history = state["messages"] or history
@@ -823,6 +835,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                             "(Ctrl-C again at an empty prompt to exit)" % len(history))
                         fenced = (recovery_notice(sid, recovered["recovery"])
                                   if recovered["blocked"] else "")
+                        fence_session = sid if fenced else ""
                         if fenced:
                             say(fenced, "yellow")
                         continue
@@ -848,6 +861,9 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                                   "then /new for a fresh thread" % (
                                       redact_text("%s: %s" % (type(exc).__name__, exc), 500),
                                       sid))
+                        # Not a recovery boundary: nothing for `collie recovery
+                        # reconcile` to close, so this fence stays until /new.
+                        fence_session = ""
                         say(fenced, "red")
                         continue
                     if saved_sid:
@@ -864,7 +880,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         say(waiting)
                     after = sess.recovery_state(sid)
                     if after and after.get("recovery_required"):
-                        fenced = recovery_notice(sid, after)
+                        fenced, fence_session = recovery_notice(sid, after), sid
                         say(fenced, "yellow")
             except terminal_queue.QueueError as exc:
                 say(str(exc), "yellow")
@@ -885,6 +901,14 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
         # only advertise --resume if a turn actually completed + saved; a fresh open->/exit leaves no
         # file, so the resume hint would load None and start empty. A fenced thread would refuse
         # that resume anyway, so it gets the reason and the way out instead of a broken invitation.
+        # A boundary closed since the fence was raised is no longer a reason to refuse it.
+        # Lifting it also settles `saved`: the fence is only lifted against an existing,
+        # readable journal, which is the very file `--resume` would open. A window that
+        # was fenced before its first save carries saved=False, and printing "nothing
+        # saved" over a checkpointed thread is the same stale-copy lie in the other
+        # direction. This claims no file that is not already there.
+        if fence_session and recovery_fence_lifted(fence_session):
+            fenced, saved = "", True
         tail = ("session saved: %s   ·   resume: collie tui --resume %s" % (sid, sid)
                 if saved else "(no turns — nothing saved)")
         if fenced:

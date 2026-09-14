@@ -421,12 +421,55 @@ def _repl_args(tmp_path, **over):
     return type("Args", (), values)()
 
 
-def _drive_repl(monkeypatch, tmp_path, lines, effect):
+def _reconcile_once(done):
+    """Stand in for `collie recovery reconcile …` run from a second terminal.
+
+    The notice a fenced prompt prints tells the person to do exactly this, and
+    they cannot do it here — this window is blocked on input(). So it happens
+    between two prompts, which is when it happens in real life.
+    """
+    def hook(h):
+        sid = getattr(h, "sid", "") if h is not None else ""
+        if not sid or sid in done:
+            return
+        state = sessions.recovery_state(sid)
+        if state and state.get("recovery_required"):
+            sessions.reconcile_recovery(sid, "completed", note="checked the tree",
+                                        confirmed=True)
+            done.add(sid)
+    return hook
+
+
+def _lose_the_journal_once(done):
+    """The fenced session's durable journal disappears between two prompts.
+
+    A pruned store, `collie sessions delete`, a second terminal started against a
+    different COLLIE_SESSIONS_DIR — the record of the boundary is gone. Nobody
+    looked at the outside world, so the question the fence asks is not answered;
+    it is now unanswerable.
+    """
+    def hook(h):
+        sid = getattr(h, "sid", "") if h is not None else ""
+        if not sid or sid in done:
+            return
+        state = sessions.recovery_state(sid)
+        if state and state.get("recovery_required"):
+            sessions.delete(sid)
+            done.add(sid)
+    return hook
+
+
+def _drive_repl(monkeypatch, tmp_path, lines, effect, on_prompt=None):
     monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
     typed = iter(lines)
-    monkeypatch.setattr("builtins.input", lambda *a: next(typed))
     holder = {}
+
+    def _typed(*a):
+        if on_prompt is not None:
+            on_prompt(holder.get("h"))
+        return next(typed)
+    monkeypatch.setattr("builtins.input", _typed)
 
     def make(cwd, **kw):
         holder["h"] = _FakeHarness(sessions.latest() or "", cwd, effect)
@@ -485,6 +528,109 @@ def test_repl_interrupt_over_a_safe_boundary_keeps_going(monkeypatch, tmp_path, 
     assert "finished" in out
 
 
+def test_repl_continues_the_thread_once_the_fence_is_reconciled(
+        monkeypatch, tmp_path, capsys):
+    """The way out the notice prints must actually let the conversation continue.
+
+    The fence is a copy of a durable fact, and the reconcile that closes it runs
+    in another terminal. The prompt used to keep its copy for the life of the
+    window: every later line got the same paragraph back, and the only escape
+    was /new, which abandons the thread the person had just finished inspecting.
+    """
+    def effect(h, line, kw):
+        h.sid = h.checkpoint_scope.split(":", 1)[1]
+        if h.calls == 1:
+            _write_progress(h, "executing_tool",
+                            {"tool_name": "write_file", "tool_call_id": "c1"})
+            raise KeyboardInterrupt()
+        return type("R", (), {"messages": (kw.get("history") or []) + [
+            {"role": "assistant", "content": "carried on"}],
+            "answer": "carried on", "error": ""})()
+
+    rc, h = _drive_repl(monkeypatch, tmp_path,
+                        ["publish the release", "and now the next bit", "/exit"],
+                        effect, on_prompt=_reconcile_once(set()))
+    out = capsys.readouterr().out
+    assert rc == 0
+    # the fence was raised, then closed from outside, and the next line RAN
+    assert "collie recovery reconcile" in out
+    assert "recovery closed for %s" % h.sid in out
+    assert h.calls == 2 and "carried on" in out
+    # ...and the farewell stops claiming a thread that is usable cannot be resumed
+    assert "cannot be resumed yet" not in out
+    assert "collie repl --resume %s" % h.sid in out
+
+
+def test_repl_fence_outlives_the_journal_that_recorded_it(
+        monkeypatch, tmp_path, capsys):
+    """A vanished journal is lost evidence, not a reconcile.
+
+    The prompt's copy of the fence is dropped only when the durable record says
+    the boundary was closed. If that record disappears while the person is
+    sitting here, nothing has been inspected — an email may or may not have gone
+    out — and reading the absence as "all clear" would invite them back into the
+    thread and let the code after the lease treat the same absence as a brand
+    new conversation to continue from this process's memory.
+    """
+    def effect(h, line, kw):
+        h.sid = h.checkpoint_scope.split(":", 1)[1]
+        _write_progress(h, "executing_tool",
+                        {"tool_name": "send_email", "tool_call_id": "c1"})
+        raise KeyboardInterrupt()
+
+    rc, h = _drive_repl(monkeypatch, tmp_path,
+                        ["send the invoices", "so, carry on", "/exit"], effect,
+                        on_prompt=_lose_the_journal_once(set()))
+    out = capsys.readouterr().out
+    # the state a naive "is the fence gone?" read would call clear
+    assert sessions.recovery_state(h.sid) is None
+    assert sessions.load_checked(h.sid)["status"] == "missing"
+    assert rc == 0 and h.calls == 1              # the second line is still refused
+    assert "recovery closed" not in out
+    assert out.count("this thread is paused") >= 3   # the prompts and the farewell
+    # and the farewell does not offer a resume of a session file that is gone
+    assert "cannot be resumed yet" in out and "collie repl --resume" not in out
+
+
+def test_repl_keeps_refusing_while_the_fence_is_still_open(
+        monkeypatch, tmp_path, capsys):
+    """The re-read is a cache check, not a way around an uninspected effect."""
+    def effect(h, line, kw):
+        h.sid = h.checkpoint_scope.split(":", 1)[1]
+        _write_progress(h, "executing_tool",
+                        {"tool_name": "browser_click", "tool_call_id": "c1"})
+        raise KeyboardInterrupt()
+
+    rc, h = _drive_repl(monkeypatch, tmp_path,
+                        ["click through checkout", "keep going", "and again", "/exit"],
+                        effect)
+    out = capsys.readouterr().out
+    assert rc == 0 and h.calls == 1
+    assert "recovery closed" not in out
+    assert out.count("this thread is paused") >= 3      # both prompts + the farewell
+    assert sessions.recovery_state(h.sid)["recovery_required"] is True
+
+
+def test_repl_transcript_fence_is_not_cleared_by_a_recovery_read(
+        monkeypatch, tmp_path, capsys):
+    """A journal that refuses writes is not something `recovery reconcile` closes."""
+    def effect(h, line, kw):
+        h.sid = h.checkpoint_scope.split(":", 1)[1]
+        return type("R", (), {"messages": [{"role": "user", "content": line}],
+                              "answer": "did it", "error": ""})()
+
+    def refuse(*a, **kw):
+        raise ValueError("session journal is unreadable")
+    monkeypatch.setattr(sessions, "save", refuse)
+    rc, h = _drive_repl(monkeypatch, tmp_path, ["do it", "do more", "/exit"], effect)
+    out = capsys.readouterr().out
+    # no active_run was ever written, so a naive "is the fence gone?" read says yes
+    assert sessions.recovery_state(h.sid) is None
+    assert rc == 0 and h.calls == 1        # the second line is still refused
+    assert "recovery closed" not in out
+    assert out.count("session transcript could not be persisted") >= 2
+
+
 def test_repl_reports_a_failed_transcript_save_and_stops(monkeypatch, tmp_path, capsys):
     """A journal that cannot be written is not a turn that quietly continues."""
     def effect(h, line, kw):
@@ -501,14 +647,19 @@ def test_repl_reports_a_failed_transcript_save_and_stops(monkeypatch, tmp_path, 
     assert "session transcript could not be persisted" in out
 
 
-def _drive_tui(monkeypatch, tmp_path, lines, effect):
+def _drive_tui(monkeypatch, tmp_path, lines, effect, on_prompt=None):
     from harness import tui
     monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
     monkeypatch.setattr(tui, "_HAVE_RICH", False)
     typed = iter(lines)
-    monkeypatch.setattr("builtins.input", lambda *a: next(typed))
     holder = {}
+
+    def _typed(*a):
+        if on_prompt is not None:
+            on_prompt(holder.get("h"))
+        return next(typed)
+    monkeypatch.setattr("builtins.input", _typed)
 
     def make(cwd, **kw):
         holder["h"] = _FakeHarness("", cwd, effect)
@@ -540,6 +691,92 @@ def test_tui_interrupt_reloads_progress_instead_of_replaying_the_old_history(
     assert "kept the 2 messages already recorded" in out
     assert "collie recovery reconcile" in out
     assert "cannot be resumed yet" in out and "collie tui --resume" not in out
+
+
+def test_tui_continues_the_thread_once_the_fence_is_reconciled(
+        monkeypatch, tmp_path, capsys):
+    """Same promise on the rich terminal: reconciling outside reopens this thread."""
+    def effect(h, line, kw):
+        h.sid = h.checkpoint_scope.split(":", 1)[1]
+        if h.calls == 1:
+            _write_progress(h, "executing_tool",
+                            {"tool_name": "write_file", "tool_call_id": "c1"})
+            raise KeyboardInterrupt()
+        return type("R", (), {"messages": (kw.get("history") or []) + [
+            {"role": "assistant", "content": "carried on"}],
+            "answer": "carried on", "error": ""})()
+
+    rc, h = _drive_tui(monkeypatch, tmp_path,
+                       ["ship the release", "keep going", "/exit"], effect,
+                       on_prompt=_reconcile_once(set()))
+    out = capsys.readouterr().out
+    assert rc == 0 and h.calls == 2
+    assert "collie recovery reconcile" in out
+    assert "recovery closed for %s" % h.sid in out
+    assert "cannot be resumed yet" not in out
+    assert "collie tui --resume %s" % h.sid in out
+
+
+def test_tui_fence_outlives_the_journal_that_recorded_it(
+        monkeypatch, tmp_path, capsys):
+    """Same rule on the rich terminal: losing the record is not closing the boundary."""
+    def effect(h, line, kw):
+        h.sid = h.checkpoint_scope.split(":", 1)[1]
+        _write_progress(h, "executing_tool",
+                        {"tool_name": "send_email", "tool_call_id": "c1"})
+        raise KeyboardInterrupt()
+
+    rc, h = _drive_tui(monkeypatch, tmp_path,
+                       ["send the invoices", "so, carry on", "/exit"], effect,
+                       on_prompt=_lose_the_journal_once(set()))
+    out = capsys.readouterr().out
+    assert sessions.load_checked(h.sid)["status"] == "missing"
+    assert rc == 0 and h.calls == 1
+    assert "recovery closed" not in out
+    # a resume hint here would point at a file that no longer exists
+    assert "cannot be resumed yet" in out and "collie tui --resume" not in out
+
+
+def test_tui_farewell_offers_the_resume_the_reconciled_journal_earned(
+        monkeypatch, tmp_path, capsys):
+    """A window fenced before its own first save still has a session on disk.
+
+    Another surface left the uninspected boundary, so the fence is raised by the
+    turn's own re-read (`owned_turn_state`) and nothing in THIS window has
+    saved anything yet. Reconciling outside and typing /quit used to end on
+    "(no turns — nothing saved)" about a journal that is right there and
+    resumable. The footer is only allowed to say that because the same check
+    that lifts the fence proved the file exists and reads back.
+    """
+    def fence_then_reconcile():
+        seen = {"prompts": 0}
+
+        def hook(h):
+            seen["prompts"] += 1
+            sid = (getattr(h, "checkpoint_scope", "") or "").split(":", 1)[-1]
+            if not sid:
+                return
+            if seen["prompts"] == 1:            # a second terminal, mid-tool-call
+                h.sid = sid
+                _write_progress(h, "executing_tool",
+                                {"tool_name": "send_email", "tool_call_id": "c1"})
+            elif seen["prompts"] == 2:          # the person does what the notice said
+                sessions.reconcile_recovery(sid, "completed", note="saw it in the outbox",
+                                            confirmed=True)
+        return hook
+
+    def effect(h, line, kw):                    # never reached: the turn is refused
+        raise AssertionError("a fenced turn must not run")
+
+    rc, h = _drive_tui(monkeypatch, tmp_path, ["send the invoices", "/quit"], effect,
+                       on_prompt=fence_then_reconcile())
+    out = capsys.readouterr().out
+    assert rc == 0 and h.calls == 0
+    assert "collie recovery reconcile" in out           # the fence was real
+    assert "(no turns — nothing saved)" not in out
+    assert "session saved: %s" % h.sid in out
+    assert "collie tui --resume %s" % h.sid in out
+    assert sessions.load_checked(h.sid)["status"] == "ok"
 
 
 def test_tui_interrupt_at_a_safe_boundary_returns_to_a_working_prompt(

@@ -598,10 +598,16 @@ def _mock_http_mcp():
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
         def do_POST(self):
-            if self.headers.get("X-Test") != "ok":
-                self.send_response(401); self.end_headers(); return
+            # Drain this fixture's request before closing a rejected connection.
+            # Closing with unread POST bytes can reset the socket on Windows and
+            # hide the 401 that the client test is intended to exercise.
             n = int(self.headers.get("content-length") or 0)
-            m = json.loads(self.rfile.read(n) or b"{}"); mid = m.get("id"); meth = m.get("method")
+            body = self.rfile.read(n)
+            if self.headers.get("X-Test") != "ok":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers(); return
+            m = json.loads(body or b"{}"); mid = m.get("id"); meth = m.get("method")
             def reply(result, sse=False):
                 msg = {"jsonrpc": "2.0", "id": mid, "result": result}
                 if sse:
