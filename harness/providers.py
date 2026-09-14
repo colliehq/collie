@@ -1261,6 +1261,29 @@ class ClaudeCliProvider(ModelProvider):
             prompt = (prompt + "\n\n# Your previous reply was NOT a single JSON object "
                       "(you wrote prose). Reply again with ONLY one JSON object — "
                       '{"tool":...} to act, or {"answer":...} to finish. Nothing else.')
+        if tool_schemas:
+            # Both physically issued replies missed Collie's {tool|answer} contract. On a
+            # tool-bearing turn that reply is an instruction for the executor, so returning it
+            # as plain `end_turn` text made the model's prose the run's ANSWER: the loop
+            # finished, reported success and offered "I will now read the file" for
+            # consolidation, having executed nothing and verified nothing. Report the same
+            # stable, content-free response-contract error the SDK transport reports, so the
+            # host spends its one bounded corrective turn (format_repair) and, failing that,
+            # records `protocol: …`. The refused reply is never returned, streamed or quoted --
+            # only the structural category of the miss, which is what the corrective turn needs.
+            # The category is computed WITHOUT an allowlist, exactly as the parser above
+            # accepts, so it can never describe a shape this adapter would have executed.
+            reason = contract_miss_reason(text)
+            return Completion(
+                text="ERROR(claude-cli): response contract error",
+                usage=total, stop_reason="error", error_status=422,
+                error_code="response_contract_error", contract_reason=reason,
+                error_detail=("response_contract_error: assistant response did not match "
+                              "Collie's tool/answer contract" +
+                              ((" (%s)" % reason) if reason else "")),
+                request_count=2)
+        # A tool-less caller (the loop's closing synthesis, Mission's planner) owns its own
+        # action contract and validates its own schema, so its plain text is returned unchanged.
         return Completion(text=text, usage=total, stop_reason="end_turn",
                           request_count=2)  # fallback: prose
 
