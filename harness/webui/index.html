@@ -4635,6 +4635,12 @@
     document.querySelectorAll(".mission").forEach(function (card) {
       if (card._missionState) renderMission(card, card._missionState);
     });
+    // Pending and retained rows are built from state at render time, not from data-i18n
+    // nodes, so chrome-only translation leaves them in whatever language was current when
+    // they were drawn — and the settings answer normally lands *after* a reload has already
+    // restored them. Re-render from the state we already hold: this reads state only and
+    // sends, saves, discards or clears nothing.
+    if (typeof renderTaskQueue === "function") renderTaskQueue();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -9959,9 +9965,30 @@
     var state = queueState();
     state.notice = message; renderTaskQueue();
   }
+  // An IME composition belongs to the live textarea node: the characters still being
+  // composed are not in .value, so a snapshot of text and caret cannot carry them to a
+  // replacement node. A render nobody asked for — a queue poll, or the language answer
+  // landing — therefore waits for the composition to finish instead of rebuilding the row.
+  var queueComposing = null, queueRenderDeferred = false;
+  function endQueueComposition(editor) {
+    if (queueComposing !== editor) return;
+    // compositionend can arrive either side of the final input event; let that event reach
+    // the node that is still attached before any rebuild.
+    setTimeout(function () {
+      if (queueComposing !== editor) return;
+      queueComposing = null;
+      var deferred = queueRenderDeferred;
+      queueRenderDeferred = false;
+      // A stale callback: the editor was closed, or another thread was opened and has
+      // already rendered. Nothing of that render is owed to what is on screen now.
+      if (deferred && editor.isConnected) renderTaskQueue();
+    }, 0);
+  }
   function renderTaskQueue() {
     var state = queueState(), panel = $("taskQueue"), list = $("taskQueueList");
     if (!panel || !list) return;
+    if (queueComposing && queueComposing === document.activeElement && list.contains(queueComposing) &&
+        queueComposing._queueSession === state.session) { queueRenderDeferred = true; return; }
     var entries = state.entries.filter(function (entry) { return entry.state === "pending" || entry.state === "claimed"; });
     var retained = retainedFor(currentSession);
     // A retained row is shown even with no thread open: a submission made before any session
@@ -9975,6 +10002,15 @@
     start.disabled = running || state.active || state.starting || entries.some(function (entry) { return entry.state === "claimed"; });
     start.textContent = t(state.starting ? "Starting…" : "Send next");
     start.onclick = startQueuedRequest;
+    // The inline editor is rebuilt with the rest of the list, so a re-render driven by
+    // something other than the person — a queue poll, or the language arriving — would
+    // otherwise drop the caret out of a half-typed edit. Its text already lives in
+    // state.editor (kept current by oninput); carry the caret across too, and only when
+    // that editor genuinely had focus, so nothing steals it.
+    var focused = document.activeElement, editorEl = null, caret = null;
+    if (focused && focused.tagName === "TEXTAREA" && list.contains(focused)) caret = {
+      start: focused.selectionStart, end: focused.selectionEnd,
+      dir: focused.selectionDirection, scroll: focused.scrollTop };
     list.innerHTML = "";
     entries.forEach(function (entry) {
       var row = document.createElement("div"); row.className = "task-queue-row"; row.dataset.id = entry.id;
@@ -9990,6 +10026,10 @@
         content.value = state.editor.text;
         content.setAttribute("aria-label", t("Edit pending request"));
         content.oninput = function () { if (state.editor) state.editor.text = content.value; };
+        content._queueSession = state.session;
+        content.addEventListener("compositionstart", function () { queueComposing = content; });
+        content.addEventListener("compositionend", function () { endQueueComposition(content); });
+        editorEl = content;
       } else { content.className = "task-queue-text"; content.textContent = entry.text; }
       row.appendChild(content);
       if (entry.state === "pending") {
@@ -10048,6 +10088,11 @@
       row.appendChild(actions);
       list.appendChild(row);
     });
+    if (caret && editorEl) {
+      editorEl.focus({preventScroll:true});
+      try { editorEl.setSelectionRange(caret.start, caret.end, caret.dir); } catch (e) {}
+      editorEl.scrollTop = caret.scroll;
+    }
   }
   function loadTaskQueue() {
     var state = queueState(), sid = state.session;
