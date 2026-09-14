@@ -8287,8 +8287,12 @@
   // further than 130px from the end, nearBottom() read that as "the user scrolled away", and the
   // follow stopped for the rest of the run — each later block pushing it further out, so it could
   // never recover on its own. Long answers and tool traces are exactly the tall-block case.
-  var stick = true, lastTop = 0;
+  var stick = true, lastTop = 0, hydrating = 0, hydrateWants = false, hydrateForce = false;
   function scrollDown(force) {
+    if (hydrating) {          // bulk hydration: hold the intent, measure once when the scope ends
+      hydrateWants = true; hydrateForce = hydrateForce || !!force;
+      return;
+    }
     var s = $("scroll");
     if (force) stick = true;
     // "instant", NOT "auto": `auto` means "use the CSS", and the container sets
@@ -8302,6 +8306,25 @@
   function updateScrollBtn() {
     var btn = $("scrollDownBtn"); if (!btn) return;
     btn.classList.toggle("show", !nearBottom());
+  }
+  // Opening a saved thread renders every turn in ONE synchronous pass, and none of it is on
+  // screen until that pass ends. scrollDown() asks the browser where the box now ends right
+  // after each append, so every message forced a fresh layout — three per turn, thousands for a
+  // long thread — to position a view nobody could see yet. Inside hydrate() that intent is only
+  // REMEMBERED; the single read that decides where the reopened thread actually sits happens
+  // when the scope closes. Live output is the opposite case — each arrival IS visible — so
+  // streaming, steering and sending never enter this scope and keep measuring per append.
+  function hydrate(fill) {
+    hydrating++;
+    try { fill(); } finally {
+      // finally, never "after fill()": one message that fails to render must not leave the page
+      // permanently unable to scroll itself.
+      hydrating--;
+      if (!hydrating && hydrateWants) {
+        var force = hydrateForce; hydrateWants = false; hydrateForce = false;
+        scrollDown(force);
+      }
+    }
   }
   $("scroll").addEventListener("scroll", function () {
     var s = $("scroll"), top = s.scrollTop;
@@ -9018,30 +9041,32 @@
       if (window.showTaskWorkspace) window.showTaskWorkspace(s.cwd, s.workspace);
       if (run) liveRuns[id] = run; else delete liveRuns[id];
       var msgs = (s && s.messages) || [], firstAsk = "";
-      msgs.forEach(function (m) {
-        if (m.role === "user" && m.source !== "harness") {
-          var text = typeof m.content === "string" ? m.content : "", images = [];
-          if (Array.isArray(m.content)) m.content.forEach(function (part) {
-            if (part.type === "text") text += (text ? "\n" : "") + (part.text || "");
-            if (part.type === "image" && part.data && part.media_type) images.push(part);
-          });
-          var display = m.display || {};
-          if (typeof display.text === "string") text = display.text;
-          if (!firstAsk) firstAsk = text;
-          var userBubble = addMsg("user", text, images, m.kind === "steer");
-          (display.contexts || []).forEach(function (context) {
-            var panel = document.createElement("details"), label = document.createElement("summary");
-            label.textContent = context.label || context.path || t("Attached context");
-            if (context.startLine) label.textContent += " · " + context.startLine + (context.endLine ? "–" + context.endLine : "");
-            panel.appendChild(label);
-            var content = document.createElement("pre"); content.textContent = context.content || "";
-            content.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto";
-            panel.appendChild(content); panel.className = "attached-context"; userBubble.appendChild(panel);
-          });
-        } else if (m.role === "assistant" && m.content) {
-          var content = String(m.content).replace(/\s*_\[stopped by user\]_\s*$/, "");
-          var el = addMsg("assistant", ""); renderMd(el, content); if (content) addCopy(el, content);
-        }
+      hydrate(function () {
+        msgs.forEach(function (m) {
+          if (m.role === "user" && m.source !== "harness") {
+            var text = typeof m.content === "string" ? m.content : "", images = [];
+            if (Array.isArray(m.content)) m.content.forEach(function (part) {
+              if (part.type === "text") text += (text ? "\n" : "") + (part.text || "");
+              if (part.type === "image" && part.data && part.media_type) images.push(part);
+            });
+            var display = m.display || {};
+            if (typeof display.text === "string") text = display.text;
+            if (!firstAsk) firstAsk = text;
+            var userBubble = addMsg("user", text, images, m.kind === "steer");
+            (display.contexts || []).forEach(function (context) {
+              var panel = document.createElement("details"), label = document.createElement("summary");
+              label.textContent = context.label || context.path || t("Attached context");
+              if (context.startLine) label.textContent += " · " + context.startLine + (context.endLine ? "–" + context.endLine : "");
+              panel.appendChild(label);
+              var content = document.createElement("pre"); content.textContent = context.content || "";
+              content.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto";
+              panel.appendChild(content); panel.className = "attached-context"; userBubble.appendChild(panel);
+            });
+          } else if (m.role === "assistant" && m.content) {
+            var content = String(m.content).replace(/\s*_\[stopped by user\]_\s*$/, "");
+            var el = addMsg("assistant", ""); renderMd(el, content); if (content) addCopy(el, content);
+          }
+        });
       });
       // A reopened thread is named by the same first sentence the sidebar uses. No rename stored and
       // no cached row (deep link, fresh reload) still has to produce the right header.
