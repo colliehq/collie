@@ -16,14 +16,62 @@ Everything here is the real index.html against the staged HTTP fixture shared wi
 test_web_ui_run_status; only the settings answer is held open, by the same helper the queue-locale
 tests use.  No dialog, rename or delete is answered on the person's behalf unless the test says so.
 """
+import datetime
 import json
 
 import pytest
 from playwright.sync_api import expect
 
-from test_web_ui_run_status import ui, server, browser, _Fixture   # noqa: F401
+from test_web_ui_run_status import SESSIONS, server, browser, _Fixture   # noqa: F401
+from test_web_ui_run_status import ui as run_status_ui                   # noqa: F401
 from test_web_busy_send_ui import open_read_thread
 from test_web_queue_locale import hold_settings
+
+# ------------------------------------------------------------------ one fixed day
+# The sidebar groups a row by comparing its `updated` stamp against the browser's own `new Date()`
+# at render time.  The shared rows are stamped once, with `time.time()`, when test_web_ui_run_status
+# is imported — so in a long suite the two clocks are hours apart, and a run that crossed local
+# midnight drew a correct YESTERDAY under tests that read TODAY.  That is the instrument moving, not
+# the product: the grouping is right, the day it was asked about changed underneath it.
+#
+# So this module — and only this module — pins both ends of that comparison to one instant.  The
+# page's Date is fixed, and the shared rows are re-stamped onto the same day for the length of a
+# test and handed back exactly as they were found, so nothing leaks to the modules that share them.
+# Only Date is frozen: the timers behind the run and queue polls, and the held-back settings answer,
+# still run at their real speed.
+#
+# 12:10 UTC is at least ten minutes away from local midnight at every real UTC offset (they land on
+# :00, :30 and :45), and mid-January is clear of daylight-saving changes, so the frozen instant and
+# the rows beneath it are one unambiguous local day in whatever zone this runs.
+FROZEN_DAY = datetime.datetime(2026, 1, 15, 12, 10, tzinfo=datetime.timezone.utc)
+
+
+@pytest.fixture
+def frozen_sessions():
+    """Re-stamp the shared sidebar rows onto the frozen day, keeping their order and spacing."""
+    saved = [row["updated"] for row in SESSIONS]
+    newest = max(saved)
+    for row, updated in zip(SESSIONS, saved):
+        row["updated"] = FROZEN_DAY.timestamp() - (newest - updated)
+    yield
+    for row, updated in zip(SESSIONS, saved):
+        row["updated"] = updated
+
+
+@pytest.fixture
+def ui(frozen_sessions, run_status_ui):
+    """The shared surface, reading the frozen day at both ends.
+
+    `frozen_sessions` is named first so the rows are already on the frozen day when the imported
+    fixture loads the page, and the page is drawn once more after the fixed Date is installed, so
+    the sidebar a test is handed was grouped against that same day rather than the wall clock.
+    """
+    page = run_status_ui.page
+    page.clock.set_fixed_time(FROZEN_DAY)
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input", timeout=8000)
+    return run_status_ui
+
 
 # (LANG, group heading, capped run badge, turn count, rename title, rename aria, delete aria)
 LANGS = [
@@ -229,6 +277,24 @@ def test_a_late_language_reaches_an_empty_sidebar(ui, lang, empty):
     expect(page.locator("html")).to_have_attribute("lang", lang)
     page.wait_for_timeout(1200)
     expect(page.locator("#threads .empty")).to_have_text(empty)
+
+
+def test_this_module_reads_one_fixed_day_whatever_the_wall_clock_says(ui):
+    """A control on the instrument these tests use, not on the product.
+
+    The page's own Date and the stamps the fixture serves have to name the same local day, however
+    long ago this module was collected and whatever the suite's wall clock has since crossed. If
+    they ever part company again, this says so here instead of as a group heading somewhere else.
+    """
+    page = ui.page
+    assert page.evaluate("() => Date.now()") == int(FROZEN_DAY.timestamp() * 1000)
+    stamps = [row["updated"] for row in SESSIONS]
+    assert page.evaluate("""(stamps) => {
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+      return stamps.every(s => s * 1000 >= midnight.getTime() && s * 1000 <= Date.now());
+    }""", stamps), stamps
+    expect(page.locator("#threads .thread-group")).to_have_count(1)
+    expect(page.locator("#threads .thread-group").first).to_have_text("TODAY", use_inner_text=True)
 
 
 def test_an_english_page_keeps_its_english_sidebar(ui):
