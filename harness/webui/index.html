@@ -3099,23 +3099,55 @@
   // useful initial focus, traps Tab while visible, and restores focus on close. Keeping this in one
   // place prevents the onboarding/settings/recording/model dialogs from drifting apart again.
   var dialogReturnFocus = new WeakMap();
+  function dialogIsVisible(overlay) {
+    return !!overlay && !overlay.hidden &&
+      (overlay.classList.contains("open") || overlay.id === "recOverlay");
+  }
   function visibleDialogOverlay() {
     var candidates = [$("nameOverlay"), $("obOverlay"), $("brOverlay"), $("amOverlay"), $("setOverlay"),
                       $("modelOverlay"), $("recOverlay")].filter(Boolean);
-    var visible = candidates.filter(function (el) {
-      return !el.hidden && (el.classList.contains("open") || el.id === "recOverlay");
-    });
+    var visible = candidates.filter(dialogIsVisible);
     return visible.length ? visible[visible.length - 1] : null;
+  }
+  // Opening and closing both move the focus a tick later, and a tick is long enough for the person
+  // to have moved on: Escape then Ctrl+K again is one flick of the fingers. A callback scheduled by
+  // a dialog that is no longer the one on screen may not act — it would drag the caret out of the
+  // dialog that replaced it, or into one that is already gone. So the moves are queued against a
+  // single lifecycle: scheduling cancels the move still waiting, and whichever ones do run are
+  // re-checked, at the moment they run, against the dialog that is actually visible. The last one
+  // that still holds decides; nothing is focused if none of them do.
+  var dialogFocusQueue = [], dialogFocusTimer = 0;
+  function runDialogFocus() {
+    dialogFocusTimer = 0;
+    var pending = dialogFocusQueue;
+    dialogFocusQueue = [];
+    var target = null;
+    pending.forEach(function (intent) {
+      var wanted = intent();          // null: that dialog no longer owns the focus
+      if (wanted) target = wanted;
+    });
+    if (target && target.isConnected && target.focus) target.focus();
+  }
+  function scheduleDialogFocus(intent) {
+    dialogFocusQueue.push(intent);
+    if (dialogFocusTimer) window.clearTimeout(dialogFocusTimer);
+    dialogFocusTimer = window.setTimeout(runDialogFocus, 0);
   }
   function dialogOpened(overlay, initial) {
     if (!overlay) return;
-    dialogReturnFocus.set(overlay, document.activeElement);
+    var opener = document.activeElement;
+    var previous = dialogReturnFocus.get(overlay);
+    // Opening a dialog that is already up (the hotkey pressed a second time) must not replace the
+    // control the person came from with one of the dialog's own fields.
+    if (opener && overlay.contains(opener)) opener = previous && previous.isConnected ? previous : null;
+    dialogReturnFocus.set(overlay, opener);
     overlay.setAttribute("aria-hidden", "false");
-    window.setTimeout(function () {
+    scheduleDialogFocus(function () {
+      if (!dialogIsVisible(overlay)) return null;         // closed again before this ran
       var target = typeof initial === "string" ? overlay.querySelector(initial) : initial;
       if (!target) target = overlay.querySelector('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]');
-      if (target && target.focus) target.focus();
-    }, 0);
+      return target;
+    });
   }
   function dialogClosed(overlay, fallback) {
     if (!overlay) return;
@@ -3123,9 +3155,13 @@
     var target = dialogReturnFocus.get(overlay) || fallback;
     if (target && target.offsetParent === null && fallback) target = fallback;
     dialogReturnFocus.delete(overlay);
-    window.setTimeout(function () {
-      if (target && target.isConnected && target.focus) target.focus();
-    }, 0);
+    scheduleDialogFocus(function () {
+      var visible = visibleDialogOverlay();
+      // Reopened, or another dialog came up, while this restore waited: that dialog keeps the focus
+      // its own opening gave it. A restore that lands inside the still-visible dialog is fine.
+      if (visible && (visible === overlay || !visible.contains(target))) return null;
+      return target;
+    });
   }
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Tab") return;
@@ -11818,6 +11854,17 @@
       modelSearch = $("modelSearch"), modelDiscover = $("modelDiscover"),
       modelList = $("modelList"), modelStatus = $("modelStatus");
   var modelEntries = [], modelCurrentId = "", modelActiveIndex = -1, modelCatalogLoaded = false, modelBusy = false;
+  // A deliberate choice is an entry, not a row number. The catalog answers over the network and can
+  // land — reordered, longer, shorter — after the person has already walked the highlight onto a
+  // model, so the id they moved to is remembered and put back on that same entry, whatever position
+  // it now holds. It is dropped the moment that entry is no longer a choosable row (removed from the
+  // catalog, no longer authenticated, or filtered out by their own search), so the highlight falls
+  // back to the current model and a stale row can never be the thing Enter submits.
+  var modelChosenId = "";
+  // Overlapping catalog reads (reopen, live discovery, a settings-driven refresh) answer in any
+  // order: only the newest request may draw, and an answer that was already in flight when a switch
+  // landed may not move the current model back to the one it was sent for.
+  var modelCatalogRequest = 0, modelCurrentGeneration = 0;
   var modelGroupDefinitions = [
     { kind: "subscription", title: "Login-backed", caption: "Availability and billing depend on the selected route" },
     { kind: "metered", title: "Metered API", caption: "Billed by the connected provider" },
@@ -11880,7 +11927,7 @@
     return Array.prototype.slice.call(modelList.querySelectorAll(".model-option:not(:disabled)"));
   }
 
-  function setModelActive(nextIndex) {
+  function setModelActive(nextIndex, deliberate) {
     var options = modelOptions();
     if (!options.length) {
       modelActiveIndex = -1;
@@ -11892,6 +11939,7 @@
       option.classList.toggle("is-keyboard-active", optionIndex === modelActiveIndex);
     });
     var activeOption = options[modelActiveIndex];
+    if (deliberate) modelChosenId = activeOption.dataset.modelId;
     modelList.setAttribute("aria-activedescendant", activeOption.id);
     activeOption.scrollIntoView({ block: "nearest" });
   }
@@ -11996,8 +12044,15 @@
       empty.textContent = t(query ? "No models match that search." : "No models are available right now.");
       modelList.appendChild(empty);
     }
-    var currentOptionIndex = modelOptions().findIndex(function (option) { return option.dataset.modelId === modelCurrentId; });
-    setModelActive(currentOptionIndex >= 0 ? currentOptionIndex : 0);
+    // The highlight follows the entry the person chose, not the row it used to sit on. If that entry
+    // is no longer offered here the choice is forgotten rather than carried on a neighbouring row.
+    var options = modelOptions();
+    var chosenOptionIndex = modelChosenId
+      ? options.findIndex(function (option) { return option.dataset.modelId === modelChosenId; }) : -1;
+    if (modelChosenId && chosenOptionIndex < 0) modelChosenId = "";
+    var currentOptionIndex = options.findIndex(function (option) { return option.dataset.modelId === modelCurrentId; });
+    setModelActive(chosenOptionIndex >= 0 ? chosenOptionIndex
+      : (currentOptionIndex >= 0 ? currentOptionIndex : 0));
     if (modelCatalogLoaded && !modelBusy) {
       // One model is "1 model available", not "1 models available"; Chinese counts the same row with
       // a measure word and no plural form at all, so the count is a whole sentence per language.
@@ -12021,12 +12076,16 @@
       modelStatus.textContent = t(discoverLive ? "Discovering authenticated providers…" : "Loading available models…");
     });
     var query = discoverLive ? "?discover=1" : "";
+    var request = ++modelCatalogRequest, generation = modelCurrentGeneration;
     return fetch("/api/models" + query).then(function (response) {
       if (!response.ok) throw new Error("model catalog request failed");
       return response.json();
     }).then(function (payload) {
+      if (request !== modelCatalogRequest) return;      // a newer read has already answered
       modelEntries = Array.isArray(payload.entries) ? payload.entries : [];
-      modelCurrentId = payload.current || modelCurrentId;
+      // This answer was sent for the model that was current when it was asked for. If a switch
+      // landed while it was in flight, it describes the past and may not undo that switch.
+      if (generation === modelCurrentGeneration) modelCurrentId = payload.current || modelCurrentId;
       var autoProvider = String(modelCurrentId || "").split(":")[0];
       if (autoProvider) {
         var providerEntry = modelEntries.find(function (entry) { return entry.provider === autoProvider; });
@@ -12040,6 +12099,7 @@
       updateModelTrigger();
       renderModelEntries();
     }).catch(function () {
+      if (request !== modelCatalogRequest) return;      // a stale failure never buries a fresh list
       paintModelStatus(function () {
         modelStatus.textContent = t("Could not load the model catalog.");
       }, "model-status err");
@@ -12072,9 +12132,12 @@
     modelOverlay.classList.add("open");
     modelTrigger.setAttribute("aria-expanded", "true");
     modelSearch.value = "";
+    modelChosenId = "";                  // a freshly opened dialog starts on the current model
     renderModelEntries();
+    // The search field is this dialog's initial focus and nothing more: it goes through the shared
+    // lifecycle above, so a reopen cannot be overtaken by the previous close's restore. A second,
+    // unguarded focus of its own used to sit here and was exactly such an unowned move.
     dialogOpened(modelOverlay, modelSearch);
-    window.setTimeout(function () { modelSearch.focus(); }, 0);
     loadModelCatalog(modelDiscover.checked);
   }
 
@@ -12087,6 +12150,9 @@
 
   function selectModel(entry) {
     if (modelBusy || !entry || entry.auth !== "ok") return;
+    // Only a model the catalog still offers may be switched to: a row drawn from an answer that has
+    // since been replaced is not sent just because a key or a click arrived a moment later.
+    if (!modelEntries.some(function (known) { return known.id === entry.id && known.auth === "ok"; })) return;
     setModelBusy(true);
     paintModelStatus(function () {          // the model's own name is carried through untranslated
       modelStatus.textContent = t("Switching to {model}…").replace("{model}", modelEntryLabel(entry));
@@ -12106,6 +12172,7 @@
         throw failure;
       }
       modelCurrentId = result.payload.provider + ":" + result.payload.model;
+      modelCurrentGeneration += 1;
       updateModelTrigger();
       if (window.refreshRunCapabilities) window.refreshRunCapabilities();
       paintModelStatus(function () {
@@ -12161,10 +12228,10 @@
     if (modelKeyIsComposition(event)) { if (event.key === "Enter") event.preventDefault(); return; }
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setModelActive(modelActiveIndex + 1);
+      setModelActive(modelActiveIndex + 1, true);       // a deliberate move: remember the entry
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setModelActive(modelActiveIndex - 1);
+      setModelActive(modelActiveIndex - 1, true);
     } else if (event.key === "Enter") {
       event.preventDefault();
       var options = modelOptions();
