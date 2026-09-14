@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 import os
+import threading
+import time
 
 import pytest
 
@@ -148,3 +150,162 @@ def test_gateway_resume_fork_and_compact_use_durable_parent(monkeypatch, tmp_pat
                   if row.get("method") == "session.resume")
     assert resume["params"]["session_id"] == "stored-parent"
     assert any(event.type == "context.compacted" for event in compacted.events)
+
+
+class WedgedGateway:
+    """A gateway that acknowledges ``session.interrupt`` and keeps working anyway.
+
+    Nothing here depends on timing: every frame is produced by an explicit
+    ``send``, and ``receive`` blocks until one exists or until the transport is
+    really shut down.  That is the shape Collie has to survive — a peer whose
+    RPC write succeeds is not a peer that stopped.
+
+    ``killed`` (``terminate``) and ``closed`` (``close``) are recorded
+    separately on purpose: the ordinary end-of-operation teardown closes every
+    transport, so only ``killed`` is evidence that cancellation escalated to the
+    owned process tree.
+    """
+
+    def __init__(self):
+        self.sent = []
+        self.returncode = None
+        self.stderr = ""
+        self.interrupts = 0
+        self.prompted = threading.Event()
+        self.killed = threading.Event()
+        self.closed = threading.Event()
+        self._frames = deque([{"jsonrpc": "2.0", "method": "event",
+                               "params": {"type": "gateway.ready", "payload": {}}}])
+        self._lock = threading.Lock()
+
+    def send(self, message):
+        message = dict(message)
+        method = message.get("method")
+        with self._lock:
+            self.sent.append(message)
+            if method == "session.create":
+                result = {"session_id": "live1234", "stored_session_id": "stored-parent"}
+            elif method == "session.interrupt":
+                # Accepted on the wire, then ignored: no message.complete follows.
+                self.interrupts += 1
+                result = {"status": "queued"}
+            elif method == "prompt.submit":
+                result = {"status": "streaming"}
+            else:
+                result = {"status": "ok"}
+            self._frames.append({"jsonrpc": "2.0", "id": message.get("id"),
+                                 "result": result})
+        if method == "prompt.submit":
+            self.prompted.set()
+
+    def receive(self, timeout_s):
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            with self._lock:
+                if self._frames:
+                    return self._frames.popleft()
+            if self.killed.is_set() or self.closed.is_set():
+                raise EOFError("Hermes gateway closed its output")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Hermes gateway produced no frame")
+            time.sleep(.005)
+
+    def terminate(self, timeout_s=5.0):
+        self.killed.set()
+        self.returncode = -9
+        return True
+
+    def close(self):
+        self.closed.set()
+        return True
+
+
+def test_ignored_native_interrupt_escalates_to_container_tree_extinction(
+        monkeypatch, tmp_path):
+    """A written session.interrupt is a request, never proof the turn stopped.
+
+    ``runner_slice._CancelWatcher`` stops asking the moment ``cancel_current()``
+    returns True, so confirming a cancel that only reached the gateway's inbox
+    leaves the container running against the user's workspace with nobody left
+    to kill it.
+    """
+    _env(monkeypatch)
+    gateway = WedgedGateway()
+    runner = HermesGatewayRunner(transport_factory=lambda *_a: gateway,
+                                 snapshotter=_snap, default_timeout_s=5.0)
+    outcome = {}
+
+    def turn():
+        try:
+            outcome["snapshot"] = runner.start("do it", str(tmp_path))
+        except BaseException as exc:      # reported by the assertions below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=turn, name="collie-hermes-wedged", daemon=True)
+    worker.start()
+    seen = {}
+    try:
+        assert gateway.prompted.wait(timeout=10), "the turn never submitted a prompt"
+        began = time.monotonic()
+        seen["confirmed"] = runner.cancel_current()
+        seen["elapsed"] = time.monotonic() - began
+        seen["killed"] = gateway.killed.is_set()
+    finally:
+        gateway.terminate()               # never leave the worker thread wedged
+        worker.join(timeout=15)
+
+    assert gateway.interrupts == 1, "the native interrupt must still be tried first"
+    assert seen["killed"], (
+        "cancel_current() returned without terminating a gateway that ignored "
+        "session.interrupt; the owned container tree was left running")
+    assert seen["confirmed"] is True
+    assert seen["elapsed"] <= 5.0, "cancel_current() must answer within five seconds"
+    assert not worker.is_alive() and "error" not in outcome
+    snapshot = outcome["snapshot"]
+    assert snapshot.cancelled and not snapshot.settled
+    assert snapshot.error == "Hermes operation was cancelled"
+
+
+def test_interrupt_that_really_stops_the_turn_is_not_escalated(monkeypatch, tmp_path):
+    """The native path stays native: a gateway that honours abort is not killed."""
+    _env(monkeypatch)
+
+    class ObedientGateway(WedgedGateway):
+        def send(self, message):
+            super().send(message)
+            if message.get("method") == "session.interrupt":
+                with self._lock:
+                    self._frames.append({
+                        "jsonrpc": "2.0", "method": "event",
+                        "params": {"type": "message.complete",
+                                   "session_id": "live1234",
+                                   "payload": {"text": "stopped",
+                                               "status": "complete"}}})
+
+    gateway = ObedientGateway()
+    runner = HermesGatewayRunner(transport_factory=lambda *_a: gateway,
+                                 snapshotter=_snap, default_timeout_s=5.0)
+    outcome = {}
+
+    def turn():
+        try:
+            outcome["snapshot"] = runner.start("do it", str(tmp_path))
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=turn, name="collie-hermes-obedient", daemon=True)
+    worker.start()
+    seen = {}
+    try:
+        assert gateway.prompted.wait(timeout=10), "the turn never submitted a prompt"
+        seen["confirmed"] = runner.cancel_current()
+        seen["killed"] = gateway.killed.is_set()
+    finally:
+        gateway.terminate()
+        worker.join(timeout=15)
+
+    assert seen["confirmed"] is True
+    assert not seen["killed"], "a gateway that stopped on request was killed anyway"
+    assert gateway.closed.is_set(), "the honoured turn still closes its transport"
+    snapshot = outcome["snapshot"]
+    assert snapshot.cancelled and not snapshot.settled

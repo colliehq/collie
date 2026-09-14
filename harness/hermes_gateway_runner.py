@@ -102,6 +102,10 @@ class HermesGatewayRunner:
         self._active_session_id = ""
         self._active_turn = False
         self._cancel_requested = False
+        # Set by the invocation thread once the operation has stopped reading the
+        # transport.  ``cancel_current`` waits on it to tell "the gateway honoured
+        # session.interrupt" apart from "the write landed in its inbox".
+        self._turn_done = threading.Event()
 
     def set_event_callback(self, callback: Callable[[RunnerEvent], Any] | None) -> None:
         self._event_callback = callback
@@ -159,6 +163,8 @@ class HermesGatewayRunner:
                 return False
 
     def cancel_current(self) -> bool:
+        deadline = time.monotonic() + 5.0
+        requested = False
         with self._active_lock:
             transport = self._active
             session_id = self._active_session_id
@@ -172,13 +178,22 @@ class HermesGatewayRunner:
                         "method": "session.interrupt",
                         "params": {"session_id": session_id},
                     })
-                    return True
+                    requested = True
                 except Exception:
                     pass
-            try:
-                return bool(transport.terminate())
-            except Exception:
-                return False
+        # A successful write only proves the interrupt reached the gateway's
+        # inbox.  This runner declares cancel="native+process-tree" and owns the
+        # container, so wait briefly for the turn to actually end and escalate to
+        # extinction when it does not: `runner_slice._CancelWatcher` stops asking
+        # the moment this returns True, and a gateway that acknowledged
+        # session.interrupt and kept working would then edit the user's workspace
+        # with nobody left to kill it.
+        if requested and self._turn_done.wait(timeout=.75):
+            return True
+        try:
+            return bool(transport.terminate(max(0.0, deadline - time.monotonic())))
+        except Exception:
+            return False
 
     def cancel_for(self, key: str = "") -> bool:
         return self.cancel_current()
@@ -318,6 +333,10 @@ class HermesGatewayRunner:
                 self._active_session_id = ""
                 self._active_turn = False
                 self._cancel_requested = False
+                # Cleared under the same lock that publishes the transport, so a
+                # concurrent cancel either finds no active operation at all or
+                # finds one whose completion latch belongs to this turn.
+                self._turn_done.clear()
 
             ready = False
             while not ready:
@@ -389,6 +408,7 @@ class HermesGatewayRunner:
                 self._active_turn = False
                 self._active_session_id = ""
                 self._active = None
+                self._turn_done.set()
             if transport is not None:
                 try:
                     close_ok = bool(transport.close())
