@@ -714,7 +714,9 @@ function validateRunSetup(){
 $("mPackCheck").addEventListener("input",function(){this.setCustomValidity("");});
 $("mPackN").addEventListener("input",function(){this.setCustomValidity("");});
 $("mVerifyCommand").addEventListener("input",function(){this.setCustomValidity("");this.dataset.source="user";});
-function refreshRunCapabilities(){fetch(api('/api/run-capabilities')).then(function(r){return r.json();}).then(function(c){
+var runCapabilityEpoch=0;
+function refreshRunCapabilities(){var epoch=++runCapabilityEpoch;fetch(api('/api/run-capabilities')).then(function(r){return r.json();}).then(function(c){
+  if(epoch!==runCapabilityEpoch)return;
   runCapabilities=c||{};var fast=(c.speed_tiers||[]).indexOf('fast')>=0,opt=$("mFastOption");opt.hidden=!fast;opt.disabled=!fast;
   if(!fast&&$("mSpeed").value==='fast'){$("mSpeed").value='standard';delete runExplicitAxes.speed;}
   Array.prototype.forEach.call($("mEffort").options,function(o){if(o.value==='auto')return;o.disabled=(c.reasoning_efforts||[]).indexOf(o.value)<0;});
@@ -735,6 +737,7 @@ function refreshRunCapabilities(){fetch(api('/api/run-capabilities')).then(funct
   });
   paintRunSetup();
 }).catch(function(){
+  if(epoch!==runCapabilityEpoch)return;
   runCapabilities={};var o=$("mFastOption");o.hidden=true;o.disabled=true;
   Array.prototype.forEach.call($("mRunner").options,function(row){
     if(row.value==="codex-exec"||row.value==="claude-code"){
@@ -744,6 +747,10 @@ function refreshRunCapabilities(){fetch(api('/api/run-capabilities')).then(funct
   });
   paintRunSetup();
 });}
+// The desktop can save a different provider/model while this page stays open, so the run options
+// are re-read at the moment a person opens them rather than only once at boot. One gesture, one
+// read — not a poll — and a read overtaken by a later one is dropped by the epoch above.
+$("runSetup").addEventListener("toggle",function(){if(this.open)refreshRunCapabilities();});
 var verificationScope=null, verificationEpoch=0;
 function refreshVerification(){
   var sid=currentSession||'',epoch=++verificationEpoch;
