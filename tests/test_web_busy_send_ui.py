@@ -552,3 +552,274 @@ def test_attachment_only_submission_survives_navigation_and_reload(ui, existing_
     expect(page.locator("#input")).to_have_value("")
     assert not _Fixture.stream_requests
     assert not _Fixture.queue_posts
+
+
+# --- fifth pass: the request that ended up in two places at once --------------------
+#
+# A refusal is answered twice over: the words go straight back into the composer, AND the same
+# words are handed to the durable queue.  While that save is in flight both copies are the same
+# request, and whichever lands first retires the other — the ACK clears the draft it named, a
+# refusal leaves the draft standing.
+#
+# Except when the save fails after the person has moved on, or the page goes away before it is
+# answered.  Then the request is filed as a retained row *and* the composer copy stays where it
+# was, in the same thread, with no identity linking them.  Two editable copies of one keystroke
+# is two turns: the row carries the request's inbox id, the composer carries nothing, and an
+# edit to either puts them beyond the reach of the server's duplicate check.
+
+def test_a_refusal_filed_as_a_row_is_not_also_left_in_the_composer(ui):
+    """Leaving the thread while the save is in flight, and the save fails."""
+    page = ui.page
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    attach(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)   # refused: the words came straight back
+    assert _Fixture.queue_seen.wait(3)
+    open_cap_thread(page)
+    _Fixture.queue_ack.set()
+    page.wait_for_timeout(1200)
+
+    open_read_thread(page)
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-text")).to_have_text(ASK)
+    # The row is the copy that survives: it kept the file and the request's identity. The
+    # composer it was taken back out of is free.
+    expect(row.locator(".task-queue-meta")).to_contain_text("Attachments saved")
+    expect(page.locator("#input")).to_have_value("")
+    expect(page.locator("#attachStrip .thumb")).to_have_count(0)
+
+    # And there is only one thing left to send.
+    _Fixture.queue_fail_all = False
+    row.locator("button").first.click()
+    expect(page.locator(".task-queue-row:not(.retained)")).to_have_count(1, timeout=6000)
+    expect(retained_rows(page)).to_have_count(0)
+    assert len(_Fixture.queue_entries) == 1, _Fixture.queue_entries
+
+
+def test_a_reload_while_the_refusal_is_saving_leaves_one_request_not_two(ui):
+    """The same thing reached by closing the page: pagehide keeps the request, so the draft it
+    was keeping it in must not survive the reload beside it."""
+    page = ui.page
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    attach(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input")
+    _Fixture.queue_ack.set()
+
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-text")).to_have_text(ASK)
+    expect(row.locator(".task-queue-meta")).to_contain_text("Attachments saved")
+    expect(page.locator("#input")).to_have_value("")
+    # Nor a "reattach before sending" prompt for a file the row is already holding.
+    expect(page.locator("#draftNotice")).to_be_hidden()
+
+    _Fixture.queue_fail_all = False
+    row.locator("button").first.click()
+    expect(page.locator(".task-queue-row:not(.retained)")).to_have_count(1, timeout=6000)
+    assert len(_Fixture.queue_entries) == 1, _Fixture.queue_entries
+    assert _Fixture.queue_posts[-1]["id"] == _Fixture.queue_posts[0]["id"]
+
+
+def test_the_second_copy_could_be_edited_past_the_servers_duplicate_check(ui):
+    """Why the two copies are not merely untidy. The retained row is resent under the request's
+    own id; the composer copy is a new request the moment a single word changes."""
+    page = ui.page
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    open_cap_thread(page)
+    _Fixture.queue_ack.set()
+    page.wait_for_timeout(1200)
+
+    _Fixture.queue_fail_all = False
+    open_read_thread(page)
+    retained_rows(page).locator("button").first.click()
+    expect(page.locator(".task-queue-row:not(.retained)")).to_have_count(1, timeout=6000)
+    # Nothing is waiting in the composer to be refined and sent as a second version of it.
+    expect(page.locator("#input")).to_have_value("")
+    page.fill("#input", ASK + " (and the docs)")
+    page.press("#input", "Enter")
+    page.wait_for_timeout(900)
+    texts = sorted(entry["text"] for entry in _Fixture.queue_entries.values())
+    assert texts == [ASK, ASK + " (and the docs)"], texts
+
+
+def test_words_typed_after_the_refusal_are_not_taken_by_the_row(ui):
+    """Only that exact submission is released. A draft written since is current intent, and it
+    stays in the composer — through the failure, and through a reload."""
+    page = ui.page
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    page.fill("#input", NEWER)
+    _Fixture.queue_ack.set()
+
+    expect(retained_rows(page)).to_have_count(1)
+    expect(retained_rows(page).locator(".task-queue-text")).to_have_text(ASK)
+    expect(page.locator("#input")).to_have_value(NEWER)
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input")
+    expect(page.locator("#input")).to_have_value(NEWER)
+    expect(retained_rows(page)).to_have_count(1)
+    expect(retained_rows(page).locator(".task-queue-text")).to_have_text(ASK)
+
+
+# --- sixth pass: the row only wins if the row is really there -----------------------
+#
+# Taking the words out of the composer is only safe because the retained row is the stronger
+# record.  It is not, when the storage refuses to keep it: retained rows carry whole requests
+# and their attachments, and a browser can refuse those writes while still accepting the small
+# composer draft beside them.  Then the row lives in this window alone, the composer copy is the
+# only one a reload can return — and releasing it against a row that was never written is how a
+# person is left with an empty composer and nothing left to send.
+
+RETAINED_UNWRITABLE = """
+(() => {
+  const real = Storage.prototype.setItem;
+  window.__collieRetainedUnwritable = true;
+  Storage.prototype.setItem = function (key, value) {
+    if (window.__collieRetainedUnwritable && String(key).indexOf('collie.retained.v1:') === 0)
+      throw new DOMException('injected retained-record storage failure', 'QuotaExceededError');
+    return real.call(this, key, value);
+  };
+})();
+"""
+
+
+def block_retained_storage(page):
+    """Fail only the retained-record writes; the compact composer draft still stores."""
+    page.add_init_script(RETAINED_UNWRITABLE)   # survives the reloads below
+    page.evaluate(RETAINED_UNWRITABLE)          # and covers the writes before the first one
+
+
+def test_a_row_that_storage_refused_does_not_take_the_draft_it_left_behind(ui):
+    """The detached half of it: the save fails while another thread is on screen, so the copy
+    at stake is the one waiting in the thread the person walked away from."""
+    page = ui.page
+    block_retained_storage(page)
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    open_cap_thread(page)
+    _Fixture.queue_ack.set()
+    page.wait_for_timeout(1200)
+
+    open_read_thread(page)
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-meta")).to_contain_text("Kept in this window only")
+    # This window has both; only one of them can come back, so it is the one that is kept.
+    expect(page.locator("#input")).to_have_value(ASK)
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input")
+    expect(retained_rows(page)).to_have_count(0)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert len(_Fixture.queue_posts) == 1, "nothing was resent to reach that state"
+
+
+def test_a_newer_draft_outlives_a_row_that_storage_refused(ui):
+    """Words typed since the refusal are current intent whether or not the row was written,
+    and the failed write must not reach them on the way past."""
+    page = ui.page
+    block_retained_storage(page)
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    page.fill("#input", NEWER)
+    _Fixture.queue_ack.set()
+
+    expect(retained_rows(page)).to_have_count(1)
+    expect(retained_rows(page).locator(".task-queue-meta")).to_contain_text("Kept in this window only")
+    expect(page.locator("#input")).to_have_value(NEWER)
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input")
+    expect(page.locator("#input")).to_have_value(NEWER)
+
+
+def test_a_window_only_row_stops_saying_so_once_a_later_write_takes_it(ui):
+    """"Kept in this window only" is a fact about the last write, not a mark on the row. A row
+    written on a later attempt is durable, says so, and is still there after a reload."""
+    page = ui.page
+    block_retained_storage(page)
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    open_cap_thread(page)
+    _Fixture.queue_ack.set()
+    page.wait_for_timeout(1200)
+    open_read_thread(page)
+    row = retained_rows(page)
+    expect(row.locator(".task-queue-meta")).to_contain_text("Kept in this window only")
+
+    # Storage comes back. The queue still refuses, so this is the same row settling again.
+    page.evaluate("window.__collieRetainedUnwritable = false")
+    row.locator("button", has_text="Send again").click()
+    expect(row.locator(".task-queue-meta")).not_to_contain_text("Kept in this window only")
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input")
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-text")).to_have_text(ASK)
+    expect(row.locator(".task-queue-meta")).not_to_contain_text("Kept in this window only")
+    assert len(_Fixture.queue_entries) == 0, "a resend that was refused queued nothing"
+
+
+def test_a_row_too_big_for_storage_keeps_the_words_and_says_what_it_could_not_keep(ui):
+    """The middle case: the write that kept the request could not keep its files with it. The
+    words and settings are durable, so the composer copy goes — and the row never claims the
+    file is coming back."""
+    page = ui.page
+    page.add_init_script(OVERFLOW)
+    page.evaluate(OVERFLOW)
+    _Fixture.queue_ack.clear()
+    _Fixture.queue_fail_all = True
+    open_read_thread(page)
+    attach(page)
+    send(page, ASK)
+    expect(page.locator("#input")).to_have_value(ASK)
+    assert _Fixture.queue_seen.wait(3)
+    open_cap_thread(page)
+    _Fixture.queue_ack.set()
+    page.wait_for_timeout(1200)
+
+    open_read_thread(page)
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-text")).to_have_text(ASK)
+    # This window still holds the file and can still send it; the promise stops at the reload.
+    expect(row.locator(".task-queue-meta")).to_contain_text("Attachments saved in this window only")
+    expect(page.locator("#input")).to_have_value("")
+    expect(page.locator("#attachStrip .thumb")).to_have_count(0)
+
+    page.reload(wait_until="load")
+    page.wait_for_selector("#input")
+    row = retained_rows(page)
+    expect(row).to_have_count(1)
+    expect(row.locator(".task-queue-text")).to_have_text(ASK)
+    expect(row.locator(".task-queue-meta")).to_contain_text("reattach before sending")
+    expect(page.locator("#input")).to_have_value("")
+    expect(page.locator("#draftNotice")).to_be_hidden()

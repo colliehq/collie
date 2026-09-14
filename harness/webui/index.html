@@ -3508,6 +3508,7 @@
     "Sending…": "发送中…",
     "Discard": "丢弃",
     "Attachments saved": "附件已保存",
+    "Attachments saved in this window only — a reload will not bring them back": "附件暂存在本窗口，刷新后需重新添加",
     "Edit pending request": "编辑待执行要求",
     "Saving request…": "正在保存要求…",
     "Request saved": "要求已保存",
@@ -3886,6 +3887,7 @@
     "Sending…": "傳送中…",
     "Discard": "捨棄",
     "Attachments saved": "附件已儲存",
+    "Attachments saved in this window only — a reload will not bring them back": "附件暫存在本視窗，重新整理後需重新加入",
     "Edit pending request": "編輯待執行要求",
     "Saving request…": "正在儲存要求…",
     "Request saved": "要求已儲存",
@@ -5547,9 +5549,14 @@
     if (unackedSend) { unackedSend.retainUnknown(); unackedSend = null; }
     pendingQueueSaves.forEach(function (save) {
       save.abandoned = true;
-      retainSubmission(save.sid, save.text, save.contexts, save.images, save.config,
+      var held = retainSubmission(save.sid, save.text, save.contexts, save.images, save.config,
         save.posted ? "unknown" : "unsent",
         {submission:save.id, requestId:save.requestId, mode:save.mode});
+      // If the row now holds this request whole, the composer copy it was put back into goes
+      // with it — this runs before the draft is written to storage, so the reload comes back to
+      // one request, not to the same words waiting in two places. If the row could not be
+      // written, the draft about to be saved is the only copy the reload will have.
+      releaseRetainedDraft(save.sid, save.draft, save.images, held);
     });
   });
 
@@ -10015,7 +10022,12 @@
                          t(currentSession && held.text.trim() ? "Send it again or discard it" : "Put it back in the composer or discard it");
       if (held.lostImages) meta.textContent += " · " + t("Attachments not restored — reattach before sending");
       else if (held.omittedImages) meta.textContent += " · " + t("Sent without its attachments");
-      else if ((held.images || []).length) meta.textContent += " · " + t("Attachments saved");
+      // The row is the only copy of these files once the composer has been released, so "saved"
+      // is qualified when the write that kept the request could not keep them with it.
+      else if ((held.images || []).length)
+        meta.textContent += " · " + (held.imagesUnstored
+          ? t("Attachments saved in this window only — a reload will not bring them back")
+          : t("Attachments saved"));
       if (held.unstored) meta.textContent += " · " + t("Kept in this window only — a reload will not bring it back");
       row.appendChild(meta);
       var content = document.createElement("div"); content.className = "task-queue-text";
@@ -10153,7 +10165,10 @@
     var save = {sid:sid, text:q, contexts:contexts || [], images:imgs || [], config:config,
       mode:mode, id:opts.submission || (window.crypto && window.crypto.randomUUID
         ? window.crypto.randomUUID() : "save-" + Date.now() + "-" + Math.random().toString(36).slice(2)),
-      requestId:opts.requestId || "", posted:false, abandoned:false};
+      requestId:opts.requestId || "", posted:false, abandoned:false,
+      // Which composer draft these words are still sitting in, so a retained row can take them
+      // out of it. A pagehide settles this save from outside queueInput and needs the same fact.
+      draft:draft};
     pendingQueueSaves.push(save);
     queueNotice(t("Saving request…"), sid);
     return requestFingerprint(value).then(function (fingerprint) {
@@ -10218,8 +10233,9 @@
           if (currentSession === sid) renderTaskQueue();
         } else if (save.abandoned || currentSession !== sid ||
                    $("input").value !== originalDraft || queueDraftRevision !== originalRevision) {
-          retainSubmission(sid, q, contexts, imgs, config, save.posted ? "unsaved" : "unsent",
-            {submission:save.id, requestId:save.requestId, mode:mode});
+          releaseRetainedDraft(sid, draft, imgs,
+            retainSubmission(sid, q, contexts, imgs, config, save.posted ? "unsaved" : "unsent",
+              {submission:save.id, requestId:save.requestId, mode:mode}));
         }
         return result;
       });
@@ -10237,6 +10253,48 @@
     attached = (imgs || []).slice(); renderAttached(); restoreIdeContexts(contexts);
     return {text:input.value, revision:queueDraftRevision, manual:JSON.stringify(ideManualContexts)};
   }
+  // ...and take them back out again once the request is filed as a retained row instead.
+  //
+  // A refused Send puts its words back in the composer AND asks the durable queue to hold them.
+  // When that save is the one that fails — or the page goes away before it answers — the request
+  // becomes a row, and the composer copy it came from is no longer a copy of anything: it is a
+  // second, editable version of the same request, in the same thread, with no shared identity.
+  // Send the row and press Enter on the composer and the thread runs the work twice; edit the
+  // composer first and not even the server's id check can tell they were one keystroke.
+  //
+  // So the row wins — it is the stronger record, keeping the attachments, the settings the
+  // request was made under and its inbox identity — and the draft it was taken from is released.
+  // Only ever that exact submission: words typed since are the person's current intent and are
+  // never touched, in this thread's composer or in the one they left behind.
+  //
+  // And only ever when the row really is the stronger record. The composer draft is kept in its
+  // own small key, which survives a quota or a private-mode failure that the retained record —
+  // whole requests, attachments and all — does not. A row that could not be written is not a
+  // replacement for anything: it lives in this window, and the copy that comes back from a
+  // reload is the composer's. Releasing against it was the one path that could leave a person
+  // with no text at all, so the release is made against what the storage actually took.
+  //
+  // "Took" includes the degraded write: text, settings and context are on disk and the row
+  // reloads saying the attachments were not kept. Nothing is lost by releasing the composer's
+  // copy of those files — the composer draft never stored file data either, and this window's
+  // row still holds the images themselves for a resend here and now.
+  function releaseRetainedDraft(sid, draft, imgs, row) {
+    if (!draft || typeof draft.text !== "string") return;   // it came from nowhere visible
+    if (!row || row.unstored) return;                       // nothing durable took its place
+    if (currentSession !== (sid || null)) {
+      // Another thread is on screen; this one's draft lives in the store the same way the
+      // acceptance path clears it there.
+      acknowledgeDetachedDraft(sid, draft.text, draft.revision, imgs || [], draft.manual);
+      return;
+    }
+    var input = $("input");
+    if (input.value !== draft.text || queueDraftRevision !== draft.revision) return;
+    input.value = ""; input.style.height = "auto";
+    attached = attached.filter(function (image) { return (imgs || []).indexOf(image) < 0; });
+    renderAttached();
+    if (JSON.stringify(ideManualContexts) === draft.manual) clearManualIdeContexts();
+    saveComposerDraft();
+  }
   // The queue would not take it and the composer was not free to hold it — or the server never
   // answered at all. Either way the request itself is kept: the words, the run settings it was
   // made under and its attachments, filed under the thread it was made for, with an identity of
@@ -10253,15 +10311,34 @@
         return row && typeof row === "object" && typeof row.id === "string" &&
           typeof row.text === "string" && row.config && typeof row.config === "object" &&
           Array.isArray(row.images) && Array.isArray(row.contexts);
-      }).map(function (row) { row.sending = false; return row; });
+      // Read back out of storage is proof of durability: whatever an earlier window could not
+      // write, this row is the copy that survived. The flags are about the last write attempt
+      // in this window only and are never carried across a reload.
+      }).map(function (row) { row.sending = false; row.unstored = false; row.imagesUnstored = false; return row; });
     }
     return retainedSends[key];
   }
+  // Returns what the storage actually took, per row, because a caller that is about to throw
+  // away the person's other copy of these words may only do so against a record that survives:
+  //   "stored"   — the rows are on disk whole
+  //   "degraded" — text, settings and context are on disk; the attachments are not, and the row
+  //                reloads saying so
+  //   "unstored" — nothing was written; these rows exist in this window and nowhere else
+  // The verdict is re-stated on every write, so a row that could not be written before and has
+  // just been written is no longer marked window-only.
   function storeRetainedSends(sid) {
     var rows = retainedFor(sid);
     function write(value) { sessionStorage.setItem(retainedKey(sid), JSON.stringify(value)); }
+    function settle(verdict) {
+      rows.forEach(function (row) {
+        row.unstored = verdict === "unstored";
+        row.imagesUnstored = verdict === "degraded" && !!(row.images || []).length;
+      });
+      return verdict;
+    }
     try {
       if (!rows.length) sessionStorage.removeItem(retainedKey(sid)); else write(rows);
+      return settle("stored");
     } catch (_) {
       // Attachments can outgrow the storage quota. The request, its settings and the fact that
       // it had files still have to survive a reload — the files themselves may not, and the row
@@ -10273,10 +10350,11 @@
                   lostImages:row.lostImages || (row.images || []).length,
                   omittedImages:row.omittedImages || 0, reason:row.reason, at:row.at};
         }));
+        return settle("degraded");
       } catch (_) {
         // No storage at all (private mode, disabled, still over quota). Say so; do not imply a
         // reload will bring this back.
-        rows.forEach(function (row) { row.unstored = true; });
+        return settle("unstored");
       }
     }
   }
