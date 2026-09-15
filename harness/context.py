@@ -249,9 +249,15 @@ class ContextComposer:
             "review": ("MODE: Review — inspect only. Report prioritized findings with concrete "
                        "file paths and line numbers. Do not edit files or run commands. The "
                        "findings are the deliverable: finish with them, with no edit."),
+            # Task-neutral on the outcome: the older wording ("return the failing check")
+            # named only one of the two results this mode can observe, so a command that
+            # actually passed had no described deliverable and the reply drifted toward
+            # hunting for a failure to report.
             "test": ("MODE: Test — inspect files and run only the proposed verification command. "
-                     "Do not edit anything. Return the failing check as evidence for a separate "
-                     "Build run: reporting that command's actual outcome completes this task."),
+                     "Do not edit anything. Report that command's actual outcome, pass or fail, "
+                     "with the evidence: the command, and the part of its output that shows the "
+                     "result. A failure is evidence for a separate Build run; a pass is a "
+                     "result in its own right. Reporting the outcome completes this task."),
         }.get(mode, act_role)
         tool_names = "TOOLS (always-on): " + ", ".join(
             t.name for t in self.registry.always_on())

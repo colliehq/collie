@@ -26,7 +26,8 @@ import uuid
 from . import preflight as _preflight
 from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
                         _parse_response_envelope, _READ_BATCH_TOOL, content_text,
-                        contract_miss_reason, provider_default_model)
+                        contract_miss_reason, host_request_note,
+                        provider_default_model)
 
 
 _MAX_STDOUT = 2 * 1024 * 1024
@@ -204,11 +205,12 @@ def _host_note(message) -> bool:
     A note that carries content blocks is not a note.  loop.py also appends
     host-sourced ``tool_attachment`` messages that hold the pixels a tool just
     produced; those are real content and stay eligible to be the current turn.
+
+    The recognition itself lives in ``providers.host_request_note``, which the
+    serializer uses to LABEL these lines: which messages are notes and which
+    line is the current turn are then one decision, not two that can drift.
     """
-    return (str(message.get("role") or "") == "user"
-            and str(message.get("source") or "") == _REPAIR_SOURCE
-            and str(message.get("kind") or "") in _HOST_NOTE_KINDS
-            and not isinstance(message.get("content"), list))
+    return bool(host_request_note(message))
 
 
 def _latest_user(messages) -> int:
@@ -336,6 +338,12 @@ def _marked_messages(messages, entries, nonce: str) -> list:
             lines.append(entry["token"])
         copy = dict(message)
         copy["content"] = "\n".join(lines)
+        # This message carried real content blocks, which is exactly what
+        # ``host_request_note`` refuses to treat as one of the host's request
+        # notes.  Flattening those blocks to text must not make the serializer
+        # label it as one, so the note marker does not survive the rewrite.
+        copy.pop("source", None)
+        copy.pop("kind", None)
         marked.append(copy)
     return marked
 

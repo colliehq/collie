@@ -1027,6 +1027,41 @@ class AnthropicOAuthProvider(AnthropicProvider):
                           stop_reason=_norm_stop(data.get("stop_reason", "end_turn")))
 
 
+# Request-scoped notes the HOST appends to an outgoing request (loop.py's format
+# repair, preflight's verification state).  Both must travel as ``role: "user"``
+# because that is the only role a provider accepts them in, so the wire role
+# cannot say who wrote them; the ``source``/``kind`` keys the host stamps on a
+# dict it built itself can.  This is the single definition of that marker, shared
+# by the serializer below and by claude_agent_sdk's ``_latest_user``/attachment
+# rules, so the prompt's labels and the turn-selection logic cannot disagree.
+_HOST_NOTE_SOURCE = "harness"
+_HOST_NOTE_KINDS = frozenset({"format_repair", "verification_state"})
+
+
+def host_request_note(message) -> str:
+    """The note kind for one host-authored request note, else "" (metadata only).
+
+    No message text is ever inspected.  A conversation is free to quote the words
+    "Collie host note" or "kind: format_repair", and a user or a model saying so
+    in prose must not be able to demote a real turn -- nor may a genuine user
+    message be re-labelled because of what it happens to say.
+
+    A message whose content is a block list is not a note: loop.py also appends
+    host-sourced messages carrying the pixels a tool just produced, and those are
+    real content.
+    """
+    if not isinstance(message, dict):
+        return ""
+    if str(message.get("role") or "") != "user":
+        return ""
+    if str(message.get("source") or "") != _HOST_NOTE_SOURCE:
+        return ""
+    kind = str(message.get("kind") or "")
+    if kind not in _HOST_NOTE_KINDS or isinstance(message.get("content"), list):
+        return ""
+    return kind
+
+
 # --------------------------------------------------------------------------- #
 #  ClaudeCliProvider — drive collie's backend with the LATEST Claude model through the
 #  official `claude` CLI. This is the ONE sanctioned, non-proxy way to use a Max/Pro
@@ -1069,9 +1104,22 @@ class ClaudeCliProvider(ModelProvider):
         # Claude attempt real tool_use (→ error_max_turns); as the system role it's config
         # and the JSON protocol below governs the reply. (Verified.)
         L = ["# Conversation so far:"]
+        noted = False
         for m in messages:
             r = m["role"]
             if r == "user":
+                # A host request note is stamped by the host and is NOT a user turn:
+                # labelling loop.py's format-repair nudge or preflight's verification
+                # state "User" told the model the person had just asked for a JSON
+                # re-emission or a status report, right before "respond to the latest
+                # User message".  Recognition is metadata-only (host_request_note), so
+                # prose cannot promote itself into a note or demote a real turn.
+                note_kind = host_request_note(m)
+                if note_kind:
+                    noted = True
+                    L.append("Collie host note (%s): %s"
+                             % (note_kind, content_text(m.get("content", ""))))
+                    continue
                 # claude-cli is text-only here; send the text (images are dropped with a marker)
                 L.append("User: " + content_text(m.get("content", "")) +
                          (" [+image]" if _has_images(m.get("content")) else ""))
@@ -1086,6 +1134,14 @@ class ClaudeCliProvider(ModelProvider):
                 if tool_result_limit is not None:
                     result = result[:tool_result_limit]
                 L.append("Result of %s: %s" % (m.get("name"), result))
+        if noted:
+            # Only when a note was actually rendered, so an ordinary conversation's
+            # request body is byte-identical to before and no prompt ever describes a
+            # label it does not contain.  This explains the label; it does not give the
+            # notes any authority they did not already have as appended guidance.
+            L += ["", 'A "Collie host note" line is Collie\'s own guidance about the '
+                  "request in progress, not something the user said and not a new task. "
+                  "The latest User line above is still the request to serve."]
         tools = "\n".join("- %s(%s): %s" % (
             t["name"], ",".join((t.get("input_schema", {}).get("properties", {}) or {}).keys()),
             t["description"]) for t in tool_schemas)
@@ -1113,7 +1169,8 @@ class ClaudeCliProvider(ModelProvider):
                   "Call the StructuredOutput formatter exactly once. Its input must contain "
                   "one response object. Do not emit this object as plain text.",
                   'To request a host tool: {"response":{"tool":"<name>","args":{...}}}',
-                  'To finish: {"response":{"answer":"<final answer>"}}']
+                  'To finish: {"response":{"answer":"<final answer>"}}',
+                  answer_encoding_instruction(structured_response=True)]
             if read_batch:
                 L += [read_batch_instruction(structured_response=True)]
             L += ["The listed executor tools run in Collie after this response; they are not "
@@ -1123,7 +1180,8 @@ class ClaudeCliProvider(ModelProvider):
               "Reply with EXACTLY ONE JSON object and nothing else — no prose, no markdown "
               "fence, no explanation before or after.",
               'To run a tool:      {"tool":"<name>","args":{...}}',
-              'To finish (only when the task is fully done): {"answer":"<final answer>"}']
+              'To finish (only when the task is fully done): {"answer":"<final answer>"}',
+              answer_encoding_instruction(structured_response=False)]
             if read_batch:
                 L += [read_batch_instruction(structured_response=False)]
             L += ["A strong model tends to explain instead of emitting JSON — do NOT. One JSON "
@@ -1407,6 +1465,23 @@ _READ_BATCH_KEYS = ("path", "offset", "limit", "max_bytes")
 _READ_BATCH_BOUNDS = ("offset", "limit", "max_bytes")
 
 
+# The "answer" slot is a JSON STRING in both envelopes.  A request whose
+# deliverable is itself JSON (or code, or a table) is the case where a model
+# reaches for an object-valued answer, which the host envelope and the provider's
+# own schema both refuse -- so the requested content is stated to belong INSIDE
+# the string, with one short escaped example.  Mode-neutral: it says how to
+# encode the answer, never whether this turn should be answering.
+def answer_encoding_instruction(structured_response=False) -> str:
+    """Show a valid complete example for the response transport being requested."""
+    example = {"answer": json.dumps({"ok": True})}
+    if structured_response:
+        example = {"response": example}
+    return ('The "answer" value is always a JSON string, including when the user asked for '
+            'JSON, code or a table: put that content inside the string and escape it, e.g. '
+            + json.dumps(example, separators=(",", ":"))
+            + '. Never send an object, array, number or null there.')
+
+
 def read_batch_instruction(structured_response=False) -> str:
     """The one place the read-batch envelope is described to a model.
 
@@ -1420,8 +1495,12 @@ def read_batch_instruction(structured_response=False) -> str:
             'answer may be mixed in): %s. Each entry needs "path" and may add "offset", '
             '"limit" or "max_bytes"; Collie runs them as separate %s calls, in order, and '
             'returns each result. Use it only when you already know every path you need; '
-            'one bad entry rejects the whole response.'
-            % (_READ_BATCH_MAX, shape, _READ_BATCH_TOOL))
+            'one bad entry rejects the whole response. Your reply is still exactly ONE '
+            'envelope: put every path in the single "reads" list. Two envelopes, a list of '
+            'ordinary {"tool":...} objects, or a "reads" envelope with anything else beside '
+            'it are all refused, and a batch is optional -- one ordinary %s call per '
+            'response remains correct.'
+            % (_READ_BATCH_MAX, shape, _READ_BATCH_TOOL, _READ_BATCH_TOOL))
 
 
 def _read_batch_args(member):
