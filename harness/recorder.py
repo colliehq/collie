@@ -41,6 +41,10 @@ class RunResult:
     canceled: bool = False
     stop_reason: str = ""
     retry_at: int = 0              # upstream quota reset; Mission persists its wait separately
+    # Set by `note_host_error` when a failure is recorded AFTER run() returned (save,
+    # required check, effect boundary).  It withdraws the provider-wait reading of
+    # `retry_at`: the run is no longer merely early.
+    host_error: bool = False
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
     contract_repairs: int = 0  # bounded structured-response corrections (not transport retries)
@@ -194,9 +198,95 @@ def root_run_filter(db):
     return "parent_run_id IS NULL" if "parent_run_id" in columns else "1=1"
 
 
-def run_outcome(result):
-    """Shared terminal fields for CLI, live events and durable run receipts."""
+# An epoch older than this cannot be a live quota window — it is a default, a
+# millisecond value divided wrong, or a receipt from another era.  Eight days is the
+# same horizon `providers.provider_retry_at` uses: it covers weekly plan windows
+# without accepting an unbounded wait.
+PROVIDER_WAIT_FLOOR = 1_600_000_000     # 2020-09-13 UTC
+PROVIDER_WAIT_HORIZON = 8 * 86400
+
+
+def provider_wait_at(value, now=None) -> int:
+    """A provider-attested quota reset a receipt may carry, or 0 for anything else.
+
+    ``providers.provider_retry_at`` is the gate at the upstream boundary and accepts only
+    a reset still in the future, which is right there: a reset already past is not a
+    reason to stop calling.  A DURABLE receipt is read back long after it was written, so
+    the same fact has a second reading — the reset has since arrived and the run is ready
+    to be retried by hand.  That is why this validator accepts a past epoch and the
+    upstream one does not; callers tell the two apart with ``now``, never by guessing.
+
+    Everything the host cannot READ as an epoch is refused outright, because the value
+    decides whether a person is told to wait: ``True`` is not 1, a float (NaN, inf and
+    1.7e9 alike) is not an epoch, and a JSON string of digits is not one either.
+    """
+    now = time.time() if now is None else now
+    if type(value) is not int:          # bool/float/str/None never grant a wait
+        return 0
+    return value if PROVIDER_WAIT_FLOOR <= value <= now + PROVIDER_WAIT_HORIZON else 0
+
+
+def provider_wait_state(result, now=None, recovery_required=False) -> dict | None:
+    """The quota reset this run is genuinely stopped on, or None.
+
+    A wait is a claim that nothing is wrong except the clock, so it is made only when
+    every other verdict agrees.  A cancellation, a budget or turn or output cap, and a
+    run that finished all outrank it: those are what actually ended the run, and the
+    reset time left on the result is then only metadata.  So does a HOST failure recorded
+    after the run returned (`note_host_error`) — a transcript that would not save or a
+    required check that would not certify is not something waiting for a provider fixes,
+    and it must never be dressed up as one because an old `retry_at` is still lying around.
+
+    ``recovery_required`` is passed IN rather than read off the result, because the result
+    genuinely does not know it: a fence lives in the session journal and in the worker's
+    own settlement report, and each host learns it at a different moment (`webapp` from
+    `_durable_external_fence` and `recovery_state`, the CLI from the worker receipt and
+    the check boundary, `web_tasks` from its caller).  A fenced thread may have fired a
+    tool outside this process; "come back at 14:00" is the wrong headline for it, whatever
+    the provider said about quota.  A caller that cannot know passes nothing and gets the
+    old reading — which is why every composition site below is explicit.
+    """
+    if recovery_required:
+        return None
+    if getattr(result, "host_error", False):
+        return None
+    if run_stop_reason(result) != "error":
+        return None
+    retry_at = provider_wait_at(getattr(result, "retry_at", 0), now=now)
+    return {"retry_at": retry_at} if retry_at else None
+
+
+def note_host_error(result, message):
+    """Append a host-side failure to a finished run and retire its provider-wait state.
+
+    Everything appended after ``Harness.run`` returns — a required check's verdict, a
+    receipt or transcript that would not persist, an effect boundary that would not
+    close — belongs to the host, not to the provider.  A run that stopped on a quota
+    reset and then failed to save is not "waiting until 14:00"; it needs a person now.
+    The reset time stays on the result for whoever wants to read it, but this run has
+    stopped being an ordinary wait, and every surface reading `run_outcome` learns that
+    from the same place rather than from the shape of an error string.
+    """
+    text = str(message or "")
+    if not text:
+        return getattr(result, "error", "")
+    result.error = ((result.error + "; ") if result.error else "") + text
+    try:
+        result.host_error = True
+    except Exception:                     # a frozen/slotted stand-in still gets the text
+        pass
+    return result.error
+
+
+def run_outcome(result, now=None, recovery_required=False):
+    """Shared terminal fields for CLI, live events and durable run receipts.
+
+    ``recovery_required`` is the thread's fence as the calling host knows it at the moment
+    the row is composed.  It never appears in the returned row — the hosts write their own
+    ``recovery_required`` key beside this one — it only withdraws the wait reading.
+    """
     reason = run_stop_reason(result)
+    wait = provider_wait_state(result, now=now, recovery_required=recovery_required)
     return {"stop_reason": reason, "completed": reason == "completed",
             "edited": bool(getattr(result, "edited", False)),
             "turns_exhausted": bool(getattr(result, "turns_exhausted", False)),
@@ -204,4 +294,7 @@ def run_outcome(result):
             "budget_limits": dict(getattr(result, "budget_limits", {}) or {}),
             "canceled": bool(getattr(result, "canceled", False)),
             "model_calls": getattr(result, "model_calls", 0),
+            # Present only on a real wait, so a legacy receipt and a receipt for a run
+            # that stopped for any other reason are the same thing to a reader: absent.
+            **({"provider_wait": True, "retry_at": wait["retry_at"]} if wait else {}),
             "parent_run_id": getattr(result, "parent_run_id", None)}

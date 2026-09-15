@@ -1218,7 +1218,9 @@ def terminal_outcome(res=None, *, canceled=False, error="", recovery_required=Fa
     """
     from .recorder import run_outcome
     if res is not None:
-        row = dict(run_outcome(res))
+        # The fence is this function's argument, not the result's: a quota reset never
+        # outranks an effect that may already have happened outside the process.
+        row = dict(run_outcome(res, recovery_required=bool(recovery_required)))
     else:
         row = {"stop_reason": "error" if error else "completed",
                "completed": bool(completed), "canceled": bool(canceled)}

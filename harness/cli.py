@@ -23,7 +23,7 @@ from .embeddings import make_embedding
 from .memory import SqliteMemory
 from .tools import default_registry
 from .context import ContextComposer, TokenBudgeter
-from .recorder import Recorder
+from .recorder import Recorder, note_host_error
 from .loop import Harness
 from . import compare as cmp
 from . import dashboard as dash
@@ -549,12 +549,51 @@ def apply_accepted_capabilities(h, capabilities):
     return h.capabilities
 
 
-def turn_decision_receipt(decision, res, provider=None):
-    """Compact structured outcome used both for UI receipts and next-turn routing."""
+def turn_receipt_fence(h, journal=None, sid=""):
+    """The fence a terminal surface can honestly claim when a turn's receipt is composed.
+
+    It answers one question for ``turn_decision_receipt``: may this row still be read as
+    "nothing is wrong except the clock"?  By the time ``Harness.run`` returns, the execution
+    loop has already SETTLED this thread's journal — a terminal checkpoint when the run
+    ended cleanly, an ``external_action`` fence when it stopped with a tool in flight
+    (loop.py `_session_checkpoint` at the end of the run) — so the journal is an honest
+    answer at this moment, and not only after the transcript save, which is where the TUI
+    and the REPL re-read it to decide about the NEXT turn.  Those later re-reads stay: they
+    guard continuation, this one guards the durable row.
+
+    True means "withhold the wait", and it is also the answer when the journal cannot be
+    read: not knowing whether an effect is open is not evidence that quota is the only
+    problem.  Withholding claims nothing in return — ``run_outcome`` never writes this key
+    — so an unreadable journal cannot invent a side effect or raise a fence anybody has to
+    reconcile.  A turn on no durable thread at all (ACP) journals no fence, and reads as
+    unfenced exactly as it always did.
+    """
+    if not sid:
+        find = getattr(h, "_durable_session_id", None)   # the id the loop journaled TO
+        sid = (find() or "") if callable(find) else ""
+    if not sid:
+        return False
+    if journal is None:
+        from . import sessions as _sessions
+        journal = _sessions
+    try:
+        state = journal.recovery_state(sid)
+    except Exception:
+        return True
+    return bool(state and state.get("recovery_required"))
+
+
+def turn_decision_receipt(decision, res, provider=None, recovery_required=False):
+    """Compact structured outcome used both for UI receipts and next-turn routing.
+
+    ``recovery_required`` is the caller's reading of the thread's fence (the terminal
+    surfaces take it from ``turn_receipt_fence`` above); it withdraws the quota-wait
+    reading without appearing in the row, which keeps that key the caller's own to write.
+    """
     active = provider
     from .recorder import run_outcome
     return {
-        **run_outcome(res),
+        **run_outcome(res, recovery_required=bool(recovery_required)),
         "decision": decision.to_dict(),
         "model": getattr(res, "model", "") or decision.model,
         "actual_speed": getattr(active, "actual_speed", decision.speed),
@@ -853,8 +892,13 @@ def cmd_repl(args):
                         h.input_entry = None
                     print("\n" + (res.answer or res.error or "(no output)"))
                     history = res.messages
-                    receipt = turn_decision_receipt(decision, res,
-                                                    getattr(h, "provider", None))
+                    # The loop settled this thread's journal before run() returned, so
+                    # read the fence HERE: this row is appended durably below, and a
+                    # later reader cannot tell a quota wait from a quota wait left over
+                    # an effect nobody has inspected.
+                    receipt = turn_decision_receipt(
+                        decision, res, getattr(h, "provider", None),
+                        recovery_required=turn_receipt_fence(h, sess, sid))
                     try:
                         saved_sid = sess.save(
                             sid, history, project=args.project, cwd=cwd,
@@ -1955,6 +1999,24 @@ def cmd_run(args):
         return 2
 
 
+def _session_fenced(sess, sid, external=False):
+    """Whether this thread's journal already holds an unresolved effect boundary.
+
+    Only asked of in-process runs. An external worker arms its replay fence BEFORE it is
+    launched and retires it after the save, so the journal would call every external run
+    fenced while it is still the run's own; for those, the worker's settlement report and
+    the receipt/save errors are the honest signals, and the caller passes those instead.
+    A journal that cannot be read is not evidence of anything, so it claims nothing.
+    """
+    if external:
+        return False
+    try:
+        state = sess.recovery_state(sid)
+    except Exception:
+        return False
+    return bool(state and state.get("recovery_required"))
+
+
 def _cmd_run_owned(args, sid, lease):
     import json as _json
     from .recorder import run_outcome
@@ -2249,8 +2311,7 @@ def _cmd_run_owned(args, sid, lease):
                     verify_command, verify_source,
                     "the check was not started: " + check_boundary["error"])
                 res.verified = False
-                res.error = ((res.error + "; ") if res.error else "") + \
-                    check_boundary["error"]
+                note_host_error(res, check_boundary["error"])
             else:
                 verification_evidence = _verification.run_verification_command(
                     verify_command, cwd, source=verify_source or "detected",
@@ -2262,8 +2323,7 @@ def _cmd_run_owned(args, sid, lease):
                 if verification_evidence.get("cancelled"):
                     res.canceled = True
                     res.verified = False
-                    res.error = ((res.error + "; ") if res.error else "") + (
-                        "stopped by user during the required check")
+                    note_host_error(res, "stopped by user during the required check")
                 else:
                     res.verified = bool(
                         verification_evidence["passed"] and not res.error)
@@ -2272,7 +2332,7 @@ def _cmd_run_owned(args, sid, lease):
                         # fail; say which of the two happened.
                         check_error = _verification.check_result_reason(
                             verification_evidence, verify_command)
-                        res.error = ((res.error + "; ") if res.error else "") + check_error
+                        note_host_error(res, check_error)
                     h.settle_run_memory(
                         res, bool(res.verified), verification_evidence,
                         source="cli_verification")
@@ -2281,16 +2341,29 @@ def _cmd_run_owned(args, sid, lease):
                 check_boundary_hold = bool(closed["fenced"])
                 verification_evidence["effect_boundary"] = closed["detail"]
                 if closed["error"]:
-                    res.error = ((res.error + "; ") if res.error else "") + closed["error"]
+                    note_host_error(res, closed["error"])
             if callable(getattr(h, "emit", None)):
                 h.emit("verification_evidence", {"evidence": verification_evidence})
         # Persist the final host-side verdict; run() could only record its in-loop evidence.
         h.recorder.finish_run(res)
     actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
+    # The fence as it stands BEFORE the save below, which is the only part of it this row
+    # can honestly speak for: an unsettled external worker, a check whose tree could not be
+    # proved extinct, and any boundary the run itself left open on disk. A durable receipt
+    # that says "just waiting for quota" about a thread with an unaccounted effect would
+    # outlive the run and be read back as reassurance, so the fence wins here too. Failures
+    # recorded after this point go through `note_host_error`, which withdraws the wait by
+    # itself; the printed verdict below re-reads the settled fence.
+    receipt_fenced = bool(
+        check_boundary_hold
+        or (hd.runner != "collie"
+            and (runner_payload is None
+                 or (runner_payload or {}).get("recovery_required") is True))
+        or _session_fenced(sess, sid, external=hd.runner != "collie"))
     receipt_error = ""
     try:
         run_receipt = {
-            **run_outcome(res),
+            **run_outcome(res, recovery_required=receipt_fenced),
             "decision": decision_payload, "model": res.model,
             "actual_speed": actual_speed, "verified": bool(getattr(res, "verified", False)),
             "verification_evidence": verification_evidence, "error": res.error or "",
@@ -2308,7 +2381,7 @@ def _cmd_run_owned(args, sid, lease):
         receipt_error = "run receipt could not be persisted: " + redact_text(
             "%s: %s" % (type(exc).__name__, exc), 500)
     if receipt_error:
-        res.error = ((res.error + "; ") if res.error else "") + receipt_error
+        note_host_error(res, receipt_error)
     if hd.runner != "collie":
         # The external CLI owns its native transcript, but Collie's session is
         # still the user-visible continuity layer. Reconstruct only the exchange
@@ -2337,7 +2410,7 @@ def _cmd_run_owned(args, sid, lease):
         from .runner_specs import redact_text
         save_error = "session transcript could not be persisted: " + redact_text(
             "%s: %s" % (type(exc).__name__, exc), 500)
-        res.error = ((res.error + "; ") if res.error else "") + save_error
+        note_host_error(res, save_error)
     if (hd.runner != "collie" and not external_recovery and not save_error
             and not check_boundary_hold):
         # The pre-launch fence is retired only by this explicit act, once the
@@ -2351,9 +2424,8 @@ def _cmd_run_owned(args, sid, lease):
                             run_id="external-cli", terminal=True)
         except Exception as exc:
             from .runner_specs import redact_text
-            res.error = ((res.error + "; ") if res.error else "") + (
-                "external-worker recovery boundary could not be cleared: " +
-                redact_text("%s: %s" % (type(exc).__name__, exc), 500))
+            note_host_error(res, "external-worker recovery boundary could not be cleared: " +
+                            redact_text("%s: %s" % (type(exc).__name__, exc), 500))
     # A run stopped over a live tool leaves this thread fenced. Say so on the same
     # surface that would otherwise offer `--continue` as if nothing were pending.
     try:
@@ -2363,7 +2435,7 @@ def _cmd_run_owned(args, sid, lease):
     fenced = bool(recovery and recovery.get("recovery_required"))
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
-            **run_outcome(res),
+            **run_outcome(res, recovery_required=fenced),
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
             "recovery_required": fenced, "recovery": recovery if fenced else None,
             "inbox_errors": inbox_errors,

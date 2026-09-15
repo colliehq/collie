@@ -36,6 +36,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .recorder import note_host_error
+
 if __name__ == "__main__":
     # `python -m harness.webapp` and imports from the execution manager must
     # share one Handler, token, run registry and cancel-event table. Otherwise
@@ -6311,7 +6313,7 @@ class Handler(BaseHTTPRequestHandler):
                             from .verification import check_result_reason
                             check_error = check_result_reason(
                                 verification_evidence, verify_command)
-                            res.error = ((res.error + "; ") if res.error else "") + check_error
+                            note_host_error(res, check_error)
                 # A stop read from the run registry is the run's own verdict, not
                 # just this thread's view of it.  Record it on the result before
                 # anything derives an outcome from it, so the telemetry row, the
@@ -6338,7 +6340,9 @@ class Handler(BaseHTTPRequestHandler):
                     or check_fenced)
                 from .recorder import run_outcome
                 receipt_row = {
-                    **run_outcome(res),
+                    # An unsettled worker or an unaccounted check tree outranks a quota
+                    # reset: this receipt must not read as "just early".
+                    **run_outcome(res, recovery_required=recovery_required),
                     "run": run_id, "decision": decision_payload,
                     "runner": worker_receipt.to_dict() if worker_receipt else None,
                     "model": res.model or decision.model,
@@ -6364,7 +6368,7 @@ class Handler(BaseHTTPRequestHandler):
                     persistence_error = "external worker receipt could not be persisted"
                     if receipt_detail:
                         persistence_error += ": " + receipt_detail
-                    res.error = ((res.error + "; ") if res.error else "") + persistence_error
+                    note_host_error(res, persistence_error)
                     res.success = False
                 # Stopping ends the turn; it does not delete what the worker had
                 # already produced.  Keep that partial text in the transcript
@@ -6393,7 +6397,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as persist_exc:
                     persistence_error = _public_error(
                         persist_exc, prefix="worker history could not be persisted: ")
-                    res.error = ((res.error + "; ") if res.error else "") + persistence_error
+                    note_host_error(res, persistence_error)
                     res.success = False
                 steer_settlement = None
                 if handed_steers or steer_not_sent or steer_errors:
@@ -6406,12 +6410,12 @@ class Handler(BaseHTTPRequestHandler):
                         "not_sent": list(steer_not_sent),
                         "consumption_unconfirmed": [row["id"] for row in handed_steers]}
                 for steer_error in steer_errors:
-                    res.error = ((res.error + "; ") if res.error else "") + steer_error
+                    note_host_error(res, steer_error)
                 boundary_cleared = False
                 if receipt_saved and history_saved and not recovery_required:
                     boundary_error = _clear_durable_external_boundary()
                     if boundary_error:
-                        res.error = ((res.error + "; ") if res.error else "") + boundary_error
+                        note_host_error(res, boundary_error)
                         res.success = False
                     else:
                         boundary_cleared = True
@@ -6424,7 +6428,7 @@ class Handler(BaseHTTPRequestHandler):
                 run_recovery, fence_required = _durable_external_fence(boundary_cleared)
                 recovery_required = bool(recovery_required or fence_required)
                 done_d = {
-                    **run_outcome(res),
+                    **run_outcome(res, recovery_required=recovery_required),
                     "session": sid, "run": run_id, "answer": res.answer or "",
                     "error": res.error or "", "canceled": canceled,
                     # The same canonical terminal fields Collie's own branch
@@ -6735,7 +6739,7 @@ class Handler(BaseHTTPRequestHandler):
                             from .verification import check_result_reason
                             check_error = check_result_reason(
                                 verification_evidence, verify_command)
-                            res.error = ((res.error + "; ") if res.error else "") + check_error
+                            note_host_error(res, check_error)
                         h.settle_run_memory(
                             res, bool(res.verified), verification_evidence,
                             source="web_verification")
@@ -6790,7 +6794,7 @@ class Handler(BaseHTTPRequestHandler):
             review_findings = (_review_findings(res.answer or "")
                                if run_opts["intent"] == "review" else None)
             from .recorder import run_outcome
-            done_d.update(run_outcome(res))
+            done_d.update(run_outcome(res, recovery_required=recovery_required))
             if review_findings is not None:
                 done_d["review_findings"] = review_findings
             # An isolated run's result is a branch, not a claim. Say which one, and what is on it,
@@ -6805,7 +6809,7 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 sessions.append_run_receipt(sid, {
-                    **run_outcome(res),
+                    **run_outcome(res, recovery_required=recovery_required),
                     "run": run_id, "decision": decision_payload,
                     "model": res.model, "effort": decision.effort,
                     "requested_speed": decision.speed, "actual_speed": actual_speed,

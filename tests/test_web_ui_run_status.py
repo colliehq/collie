@@ -67,6 +67,13 @@ FAILED_EVIDENCE = dict(UNCERTIFIED_EVIDENCE, exit_code=1, command_passed=False,
                        command="pytest -q")
 
 
+# A run stopped on a provider-attested quota reset. The reset is placed against the real clock,
+# because the page validates it against the real clock — a fixed epoch would go stale and the
+# test would then be checking the staleness rule instead of the wait.
+WAIT_RESET = int(time.time()) + 3600
+WAIT_ERROR = "retryable: [provider quota reset at 2026-09-14 12:00:00 UTC] HTTP 429 rate limit"
+
+
 def _script(text):
     """Pick a staged run from the request text, the way a router would pick a route."""
     q = (text or "").lower()
@@ -182,6 +189,40 @@ def _script(text):
                           error="required check failed: pytest -q (exit 1)", canceled=False,
                           stop_reason="error", completed=False, edited=True, verified=False,
                           verification_evidence=FAILED_EVIDENCE)),
+        ]
+    if "regenerate the api client" in q:
+        # The provider said, in machine metadata, when it will answer again. Nothing here is
+        # a failure of the work, and nothing is scheduled: the frame is a statement of fact.
+        return [
+            ("start", {"session": "s-wait", "run": "r-wait", "model": "mock", "prior_turns": 0}),
+            ("token", {"t": "Started regenerating the client."}),
+            ("done", dict(DONE_BASE, session="s-wait", run="r-wait", answer="",
+                          error=WAIT_ERROR, canceled=False, stop_reason="error",
+                          completed=False, edited=False,
+                          provider_wait=True, retry_at=WAIT_RESET)),
+        ]
+    if "recompile the grammar" in q:
+        # The same frame with a reset the page cannot read as an epoch. A wait that cannot be
+        # substantiated is not softened into one: this is an ordinary failure.
+        return [
+            ("start", {"session": "s-wait-bad", "run": "r-bad", "model": "mock", "prior_turns": 0}),
+            ("done", dict(DONE_BASE, session="s-wait-bad", run="r-bad", answer="",
+                          error=WAIT_ERROR, canceled=False, stop_reason="error",
+                          completed=False, edited=False,
+                          provider_wait=True, retry_at=True)),
+        ]
+    if "roll the signing keys" in q:
+        # A quota reset AND an unresolved external effect. The fence owns the ending.
+        return [
+            ("start", {"session": "s-wait-fence", "run": "r-wf", "model": "mock", "prior_turns": 0}),
+            ("tool", {"name": "run_shell", "args": {"cmd": "./rotate.sh"}, "ok": True,
+                      "result": "rotating"}),
+            ("done", dict(DONE_BASE, session="s-wait-fence", run="r-wf", answer="",
+                          error=WAIT_ERROR, canceled=False, stop_reason="error",
+                          completed=False, edited=False,
+                          provider_wait=True, retry_at=WAIT_RESET,
+                          recovery_required=True,
+                          recovery=_fence("s-wait-fence", "r-wf", FENCE_REASON))),
         ]
     if "readme" in q:
         return [
@@ -2503,4 +2544,166 @@ def test_the_optional_section_speaks_the_reader_s_language(server, browser):
     finally:
         _Fixture.lang = "en"
         _Fixture.recovery_extra_items = []
+        context.close()
+
+
+# --------------------------------------------------- waiting on a provider quota reset
+# `loop.py` has always known when the provider will answer again; the ordinary surfaces threw
+# it away at `recorder.run_outcome`, so this page could only say "failed" and print an HTTP
+# body. These check the reading, on the real page: a wait, the reset time, and — on a thread
+# reopened after that time — a readiness. Nothing in this path may send anything.
+def test_a_quota_wait_reads_as_a_wait_and_not_as_a_failure(ui):
+    """ONE amber block, not two.
+
+    The r1 draft printed the raw provider body as an `.interruption-note` and then repeated
+    the same stop in prose underneath, which is what the Chinese UI showed: an HTTP string
+    followed by an explanation of it. The reading is now stated once; the transport text is
+    kept inside the same block, behind a closed native disclosure.
+    """
+    ui.ask("Regenerate the api client")
+
+    assert ui.page.inner_text("#stateText") == "waiting for quota"
+    note = ui.page.locator(".provider-wait")
+    assert note.count() == 1
+    assert ui.page.locator(".interruption-note").count() == 0, "no second amber block"
+    assert note.get_attribute("data-provider-wait") == "waiting"
+    assert int(note.get_attribute("data-retry-at")) == WAIT_RESET
+    text = note.inner_text()
+    assert "Waiting for the provider's quota reset" in text
+    assert "provider reported" in text
+    assert "is not calling the provider before then" in text
+    # The provider's own words are kept, closed by default, and openable without a request.
+    detail = note.locator("details.wait-detail")
+    assert detail.count() == 1
+    assert detail.evaluate("el => el.open") is False
+    assert "429" not in note.inner_text(), "the raw body is folded away, not headlined"
+    detail.locator("summary").click()
+    assert "429" in detail.inner_text() and "rate limit" in detail.inner_text()
+    # ...and exactly one request ever left this page, disclosure included.
+    assert len(_Fixture.stream_requests) == 1
+
+
+def test_a_wait_offers_no_button_and_starts_nothing_before_the_reset(ui):
+    """No countdown, no timer, no retry control: a reset is a time, not a schedule."""
+    ui.ask("Regenerate the api client")
+    assert ui.page.locator(".provider-wait button").count() == 0
+    ui.page.wait_for_timeout(1200)
+    assert len(_Fixture.stream_requests) == 1, "nothing may be re-sent while waiting"
+    assert _Fixture.repair_posts == [] and _Fixture.reconcile_posts == []
+    assert ui.page.locator(".provider-wait").get_attribute("data-provider-wait") == "waiting"
+
+
+def test_a_reset_the_page_cannot_read_is_an_ordinary_failure(ui):
+    """`retry_at: true` is not one second past the epoch, and it is not a wait either."""
+    ui.ask("Recompile the grammar")
+
+    assert ui.page.locator(".provider-wait").count() == 0
+    assert ui.page.inner_text("#stateText") == "failed"
+    assert "fail" in ui.page.locator(".interruption-note").first.get_attribute("class")
+
+
+def test_a_fenced_wait_keeps_the_fence_as_the_ending(ui):
+    """Something may already have fired outside the process. That outranks being early.
+
+    The headline state is the surface that regressed in r1: the block was suppressed while
+    the pill still read "waiting for quota", downgrading a thread that needs inspection.
+    """
+    ui.ask("Roll the signing keys")
+
+    assert ui.page.locator(".provider-wait").count() == 0, \
+        "a fenced thread is not merely waiting for a quota window"
+    assert ui.page.inner_text("#stateText") == "failed", "the pill states the real ending"
+    note = ui.page.locator(".interruption-note").first
+    assert "fail" in note.get_attribute("class") and "429" in note.inner_text()
+    assert ui.page.locator(".recovery-fence, .fenced-note").count() >= 1 or \
+        "may already have run" in ui.log_text()
+
+
+def test_a_reopened_fenced_wait_is_still_a_fence_and_not_a_wait(ui, monkeypatch):
+    """The same precedence on a restored thread, where the receipt is all there is."""
+    passed = int(time.time()) - 120
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [
+            {"role": "user", "content": "Roll the signing keys"},
+            {"role": "assistant", "content": "Started rotating."},
+        ],
+        "run_receipts": [{"run": "r-wf", "stop_reason": "error", "completed": False,
+                          "edited": False, "verified": False, "canceled": False,
+                          "error": WAIT_ERROR, "provider_wait": True, "retry_at": passed,
+                          "recovery_required": True,
+                          "decision": {"intent": "build", "verification": "auto"}}],
+    })
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_selector(".interruption-note", timeout=8000)
+
+    assert ui.page.locator(".provider-wait").count() == 0
+    assert ui.page.inner_text("#stateText") == "failed"
+    note = ui.page.locator(".interruption-note").first
+    assert "fail" in note.get_attribute("class"), "not recoloured warn by a stale reset"
+    assert "429" in note.inner_text(), "the run's own text is still shown"
+    assert not _Fixture.stream_requests, "reopening a fenced thread must not execute a turn"
+
+
+def test_a_reopened_thread_reads_a_passed_reset_as_ready_to_retry(ui, monkeypatch):
+    """The receipt stores the reset; whether it has arrived is read now, not when written."""
+    passed = int(time.time()) - 120
+    monkeypatch.setitem(TRANSCRIPTS, "s-read", {
+        "messages": [
+            {"role": "user", "content": "Regenerate the api client"},
+            {"role": "assistant", "content": "Started regenerating the client."},
+        ],
+        "run_receipts": [{"run": "r-wait", "stop_reason": "error", "completed": False,
+                          "edited": False, "verified": False, "canceled": False,
+                          "error": WAIT_ERROR, "provider_wait": True, "retry_at": passed,
+                          "decision": {"intent": "build", "verification": "auto"}}],
+    })
+    ui.page.locator(".thread").filter(has_text="Read README.md").first.click()
+    ui.page.wait_for_selector(".provider-wait", timeout=8000)
+
+    note = ui.page.locator(".provider-wait")
+    assert note.get_attribute("data-provider-wait") == "ready"
+    text = note.inner_text()
+    # What the page may say: the time the receipt carries has passed. What it may not say:
+    # that the limit lifted, or that nothing was sent from anywhere else in the meantime.
+    assert "The provider's retry time has passed" in text
+    assert "Provider availability has not been checked here" in text
+    assert "Collie has not contacted it since" not in text
+    assert "You can send a request when you are ready" in text
+    for overclaim in ("has reset", "Nothing was sent", "nothing has been sent"):
+        assert overclaim not in text, overclaim
+    assert ui.page.inner_text("#stateText") == "ready to retry"
+    detail = note.locator("details.wait-detail")
+    detail.locator("summary").click()
+    assert "429" in detail.inner_text(), "detail still available on a restored thread"
+    assert not _Fixture.stream_requests, "reopening a waiting thread must not execute a turn"
+
+
+def test_the_wait_speaks_the_reader_s_language(server, browser):
+    """The whole block is localized, including the state pill beside it."""
+    _reset_fixture_state()
+    _Fixture.lang = "zh"
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        page.wait_for_timeout(400)
+        Page(page, errors).ask("Regenerate the api client")
+        note = page.locator(".provider-wait")
+        text = note.inner_text()
+        assert "正在等待服务商配额重置" in text
+        assert "服务商给出的时间" in text
+        assert page.inner_text("#stateText") == "等待配额重置"
+        # One block, and the raw English body is behind a Chinese disclosure label.
+        assert page.locator(".interruption-note").count() == 0
+        assert "429" not in text
+        summary = note.locator("details.wait-detail > summary")
+        assert summary.inner_text().strip() == "服务商返回的原始信息"
+        summary.click()
+        assert "429" in note.locator("details.wait-detail").inner_text()
+        assert errors == [], "JS errors: %r" % errors
+    finally:
+        _Fixture.lang = "en"
         context.close()

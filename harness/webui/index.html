@@ -1350,6 +1350,11 @@
   .stop-note { display: grid; gap: 7px; }
   .stop-note .sn-why { color: var(--muted); font-size: 12px; }
   .stop-note .sn-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  /* The provider's own words, kept and folded away rather than shown as a second amber slab.
+     `wait-raw` wraps an unbroken HTTP body instead of stretching the bubble on a phone. */
+  .provider-wait .wait-detail > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .provider-wait .wait-raw { margin-top: 5px; color: var(--muted); font: 11px/1.5 var(--mono);
+                             white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
   .stop-note button { font: 600 12px var(--sans); color: var(--ink); background: var(--surface);
     border: 1px solid var(--line); border-radius: 8px; padding: 5px 11px; cursor: pointer; }
   .stop-note button:hover { background: var(--surface-2); }
@@ -4259,6 +4264,13 @@
     "the run emitted its final canceled verdict":"运行已返回最终取消结果","the run finished before cancellation took effect":"运行在取消生效前已经结束",
     "the run registry confirmed the canceled verdict":"运行注册表已确认取消结果","this setting is held by an environment variable — ":"此设置由环境变量控制——",
     "tool":"个工具","tools":"个工具","event":"个事件","events":"个事件","unavailable":"不可用","updating mission…":"正在更新任务…","waiting for the run's final canceled verdict":"正在等待运行的最终取消结果",
+    "waiting for quota":"等待配额重置","ready to retry":"可以重试",
+    "Waiting for the provider's quota reset":"正在等待服务商配额重置",
+    "The provider's retry time has passed":"服务商给出的恢复时间已过",
+    "provider reported {when}":"服务商给出的时间：{when}",
+    "The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.":"服务商已达用量上限，并给出了预计恢复接受请求的时间。以上工作已保留，在此之前 Collie 不会调用服务商。",
+    "The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.":"本次运行收到的可重试时间已到；这里尚未确认服务商当前是否可用。需要继续时，可以发送请求。",
+    "What the provider returned":"服务商返回的原始信息",
     "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
   });
   Object.assign(ZHTW, {
@@ -4451,6 +4463,13 @@
     "the run emitted its final canceled verdict":"執行已傳回最終取消結果","the run finished before cancellation took effect":"執行在取消生效前已經結束",
     "the run registry confirmed the canceled verdict":"執行註冊表已確認取消結果","this setting is held by an environment variable — ":"此設定由環境變數控制——",
     "tool":"項工具","tools":"項工具","event":"個事件","events":"個事件","unavailable":"無法使用","updating mission…":"正在更新任務…","waiting for the run's final canceled verdict":"正在等待執行的最終取消結果",
+    "waiting for quota":"等待配額重置","ready to retry":"可以重試",
+    "Waiting for the provider's quota reset":"正在等待服務商配額重置",
+    "The provider's retry time has passed":"服務商給出的恢復時間已過",
+    "provider reported {when}":"服務商給出的時間：{when}",
+    "The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.":"服務商已達用量上限，並給出了預計恢復接受請求的時間。以上工作已保留，在此之前 Collie 不會呼叫服務商。",
+    "The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.":"本次執行收到的可重試時間已到；這裡尚未確認服務商目前是否可用。需要繼續時，可以傳送請求。",
+    "What the provider returned":"服務商傳回的原始訊息",
     "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件"
   });
   var I18N = {
@@ -9106,9 +9125,19 @@
     if (receipt.canceled || receipt.error) {
       showTerminalRunState(receipt);
       if (bubbles.length) {
-        var note = document.createElement("div"); note.className = "pack-summary interruption-note " + (receipt.canceled ? "warn" : "fail");
-        note.textContent = receipt.canceled ? t("Run stopped by the user.") : receipt.error;
-        bubbles[bubbles.length - 1].appendChild(note);
+        // The receipt carries the reset the run stopped on; whether that time has passed is
+        // read NOW, not when the receipt was written, so a thread reopened tomorrow says so
+        // instead of still pointing at yesterday. Reading a receipt sends nothing, here or
+        // anywhere below: the wait block is text, and the fence block above owns the ending
+        // whenever this thread is fenced.
+        var reopenWait = !receipt.canceled && providerWait(receipt);
+        if (reopenWait) {
+          addProviderWaitNote(receipt, bubbles[bubbles.length - 1], receipt.error || "");
+        } else {
+          var note = document.createElement("div"); note.className = "pack-summary interruption-note " + (receipt.canceled ? "warn" : "fail");
+          note.textContent = receipt.canceled ? t("Run stopped by the user.") : receipt.error;
+          bubbles[bubbles.length - 1].appendChild(note);
+        }
       }
       return;
     }
@@ -10940,13 +10969,24 @@
       var partial = document.createElement("div"); partial.className = "text md";
       flowEl.appendChild(partial); renderMd(partial, answer); addCopy(partial, answer);
     }
-    var note = document.createElement("div");
-    note.className = "pack-summary interruption-note " + (d.canceled ? "warn" : "fail");
-    note.textContent = d.canceled ? t("Run stopped by the user.") : (d.error || t("failed"));
-    flowEl.appendChild(note);
+    // A run stopped on a provider quota reset is not a failure of the work, and it gets ONE
+    // block: the wait note states the ending in prose and keeps the provider's own text in a
+    // disclosure inside it. Anything else — a cancellation, a genuine error — keeps the plain
+    // note it always had. The record is never dropped, only stated once.
+    var waiting = !d.canceled && providerWait(d);
+    var errorText = d.canceled ? t("Run stopped by the user.") : (d.error || t("failed"));
+    var note;
+    if (waiting) {
+      note = addProviderWaitNote(d, flowEl, d.error || "");
+    } else {
+      note = document.createElement("div");
+      note.className = "pack-summary interruption-note " + (d.canceled ? "warn" : "fail");
+      note.textContent = errorText;
+      flowEl.appendChild(note);
+    }
     // An ordinary stop ends here: the run is simply over. A stop the server fenced is a different
     // statement — something outside may already have happened — and it gets its own block below.
-    showRecoveryFence(d, d.session || currentSession, {host: flowEl, already: note.textContent});
+    showRecoveryFence(d, d.session || currentSession, {host: flowEl, already: errorText});
     scrollDown();
   }
 
@@ -11127,7 +11167,83 @@
   }
   var RUN_STATE_LABEL = { canceled: "stopped", error: "failed", turn_limit: "turn limit",
                           budget_limit: "budget limit", output_limit: "output limit" };
+
+  // ---- waiting on the provider's own quota reset ------------------------
+  //
+  // The run stopped because the provider said, in machine metadata, when it will answer
+  // again. That is not a failure of the work, and the page used to show it as one: a red
+  // "failed" note carrying a raw HTTP body. The server sends `provider_wait` only when the
+  // wait is the whole story — a cancellation, a budget or turn cap, and any host-side
+  // failure recorded after the run all outrank it at `recorder.run_outcome` and arrive
+  // without it. A recovery fence outranks it too, and each host passes its own reading of
+  // that fence into the same function; this page re-checks `recovery_required` anyway,
+  // because it is the one signal the result object cannot carry by itself and an OLD
+  // receipt may predate that rule.
+  //
+  // Everything below re-checks the value it was handed, because this is what decides
+  // whether a person is told to wait: only a real, finite, integral epoch inside the same
+  // eight-day horizon the server validates counts. `true`, "1700000000", NaN and a reset
+  // from 1970 are all simply absent. Nothing here schedules anything: no timer re-sends a
+  // request, and no request is issued before the reset — the page reads a time and says it.
+  var PROVIDER_WAIT_FLOOR = 1600000000, PROVIDER_WAIT_HORIZON = 8 * 86400;
+  function providerWait(d) {
+    d = d || {};
+    if (d.provider_wait !== true) return null;         // absent on legacy receipts, and on every
+    if (stopReason(d) !== "error") return null;        // ending that was really something else
+    // A thread whose tool may already have fired outside the process is not "just early",
+    // whatever the provider said about quota. The fence owns that ending — headline, pill
+    // and restored note alike — so the wait reading stops here rather than at each caller.
+    if (d.recovery_required) return null;
+    var at = d.retry_at;
+    if (typeof at !== "number" || !isFinite(at) || Math.floor(at) !== at) return null;
+    var now = Date.now() / 1000;
+    if (at < PROVIDER_WAIT_FLOOR || at > now + PROVIDER_WAIT_HORIZON) return null;
+    return {at: at, ready: now >= at};
+  }
+  function providerWaitClock(at) {
+    var date = new Date(at * 1000);
+    return date.toLocaleString(todayLocale(), {hour: "numeric", minute: "2-digit",
+                                               month: "short", day: "numeric"});
+  }
+  // The ONE block a waiting run gets, on the live terminal frame and on a reopened thread
+  // alike. It replaces the red failure note rather than joining it: the raw provider text
+  // was showing as a second amber slab above this one, so the same stop was stated twice —
+  // once in HTTP and once in prose. The transport text is not thrown away, it moves into a
+  // native disclosure below, closed by default and localized like everything else.
+  //
+  // It states the reset and nothing else: no countdown that would imply something is
+  // running, no retry button that would re-send work the person has not asked to re-send.
+  function addProviderWaitNote(d, host, detail) {
+    var wait = providerWait(d);
+    if (!wait || !host) return null;
+    var box = document.createElement("div");
+    box.className = "pack-summary warn stop-note provider-wait";
+    box.setAttribute("data-provider-wait", wait.ready ? "ready" : "waiting");
+    box.setAttribute("data-retry-at", String(wait.at));
+    // Both readings are about the RECEIPT, never about the provider's live state: this page
+    // has not asked the provider anything, cannot know whether the limit actually lifted,
+    // and cannot speak for other threads, Mission wakes or another machine on the same
+    // account. So the ready copy reports that the time it was given has passed — and stops.
+    var title = wait.ready ? t("The provider's retry time has passed")
+                           : t("Waiting for the provider's quota reset");
+    var why = wait.ready
+      ? t("The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.")
+      : t("The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.");
+    var html = '<div><b>⏳ ' + esc(title) + '</b> · ' +
+               esc(t("provider reported {when}").replace("{when}", providerWaitClock(wait.at))) +
+               '</div><div class="sn-why">' + esc(why) + '</div>';
+    var raw = String(detail || "");
+    if (raw) {
+      html += '<details class="wait-detail"><summary>' + esc(t("What the provider returned")) +
+              '</summary><div class="wait-raw">' + esc(raw) + '</div></details>';
+    }
+    box.innerHTML = html;
+    host.appendChild(box);
+    return box;
+  }
   function showTerminalRunState(d) {
+    var wait = providerWait(d);
+    if (wait) return setRunState(wait.ready ? "ready to retry" : "waiting for quota", false);
     var label = RUN_STATE_LABEL[stopReason(d)];
     if (label) setRunState(label, false);
   }

@@ -553,7 +553,7 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
     from .cli import (apply_accepted_capabilities, apply_accepted_limits,
                       apply_turn_decision, make_harness, owned_turn_state,
                       recovery_fence_lifted, recovery_notice, resolve_turn_decision,
-                      turn_decision_receipt)
+                      turn_decision_receipt, turn_receipt_fence)
     from . import run_ownership, terminal_queue
     from . import sessions as sess
 
@@ -845,8 +845,13 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                         h.steering = None       # steering only during a run
                         h.approve = None        # and nobody is at the prompt between turns
                     history = res.messages
-                    receipt = turn_decision_receipt(decision, res,
-                                                    getattr(h, "provider", None))
+                    # run() returned with this thread's journal already settled, so the
+                    # fence is readable NOW -- and this receipt is saved durably below,
+                    # where a quota error left over an open effect must not reopen in
+                    # another surface as an ordinary "waiting for quota".
+                    receipt = turn_decision_receipt(
+                        decision, res, getattr(h, "provider", None),
+                        recovery_required=turn_receipt_fence(h, sess, sid))
                     try:
                         saved_sid = sess.save(
                             sid, history, project=project, cwd=cwd,

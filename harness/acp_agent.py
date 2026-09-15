@@ -124,7 +124,7 @@ class CollieAgent(acp.Agent):
         self._last_bash = None
 
         from .cli import (apply_turn_decision, make_harness, resolve_turn_decision,
-                          turn_decision_receipt)
+                          turn_decision_receipt, turn_receipt_fence)
         from . import settings
         # env > settings.json > API default — the ACP entry never calls settings.apply(), so read
         # settings directly to keep the web Settings panel authoritative here too.
@@ -167,7 +167,11 @@ class CollieAgent(acp.Agent):
             res = await loop.run_in_executor(
                 None, lambda: h.run("acp", task, consolidate=False, history=history))
             sess["messages"] = res.messages  # remember for the next prompt in this session
-            outcome = turn_decision_receipt(decision, res, getattr(h, "provider", None))
+            # ACP keeps its receipts in memory on a thread with no session journal, so
+            # the fence reading is "none to read"; asking is still what keeps this call
+            # honest if this surface ever gains a durable thread.
+            outcome = turn_decision_receipt(decision, res, getattr(h, "provider", None),
+                                            recovery_required=turn_receipt_fence(h))
             sess.setdefault("run_receipts", []).append(outcome)
             sess["run_receipts"] = sess["run_receipts"][-40:]
             receipt["decision"] = outcome["decision"]
