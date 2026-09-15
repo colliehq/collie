@@ -235,7 +235,22 @@ def test_missions_pack_and_studio_stay_in_the_native_application_shell():
     assert 'm.goal' not in desktop.split("function showMissions()", 1)[1].split(
         "function missionHelp()", 1)[0]
     assert 'id="surfacePanel"' in desktop and 'id="surfaceFrame"' in desktop
-    assert '<button type="button" class="side-nav-item" id="navPack">' in desktop
+    # Additional accessible-name/localization attributes must not break the
+    # native-button contract; inspect its HTML attributes instead of exact markup.
+    from html.parser import HTMLParser
+    pack_nav = []
+
+    class PackNavParser(HTMLParser):
+        def handle_starttag(self, tag, attributes):
+            attributes = dict(attributes)
+            if attributes.get("id") == "navPack":
+                pack_nav.append((tag, attributes))
+
+    PackNavParser().feed(desktop)
+    assert len(pack_nav) == 1
+    tag, attributes = pack_nav[0]
+    assert tag == "button" and attributes.get("type") == "button"
+    assert "side-nav-item" in attributes.get("class", "").split()
     assert 'openEmbeddedSurface("Devices & team", "/remote?embedded=1", "pack")' in desktop
     assert 'openEmbeddedSurface("Studio", "/studio?embedded=1")' in desktop
     assert 'openEmbeddedSurface("Meeting notes", "/meetings?embedded=1")' in desktop
