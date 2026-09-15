@@ -20,6 +20,7 @@ import time
 
 from . import __version__
 from . import compaction as _compaction
+from . import preflight as _preflight
 from . import redact as _redact
 from . import run_ownership as _ownership
 from . import settings as _settings
@@ -1826,6 +1827,75 @@ class Harness:
                          ok=not last_repro_failed, asserted=last_repro_asserted)],
         ).verified
 
+    def _verification_preflight(self, did_edit, edited_files, host_checks, last_edit_turn,
+                                last_repro_turn, last_repro_failed, last_repro_asserted,
+                                detect_cache, edit_generation=0) -> list:
+        """Zero or one request-scoped message stating the CURRENT verification state.
+
+        The finish gate below already refuses an unverified finish — but only once the model
+        has composed the answer it is refusing, which in recorded runs meant a long answer, a
+        response-contract repair and then a second long answer. This says the same thing on
+        the request the loop is making anyway, right after an edit lands, so the model can do
+        the check before it writes the expensive part. It spends no model call of its own.
+
+        It is guidance, never evidence: the verdict below is computed from exactly the same
+        accounting whether or not this fires, so a model that ignores the hint meets the
+        unchanged gate. Three conditions keep it off the tasks it has no business on —
+        ``self_verify`` (an explicitly disabled or externally-owned verification stays off),
+        a landed edit (a read-only or question-answering run is never asked to run anything),
+        and a verdict that is still missing or failed (a check that genuinely passes on the
+        latest edit makes the hint disappear on the next turn, because it is recomputed from
+        live state rather than remembered).
+        """
+        if not (self.self_verify and did_edit):
+            return []
+        if self._repro_verified(did_edit, last_edit_turn, last_repro_turn,
+                                last_repro_failed, last_repro_asserted):
+            return []
+        fresh = last_repro_turn >= last_edit_turn
+        command, source = "", ""
+        # An explicit required-verification wording owns what counts here; naming a detected
+        # command beside it would invite the wrong check (SWE's reproduction, not pytest).
+        if not self.verify_nudge:
+            # Same precedence as verify_nudge_for: a command this host watched succeed here
+            # beats a marker file. Still only wording — its run predates the edit above.
+            command = _reusable_check_command(host_checks, self.cwd)
+            if command:
+                source = "already ran successfully in this workspace"
+            elif detect_cache.get("generation") == edit_generation:
+                # Same workspace contents as when this was detected: no edit has landed
+                # since, so re-walking the markers could only produce the same answer.
+                command, source = detect_cache["command"], detect_cache["source"]
+            else:
+                try:
+                    from .verification import detect_verification_commands
+                    found = detect_verification_commands(str(self.cwd)) if self.cwd else []
+                except Exception:
+                    found = []
+                # Detection touches the filesystem, so it is memoized — but keyed on the
+                # count of edits that have LANDED, never on the run. The primary workflow
+                # here is a project being created or reshaped: the first turn may edit a
+                # README in a workspace with no runner at all, and the turn that adds
+                # package.json (or renames the script a previous detection named) must not
+                # keep being told there is nothing to run. An unreadable workspace simply
+                # leaves the hint without a named command.
+                #
+                # Bounded: one detection per edit generation at most, and a generation only
+                # advances on a write that actually landed — a rejected edit, a read, a
+                # check run or a plain answer all reuse the memo. detection itself is the
+                # non-recursive marker scan ``verify_nudge_for`` below already performs on
+                # every post-edit turn without any memo at all.
+                command, source = ((found[0]["command"], "detected from %s" % found[0]["source"])
+                                   if found else ("", ""))
+                detect_cache.update(generation=edit_generation, command=command, source=source)
+        hint = _preflight.verification_state_hint(
+            edited_paths=edited_files, check_ran_after_edit=fresh,
+            check_failed=bool(fresh and last_repro_failed),
+            check_inconclusive=bool(fresh and not last_repro_failed),
+            command=command, command_source=source,
+            required_override=bool(self.verify_nudge))
+        return [hint] if hint else []
+
     def run(self, task_id: str, user_msg, consolidate: bool = True,
             history: list = None, authority_msg=None) -> RunResult:
         """Execute one run under exactly one execution lease for its session.
@@ -2112,6 +2182,13 @@ class Harness:
         # Check commands this run executed successfully, oldest first. Reminder wording only —
         # a later edit still invalidates the reproduction accounting above, untouched.
         host_checks = []
+        # Memo for the preflight hint's static command discovery, keyed on edit_generation
+        # below: at most one marker scan per landed edit, and none on turns that changed no
+        # file. Empty until the first hint actually needs it.
+        preflight_detected = {}
+        # Number of edits that have LANDED this run. Only used to invalidate the memo above —
+        # the verification accounting keys off last_edit_turn exactly as before.
+        edit_generation = 0
         coverage_rounds = 0
         critic_rounds = 0
         hook_stop_rounds = 0
@@ -2237,7 +2314,22 @@ class Harness:
                 # raising; the try is a belt for any provider not yet on that contract.
                 attempts = 0
                 overflow_now = False
-                call_messages = msgs
+                # Finish preflight (preflight.py): after a landed edit whose verification is
+                # still missing or failed, tell the model the state NOW — on the request it is
+                # already paying for — instead of letting it compose a full answer first and
+                # meeting the reminder afterwards. Attached to THIS request only, exactly like
+                # the format_repair correction below: session["messages"] is not touched, so
+                # nothing is duplicated into durable history, re-checkpointed, compacted, or
+                # billed as cached prefix, and the hint is recomputed from live state each turn
+                # (a check that really passes on the latest edit simply stops producing one).
+                # It rides after the composed history, i.e. after meta.elide_from, so the stable
+                # cached prefix the provider was told about is unchanged.
+                preflight = self._verification_preflight(
+                    did_edit, edited_files, host_checks, last_edit_turn, last_repro_turn,
+                    last_repro_failed, last_repro_asserted, preflight_detected,
+                    edit_generation)
+                base_messages = (list(msgs) + preflight) if preflight else msgs
+                call_messages = base_messages
                 while True:
                     call_cap = max(0, int(getattr(self, "max_model_calls", 0) or 0))
                     if call_cap and model_calls >= call_cap:
@@ -2338,8 +2430,10 @@ class Harness:
                         reason = _safe_contract_reason(comp)
                         # Do not append either the rejected output or this synthetic correction to
                         # session["messages"].  The next successful tool/answer is the only assistant
-                        # turn that becomes durable history.
-                        call_messages = list(msgs) + [{
+                        # turn that becomes durable history.  Built on base_messages so a repair
+                        # does not silently drop this turn's verification state, which is the one
+                        # sequence (long answer → contract error → repair) this lane is about.
+                        call_messages = list(base_messages) + [{
                             "role": "user",
                             "content": format_repair_nudge(
                                 reason, [s.get("name") for s in schemas]),
@@ -2642,7 +2736,7 @@ class Harness:
                         It is passed by value, never stashed, so it cannot outlive its call.
                         """
                         nonlocal did_edit, last_edit_turn, last_repro_turn
-                        nonlocal last_repro_failed, last_repro_asserted
+                        nonlocal last_repro_failed, last_repro_asserted, edit_generation
                         nonlocal last_edit_path, last_edit_text, best_diff
                         try:            # edit-accounting + repro detection: best-effort bookkeeping
                             if os.environ.get("COLLIE_DEBUG"):
@@ -2658,6 +2752,9 @@ class Harness:
                             if edit_ok:
                                 did_edit = True
                                 last_edit_turn = turn
+                                # The workspace just changed, so anything derived from its
+                                # contents (the preflight's detected check command) is stale.
+                                edit_generation += 1
                                 # A landed edit invalidates earlier reproduction evidence, including
                                 # an internal execute_code call that reproduced before a later write.
                                 last_repro_turn, last_repro_failed, last_repro_asserted = (

@@ -23,6 +23,7 @@ import threading
 import time
 import uuid
 
+from . import preflight as _preflight
 from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
                         _parse_response_envelope, _READ_BATCH_TOOL, content_text,
                         contract_miss_reason, provider_default_model)
@@ -68,6 +69,15 @@ _STRUCTURED_SYSTEM_SUFFIX = (
 # schema; see ``_repair_escalation``.
 _REPAIR_SOURCE = "harness"
 _REPAIR_KIND = "format_repair"
+
+# Request-scoped notes loop.py appends AFTER the composed conversation, on the
+# outgoing request only: the response-contract repair above and the finish
+# preflight's verification state.  Both are host guidance about the turn in
+# progress rather than a turn of the conversation, and both are stamped
+# ``role: "user"`` because that is the only role a provider accepts them in --
+# which is exactly why ``_latest_user`` may not answer "whose turn is this?" by
+# role alone.
+_HOST_NOTE_KINDS = frozenset({_REPAIR_KIND, _preflight.HINT_KIND})
 
 
 # Provider-rejection categories the worker may report (the SDK's stable
@@ -182,12 +192,55 @@ def _checked_image(block) -> dict:
     return {"media_type": media_type, "data": data}
 
 
+def _host_note(message) -> bool:
+    """True for one of the host's own request-scoped notes (metadata only).
+
+    The decision rests entirely on keys the host stamps on a dict it built
+    itself -- ``source``/``kind``, the same marker ``_repair_escalation``
+    already trusts.  No message text is read: a conversation is free to contain
+    the words "host verification state", and a claim made in prose by a user or
+    a model must never be able to demote a real turn.
+
+    A note that carries content blocks is not a note.  loop.py also appends
+    host-sourced ``tool_attachment`` messages that hold the pixels a tool just
+    produced; those are real content and stay eligible to be the current turn.
+    """
+    return (str(message.get("role") or "") == "user"
+            and str(message.get("source") or "") == _REPAIR_SOURCE
+            and str(message.get("kind") or "") in _HOST_NOTE_KINDS
+            and not isinstance(message.get("content"), list))
+
+
+def _latest_user(messages) -> int:
+    """Index of the user message the CURRENT turn's attachments belong to.
+
+    Role alone is the wrong question.  loop.py appends its request-scoped notes
+    at the very end of the outgoing request, so a role-only scan makes the
+    images the caller JUST attached look historical -- and history is precisely
+    the part ``_apply_attachment_budget`` is allowed to drop silently, with a
+    marker, instead of refusing.  That would turn "your screenshot is too large"
+    into a model answering about an image it never received.
+
+    The rule is kept deliberately narrow.  Notes are transparent only in the
+    trailing run, which is the only place the host puts them, so a dict sitting
+    mid-conversation changes nothing.  Any genuine user message after them wins,
+    because a user who has since said something else really has moved the turn
+    on.  And if a request somehow contains nothing but notes, the previous
+    role-only answer stands rather than a newly invented one.
+    """
+    end = len(messages)
+    while end and _host_note(messages[end - 1]):
+        end -= 1
+    for limit in (end, len(messages)):
+        for index in range(limit - 1, -1, -1):
+            if str(messages[index].get("role") or "") == "user":
+                return index
+    return -1
+
+
 def _attachments(messages) -> list:
     """Validated canonical images, in conversation order, newest message last."""
-    last_user = -1
-    for index, message in enumerate(messages):
-        if str(message.get("role") or "") == "user":
-            last_user = index
+    last_user = _latest_user(messages)
     found = []
     for index, message in enumerate(messages):
         content = message.get("content")
