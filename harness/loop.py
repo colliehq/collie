@@ -118,24 +118,78 @@ VERIFY_NUDGE = ("Before finalizing, use the bash tool to run the project's relev
 # A JSON/CSV/Markdown deliverable has no suite, and naming pytest anyway is what makes a model
 # run a test runner in a directory it has just confirmed holds no tests — which costs a turn and
 # leaves a .pytest_cache behind in a workspace whose task never authorized one.  This text must
-# not imply the cheap check is the grade: parsing a file proves it is well-formed and nothing
+# not imply the cheap check is the grade: re-reading a file proves what it contains and nothing
 # more, so the model is asked to say which requirements remain unverified.
+#
+# It must also stay TASK-NEUTRAL.  An earlier version named "the JSON or CSV" and its fields,
+# which reads as an instruction about a deliverable the task may not have: the observed run was
+# a README edit in a Python workspace, and the reminder answered it with a data-file recipe.
 _NO_CHECK_VERIFY_NUDGE = (
     "Before finalizing: the host did not detect a supported test, build or typecheck command "
     "in this workspace. Follow any project instructions or existing applicable checks; the "
     "detector does not recognize every project layout. When no applicable suite exists, do "
     "not install a toolchain or create a test project just to run a check, and do not invoke "
-    "a test runner known to collect nothing. Check what you actually produced%s in its "
-    "own form — parse the JSON or CSV, confirm the fields, values and ordering the request "
-    "named — using a command that writes nothing into this workspace. "
-    "Parsing proves only that the file is well-formed; it does not prove the request was "
+    "a test runner known to collect nothing. Instead inspect what you actually produced%s "
+    "in whatever form it takes, using a command that writes nothing into this workspace. "
+    "Inspecting the result proves what it contains; it does not prove the request was "
     "satisfied, so state briefly which of the request's requirements you checked and which "
     "remain unverified. " + _VERIFY_HYGIENE + _VERIFY_TAIL)
 
+# The reminder when this run ALREADY executed a check here and the host watched it succeed.
+# Static discovery answers "what check does this project appear to own?"; an executed command
+# answers "what check does this project actually run, in this environment, right now" — which
+# is strictly the better-evidenced of the two, so it names the command.  It is still only
+# WORDING: the earlier run happened before the later edit and therefore certifies nothing about
+# the bytes on disk now, which is exactly why the model is being asked to run it again.
+_RAN_CHECK_VERIFY_NUDGE = (
+    "Before finalizing, use the bash tool to re-run the check that already ran successfully in "
+    "this workspace: `%s`. You have edited files since that run, so its result does not cover "
+    "them. If anything fails, read the error, fix it, and re-run. "
+    + _VERIFY_HYGIENE + _VERIFY_TAIL)
+
 _VERIFY_EDITED_NAMES = 4
+# A reminder quotes a command back to the model, so keep it to something a person would
+# recognize as one line of shell rather than pasting an arbitrarily long payload.
+_VERIFY_COMMAND_CHARS = 300
 
 
-def verify_nudge_for(cwd, edited_paths=()) -> str:
+def _same_dir(a, b) -> bool:
+    """Whether two paths name the same directory, as far as this host can tell."""
+    try:
+        return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(
+            os.path.abspath(str(b)))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _reusable_check_command(ran_checks, cwd=None) -> str:
+    """The most recent host-observed successful check command worth quoting, or ``""``.
+
+    Entries recorded by the loop are ``(cwd, command)``: a command is only worth re-running
+    where it ran.  ``python -m unittest -q`` that passed in one directory says nothing about a
+    workspace the run has since moved to, and quoting it there would name a check that may not
+    even exist.  ``ran_checks`` is also a per-run list, never persisted, so a success from an
+    earlier run cannot reach this at all.  A bare string is accepted for callers that pass one
+    explicitly, and carries no directory claim.
+    """
+    for entry in reversed(list(ran_checks or [])):
+        if isinstance(entry, (tuple, list)) and len(entry) == 2:
+            where, command = entry
+            if cwd is not None and not _same_dir(where, cwd):
+                continue
+        elif isinstance(entry, str):
+            command = entry
+        else:
+            continue
+        if not isinstance(command, str):
+            continue
+        text = command.strip()
+        if text and len(text) <= _VERIFY_COMMAND_CHARS and "\n" not in text:
+            return text
+    return ""
+
+
+def verify_nudge_for(cwd, edited_paths=(), ran_checks=()) -> str:
     """The post-edit reminder, chosen from what this workspace can actually verify.
 
     ``detect_verification_commands`` is the product's existing evidence-based answer to "what
@@ -143,9 +197,18 @@ def verify_nudge_for(cwd, edited_paths=()) -> str:
     UI proposes and what Test mode allowlists.  The loop simply never asked it, so the advisory
     named pytest first on every task, including ones with no code in them at all.
 
+    ``ran_checks`` are check commands the HOST watched exit zero earlier in this same run (see
+    ``_host_observed_check``).  They outrank detection for wording, because an execution that
+    happened is better evidence that a command exists and works here than a marker file is.
+
     This selects *wording* only.  Whether a finish is accepted stays with the verify gate and
-    with the host check receipt; neither is consulted or relaxed here.
+    with the host check receipt; neither is consulted or relaxed here.  In particular a reused
+    command is named precisely because its earlier run is stale — it is never counted as the
+    fresh evidence the gate is asking for.
     """
+    reusable = _reusable_check_command(ran_checks, cwd)
+    if reusable:
+        return _RAN_CHECK_VERIFY_NUDGE % reusable
     if not cwd:
         return VERIFY_NUDGE
     try:
@@ -509,6 +572,93 @@ def _repro_failed(output, name: str = "bash", command: str = "", receipt=None) -
     if name == "run_in_env":
         return _env_repro_failed(receipt)
     return o.startswith("ERROR") or o.startswith("[exit")
+
+
+# How many distinct successful check commands to remember for reminder wording. Small on
+# purpose: the reminder quotes ONE command, and a longer memory is just state to get wrong.
+_HOST_CHECK_MEMORY = 3
+# How much of a result to read when looking for the host's own outcome markers. They are
+# written at the FRONT of the result (see tools.BashTool), so a bounded head is enough and a
+# huge captured output cannot turn this into an unbounded scan.
+_HOST_CHECK_HEAD_CHARS = 600
+# Markers that mean "this did not finish", "this was not allowed to run" or "nobody can say
+# what this did". Each one is text the HOST writes around a tool result, not text a command
+# prints: `ERROR:`/`[exit N]`/`[WARNING:` come from BashTool, `DENIED:` from the permission
+# path in Harness, `CANCELED: run stopped before execution` from the cancellation path that
+# fills in results for calls that were never dispatched.
+_HOST_CHECK_REJECT = (
+    "error", "denied", "[exit", "canceled", "cancelled", "refused", "blocked",
+    "[warning:", "timed out", "not allowed", "not permitted", "permission denied",
+    "was not executed", "did not finish", "could not be confirmed",
+)
+# Output that says, in the runner's own words, that it collected nothing. A green exit from a
+# runner that ran zero tests is the single most misleading thing that can be quoted back as
+# "the check that already ran successfully", because it is simultaneously true and worthless.
+_HOST_CHECK_ZERO_RE = re.compile(
+    r"\bran\s+0\s+tests?\b|\bno\s+tests?\s+ran\b|\bcollected\s+0\s+items?\b"
+    r"|\bno\s+tests?\s+(were\s+)?(found|collected|executed|to\s+run)\b"
+    r"|\b0\s+tests?\s+(ran|collected|executed|found)\b|\bno\s+test\s+files\b",
+    re.IGNORECASE)
+
+
+def _host_observed_check(name, args, out) -> str:
+    """A check command THIS host watched run to a successful exit, or ``""``.
+
+    Used for reminder wording only, never as verification evidence: the whole reason the
+    reminder fires is that the workspace changed after this ran.  It is deliberately as strict
+    as the finish gate about what counts as an executed success, because a command that was
+    denied, refused, cancelled, killed at its deadline, exit-masked by shell composition or
+    told to collect nothing is not a check anybody should be invited to "re-run" as if it had
+    worked.
+
+    WHERE THE OUTCOME COMES FROM, precisely: the ``bash`` tool returns a plain ``str`` and mints
+    NO ``ExecReceipt`` — only ``run_in_env`` does, and its receipt describes a dual red→green
+    pair rather than "the suite is green".  So the only outcome channel bash actually supplies
+    is the text the HOST prepends: ``[exit N]`` for a non-zero status, ``ERROR: ...`` for a
+    timeout/cancel/launch failure, ``[WARNING: ...]`` for an effect it could not account for,
+    and nothing at all on a clean zero exit.  This reads exactly that channel; it does not
+    invent a receipt API bash does not have, and it does not parse a status back out of what
+    the command itself printed.  Because "success" is therefore the ABSENCE of a marker, every
+    result that is not plainly a finished bash run is refused:
+
+      * ``bash`` only, and a real ``str`` result — ``None``, bytes or an object stands for a
+        call that never produced host text, which is not an observation of anything.
+      * a receipt, if one is ever attached, must belong to THIS tool and command, and must
+        carry a zero status; a foreign receipt means this is not bash's own result.
+      * ``_is_test_runner_cmd`` — rejects pipelines, ``|| true``, ``;`` chains, backgrounding
+        and collect-only/list-only modes, exactly as the gate does.
+      * no failure/interruption marker in the head, and no "ran 0 tests".
+
+    Anything uncertain returns ``""``, which costs only the better wording: the caller falls
+    back to static discovery, and the verify gate is not consulted here either way.
+    """
+    if name != "bash":
+        return ""
+    command = args.get("command") if isinstance(args, dict) else ""
+    if not isinstance(command, str) or not command.strip():
+        return ""
+    if not _is_test_runner_cmd(command):
+        return ""
+    if not isinstance(out, str):
+        return ""
+    receipt = _tools.exec_receipt(out)
+    if receipt is not None:
+        # bash mints none today; if that ever changes, the host-minted status wins and a
+        # receipt belonging to some other call is not this command's outcome.
+        if (receipt.tool != name or receipt.command != command
+                or receipt.dual or receipt.edit_rc not in (0, None)):
+            return ""
+    text = out.strip()
+    if not text or text == "(no output)":
+        # A runner that finished without printing a single line gives nothing to stand on.
+        return ""
+    head = text[:_HOST_CHECK_HEAD_CHARS].lower()
+    if any(marker in head for marker in _HOST_CHECK_REJECT):
+        return ""
+    if _HOST_CHECK_ZERO_RE.search(text[:_HOST_CHECK_HEAD_CHARS]) or _HOST_CHECK_ZERO_RE.search(
+            text[-_HOST_CHECK_HEAD_CHARS:]):
+        return ""
+    return command.strip()
 
 
 def _bound_receipt(out, tc, run_args):
@@ -1933,6 +2083,9 @@ class Harness:
         last_edit_turn = -100
         last_repro_turn, last_repro_failed, verify_rounds = -100, False, 0
         last_repro_asserted = False   # did the last post-edit repro actually run an `assert`?
+        # Check commands this run executed successfully, oldest first. Reminder wording only —
+        # a later edit still invalidates the reproduction accounting above, untouched.
+        host_checks = []
         coverage_rounds = 0
         critic_rounds = 0
         hook_stop_rounds = 0
@@ -2508,6 +2661,19 @@ class Harness:
                                 self._emit("repro", passed=not last_repro_failed,
                                            asserted=last_repro_asserted,
                                            cmd=(tc.args.get("command") or "")[:200])
+                            # Independent of the gate's freshness accounting: remember WHICH
+                            # check command actually worked here, so a later reminder can name
+                            # it instead of guessing from markers. Not evidence — an entry
+                            # survives the edit that just invalidated its result.
+                            observed = _host_observed_check(tc.name, tc.args, out)
+                            if observed:
+                                # Bound to the directory it ran in: a later reminder for some
+                                # other workspace must not quote it.
+                                entry = (self.cwd, observed)
+                                if entry in host_checks:
+                                    host_checks.remove(entry)
+                                host_checks.append(entry)
+                                del host_checks[:-_HOST_CHECK_MEMORY]
                         except Exception as _acc_e:
                             if os.environ.get("COLLIE_DEBUG"):
                                 print("  [accounting error, continuing] %s" % _acc_e, flush=True)
@@ -2952,7 +3118,7 @@ class Harness:
                             # until a reproduction has actually run. Only which check the text
                             # names is workspace-selected.
                             nudge = ((self.verify_nudge
-                                      or verify_nudge_for(self.cwd, edited_files))
+                                      or verify_nudge_for(self.cwd, edited_files, host_checks))
                                      if last_repro_turn < last_edit_turn
                                      else (self.repair_nudge or REPAIR_NUDGE))
                             session["messages"].append({"role": "assistant", "content": comp.text})
@@ -2968,7 +3134,8 @@ class Harness:
                         session["messages"].append(
                             {"role": "user",
                              "content": (self.verify_nudge
-                                         or verify_nudge_for(self.cwd, edited_files)),
+                                         or verify_nudge_for(self.cwd, edited_files,
+                                                             host_checks)),
                              "source": "harness", "kind": "verification_reminder"})
                         verified = True
                         res.turns = turn + 1

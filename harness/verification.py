@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -124,6 +125,204 @@ def _candidate(kind: str, command: str, source: str, confidence: str = "high") -
     return {"kind": kind, "command": command, "source": source, "confidence": confidence}
 
 
+# ── standard-library unittest layouts ────────────────────────────────────────
+# A large share of real Python coding tasks (and every observed Python coding
+# benchmark instance) ships exactly one top-level ``test_solution.py`` that
+# imports ``unittest``, with no pyproject/setup.cfg and no ``tests/`` directory.
+# ``python -m unittest -q`` runs it — discovery with no arguments uses unittest's
+# own ``test*.py`` pattern — but the detector below saw no marker at all and said
+# "no supported checks", which is how a real, cheap, passing suite went unnamed.
+#
+# The evidence has to be a suite, not a filename: a ``test_data.py`` fixture
+# module, a README mentioning unittest, or a comment must not become a proposed
+# command.  So the file is PARSED (never imported, never executed) and counts
+# only if it both imports ``unittest`` and defines a case the real loader would
+# COLLECT A TEST FROM.  That last part is the whole rule, and an earlier version
+# got it wrong in both directions the loader cares about: ``class T(TestCase):
+# pass`` and a ``TestCase`` defined inside a function both looked like suites
+# statically while ``unittest`` collected zero tests from them, which is how a
+# proposed command could name a run that reports "Ran 0 tests".  So:
+#
+#   * the class must be MODULE-LEVEL — ``loadTestsFromModule`` iterates
+#     ``dir(module)``, so a class nested in a function or another class is not
+#     reachable there at all;
+#   * it must have a statically visible callable ``test*`` method, directly or
+#     from a base class defined in this same module — ``getTestCaseNames`` takes
+#     ``dir(cls)`` entries that are ``callable``, so ``test_x = 5`` is not a test
+#     and an empty case contributes nothing;
+#   * anything dynamic (a base imported from elsewhere, a class built by a
+#     decorator or a loop, methods installed with ``setattr``) is SKIPPED rather
+#     than guessed at: a false negative keeps the old "no check" wording, while a
+#     false positive names a command that collects nothing.
+_UNITTEST_CANDIDATE_FILES = 200
+_UNITTEST_PARSE_FILES = 25
+_UNITTEST_SOURCE_BYTES = 1_000_000
+_UNITTEST_BASE_DEPTH = 8          # bounded walk of local base classes
+# unittest's own rule for which files discovery will even try to import, copied
+# from ``unittest.loader``: the ``test*.py`` glob is only half of it, and
+# ``VALID_MODULE_NAME`` is the half that rejects ``test-solution.py`` and
+# ``test suite.py`` — names that are matched by the glob but can never be
+# imported as a module, so the loader silently collects nothing from them.
+_UNITTEST_VALID_MODULE = re.compile(r"[_a-z]\w*\.py$", re.IGNORECASE)
+# The loader's default ``testMethodPrefix``.
+_UNITTEST_METHOD_PREFIX = "test"
+
+
+def _unittest_discoverable_name(name: str) -> bool:
+    """Would ``python -m unittest`` discovery import a top-level file with this name?
+
+    Both of the loader's conditions, not just the famous one: the ``test*.py``
+    pattern AND ``VALID_MODULE_NAME``.  The pattern is applied case-sensitively
+    here on purpose — ``fnmatch`` folds case on Windows and does not on POSIX, so
+    the lower-case reading is the one that holds on every host the proposal might
+    be re-run on.
+    """
+    return (name.startswith(_UNITTEST_METHOD_PREFIX) and name.endswith(".py")
+            and bool(_UNITTEST_VALID_MODULE.match(name)))
+
+
+def _unittest_imports(tree) -> tuple[set, set]:
+    """``(module aliases, names bound to a TestCase class)`` for a parsed module."""
+    module_aliases = set()   # names bound to the unittest package or a submodule
+    case_names = set()       # names bound directly to a TestCase class
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "unittest" or alias.name.startswith("unittest."):
+                    module_aliases.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or (node.module or "").split(".")[0] != "unittest":
+                continue
+            for alias in node.names:
+                if alias.name.endswith("TestCase"):
+                    case_names.add(alias.asname or alias.name)
+                else:
+                    # ``from unittest import case`` -> ``case.TestCase`` below.
+                    module_aliases.add(alias.asname or alias.name)
+    return module_aliases, case_names
+
+
+def _has_test_method(cls, classes, depth=_UNITTEST_BASE_DEPTH) -> bool:
+    """Does this class body — or a base class defined in the same module — define
+    a callable ``test*`` method the loader would name?
+
+    ``async def`` counts: ``IsolatedAsyncioTestCase`` runs those, and even on a
+    plain ``TestCase`` the loader still COLLECTS one, which is what this function
+    is predicting.  A plain-object mixin counts too, because ``dir(cls)`` does not
+    care where the method came from.
+    """
+    for stmt in cls.body:
+        if (isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and stmt.name.startswith(_UNITTEST_METHOD_PREFIX)):
+            return True
+    if depth <= 0:
+        return False
+    for base in cls.bases:
+        local = classes.get(base.id) if isinstance(base, ast.Name) else None
+        if local is not None and local is not cls and _has_test_method(local, classes, depth - 1):
+            return True
+    return False
+
+
+def _derives_from_case(cls, classes, module_aliases, case_names,
+                       depth=_UNITTEST_BASE_DEPTH) -> bool:
+    """Does this class statically resolve to a ``unittest`` ``*TestCase`` subclass?
+
+    Either a base names one of the imported case classes, or a base is a class
+    defined in this same module that does.  A base this module cannot see is not
+    followed — it may or may not be a case, and guessing is exactly what produced
+    a proposal for a suite the loader collects nothing from.
+    """
+    for base in cls.bases:
+        if isinstance(base, ast.Name):
+            if base.id in case_names:
+                return True
+            local = classes.get(base.id)
+            if (depth > 0 and local is not None and local is not cls
+                    and _derives_from_case(local, classes, module_aliases,
+                                           case_names, depth - 1)):
+                return True
+        elif isinstance(base, ast.Attribute) and base.attr.endswith("TestCase"):
+            root = base.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in module_aliases:
+                return True
+    return False
+
+
+def _defines_unittest_case(source: str) -> bool:
+    """Would the real loader collect at least one test from this module text?
+
+    Pure ``ast`` inspection: no import, no execution, no toolchain.  A string or
+    comment that merely mentions unittest has no import node and no class bases,
+    so it cannot reach ``True`` here; neither can an empty case nor one hidden
+    inside a function.  Conservative by construction — see the note above.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return False
+    module_aliases, case_names = _unittest_imports(tree)
+    if not (module_aliases or case_names):
+        return False
+    # MODULE-LEVEL only: this is what ``dir(module)`` would show the loader.
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    for cls in classes.values():
+        if (_derives_from_case(cls, classes, module_aliases, case_names)
+                and _has_test_method(cls, classes)):
+            return True
+    return False
+
+
+def _unittest_suite_file(cwd: str) -> str:
+    """Name of a top-level unittest suite module in ``cwd``, or ``""``.
+
+    Bounded and non-recursive.  The candidate list is CAPPED WHILE SCANNING, not
+    after sorting: a directory with a million ``test*.py`` entries must cost a
+    bounded read here, and sorting the whole set first would have paid for all of
+    them before the cap applied.  A symlink is only read when its target stays
+    inside this workspace: a link out to somebody else's tree is not this
+    project's check, and following it would propose a command for code the user
+    never put here.
+    """
+    root = os.path.realpath(os.path.abspath(cwd))
+    names = []
+    try:
+        with os.scandir(cwd) as entries:
+            for entry in entries:
+                if not _unittest_discoverable_name(entry.name):
+                    continue
+                names.append(entry.name)
+                if len(names) >= _UNITTEST_CANDIDATE_FILES:
+                    break
+        names.sort()
+    except OSError:
+        return ""
+    parsed = 0
+    for name in names:
+        if parsed >= _UNITTEST_PARSE_FILES:
+            break
+        path = os.path.join(cwd, name)
+        try:
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode):
+                target = os.path.realpath(path)
+                if os.path.commonpath((target, root)) != root:
+                    continue
+                info = os.stat(path)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _UNITTEST_SOURCE_BYTES:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                source = fh.read(_UNITTEST_SOURCE_BYTES)
+        except (OSError, ValueError):
+            continue
+        parsed += 1
+        if _defines_unittest_case(source):
+            return name
+    return ""
+
+
 def detect_verification_commands(cwd: str) -> list[dict]:
     """Detect likely repo-owned checks without executing project code.
 
@@ -158,6 +357,15 @@ def detect_verification_commands(cwd: str) -> list[dict]:
     if os.path.isdir(os.path.join(cwd, "tests")) or any(
             os.path.isfile(os.path.join(cwd, p)) for p in python_markers):
         found.append(_candidate("test", "python -m pytest -q", "Python test layout"))
+    else:
+        # Only where the pytest layout is absent: a project that declares one owns
+        # its runner, and pytest already collects unittest suites.  This branch is
+        # for the workspace that has no project metadata at all and would
+        # otherwise be reported as having no check whatsoever.
+        suite = _unittest_suite_file(cwd)
+        if suite:
+            found.append(_candidate("test", "python -m unittest -q",
+                                    "unittest.TestCase in %s" % suite))
 
     if os.path.isfile(os.path.join(cwd, "Cargo.toml")):
         found.append(_candidate("test", "cargo test", "Cargo.toml"))
