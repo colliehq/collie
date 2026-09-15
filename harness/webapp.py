@@ -5013,6 +5013,11 @@ class Handler(BaseHTTPRequestHandler):
         forever after a crash.  It is ``null`` when even the OS cannot say.
         ``owner`` stays what it always was: the advisory description, labelled.
 
+        ``scheduled_wait`` is the fourth: an already accepted request that a
+        provider quota reset is scheduled to start, with the time it starts
+        after.  The server owns that timer -- the page only reports it, and the
+        row keeps the cancel control it already had.
+
         The same crash leaves a second record that lies in the same way: an entry
         still ``claimed`` by an executor that is gone.  That one is not merely
         cosmetic — claimed is the state a surface cannot act on at all (start,
@@ -5045,6 +5050,10 @@ class Handler(BaseHTTPRequestHandler):
             "owner_busy": True if active else busy,
             "owner": session_owner.describe(sid)["owner"] or None,
             "queue_error": web_tasks.queue_error(sid),
+            # Sanitized, and only for the entry a provider reset is actually
+            # scheduled for: the state, the time it starts after, and why if
+            # something stopped it. None of this module's bookkeeping crosses.
+            "scheduled_wait": web_tasks.scheduled_wait(sid),
             "limits": {"max_pending": task_inbox.MAX_PENDING,
                        "max_text_bytes": task_inbox.MAX_TEXT_BYTES,
                        "max_body_bytes": web_tasks.MAX_BODY_BYTES}})
@@ -6977,6 +6986,11 @@ def main(argv=None, on_bound=None):
               "Open http://127.0.0.1:%d/ , or pass --port <free port>." % (requested, requested + 11, requested))
         return 1
     start_mission_ticker()
+    # A run that died on a quota error may have left an already-accepted request
+    # waiting for a reset the provider named.  That record is durable, so this
+    # pass also catches up waits recorded before this process existed.
+    from . import quota_resume
+    quota_resume.start_ticker()
     # Live Copilot must keep understanding already-captured context when its panel is hidden. The
     # first-party Web/Desktop server is Collie's long-lived process, so this loop survives ordinary
     # navigation without turning Live into a browser-page feature.
@@ -7046,6 +7060,9 @@ def main(argv=None, on_bound=None):
     except KeyboardInterrupt:
         print("\nbye")
     finally:
+        # Best effort, and honest about it: a pass that will not end in time
+        # keeps its thread identity, so nothing here starts a second one.
+        quota_resume.stop_ticker()
         httpd.server_close()
     return 0
 

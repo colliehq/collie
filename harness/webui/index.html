@@ -3242,6 +3242,9 @@
     return "en";
   }
   var ZH = {
+    "Starting now — already submitted": "已提交，正在启动",
+    "Automatic start stopped — start it when you're ready": "自动启动已停止，可随时手动开始",
+    "Already submitted — starts after": "已提交，将在此时间后开始",
     "Live Copilot": "实时协作", "Maintaining context": "正在保持理解", "Not active": "未开启",
     "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Online": "在线协作", "Library": "能力库", "Activity": "活动", "Worker": "工作进程", "Service": "服务",
     "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
@@ -3668,6 +3671,9 @@
   // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
+    "Starting now — already submitted": "已提交，正在啟動",
+    "Automatic start stopped — start it when you're ready": "自動啟動已停止，可隨時手動開始",
+    "Already submitted — starts after": "已提交，將在此時間後開始",
     "Live Copilot": "即時協作", "Maintaining context": "正在保持理解", "Not active": "未開啟",
     "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Online": "線上協作", "Library": "能力庫", "Activity": "活動", "Worker": "工作程序", "Service": "服務",
     "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
@@ -10345,6 +10351,22 @@
       var meta = document.createElement("div"); meta.className = "task-queue-meta";
       meta.textContent = t(entry.mode === "steer" ? "Added instruction" : "Next task") + " · " +
         t(entry.state === "claimed" ? "Delivering…" : "Waiting");
+      // This request was already submitted and is scheduled to start on its own
+      // after the provider's reset. Nothing is timed or polled here beyond the
+      // queue refresh that is already running: the row states the server's time.
+      var wait = state.scheduledWait;
+      if (wait && wait.entry === entry.id && entry.state === "pending") {
+        if (wait.state === "retired" && wait.reason) meta.title = wait.reason;
+        // "retired" is the server saying it gave up on starting this by itself.
+        // The row says so plainly and keeps its Start and Remove controls: the
+        // request is still accepted and still startable by hand.
+        meta.textContent += " · " + (wait.state === "admitting"
+          ? t("Starting now — already submitted")
+          : wait.state === "retired"
+          ? t("Automatic start stopped — start it when you're ready")
+          : t("Already submitted — starts after") + " " +
+            new Date(wait.retry_at * 1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}));
+      }
       var assets = entry.assets || (entry.metadata || {}).assets || {};
       if (assets.images || assets.contexts) meta.textContent += " · " + t("Attachments saved");
       row.appendChild(meta);
@@ -10454,6 +10476,12 @@
         if (serverNotice !== (state.serverNotice || "")) {
           if (serverNotice || state.notice === state.serverNotice) state.notice = serverNotice;
           state.serverNotice = serverNotice; changed = true;
+        }
+        // The server owns this timer; the page only reports what it says. A row that
+        // gains or loses a scheduled start has changed even when its entry has not.
+        var wait = data.scheduled_wait || null;
+        if (JSON.stringify(wait) !== JSON.stringify(state.scheduledWait || null)) {
+          state.scheduledWait = wait; changed = true;
         }
         state.entries = data.entries; state.active = active;
         // The save response may have been lost during a reload. The durable inbox is

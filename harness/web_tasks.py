@@ -1056,6 +1056,9 @@ def serve_managed_stream(handler, qs, *, owner=None, entry=None):
         # no longer the newest thing that happened to it.  If this one fails too,
         # it will say so itself.
         clear_queue_error(sid)
+        # ...and a wait scheduled by an older failure is older than this
+        # turn, whatever this turn goes on to do.
+        supersede_wait(sid)
         handler._managed_session = sid
         handler._run_owner = lease
         handler._input_entry = entry
@@ -1154,7 +1157,10 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
     if not outcome.get("auto_next"):
         # Stop, error, a turn/budget cap and an open recovery fence all leave
         # accepted input waiting on an explicit Start.  Nothing here starts work
-        # a person did not ask to continue.
+        # a person did not ask to continue.  One ending says more than "not now",
+        # though: a quota refusal carries the provider's own statement of when it
+        # will answer again, and that is worth remembering durably.
+        note_quota_wait(sid, outcome, entry)
         return False
     try:
         readable = journal_ids(sid) is not None
@@ -1207,6 +1213,202 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
         return False
 
 
+def note_quota_wait(sid, outcome, entry=None):
+    """Remember a provider-attested reset, but only with something to admit.
+
+    The reset itself is not this function's reading.  ``terminal_outcome`` --
+    through ``recorder.run_outcome`` -- is the one place that decides whether a
+    run is genuinely stopped on a provider wait, and it withdraws that reading
+    for a cancellation, a budget or turn cap, a recovery fence and a host-side
+    failure recorded after the run returned.  What is read here is only its
+    verdict (``provider_wait``), so a second opinion about quota metadata cannot
+    exist in this file.
+
+    The other half has to be true too, and it is read from the store: a request
+    the person *already accepted* is actually waiting.  With no accepted
+    follow-up there is nothing a reset could start, and the ordinary
+    wait-for-Start is exactly right; recording a timer then would be promising
+    something this module must not do -- inventing a request to continue with.
+    The entry that is waiting *now* is bound into the record, because that is
+    the request this schedules, and no other.
+    """
+    if not outcome.get("provider_wait") or outcome.get("canceled") \
+            or outcome.get("recovery_required"):
+        return None
+    retry_at = outcome.get("retry_at")
+    if type(retry_at) is not int or retry_at <= 0:
+        return None
+    try:
+        pending = task_inbox.list_entries(sid, states=("pending",), modes=("follow_up",),
+                                          limit=1)
+    except task_inbox.InboxError:
+        return None                # an inbox needing inspection is not a timer's job
+    if not pending:
+        return None
+    if entry is not None and pending[0]["id"] == entry.get("id"):
+        # Settlement returned this failed request to pending because it was not
+        # delivered. Do not restart it with its original budget, or bypass it
+        # to start a later request. This wait is only for a distinct successor.
+        return None
+    try:
+        from . import quota_resume
+        return quota_resume.record(sid, retry_at=retry_at, entry_id=pending[0]["id"],
+                                   run_id=str(outcome.get("run") or ""))
+    except Exception as exc:
+        note_queue_error(sid, "the provider's reset time could not be saved, so the "
+                              "queued request waits for Start: %s: %s"
+                              % (type(exc).__name__, str(exc)[:200]),
+                         entry_id=(entry or {}).get("id") or "", kind="quota_wait")
+        return None
+
+
+def scheduled_wait(session):
+    """The sanitized "this accepted request starts after T", for a surface.
+
+    Bookkeeping stays here: a pid, a claim time and this module's retry counters
+    answer no question a person asked.  What crosses to the browser is the entry
+    that is scheduled, whether it is waiting or already starting, and the time
+    it starts after -- enough for the queue row to say so, and to keep offering
+    the cancel it always had.
+    """
+    try:
+        from . import quota_resume
+        return quota_resume.status(session)
+    except Exception:
+        return None
+
+
+def supersede_wait(session):
+    """A run just took this conversation, so a scheduled wait is stale.
+
+    Called as any managed turn acquires the lease -- a manual Start, a follow-up
+    chain, the admission the wait itself asked for.  Whatever that run goes on
+    to do, including being canceled a second later, it is newer than the wait
+    and a person is present for it; leaving a timer armed behind a decision they
+    have since made is how queued work starts after it stopped being wanted.
+    """
+    try:
+        from . import quota_resume
+        return quota_resume.clear(session, reason="a newer run took this conversation")
+    except Exception:
+        return None
+
+
+def admit_after_quota_reset(wait):
+    """Start the *bound* accepted follow-up, the same way Start would.
+
+    Called by the server's own pass once the recorded reset is due, with the
+    wait already claimed.  Everything that decides whether work may run is read
+    again *here*, live, at the moment of admission -- the session lease, the
+    recovery fence, and what the inbox says about the exact entry this wait was
+    recorded for.  A reset time is permission to ask, not an answer, and nothing
+    about the interrupted turn is replayed or refunded.
+
+    Three rules make that safe long after the record was written.  The claim is
+    re-read under the lease and must still be *this* claim -- the nonce, the
+    ``admitting`` state and the bound entry -- or nothing here executes.
+    Nothing is started unless the authority can actually be read: an unreadable
+    recovery state defers, it does not proceed.  And the entry is the one that
+    was bound at failure time -- if it was canceled, the wait is over, because
+    starting whatever else is queued would be running a request the person never
+    scheduled.  Every write back to the record is a compare-and-set on the nonce
+    this claim carries, so a successor's newer wait is never clobbered by it.
+    """
+    from . import quota_resume
+    sid, nonce, bound = wait["session"], wait["nonce"], wait["entry"]
+    # The pass's own clock, recorded when the wait was claimed: a backoff must be
+    # measured from the moment this admission was attempted, not from a second,
+    # independently sampled "now".
+    now = float(wait.get("claimed_at") or time.time())
+    try:
+        lease = session_owner.try_acquire(sid, label="quota-resume")
+    except ValueError:
+        quota_resume.retire(sid, "this session id can no longer be addressed",
+                            nonce=nonce)
+        return {"session": sid, "started": False, "reason": "invalid_session"}
+    if lease is None:
+        # Someone is already running this conversation -- a manual Start, or a
+        # follow-up chain that got there first.  That run is newer than this
+        # wait and it is not this pass's place to interrupt or outrank it.
+        quota_resume.defer(sid, "this conversation was running when the reset came",
+                           nonce=nonce, now=now)
+        return {"session": sid, "started": False, "reason": "busy"}
+    handed = False
+    try:
+        current = quota_resume.read(sid)
+        if (current is None or current.get("nonce") != nonce
+                or current.get("state") != "admitting"
+                or current.get("entry") != bound):
+            # Between the claim and this lease, the record stopped being this
+            # claim's to act on: a newer run cleared it, a newer failure replaced
+            # it, or a recovery pass rotated its nonce.  The claim carried no
+            # authority to execute, so nothing is claimed from the inbox and
+            # nothing is written back -- whatever is there now belongs to
+            # somebody newer, and deleting or retiring it would cancel a wait
+            # nobody asked to cancel.
+            return {"session": sid, "started": False, "reason": "superseded"}
+        try:
+            state = sessions.recovery_state(sid)
+        except Exception as exc:
+            # "Cannot tell" is not "no fence".  Ask again next pass rather than
+            # execute against a conversation whose state could not be read.
+            quota_resume.defer(sid, "this conversation's state could not be read: %s"
+                               % str(exc)[:200], nonce=nonce, now=now)
+            return {"session": sid, "started": False, "reason": "unreadable_state"}
+        if state and state.get("recovery_required"):
+            quota_resume.retire(sid, state.get("reason") or
+                                "this conversation needs recovery before it can continue",
+                                nonce=nonce)
+            return {"session": sid, "started": False, "reason": "recovery_required"}
+        try:
+            reconcile_open_claims(sid, lease)
+            target = task_inbox.get(sid, bound)
+        except task_inbox.InboxError as exc:
+            # Left inspectable rather than retried into a storm: an inbox that
+            # cannot be read is a thing to look at, not to poll.
+            quota_resume.retire(sid, "the queued requests could not be read: %s"
+                                % str(exc)[:200], nonce=nonce)
+            return {"session": sid, "started": False, "reason": "inbox_error"}
+        if target is None or target.get("state") != "pending":
+            # Withdrawn, or already delivered by a run that happened meanwhile.
+            # Another request may well be queued; it is not this one, and this
+            # wait has no authority to start it.
+            quota_resume.retire(sid, "the accepted request this was waiting for is no "
+                                     "longer queued, so nothing was started", nonce=nonce)
+            return {"session": sid, "started": False, "reason": "nothing_pending"}
+        entry = claim_next(sid, lease, ("follow_up",),
+                           after_seq=max(0, int(target.get("seq") or 1) - 1))
+        if entry is None:
+            quota_resume.retire(sid, "the accepted request this was waiting for was no "
+                                     "longer waiting when the reset came", nonce=nonce)
+            return {"session": sid, "started": False, "reason": "nothing_pending"}
+        if entry["id"] != bound:
+            # The store handed back something else: the bound request moved out
+            # from under this claim between the read and it.  Put it straight
+            # back -- it is somebody else's turn to start, not this wait's.
+            release_undelivered(sid, lease, [entry["id"]],
+                                "this request was not the one scheduled for the reset")
+            quota_resume.retire(sid, "the accepted request this was waiting for is no "
+                                     "longer queued, so nothing was started", nonce=nonce)
+            return {"session": sid, "started": False, "reason": "nothing_pending"}
+        schedule(sid, lease, entry)
+        handed = True
+        quota_resume.retire(sid, "started after the provider's reset", nonce=nonce,
+                            state="admitted")
+        return {"session": sid, "started": True, "entry": public_entry(entry),
+                "retry_at": int(wait["retry_at"])}
+    except Exception as exc:
+        quota_resume.failed(sid, "the queued request could not be started: %s: %s"
+                            % (type(exc).__name__, str(exc)[:200]), nonce=nonce, now=now)
+        note_queue_error(sid, "the queued request could not be started after the "
+                              "provider's reset: %s: %s"
+                              % (type(exc).__name__, str(exc)[:200]), kind="quota_wait")
+        return {"session": sid, "started": False, "reason": "error"}
+    finally:
+        if not handed:
+            lease.release()
+
+
 def terminal_outcome(res=None, *, canceled=False, error="", recovery_required=False,
                      completed=None):
     """What actually happened, read from the run's own result.
@@ -1231,4 +1433,12 @@ def terminal_outcome(res=None, *, canceled=False, error="", recovery_required=Fa
     row["recovery_required"] = bool(recovery_required)
     row["auto_next"] = bool(row.get("completed") and not row["canceled"]
                             and not row["error"] and not recovery_required)
+    if row["canceled"]:
+        # `run_outcome` already withdraws the wait reading for a fence, a
+        # host-side failure and a cancellation the *result* carries; there is
+        # no second opinion about quota metadata here.  A cancellation only
+        # the caller knows about is that same fact arriving later, so it
+        # withdraws the same reading rather than computing a rival one.
+        row.pop("provider_wait", None)
+        row.pop("retry_at", None)
     return row
