@@ -1089,12 +1089,25 @@ class ClaudeCliProvider(ModelProvider):
         tools = "\n".join("- %s(%s): %s" % (
             t["name"], ",".join((t.get("input_schema", {}).get("properties", {}) or {}).keys()),
             t["description"]) for t in tool_schemas)
+        # This paragraph is the TRANSPORT protocol: what the executor can run, what a reply
+        # may contain, and what counts as a truthful finish. It must stay mode-neutral. The
+        # older wording ("until the requested work has been performed, an answer JSON is a
+        # failure … use edit_file/write_file to make the change before answering") assumed
+        # every turn was an implementation turn, so it contradicted the system prompt's own
+        # MODE line on Review/Test/Plan (which forbid edits) and on plain questions: the only
+        # correct reply there — an answer with no edit — was described as a failure. The
+        # obligation to actually change files belongs to MODE: Act in context.py, which is
+        # where the caller's mode is known; the transport only states the facts that hold on
+        # every turn. Task-shaped duties (grounding, DELIVERY) are not repeated here.
         L += ["", "# Tools the executor can run:", tools, "",
               "You are the reasoning engine inside Collie, not a standalone chat assistant. "
-              "You cannot inspect or change the workspace except by emitting a tool JSON below. "
-              "Until the requested work has actually been performed, an answer JSON is a failure. "
-              "On the first turn of a coding task, inspect the workspace with grep, glob, or "
-              "read_file; use edit_file/write_file to make the change before answering.", ""]
+              "These are the only tools that exist for you: Collie's executor runs the one you "
+              "name and returns its output above as data — you cannot inspect or change the "
+              "workspace any other way. Follow the task and mode your system prompt sets, and "
+              "finish only when that task is actually done: never report an inspection, a "
+              "change, or a check you did not perform through these tools. Work that asks for "
+              "a change is not done until the change is made here; review, test, and "
+              "explanation work is done without edits.", ""]
         if structured_response:
             L += ["# RESPONSE FORMAT (strict):",
                   "Call the StructuredOutput formatter exactly once. Its input must contain "

@@ -223,21 +223,35 @@ class ContextComposer:
         # STABLE cached prefix, so it must stay byte-identical for the whole session. The
         # workspace-specific command is named later, by loop.verify_nudge_for, in an appended
         # reminder that does not disturb the prefix.
+        # The "make it, don't describe it" duty lives HERE, not in the transport protocol
+        # (providers.ClaudeCliProvider._prompt): only the composer knows the caller's mode, so
+        # only it can demand an edit without also demanding one from Review/Test/Plan. It is
+        # conditional on the request, because Act also serves questions that are answered
+        # truthfully with no edit at all.
         act_role = ("MODE: Act — use tools to gather facts and make changes. "
-                    "Prefer edit_file for small changes. After editing, verify with a check "
+                    "When the request calls for a change, make it with edit_file (preferred for "
+                    "small changes) or write_file before answering, rather than describing the "
+                    "change you would make. After editing, verify with a check "
                     "this project actually supports: run its existing test suite (e.g. "
                     "python -m pytest -q) when it has one; when it has none, validate the "
                     "artifact you produced rather than installing or inventing a test project. "
-                    "Report what your check did and did not establish.")
+                    "Report what your check did and did not establish. When the request only "
+                    "asks a question, answer it from what you inspected; no edit is required.")
         # unknown/typo'd mode -> ACT (never silently drop the tool-usage + verify contract).
         mode_role = {
             "act": act_role,
+            # Each non-Act mode says what finishing looks like, because the deliverable is the
+            # report/plan itself: without that, a model carrying a generic "act first" habit
+            # keeps hunting for an edit it is forbidden to make.
             "plan": ("MODE: Plan — inspect the project and produce an editable plan artifact with "
-                     "scope, files, risks, and proposed checks. Do not edit project files or run commands."),
+                     "scope, files, risks, and proposed checks. Do not edit project files or run "
+                     "commands. The plan is the deliverable: finish once it is written."),
             "review": ("MODE: Review — inspect only. Report prioritized findings with concrete "
-                       "file paths and line numbers. Do not edit files or run commands."),
+                       "file paths and line numbers. Do not edit files or run commands. The "
+                       "findings are the deliverable: finish with them, with no edit."),
             "test": ("MODE: Test — inspect files and run only the proposed verification command. "
-                     "Do not edit anything. Return the failing check as evidence for a separate Build run."),
+                     "Do not edit anything. Return the failing check as evidence for a separate "
+                     "Build run: reporting that command's actual outcome completes this task."),
         }.get(mode, act_role)
         tool_names = "TOOLS (always-on): " + ", ".join(
             t.name for t in self.registry.always_on())
