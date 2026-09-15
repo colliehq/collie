@@ -6765,14 +6765,27 @@ class Handler(BaseHTTPRequestHandler):
             sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
             try:
                 run_recovery = sessions.recovery_state(sid)
+                recovery_known = True
             except Exception:
-                run_recovery = None
+                run_recovery, recovery_known = None, False
             recovery_required = bool(run_recovery and run_recovery.get("recovery_required"))
+            # A journal that could not be read is not a cleared one. `recovery_required`
+            # stays the fact -- no fence is invented for anyone to reconcile -- but every
+            # row below withholds the "nothing is wrong except the clock" reading: an
+            # effect may be open and nobody can currently say. The save above succeeding
+            # is no evidence either, because this read can fail on its own.
+            wait_fenced = recovery_required or not recovery_known
             # The scheduler's only input, and it is the run's own terminal record:
             # not the answer text, not whether a socket was still attached.
             self._stream_outcome = web_tasks.terminal_outcome(
                 res, canceled=canceled, error=res.error or "",
                 recovery_required=recovery_required)
+            if not recovery_known:
+                # Starting the next queued item on the person's behalf is a claim that
+                # this one ended cleanly, which is the very thing nobody can read.
+                for withheld in ("provider_wait", "retry_at"):
+                    self._stream_outcome.pop(withheld, None)
+                self._stream_outcome["auto_next"] = False
             Handler._live_pub("done", {"session": sid, "run": run_id,
                                         "turns": res.turns, "canceled": canceled})
             actual_speed = getattr(getattr(h, "provider", None), "actual_speed", decision.speed)
@@ -6803,7 +6816,7 @@ class Handler(BaseHTTPRequestHandler):
             review_findings = (_review_findings(res.answer or "")
                                if run_opts["intent"] == "review" else None)
             from .recorder import run_outcome
-            done_d.update(run_outcome(res, recovery_required=recovery_required))
+            done_d.update(run_outcome(res, recovery_required=wait_fenced))
             if review_findings is not None:
                 done_d["review_findings"] = review_findings
             # An isolated run's result is a branch, not a claim. Say which one, and what is on it,
@@ -6818,7 +6831,7 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 sessions.append_run_receipt(sid, {
-                    **run_outcome(res, recovery_required=recovery_required),
+                    **run_outcome(res, recovery_required=wait_fenced),
                     "run": run_id, "decision": decision_payload,
                     "model": res.model, "effort": decision.effort,
                     "requested_speed": decision.speed, "actual_speed": actual_speed,

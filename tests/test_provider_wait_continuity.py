@@ -151,7 +151,11 @@ def test_every_host_composition_site_passes_its_fence_in():
         assert "recovery_required=" in text
     cli = open(os.path.join(here, "harness", "cli.py"), encoding="utf-8").read()
     assert "run_outcome(res, recovery_required=receipt_fenced)" in cli, "durable CLI receipt"
-    assert "run_outcome(res, recovery_required=fenced)" in cli, "the printed CLI verdict"
+    # The printed verdict passes the CONSERVATIVE reading, not the bare fact: `fenced` is
+    # what the row states about the thread, `wait_fenced` is what it may still claim about
+    # the clock, and an unreadable journal separates the two.
+    assert "run_outcome(res, recovery_required=wait_fenced)" in cli, "the printed CLI verdict"
+    assert "wait_fenced = fenced or not recovery_known" in cli, "unknown withholds the wait"
     assert not re.search(r"run_outcome\(res\)", cli)
 
 
@@ -506,3 +510,236 @@ def test_every_terminal_receipt_call_site_passes_its_fence():
                 fence[0].value.func.id == "turn_receipt_fence", \
                 "%s:%d must read the fence, not assume one" % (name, call.lineno)
     assert found == {"tui.py": 1, "cli.py": 1, "acp_agent.py": 1}
+
+
+# ---------------------------------------------- an UNKNOWN fence is not a clear one
+# `turn_receipt_fence` already withholds the wait when the journal will not answer. The
+# ordinary CLI and Web run paths read the same journal at their own moments and turned
+# every failure of that read into "unfenced", which is a different claim: the row then
+# went out saying "nothing is wrong except the clock" about a thread whose boundary
+# nobody could see. A read can fail on its own -- a lock held, a truncated write, a file
+# briefly unreadable -- and the very next save can succeed, so a failed write is no
+# rescue. These drive the REAL run paths with reads refusing and every write working,
+# and read the verdict where a person meets it: the printed JSON, the durable receipt,
+# the streamed `done` frame and the scheduler's row.
+
+
+class _RefusesToRead:
+    """Refuses `recovery_state`; every other journal call is the real one.
+
+    Armed on demand, because a read that answered a moment ago is exactly the read that
+    can fail now: the Web surface consults the journal BEFORE it starts a run (to refuse
+    continuing a fenced thread), and the failure this guards is the read that composes
+    the finished run's own verdict.
+    """
+
+    def __init__(self, monkeypatch, module=sessions):
+        self.reads = 0
+        self._monkeypatch, self._module = monkeypatch, module
+
+    def arm(self):
+        self._monkeypatch.setattr(self._module, "recovery_state", self._refuse)
+        return self
+
+    def _refuse(self, *a, **kw):
+        self.reads += 1
+        raise OSError("journal unreadable")
+
+
+def _passing_check(monkeypatch, arm=None):
+    """A required check that passes, optionally arming a journal failure as it returns."""
+    from harness import verification
+
+    def check(command, cwd, **kw):
+        if arm is not None:
+            arm.arm()
+        return {"command": command, "exit_code": 0, "passed": True,
+                "command_passed": True, "output": "1 passed",
+                "executed": True, "process_tree_terminated": True,
+                "freshness": "fresh", "source": "user"}
+    monkeypatch.setattr(verification, "run_verification_command", check)
+
+
+def _cli_quota_run(monkeypatch, tmp_path, capsys, soon):
+    """One real `collie run` that ends on an attested quota reset. Returns (payload, receipt)."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from harness import cli as cli_mod
+    from test_interruption_lifecycle import _cli_run_args, _pin_native_cli
+
+    _passing_check(monkeypatch)
+
+    def run(h, task_id, task, history):
+        return waited(retry_at=soon, task_id=task_id, harness="collie",
+                      model="mock-coder-v1",
+                      messages=[{"role": "user", "content": task}])
+
+    _pin_native_cli(monkeypatch, tmp_path, run)
+    assert cli_mod.cmd_run(_cli_run_args(tmp_path)) == 1        # it ended on an error
+    payload = json.loads(capsys.readouterr().out.strip())
+    saved = sessions.load(payload["session"]) or {}
+    return payload, (saved.get("run_receipts") or [])[-1]
+
+
+def test_the_cli_withholds_the_wait_when_the_journal_will_not_answer(monkeypatch, tmp_path,
+                                                                    capsys):
+    """Printed verdict and durable receipt, over a journal that refuses every read.
+
+    The saves below all SUCCEED -- that is the point. A host error would withdraw the
+    wait by itself; an unreadable fence with a healthy disk is the case where nothing
+    else does it.
+    """
+    refuses = _RefusesToRead(monkeypatch).arm()
+    soon = int(time.time()) + 3600
+    payload, receipt = _cli_quota_run(monkeypatch, tmp_path, capsys, soon)
+
+    assert refuses.reads >= 2, "both the receipt and the printed verdict asked"
+    for row in (payload, receipt):
+        assert "provider_wait" not in row and "retry_at" not in row, row
+        assert row["stop_reason"] == "error" and row["completed"] is False
+    # Nothing was claimed in exchange: no fence is asserted, and none is offered to
+    # reconcile, because no evidence of one was ever read.
+    assert payload["recovery_required"] is False and payload["recovery"] is None
+    assert "rate limit" in payload["error"], "the provider's own words survive"
+    assert "recovery_required" not in receipt, "that key stays the host's to write"
+    # The transcript really did persist -- a write failure is not what saved this verdict.
+    assert (sessions.load(payload["session"]) or {}).get("messages")
+
+
+def test_a_cli_run_on_a_readable_thread_still_reports_its_wait(monkeypatch, tmp_path,
+                                                               capsys):
+    """The control: same run, same writes, a journal that answers -- the wait is intact."""
+    soon = int(time.time()) + 3600
+    payload, receipt = _cli_quota_run(monkeypatch, tmp_path, capsys, soon)
+
+    for row in (payload, receipt):
+        assert row["provider_wait"] is True and row["retry_at"] == soon
+    assert payload["recovery_required"] is False and payload["recovery"] is None
+    assert sessions.recovery_state(payload["session"]) is None, "no fence was invented"
+
+
+def _web_run(monkeypatch, tmp_path, result, session, refuses=None, after_check=False):
+    """One real `_serve_stream` run. Returns (done frame, scheduler row, durable receipt).
+
+    ``refuses`` is armed as the run returns, so the journal answers the pre-run gate and
+    then refuses the read the verdict is built from.  ``after_check`` arms it one step
+    later instead, as the required check returns: the check boundary reads the journal
+    too, and a failure there is a HOST error that withdraws the wait by its own door --
+    which is not the case under test here.
+    """
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_interruption_lifecycle import _WebHarness, _web_isolate
+    from harness import cli as _cli, webapp
+
+    _web_isolate(monkeypatch, tmp_path)
+    _passing_check(monkeypatch, arm=refuses if after_check else None)
+    arm_at_run = refuses if (refuses and not after_check) else None
+    monkeypatch.setattr(_cli, "make_harness",
+                        lambda *a, **kw: _WebHarness(
+                            kw.get("gate"), lambda msg: result,
+                            before_return=(lambda h: arm_at_run.arm()) if arm_at_run else None))
+    events = []
+    fake = object.__new__(webapp.Handler)
+    fake._sse_open = lambda: None
+    fake._sse = lambda kind, data: events.append((kind, data))
+    webapp.Handler._serve_stream(fake, {
+        "q": ["rotate the deploy keys"], "session": [session], "intent": ["build"],
+        "quality": ["balanced"], "verification": ["required"],
+        "verify_command": ["pytest -q"], "verify_source": ["user"],
+        "workspace": ["current"], "strategy": ["single"]})
+    done = next(data for kind, data in events if kind == "done")
+    saved = sessions.load(session) or {}
+    return done, fake._stream_outcome, (saved.get("run_receipts") or [])[-1]
+
+
+def _web_quota_result(soon, **over):
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_interruption_lifecycle import _web_result
+
+    values = dict(error="retryable: [provider quota reset] HTTP 429 rate limit",
+                  stop_reason="error", success=False, retry_at=soon)
+    values.update(over)
+    return _web_result("rotate the deploy keys", **values)
+
+
+def test_the_web_stream_withholds_the_wait_when_the_journal_will_not_answer(monkeypatch,
+                                                                           tmp_path):
+    """The `done` frame the browser renders, and the receipt a reopen reads back."""
+    soon = int(time.time()) + 3600
+    result = _web_quota_result(soon)
+    refuses = _RefusesToRead(monkeypatch)
+    done, scheduled, receipt = _web_run(monkeypatch, tmp_path, result, "web-unknown",
+                                        refuses=refuses)
+
+    assert refuses.reads >= 1
+    for row in (done, scheduled, receipt):
+        assert "provider_wait" not in row and "retry_at" not in row, row
+        assert row["stop_reason"] == "error"
+    assert done["recovery_required"] is False and done["recovery"] is None
+    assert "rate limit" in done["error"]
+    assert (sessions.load("web-unknown") or {}).get("messages"), "the save went through"
+
+
+def test_a_web_run_on_a_readable_thread_still_reports_its_wait(monkeypatch, tmp_path):
+    """The control, through the same stream: a settled thread reads as the wait it is."""
+    soon = int(time.time()) + 3600
+    done, scheduled, receipt = _web_run(
+        monkeypatch, tmp_path, _web_quota_result(soon), "web-clean")
+
+    for row in (done, scheduled, receipt):
+        assert row["provider_wait"] is True and row["retry_at"] == soon
+    assert done["recovery_required"] is False
+    assert scheduled["auto_next"] is False, "an error never schedules the next item"
+
+
+def test_an_unreadable_journal_does_not_start_the_next_queued_item(monkeypatch, tmp_path):
+    """Scheduling is a claim too: `auto_next` says this thread ended clean and free.
+
+    A completed run whose fence cannot be read has no error to stop the scheduler, so
+    this is the one place where the unknown state would otherwise hand the next request
+    to a thread that may have an effect open.
+    """
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_interruption_lifecycle import _web_result
+
+    done, scheduled, _ = _web_run(
+        monkeypatch, tmp_path, _web_result("rotate the deploy keys"), "web-auto-clean")
+    assert scheduled["completed"] is True and scheduled["auto_next"] is True
+
+    done, scheduled, _ = _web_run(
+        monkeypatch, tmp_path, _web_result("rotate the deploy keys"), "web-auto-unknown",
+        refuses=_RefusesToRead(monkeypatch), after_check=True)
+    assert scheduled["completed"] is True, "the run itself still finished"
+    assert scheduled["auto_next"] is False, "unknown is not a green light"
+    assert scheduled["recovery_required"] is False, "and no fence was invented either"
+    assert done["recovery_required"] is False
+
+
+def test_the_cli_fence_reading_separates_the_fact_from_the_reading(monkeypatch, tmp_path,
+                                                                  store):
+    """The value the two CLI rows are built from, against the real journal states."""
+    from harness.cli import _session_fence_reading, _session_fenced
+
+    sid = "reading-thread"
+    sessions.checkpoint(sid, [{"role": "user", "content": "rotate the keys"}],
+                        run_id="r-1", state="executing_tool",
+                        detail={"tool": "run_shell", "args": {"cmd": "./rotate.sh"}})
+    assert _session_fence_reading(sessions, sid) == (True, True)
+    # An external worker owns its own fence; the journal is not the one being asked, so
+    # it neither reports one nor withholds anything on its behalf.
+    assert _session_fence_reading(sessions, sid, external=True) == (False, True)
+
+    sessions.checkpoint(sid, [{"role": "user", "content": "rotate the keys"}],
+                        run_id="r-1", terminal=True)
+    assert _session_fence_reading(sessions, sid) == (False, True)
+
+    class Refuses:
+        def recovery_state(self, sid):
+            raise OSError("journal unreadable")
+
+    assert _session_fence_reading(Refuses(), sid) == (False, False)
+    # The fact alone is unchanged for callers that WRITE it down.
+    assert _session_fenced(Refuses(), sid) is False

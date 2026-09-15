@@ -2279,48 +2279,48 @@
         </div>
       </div>
     </div>
-    <button class="newbtn" id="newChat">
+    <button class="newbtn" id="newChat" aria-label="New task" data-i18n-aria-label="New task">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       <span data-i18n="New task">New task</span>
     </button>
 
     <nav class="side-nav" aria-label="Collie">
-      <button type="button" class="side-nav-item on" id="navHome">
+      <button type="button" class="side-nav-item on" id="navHome" aria-label="Today" data-i18n-aria-label="Today">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11.5 12 4l9 7.5V21h-6v-6H9v6H3z"/></svg>
         <span data-i18n="Today">Today</span>
       </button>
-      <button type="button" class="side-nav-item" id="navMissions">
+      <button type="button" class="side-nav-item" id="navMissions" aria-label="Tasks" data-i18n-aria-label="Tasks">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="m18 6 3-3M18 3h3v3"/></svg>
         <span data-i18n="Tasks">Tasks</span>
       </button>
-      <button type="button" class="side-nav-item" id="navLive">
+      <button type="button" class="side-nav-item" id="navLive" aria-label="Live Copilot" data-i18n-aria-label="Live Copilot">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12h3l2-5 4 10 2-5h5"/><circle cx="12" cy="12" r="9"/></svg>
         <span data-i18n="Live Copilot">Live Copilot</span><span class="online-nav-status" id="liveNavStatus" title="Not active"></span>
       </button>
-      <button type="button" class="side-nav-item" id="navLibrary">
+      <button type="button" class="side-nav-item" id="navLibrary" aria-label="Apps &amp; connections" data-i18n-aria-label="Apps & connections">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h5v16H5zM14 4h5v16h-5z"/><path d="M7 8h1M16 8h1"/></svg>
         <span data-i18n="Apps & connections">Apps &amp; connections</span>
       </button>
-      <button type="button" class="side-nav-item" id="needsYouNav" hidden>
+      <button type="button" class="side-nav-item" id="needsYouNav" aria-label="Needs You" data-i18n-aria-label="Needs You" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a7 7 0 0 0-7 7v4l-2 3h18l-2-3v-4a7 7 0 0 0-7-7Z"/><path d="M9 20h6"/></svg>
         <span data-i18n="Needs You">Needs You</span><span class="side-badge" id="needsYouCount">0</span>
       </button>
       <details class="side-more" id="sideMore">
-        <summary class="side-nav-item">
+        <summary class="side-nav-item" aria-label="More" data-i18n-aria-label="More">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
           <span data-i18n="More">More</span>
           <svg class="side-more-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg>
         </summary>
         <div class="side-more-items">
-          <button type="button" class="side-nav-item" id="navPack">
+          <button type="button" class="side-nav-item" id="navPack" aria-label="Devices &amp; team" data-i18n-aria-label="Devices & team">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="12" height="9" rx="2"/><path d="M7 17h4M9 13v4M17 9h4v10h-7v-4"/></svg>
             <span data-i18n="Devices & team">Devices &amp; team</span>
           </button>
-          <button type="button" class="side-nav-item" id="navOnline">
+          <button type="button" class="side-nav-item" id="navOnline" aria-label="Sync &amp; cloud" data-i18n-aria-label="Sync & cloud">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 18.5h11a4 4 0 0 0 .6-7.96A6.4 6.4 0 0 0 5.7 9.3a4.6 4.6 0 0 0 .8 9.2Z"/><path d="M9 14h6M12 11v6"/></svg>
             <span data-i18n="Sync & cloud">Sync &amp; cloud</span><span class="online-nav-status" id="onlineNavStatus" title="Not connected"></span>
           </button>
-          <button type="button" class="side-nav-item" id="navActivity">
+          <button type="button" class="side-nav-item" id="navActivity" aria-label="System activity" data-i18n-aria-label="System activity">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V9M10 18V5M16 18v-7M22 18V2"/></svg>
             <span data-i18n="System activity">System activity</span>
           </button>
@@ -2377,10 +2377,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
       </button>
       <details class="topbar-more" id="topbarMore">
-        <summary class="tbtn" title="More tools" aria-label="More tools">
+        <summary class="tbtn" title="More tools" aria-label="More tools" data-i18n-title="More tools" data-i18n-aria-label="More tools">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
         </summary>
-        <div class="topbar-tools" aria-label="More tools">
+        <div class="topbar-tools" aria-label="More tools" data-i18n-aria-label="More tools">
           <button type="button" class="model-trigger" id="modelTrigger" title="Switch model (Ctrl/⌘ K)" aria-haspopup="dialog" aria-controls="modelOverlay" aria-expanded="false">
             <span class="model-trigger-dot"></span>
             <span class="model-trigger-label" id="modelTriggerLabel" data-i18n="Loading model…">Loading model…</span>
@@ -3246,6 +3246,8 @@
     "Automatic start stopped — start it when you're ready": "自动启动已停止，可随时手动开始",
     "Already submitted — starts after": "已提交，将在此时间后开始",
     "Live Copilot": "实时协作", "Maintaining context": "正在保持理解", "Not active": "未开启",
+    "Stop run": "停止运行", "Stopping run": "正在停止运行",
+    "Not connected": "未连接", "Connected on this device": "此设备已连接",
     "Home": "主页", "Missions": "任务", "Pack": "设备与伙伴", "Online": "在线协作", "Library": "能力库", "Activity": "活动", "Worker": "工作进程", "Service": "服务",
     "Needs You": "需要你", "New task": "新任务", "Recent work": "最近工作",
     "Optional steps skipped": "已省略的可选步骤", "Detailed steps": "详细步骤",
@@ -3517,6 +3519,11 @@
     "no files changed": "没有文件改动",
     "still working": "仍在运行",
     "this run started elsewhere — following it live; the thread fills in when it lands": "这次运行不是在本窗口发起的——正在实时跟随；结束后会显示完整对话",
+    "still working…": "仍在运行…",
+    "cancellation pending…": "正在等待取消…",
+    "More tools": "更多工具",
+    "Follow up while the worker runs — Enter queues": "运行期间可继续输入——回车加入队列",
+    "Steer while the worker runs — Enter to send": "运行期间可追加指令——回车发送",
     "working…": "运行中",
     "failed": "失败",
     "verified": "已验证",
@@ -3675,6 +3682,8 @@
     "Automatic start stopped — start it when you're ready": "自動啟動已停止，可隨時手動開始",
     "Already submitted — starts after": "已提交，將在此時間後開始",
     "Live Copilot": "即時協作", "Maintaining context": "正在保持理解", "Not active": "未開啟",
+    "Stop run": "停止執行", "Stopping run": "正在停止執行",
+    "Not connected": "未連線", "Connected on this device": "此裝置已連線",
     "Home": "首頁", "Missions": "任務", "Pack": "裝置與夥伴", "Online": "線上協作", "Library": "能力庫", "Activity": "活動", "Worker": "工作程序", "Service": "服務",
     "Needs You": "需要你", "New task": "新任務", "Recent work": "最近工作",
     "Optional steps skipped": "已省略的可選步驟", "Detailed steps": "詳細步驟",
@@ -3931,6 +3940,11 @@
     "no files changed": "沒有檔案變更",
     "still working": "仍在執行",
     "this run started elsewhere — following it live; the thread fills in when it lands": "這次執行不是在本視窗發起的——正在即時跟隨；結束後會顯示完整對話",
+    "still working…": "仍在執行…",
+    "cancellation pending…": "正在等待取消…",
+    "More tools": "更多工具",
+    "Follow up while the worker runs — Enter queues": "執行期間可繼續輸入——Enter 加入佇列",
+    "Steer while the worker runs — Enter to send": "執行期間可追加指令——Enter 發送",
     "working…": "執行中",
     "failed": "失敗",
     "verified": "已驗證",
@@ -4736,6 +4750,44 @@
   }
   var COLLIE_IDENTITY_READY = refreshCollieIdentity();
   window.setInterval(refreshCollieIdentity, 15000);
+  // The send control doubles as the run's stop button, so its tooltip and accessible name
+  // change with run state — and the language can change while a run is live or its cancel is
+  // still pending. Both strings are kept on the node as data-i18n-* sources, so applyLang()
+  // re-translates the state the button is actually in instead of restoring "Send" over a
+  // button that still cancels a live run. State only: this labels, it never sends or cancels.
+  function sendControlState() { return !running ? "idle" : (cancelPending ? "stopping" : "running"); }
+  function setSendLabels(state) {
+    var b = $("send"); if (!b) return;
+    var tip  = state === "stopping" ? "Stopping…" : (state === "running" ? "Stop run" : "Send");
+    var name = state === "stopping" ? "Stopping run" : (state === "running" ? "Stop run" : "Send");
+    b.setAttribute("data-i18n-title", tip); b.setAttribute("data-i18n-aria-label", name);
+    b.title = t(tip); b.setAttribute("aria-label", t(name));
+  }
+  // Icon-only sidebar: under 900px CSS hides each item's text, which left these buttons with no
+  // accessible name at all. The names now live on the buttons (data-i18n-aria-label, translated
+  // by applyLang); an explicit name also hides the badge count and status dot from the computed
+  // name, so re-append what they say. Reads rendered state; starts, stops and queues nothing.
+  // The two status dots carry live state, so their tooltip source is the `connected` class the
+  // pollers set — never a stored translation. applyLang() therefore re-derives the ON string for a
+  // dot that is still on, instead of writing the off string over it until the next poll.
+  var NAV_STATUS = {
+    liveNavStatus: ["Maintaining context", "Not active"],
+    onlineNavStatus: ["Connected on this device", "Not connected"]
+  };
+  function navStatusSource(dot) {
+    var pair = dot && NAV_STATUS[dot.id];
+    return pair ? pair[dot.classList.contains("connected") ? 0 : 1] : "";
+  }
+  function refreshNavAccessibleNames() {
+    var needs = $("needsYouNav"), count = $("needsYouCount");
+    if (needs && count) needs.setAttribute("aria-label", t("Needs You") + " (" + (count.textContent || "0") + ")");
+    [["navLive", "Live Copilot", "liveNavStatus"], ["navOnline", "Sync & cloud", "onlineNavStatus"]]
+      .forEach(function (row) {
+        var btn = $(row[0]), dot = $(row[2]), state = navStatusSource(dot) ? t(navStatusSource(dot)) : "";
+        if (dot && state) dot.title = state;
+        if (btn) btn.setAttribute("aria-label", state ? t(row[1]) + " — " + state : t(row[1]));
+      });
+  }
   function applyLang() {
     document.documentElement.lang = UI_LANG;
     // static chrome (live nodes + templates); dynamic strings route through t() at their call sites
@@ -4762,6 +4814,10 @@
       runDetails.title = t("run details");
       runDetails.setAttribute("aria-label", t("run details"));
     }
+    // The send button and the icon-only nav carry run/queue state in their names; the sweeps
+    // above only restored the idle source strings, so re-derive them from state now.
+    setSendLabels(sendControlState());
+    refreshNavAccessibleNames();
     var st = $("setTitle"); if (st) st.textContent = t("Settings");
     var sc = $("setCancel"); if (sc) sc.textContent = t("Cancel");
     var sv = $("setSave"); if (sv) sv.textContent = t("Close");
@@ -6009,6 +6065,7 @@
     var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS + MISSION_NEEDS.length + waiting.length, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
+    refreshNavAccessibleNames();
     if (!n && nav.classList.contains("on") && typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   }
   function trackPermission(d, sid) {
@@ -6879,7 +6936,7 @@
     var node = $("onlineNavStatus"), connected = data && data.mode === "connected";
     if (!node) return;
     node.classList.toggle("connected", !!connected);
-    node.title = connected ? "Connected on this device" : "Not connected";
+    refreshNavAccessibleNames();                     // title + nav name both derive from the class
   }
   function startOnlinePairing() {
     var popup = window.open("about:blank", "_blank");
@@ -8749,7 +8806,7 @@
     if (name && name.indexOf("mcp__") === 0) return { verb: name.split("__").pop(), target: "" };
     return { verb: name, target: shortArgs(name, args) };
   }
-  var pendStart = 0, pendTimer = null, pendAction = "working…";
+  var pendStart = 0, pendTimer = null, pendAction = "working…";  // replaced by t() at addPending
   function pendRender() {
     if (!pstatEl) return;
     var s = Math.round((Date.now() - pendStart) / 1000);
@@ -8766,10 +8823,10 @@
     sealText();                                      // a leftover open block from a cut stream loses its caret
     curSeg = ""; streamedAll = "";
     statusEl = document.createElement("div"); statusEl.className = "text thinking";
-    statusEl.innerHTML = '<span class="dots"><i></i><i></i><i></i></span><span class="pstat">working…</span>';
+    statusEl.innerHTML = '<span class="dots"><i></i><i></i><i></i></span><span class="pstat"></span>';
     flowEl.appendChild(statusEl);                    // status line always sits at the bottom of the flow
     pstatEl = statusEl.querySelector(".pstat");
-    pendStart = Date.now(); pendAction = "working…";
+    pendStart = Date.now(); pendAction = t("working…"); pendRender();
     if (pendTimer) clearInterval(pendTimer);
     pendTimer = setInterval(pendRender, 1000);       // live elapsed, cc-style, non-annoying
     scrollDown();
@@ -9334,7 +9391,7 @@
     runCanSteer = !!knownRun.can_steer; shownRunPlan = "";
     setRunState(cancelPending ? "stopping" : "running", true);
     var runButton = $("send");runButton.classList.add("stop");runButton.disabled=cancelPending;
-    runButton.title=cancelPending?"Stopping…":"Stop run";runButton.setAttribute("aria-label",cancelPending?"Stopping run":"Stop run");
+    setSendLabels(cancelPending ? "stopping" : "running");
     $("input").disabled=cancelPending;$("input").placeholder=followUpPlaceholder();
     var note = addEvent("meta", "eye", t("still working"),
                         t("this run started elsewhere — following it live; the thread fills in when it lands"));
@@ -9758,7 +9815,7 @@
     fetch("/api/live-copilot?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); })
       .then(function (value) {
         var active = !!value.active; dot.classList.toggle("connected", active);
-        dot.title = active ? t("Maintaining context") : t("Not active");
+        refreshNavAccessibleNames();                 // title + nav name both derive from the class
         if (NATIVE_SHELL && window.chrome && window.chrome.webview) {
           try { window.chrome.webview.postMessage({
             type:"live-native-state", active:active, listen:!!value.listen,
@@ -9931,8 +9988,8 @@
     }
     cancelPending = true;
     var b = $("send"), input = $("input");
-    b.disabled = true; b.title = "Stopping…"; b.setAttribute("aria-label", "Stopping run");
-    input.disabled = true; setRunState("stopping", true); pstat("stopping…");
+    b.disabled = true; setSendLabels("stopping");
+    input.disabled = true; setRunState("stopping", true); pstat(t("stopping…"));
     return fetch("/api/run/cancel?token=" + encodeURIComponent(CT), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session: currentSession, run: currentRun })
@@ -9943,15 +10000,15 @@
         throw new Error((res.d && (res.d.error || res.d.message)) || "cancel is not supported by this server");
       }
       addEvent("meta","flag",t("cancellation requested"),t("waiting for the run's final canceled verdict"));
-      pstat("cancellation pending…");
+      pstat(t("cancellation pending…"));
       if(res.d.status==="already_canceled")settleCancelFromRegistry({state:"canceled"});else pollCancelTerminal();
       return true;
     }).catch(function (err) {
       cancelPending=false;
       addErr(t("Could not stop the run") + " — " + (err && err.message ? err.message : err));
-      setRunState("running", true); pstat("still working…");
+      setRunState("running", true); pstat(t("still working…"));
       b.disabled = false; input.disabled = false;
-      b.title="Stop run";b.setAttribute("aria-label","Stop run");
+      setSendLabels("running");
       return false;
     });
   }
@@ -9966,7 +10023,7 @@
     PENDING_PERMS = {}; updateNeedsYou();
     setRunState("idle", false);
     var b = $("send"); b.classList.remove("stop"); b.disabled = false;
-    b.title = "Send"; b.setAttribute("aria-label", "Send");
+    setSendLabels("idle");
     $("sendIcon").innerHTML = '<path d="M4 12l16-8-6 16-3-7-7-1z"/>';
     var inp = $("input"); inp.disabled = false;
     inp.placeholder = t("Describe the outcome you want…");
@@ -11419,7 +11476,7 @@
     unackedSend = preLaunchHandle;
     if (window.setRunSetupLocked) window.setRunSetupLocked(true);
     var b = $("send"); b.classList.add("stop"); b.disabled = false;
-    b.title = "Stop run"; b.setAttribute("aria-label", "Stop run");
+    setSendLabels("running");
     $("sendIcon").innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
     // The start frame names the selected worker's actual steering capability.
     input.placeholder = t("Waiting for worker capabilities…");

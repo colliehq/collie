@@ -1999,22 +1999,42 @@ def cmd_run(args):
         return 2
 
 
-def _session_fenced(sess, sid, external=False):
-    """Whether this thread's journal already holds an unresolved effect boundary.
+def _session_fence_reading(sess, sid, external=False):
+    """``(fenced, known)`` for this thread's unresolved effect boundary.
+
+    Two separate questions, and a row needs both: ``fenced`` is a fact the journal stated
+    and may be written down, while ``known`` says whether the host could read it at all.
+    A row may only ASSERT the first, but it must WITHHOLD its "nothing is wrong except
+    the clock" reading for either -- not knowing whether an effect is open is not evidence
+    that quota is the only problem, and a read that failed here is not rescued by the
+    save that follows it succeeding.
 
     Only asked of in-process runs. An external worker arms its replay fence BEFORE it is
     launched and retires it after the save, so the journal would call every external run
     fenced while it is still the run's own; for those, the worker's settlement report and
     the receipt/save errors are the honest signals, and the caller passes those instead.
-    A journal that cannot be read is not evidence of anything, so it claims nothing.
+    That branch reports unfenced AND known, because the journal is not the thing that
+    knows there: it withholds nothing the caller is not already deciding from the
+    worker's own report.
     """
     if external:
-        return False
+        return False, True
     try:
         state = sess.recovery_state(sid)
     except Exception:
-        return False
-    return bool(state and state.get("recovery_required"))
+        return False, False
+    return bool(state and state.get("recovery_required")), True
+
+
+def _session_fenced(sess, sid, external=False):
+    """Whether this thread's journal already holds an unresolved effect boundary.
+
+    The FACT alone, for callers that write it into a row: a journal that cannot be read
+    is not evidence of anything, so it claims nothing.  A caller deciding whether a row
+    may still be read as an ordinary provider wait takes the pair from
+    ``_session_fence_reading`` instead, and withholds on an unreadable journal too.
+    """
+    return _session_fence_reading(sess, sid, external=external)[0]
 
 
 def _cmd_run_owned(args, sid, lease):
@@ -2354,12 +2374,19 @@ def _cmd_run_owned(args, sid, lease):
     # outlive the run and be read back as reassurance, so the fence wins here too. Failures
     # recorded after this point go through `note_host_error`, which withdraws the wait by
     # itself; the printed verdict below re-reads the settled fence.
+    # An unreadable journal withholds the wait here exactly as it does on a terminal
+    # turn (`turn_receipt_fence`): this row outlives the run, and "just waiting for
+    # quota" about a thread whose boundary nobody could read is the same false
+    # reassurance as saying it about a thread known to be fenced.  Withholding claims
+    # nothing in return -- `run_outcome` never writes this key.
+    journal_fenced, journal_known = _session_fence_reading(
+        sess, sid, external=hd.runner != "collie")
     receipt_fenced = bool(
         check_boundary_hold
         or (hd.runner != "collie"
             and (runner_payload is None
                  or (runner_payload or {}).get("recovery_required") is True))
-        or _session_fenced(sess, sid, external=hd.runner != "collie"))
+        or journal_fenced or not journal_known)
     receipt_error = ""
     try:
         run_receipt = {
@@ -2430,12 +2457,18 @@ def _cmd_run_owned(args, sid, lease):
     # surface that would otherwise offer `--continue` as if nothing were pending.
     try:
         recovery = sess.recovery_state(sid)
+        recovery_known = True
     except Exception:
-        recovery = None
+        recovery, recovery_known = None, False
     fenced = bool(recovery and recovery.get("recovery_required"))
+    # `fenced` stays the FACT: it is what the keys below state and what the notice
+    # offers to reconcile.  This is the separate, conservative reading -- a journal
+    # nobody could read cannot certify that the clock is the only problem either, so
+    # the wait is withheld without a fence being claimed on its behalf.
+    wait_fenced = fenced or not recovery_known
     if getattr(args, "json", False) or getattr(args, "stream_json", False):
         print(_json.dumps({
-            **run_outcome(res, recovery_required=fenced),
+            **run_outcome(res, recovery_required=wait_fenced),
             "answer": res.answer, "error": res.error, "model": res.model, "session": sid,
             "recovery_required": fenced, "recovery": recovery if fenced else None,
             "inbox_errors": inbox_errors,
