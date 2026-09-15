@@ -281,6 +281,52 @@ def test_bash_python_shim():
     r = BashTool().run({"command": 'python -c "print(6*7)"', "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert r.strip() == "42", "python (shimmed to python3) must run, got: %r" % r
 
+def test_bash_command_runs_verbatim_after_json_decode():
+    """A backslash+n that survives the provider's JSON decode is TWO characters, not a newline.
+
+    Observed repeatedly: the model emitted `python -c "import m;\\nfor r in rows: ..."`, Python
+    got a line continuation and answered `SyntaxError: unexpected character after line continuation
+    character`, and the next call re-did the work with real newlines — a wasted turn every time.
+    The tool must NOT fix this up at runtime: unescaping the command would rewrite programs that
+    MEAN a literal backslash-n (regexes, printf, sed). So the contract is taught in
+    BashTool.description, and this test pins the behavior that makes it true."""
+    from harness.tools import BashTool
+    from harness import plat
+    bs_n = "\\n"                                  # what a JSON "\\n" decodes to: backslash, n
+    args = json.loads(json.dumps({"command": 'python -c "x=1;' + bs_n + 'print(x)"',
+                                  "timeout_s": 20}))
+    assert "\n" not in args["command"], "round trip must keep it a literal, not a newline"
+    broken = BashTool().run(args, _ctx(tempfile.gettempdir()))
+    assert "SyntaxError" in broken, "command must reach the shell verbatim, got: %r" % broken[:200]
+    # POSIX shells retain the real newline inside quotes. The cmd.exe fallback has
+    # different multiline parsing; do not imply that this POSIX recipe works there.
+    if not plat.is_windows() or plat.posix_shell():
+        ok = json.loads(json.dumps({"command": 'python -c "x=1\nprint(x)"', "timeout_s": 20}))
+        assert BashTool().run(ok, _ctx(tempfile.gettempdir())).strip() == "1", "real newlines must work"
+
+def test_bash_multiline_python_recipes_survive_json():
+    """Both multi-line recipes the bash description offers must work after the JSON round trip —
+    the portable one everywhere, the heredoc wherever bash is the shell (the cmd.exe fallback has
+    no heredocs, which is why the description does not promise them there)."""
+    from harness.tools import BashTool, WriteFileTool
+    from harness import plat
+    with tempfile.TemporaryDirectory(prefix="bash_multiline_") as d:
+        _check_bash_multiline_recipes(d, BashTool, WriteFileTool, plat)
+
+
+def _check_bash_multiline_recipes(d, BashTool, WriteFileTool, plat):
+    # portable: write_file the script, then run it
+    WriteFileTool().run(json.loads(json.dumps(
+        {"path": "s.py", "content": "rows = [1, 2, 3]\nfor r in rows:\n    print(r * 2)\n"})), _ctx(d))
+    out = BashTool().run(json.loads(json.dumps({"command": "python s.py", "timeout_s": 20})), _ctx(d))
+    assert out.split() == ["2", "4", "6"], "write_file + `python script.py` must run: %r" % out[:200]
+    if plat.is_windows() and not plat.posix_shell():
+        raise _Skip("cmd.exe fallback has no heredoc — the description says so")
+    here = BashTool().run(json.loads(json.dumps(
+        {"command": "python - <<'PY'\nrows = [1, 2, 3]\nfor r in rows:\n    print(r * 2)\nPY\n",
+         "timeout_s": 20})), _ctx(d))
+    assert here.split() == ["2", "4", "6"], "quoted heredoc must run under bash: %r" % here[:200]
+
 # ------------------------------------------------------------------ failures must announce themselves
 def test_grep_timeout_is_not_reported_as_no_match():
     """A killed search must not wear the shape of a completed one.

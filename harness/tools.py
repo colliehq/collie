@@ -527,7 +527,13 @@ class BashTool(Tool):
                   "(seconds; default 120, max 600 — RAISE it for slow test suites / builds). For a "
                   "command that never returns (a server, tail -f) background it with & instead. "
                   "Output is already bounded; run checks directly without head/tail pipes or "
-                  "echo suffixes so their real exit status remains visible.")
+                  "echo suffixes so their real exit status remains visible. "
+                  "The decoded `command` is passed unchanged: multiline Python source needs real "
+                  "newlines, not literal backslash+n inside `python -c` (a SyntaxError). In a POSIX "
+                  "shell use a quoted heredoc: `python - <<'PY'`, source lines, then `PY`, each on "
+                  "its own line. Check PLATFORM: cmd.exe has no heredocs. Write and run a script "
+                  "only if the task permits extra files; otherwise keep checks in memory. "
+                  "A for/if/def block cannot follow a semicolon.")
     # accept BOTH `timeout_s` and `timeout` (execute_code uses `timeout`) so an override never
     # silently falls back to the default just because the model picked the other name.
     schema = {"type": "object", "properties": {
