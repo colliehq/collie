@@ -79,6 +79,13 @@ CONTRACT_REPAIR_HINTS = {
                        "an answer.",
     "provider_schema_refusal": "The provider's own formatter refused your previous reply against "
                                "this contract's schema.",
+    # Kept in lockstep with providers.CONTRACT_MISS_REASONS: a category with no
+    # hint would silently degrade the one corrective turn back to generic advice.
+    "read_batch_not_allowed": "Your previous reply used a \"reads\" batch, which this request "
+                              "does not offer. Send one tool call or one answer.",
+    "read_batch_invalid": "Your previous reply's \"reads\" batch was refused as a whole: it must "
+                          "be 1-8 entries, each an object with a non-empty \"path\" and at most "
+                          "\"offset\", \"limit\" and \"max_bytes\" (positive integers).",
 }
 
 

@@ -43,6 +43,14 @@ _FORMATTER_RECEIPT = "Structured output provided successfully"
 # failure the host can only treat as fatal.
 _FORMATTER_REFUSED = "formatter_refused_response"
 
+# Bounded READ-ONLY batch envelope (opt-in per request).  Duplicated from
+# harness/providers.py for the same reason every other bound in this file is:
+# the worker runs as a script that cannot import the harness package, and the
+# host re-validates everything this boundary accepts.
+_READ_BATCH_TOOL = "read_file"
+_READ_BATCH_MAX = 8
+_READ_BATCH_KEYS = ("path", "offset", "limit", "max_bytes")
+
 _SDK_ENV = {
     "CLAUDE_CODE_MAX_RETRIES": "0",
     "ENABLE_TOOL_SEARCH": "false",
@@ -263,29 +271,60 @@ def _response_tools(value) -> list:
     return names
 
 
-def _response_schema(names) -> dict:
+def _read_batch_allowed(request: dict, names) -> bool:
+    """Whether THIS structured request permits the bounded read-only batch.
+
+    The flag is host-supplied but re-derived here: a batch is only permitted
+    when the host asked for it *and* ``read_file`` is in the allowlist this same
+    request carries, so the schema can never offer a tool the request withheld.
+    """
+    value = request.get("response_read_batch", False)
+    if not isinstance(value, bool):
+        raise RuntimeError("structured worker request has an invalid read-batch flag")
+    if value and _READ_BATCH_TOOL not in names:
+        raise RuntimeError("structured read-batch request does not allow read_file")
+    return value
+
+
+def _response_schema(names, read_batch: bool = False) -> dict:
     """Collie's {tool|answer} envelope as a provider-enforced JSON schema.
 
     A top-level ``anyOf`` is rejected by the provider with HTTP 400, so the
     alternation lives one level down under a required ``response`` wrapper.
     Tool *arguments* stay an open object: their schema is owned by Collie's host
     executor, and inventing a stricter one here would reject valid calls.
+
+    ``read_batch`` adds one further alternative, and only when the host enabled
+    it: a bounded READ-ONLY ``reads`` list the transport expands into ordinary
+    ``read_file`` calls.  Its member schema IS pinned here, because its whole
+    contract is that no member can name a tool or carry a mutating argument.
     """
+    alternatives = [
+        {"type": "object",
+         "properties": {"answer": {"type": "string"}},
+         "required": ["answer"], "additionalProperties": False},
+        {"type": "object",
+         "properties": {"tool": {"type": "string", "enum": list(names)},
+                        "args": {"type": "object"}},
+         "required": ["tool", "args"], "additionalProperties": False},
+    ]
+    if read_batch:
+        alternatives.append({
+            "type": "object",
+            "properties": {"reads": {
+                "type": "array", "minItems": 1, "maxItems": _READ_BATCH_MAX,
+                "items": {"type": "object",
+                          "properties": {"path": {"type": "string"},
+                                         "offset": {"type": "integer"},
+                                         "limit": {"type": "integer"},
+                                         "max_bytes": {"type": "integer"}},
+                          "required": ["path"], "additionalProperties": False},
+            }},
+            "required": ["reads"], "additionalProperties": False})
     return {
         "type": "object",
         "properties": {
-            "response": {
-                "type": "object",
-                "anyOf": [
-                    {"type": "object",
-                     "properties": {"answer": {"type": "string"}},
-                     "required": ["answer"], "additionalProperties": False},
-                    {"type": "object",
-                     "properties": {"tool": {"type": "string", "enum": list(names)},
-                                    "args": {"type": "object"}},
-                     "required": ["tool", "args"], "additionalProperties": False},
-                ],
-            },
+            "response": {"type": "object", "anyOf": alternatives},
         },
         "required": ["response"],
         "additionalProperties": False,
@@ -326,9 +365,10 @@ def _build_options(sdk, request: dict):
         # Structured mode only.  The tool-less planner keeps a byte-identical
         # plain configuration, because its own action contract is not this
         # envelope and a schema would turn a valid plan into a failure.
+        names = _response_tools(request.get("response_tools"))
         kwargs["output_format"] = {
             "type": "json_schema",
-            "schema": _response_schema(_response_tools(request.get("response_tools"))),
+            "schema": _response_schema(names, _read_batch_allowed(request, names)),
         }
         # Match raw model-response identity against Assistant fragments as an
         # additional check on the one-response contract. SDK num_turns also
@@ -543,7 +583,34 @@ def _formatter_receipt(message):
     return tool_use_id.strip(), refused
 
 
-def _canonical_structured(value, allowed) -> str:
+def _canonical_reads(value) -> list:
+    """A structured ``reads`` list -> validated read_file argument objects.
+
+    All-or-nothing: one refused member fails the whole response, so no partial
+    batch is ever handed to the host.
+    """
+    if not isinstance(value, list) or not value or len(value) > _READ_BATCH_MAX:
+        raise RuntimeError("SDK structured read batch is empty or oversized")
+    members = []
+    for member in value:
+        if not isinstance(member, dict) or not set(member) <= set(_READ_BATCH_KEYS):
+            raise RuntimeError("SDK structured read batch member has unexpected fields")
+        path = member.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise RuntimeError("SDK structured read batch member has an invalid path")
+        entry = {"path": path}
+        for key in ("offset", "limit", "max_bytes"):
+            if key not in member:
+                continue
+            bound = member[key]
+            if not isinstance(bound, int) or isinstance(bound, bool) or bound < 1:
+                raise RuntimeError("SDK structured read batch member has an invalid %s" % key)
+            entry[key] = bound
+        members.append(entry)
+    return members
+
+
+def _canonical_structured(value, allowed, read_batch: bool = False) -> str:
     """Validated structured output -> Collie's canonical envelope text.
 
     Structural validation is done here, at the process boundary, and the host
@@ -555,7 +622,14 @@ def _canonical_structured(value, allowed) -> str:
     if not isinstance(response, dict):
         raise RuntimeError("SDK structured response is not an object")
     keys = set(response)
-    if keys == {"answer"}:
+    if keys == {"reads"}:
+        # Refused unless this request both enabled the batch and advertised the
+        # tool it expands into; the schema above never offered it otherwise.
+        if not read_batch or _READ_BATCH_TOOL not in allowed:
+            raise RuntimeError("SDK structured response used a read batch this request "
+                               "did not permit")
+        canonical = {"reads": _canonical_reads(response["reads"])}
+    elif keys == {"answer"}:
         answer = response["answer"]
         if not isinstance(answer, str):
             raise RuntimeError("SDK structured answer is not a string")
@@ -624,6 +698,7 @@ async def _query(request: dict, sdk) -> dict:
               if "content" in request else request["prompt"])
     structured = request.get("response_format") == _STRUCTURED_FORMAT
     allowed = _response_tools(request.get("response_tools")) if structured else []
+    read_batch = _read_batch_allowed(request, allowed) if structured else False
     init_seen = False
     api_key_source = ""
     assistant_id = ""
@@ -823,14 +898,20 @@ async def _query(request: dict, sdk) -> dict:
             raise RuntimeError("SDK model response id did not match its Assistant message")
         # Python equality treats True == 1 and 1 == 1.0. Those are distinct
         # JSON argument values and can produce different host-tool behavior.
-        canonical = _canonical_structured(structured_output, allowed)
-        formatted = _canonical_structured(formatter_input, allowed)
+        canonical = _canonical_structured(structured_output, allowed, read_batch)
+        formatted = _canonical_structured(formatter_input, allowed, read_batch)
         if json.dumps(json.loads(canonical), sort_keys=True) != json.dumps(
                 json.loads(formatted), sort_keys=True):
             raise RuntimeError("SDK structured output did not match the formatter input")
-        return {"ok": True, "text": canonical,
-                "usage": _usage_dict(usage), "api_key_source": api_key_source,
-                "response_format": _STRUCTURED_FORMAT, "response_tools": allowed}
+        result = {"ok": True, "text": canonical,
+                  "usage": _usage_dict(usage), "api_key_source": api_key_source,
+                  "response_format": _STRUCTURED_FORMAT, "response_tools": allowed}
+        if read_batch:
+            # Attested only when enabled, so a worker predating this capability
+            # stays byte-identical for every existing structured request while
+            # a batch-enabled one that silently ignored the flag fails closed.
+            result["response_read_batch"] = True
+        return result
     return {"ok": True, "text": assistant_text, "usage": _usage_dict(usage),
             "api_key_source": api_key_source}
 
@@ -856,7 +937,11 @@ def _read_request() -> dict:
         if request.get("response_format") != _STRUCTURED_FORMAT:
             raise RuntimeError("invalid worker response format")
         request["response_tools"] = _response_tools(request.get("response_tools"))
-    elif "response_format" in request or "response_tools" in request:
+        # Validated here too, before the SDK exists: an invalid or unbacked
+        # read-batch flag must never reach schema construction.
+        _read_batch_allowed(request, request["response_tools"])
+    elif ("response_format" in request or "response_tools" in request
+            or "response_read_batch" in request):
         raise RuntimeError("plain worker request must not carry a response format")
     if protocol in (1, 3):
         # The text protocol keeps its original, smaller stdin budget.

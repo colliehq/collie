@@ -1063,7 +1063,7 @@ class ClaudeCliProvider(ModelProvider):
         self.effort, _ = resolve_reasoning_effort(self.name, model, requested_effort)
 
     def _prompt(self, messages, tool_schemas, *, tool_result_limit=2000,
-                structured_response=False):
+                structured_response=False, read_batch=False):
         # NB: collie's system prompt is passed via --system-prompt, NOT embedded here.
         # Embedding collie's agentic "use tools / run tests" language in the -p body made
         # Claude attempt real tool_use (→ error_max_turns); as the system role it's config
@@ -1113,16 +1113,20 @@ class ClaudeCliProvider(ModelProvider):
                   "Call the StructuredOutput formatter exactly once. Its input must contain "
                   "one response object. Do not emit this object as plain text.",
                   'To request a host tool: {"response":{"tool":"<name>","args":{...}}}',
-                  'To finish: {"response":{"answer":"<final answer>"}}',
-                  "The listed executor tools run in Collie after this response; they are not "
+                  'To finish: {"response":{"answer":"<final answer>"}}']
+            if read_batch:
+                L += [read_batch_instruction(structured_response=True)]
+            L += ["The listed executor tools run in Collie after this response; they are not "
                   "SDK tools you can call directly. Your only SDK tool is StructuredOutput."]
         else:
             L += ["# RESPONSE FORMAT (strict):",
               "Reply with EXACTLY ONE JSON object and nothing else — no prose, no markdown "
               "fence, no explanation before or after.",
               'To run a tool:      {"tool":"<name>","args":{...}}',
-              'To finish (only when the task is fully done): {"answer":"<final answer>"}',
-              "A strong model tends to explain instead of emitting JSON — do NOT. One JSON "
+              'To finish (only when the task is fully done): {"answer":"<final answer>"}']
+            if read_batch:
+                L += [read_batch_instruction(structured_response=False)]
+            L += ["A strong model tends to explain instead of emitting JSON — do NOT. One JSON "
                   "object, that is your entire reply. Respond to the latest User message now."]
         return "\n".join(L)
 
@@ -1380,17 +1384,105 @@ def _json_objects(text: str):
         cursor = max(start + 1, end)
 
 
-def _parse_response_envelope(text: str, allowed_tools=None):
+# --------------------------------------------------------------------------- #
+# Bounded READ-ONLY batch envelope.
+#
+# A coding run spends one whole logical model request per ``read_file``, even
+# when the next three reads are already known.  ``{"reads":[{...}]}`` lets one
+# response name up to _READ_BATCH_MAX of them; the adapter expands it into that
+# many ORDINARY read_file tool calls with distinct ids, so the host loop keeps
+# doing its own per-call validation, permission, receipt and cancellation work.
+# It is deliberately not a compound tool: nothing here executes anything.
+#
+# The envelope is opt-in per request (``read_batch=True``).  A provider which
+# did not advertise it must not accept one, so the default keeps every existing
+# caller -- the CLI providers, the subscription sidecar, Mission -- byte-identical.
+_READ_BATCH_TOOL = "read_file"
+_READ_BATCH_MAX = 8
+# Only read_file's own read-shaped arguments.  ``path`` is required; the three
+# optional bounds are the ones ReadFileTool.schema declares.  Anything else
+# (including a nested "tool" name, or a write argument) rejects the whole
+# envelope: this surface may never become a way to reach a mutating tool.
+_READ_BATCH_KEYS = ("path", "offset", "limit", "max_bytes")
+_READ_BATCH_BOUNDS = ("offset", "limit", "max_bytes")
+
+
+def read_batch_instruction(structured_response=False) -> str:
+    """The one place the read-batch envelope is described to a model.
+
+    Only added to a request that actually permits the envelope, so the prompt
+    can never describe a protocol the parser for that same request refuses.
+    """
+    shape = '{"reads":[{"path":"a.py"},{"path":"b.py","offset":10,"limit":20}]}'
+    if structured_response:
+        shape = '{"response":%s}' % shape
+    return ('To read up to %d files in one response (READ-ONLY, no other tool and no '
+            'answer may be mixed in): %s. Each entry needs "path" and may add "offset", '
+            '"limit" or "max_bytes"; Collie runs them as separate %s calls, in order, and '
+            'returns each result. Use it only when you already know every path you need; '
+            'one bad entry rejects the whole response.'
+            % (_READ_BATCH_MAX, shape, _READ_BATCH_TOOL))
+
+
+def _read_batch_args(member):
+    """One validated read member -> its read_file args, or ``None`` to refuse.
+
+    Strict on purpose and with no partial acceptance anywhere above it: a single
+    refused member rejects the entire response before anything is executed.
+    """
+    if not isinstance(member, dict) or not member:
+        return None
+    if not set(member) <= set(_READ_BATCH_KEYS) or "path" not in member:
+        return None
+    path = member["path"]
+    if not isinstance(path, str) or not path.strip():
+        return None
+    args = {"path": path}
+    for key in _READ_BATCH_BOUNDS:
+        if key not in member:
+            continue
+        value = member[key]
+        # ``bool`` is an ``int`` in Python but is a different JSON value, and a
+        # float offset is not a line number.  Neither may be coerced here.
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            return None
+        args[key] = value
+    return args
+
+
+def _read_batch_members(value, allowed):
+    """A whole ``reads`` list -> per-call args, or ``None`` to refuse it all.
+
+    ``read_file`` must be advertised on THIS request.  A batch whose tool the
+    caller never offered is refused exactly like any other unknown tool, so the
+    envelope cannot smuggle in a capability this request does not have.
+    """
+    if allowed is None or _READ_BATCH_TOOL not in allowed:
+        return None
+    if not isinstance(value, list) or not value or len(value) > _READ_BATCH_MAX:
+        return None
+    members = []
+    for member in value:
+        args = _read_batch_args(member)
+        if args is None:
+            return None
+        members.append(args)
+    return members
+
+
+def _parse_response_envelope(text: str, allowed_tools=None, read_batch=False):
     """Return exactly one valid Collie text-protocol envelope, or ``None``.
 
     A bare object is preferred.  For compatibility with existing subscription runs, one otherwise
     unambiguous object embedded in prose or a Markdown fence is accepted.  Extra keys, multiple
     valid envelopes, non-object tool arguments, and tools outside ``allowed_tools`` fail closed.
-    The returned pair is ``("answer", str)`` or ``("tool", ToolCall)``.
+    The returned pair is ``("answer", str)``, ``("tool", ToolCall)``, or -- only when the caller
+    passes ``read_batch=True`` -- ``("reads", [ToolCall, ...])``.
     """
     if not isinstance(text, str):
         return None
     allowed = None if allowed_tools is None else set(allowed_tools)
+    read_batch = bool(read_batch)
 
     def accepted(obj):
         if (isinstance(obj, dict) and set(obj) == {"answer"}
@@ -1401,6 +1493,10 @@ def _parse_response_envelope(text: str, allowed_tools=None):
                 and isinstance(obj.get("args"), dict)
                 and (allowed is None or obj["tool"] in allowed)):
             return "tool", (obj["tool"], obj["args"])
+        if read_batch and isinstance(obj, dict) and set(obj) == {"reads"}:
+            members = _read_batch_members(obj["reads"], allowed)
+            if members is not None:
+                return "reads", members
         return None
 
     try:
@@ -1422,6 +1518,12 @@ def _parse_response_envelope(text: str, allowed_tools=None):
     kind, payload = candidate
     if kind == "answer":
         return kind, payload
+    if kind == "reads":
+        # Ordinary read_file calls, each with its own identity, in the order the
+        # model asked for them.  The host loop authorizes and executes them one
+        # by one exactly as it would a sequence of single-read turns.
+        return kind, [ToolCall("cli_" + uuid.uuid4().hex, _READ_BATCH_TOOL, args)
+                      for args in payload]
     name, args = payload
     # Each invocation needs its own identity, including repeated identical
     # calls. Length-derived IDs collided in ordinary reads and could make an
@@ -1449,12 +1551,23 @@ CONTRACT_MISS_REASONS = (
     "answer_not_string",   # "answer" was not a string
     "unknown_tool",        # a well-formed call naming a tool the executor does not have
     "not_an_envelope",     # a JSON object that is neither a tool call nor an answer
+    "read_batch_not_allowed",  # a {"reads":[...]} batch this request never permitted
+    "read_batch_invalid",      # a permitted batch that is empty, oversized, or has a bad member
 )
 
 
-def _object_miss_reason(obj, allowed):
+def _object_miss_reason(obj, allowed, read_batch=False):
     """One object's contract verdict: "" when it IS a valid envelope."""
     keys = set(obj)
+    if "reads" in keys:
+        # Checked first so a batch mixed with an answer or a tool call is
+        # reported as the key mixing it is, not as a malformed tool call.
+        if keys != {"reads"}:
+            return "extra_keys"
+        if not read_batch:
+            return "read_batch_not_allowed"
+        return "" if _read_batch_members(obj["reads"], allowed) is not None \
+            else "read_batch_invalid"
     if "tool" in keys or "args" in keys:
         if not {"tool", "args"} <= keys:
             return "not_an_envelope"
@@ -1476,7 +1589,7 @@ def _object_miss_reason(obj, allowed):
     return "not_an_envelope"
 
 
-def contract_miss_reason(text, allowed_tools=None) -> str:
+def contract_miss_reason(text, allowed_tools=None, read_batch=False) -> str:
     """Classify a reply that ``_parse_response_envelope`` already refused.
 
     This deliberately re-inspects the refused text instead of being folded into
@@ -1516,7 +1629,7 @@ def contract_miss_reason(text, allowed_tools=None) -> str:
         if not isinstance(value, dict):
             return "not_a_json_object"
         objects = [value]
-    reasons = [_object_miss_reason(obj, allowed) for obj in objects]
+    reasons = [_object_miss_reason(obj, allowed, read_batch) for obj in objects]
     if reasons.count("") > 1:
         return "multiple_envelopes"
     if reasons.count("") == 1:

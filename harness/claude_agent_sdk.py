@@ -24,7 +24,7 @@ import time
 import uuid
 
 from .providers import (ClaudeCliProvider, Completion, ModelProvider, Usage,
-                        _parse_response_envelope, content_text,
+                        _parse_response_envelope, _READ_BATCH_TOOL, content_text,
                         contract_miss_reason, provider_default_model)
 
 
@@ -439,7 +439,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
 
     def __init__(self, model: str | None = None, timeout: int = 180,
                  effort: str | None = None, subscription_only: bool = False,
-                 structured_output: bool = False, structured_repair: bool = True):
+                 structured_output: bool = False, structured_repair: bool = True,
+                 read_batch: bool = False):
         model = model or provider_default_model(self.name)
         self.model = "claude-agent-sdk:" + model
         self._model = model
@@ -463,10 +464,38 @@ class ClaudeAgentSdkProvider(ModelProvider):
         # non-envelope object at all.  It spends no additional request and no
         # additional repair: it is the already-budgeted corrective call.
         self.structured_repair = bool(structured_repair)
+        # Bounded READ-ONLY batching, opt-in for its initial proof.  Observed
+        # coding runs spend one whole logical request per read_file even when
+        # the next few paths are already known; one response may instead name up
+        # to eight reads, which the adapter expands into that many ordinary
+        # read_file tool calls for the existing loop to authorize and execute.
+        # It reduces MODEL ROUND TRIPS only -- the host still reads sequentially,
+        # and nothing here claims parallel disk I/O.  A parent enables it for a
+        # controlled experiment with
+        # ``ClaudeAgentSdkProvider(..., read_batch=True)`` (see
+        # ``harness/providers.py`` for the envelope contract); the default stays
+        # off until a recorded comparison decides whether fewer turns actually
+        # beat the extra refusal surface.
+        self.read_batch = bool(read_batch)
         self._process_condition = threading.Condition(threading.RLock())
         self._active_runs: dict[str, dict] = {}
 
-    def _prompt(self, messages, tool_schemas, structured=None) -> str:
+    def _read_batch_allowed(self, tool_schemas) -> bool:
+        """Whether THIS request permits the bounded read-only batch envelope.
+
+        One decision, reused by the prompt, the worker request, the capability
+        attestation and the response parser, so those four can never disagree
+        about what this particular call was allowed to answer with.  A request
+        that does not advertise ``read_file`` never permits a batch, no matter
+        how the provider is configured.
+        """
+        if not self.read_batch or not tool_schemas:
+            return False
+        return any(isinstance(schema, dict) and schema.get("name") == _READ_BATCH_TOOL
+                   for schema in tool_schemas)
+
+    def _prompt(self, messages, tool_schemas, structured=None,
+                read_batch=False) -> str:
         # ContextComposer already chooses which tool results to keep or elide.
         # A second, silent 2,000-character cut here hid recent file/error tails
         # and even the composer's omission markers from the model.
@@ -476,7 +505,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
         return ClaudeCliProvider._prompt(
             self, messages, tool_schemas, tool_result_limit=None,
             structured_response=(self.structured_output if structured is None
-                                 else bool(structured)))
+                                 else bool(structured)),
+            read_batch=bool(read_batch))
 
     @staticmethod
     def _plain_prompt(messages) -> str:
@@ -496,7 +526,7 @@ class ClaudeAgentSdkProvider(ModelProvider):
         lines.append("\nRespond to the latest user message according to the system prompt.")
         return "\n".join(lines)
 
-    def _payload(self, messages, tool_schemas, structured=None):
+    def _payload(self, messages, tool_schemas, structured=None, read_batch=False):
         """The model-facing prompt: a plain string, or ordered content blocks.
 
         Text-only conversations share the same serializer as the text portions
@@ -504,12 +534,12 @@ class ClaudeAgentSdkProvider(ModelProvider):
         """
         entries = _attachments(messages)
         if not entries:
-            return (self._prompt(messages, tool_schemas, structured) if tool_schemas
-                    else self._plain_prompt(messages))
+            return (self._prompt(messages, tool_schemas, structured, read_batch)
+                    if tool_schemas else self._plain_prompt(messages))
         _apply_attachment_budget(entries)
         marked = _marked_messages(messages, entries, uuid.uuid4().hex)
-        text = (self._prompt(marked, tool_schemas, structured) if tool_schemas
-                else self._plain_prompt(marked))
+        text = (self._prompt(marked, tool_schemas, structured, read_batch)
+                if tool_schemas else self._plain_prompt(marked))
         if not any(entry.get("token") for entry in entries):
             # Reachable only when the current turn attached nothing and every
             # older image fell outside the budget.  The text protocol still
@@ -560,7 +590,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 names.append(name)
         return names
 
-    def _worker_request(self, system, payload, structured_tools=None) -> dict:
+    def _worker_request(self, system, payload, structured_tools=None,
+                        read_batch=False) -> dict:
         """Worker protocol 1 = text/plain, 2 = image/plain, 3/4 = structured.
 
         The version is raised for multimodal and for structured calls, so a
@@ -580,6 +611,10 @@ class ClaudeAgentSdkProvider(ModelProvider):
             request["system_prompt"] += _STRUCTURED_SYSTEM_SUFFIX
             request["response_format"] = _STRUCTURED_FORMAT
             request["response_tools"] = list(structured_tools)
+            if read_batch:
+                # Sent only when permitted, so the provider-enforced schema and
+                # the host's parser describe the same set of valid responses.
+                request["response_read_batch"] = True
         if isinstance(payload, list):
             request.pop("prompt")
             request["protocol"] = 4 if structured_tools else 2
@@ -950,10 +985,12 @@ class ClaudeAgentSdkProvider(ModelProvider):
                     self._set_pending_scope(registration, cancel_scope)
 
             structured_tools = self._structured_tools(tool_schemas, messages)
+            read_batch = self._read_batch_allowed(tool_schemas)
             payload = self._payload(messages, tool_schemas,
-                                    structured_tools is not None)
+                                    structured_tools is not None, read_batch)
             data = self._run_worker(
-                self._worker_request(system, payload, structured_tools),
+                self._worker_request(system, payload, structured_tools,
+                                     read_batch and structured_tools is not None),
                 cancel_scope=cancel_scope, registration=registration)
             api_key_source = data.get("api_key_source")
             if api_key_source != "none":
@@ -964,8 +1001,10 @@ class ClaudeAgentSdkProvider(ModelProvider):
             # which enforced a different tool allowlist, must fail rather than
             # have its free-text answer accepted as schema-enforced.
             attested = data.get("response_format")
+            structured_batch = read_batch and structured_tools is not None
             if structured_tools is None:
-                if attested is not None or "response_tools" in data:
+                if (attested is not None or "response_tools" in data
+                        or "response_read_batch" in data):
                     raise RuntimeError(
                         "Claude Agent SDK worker attested an unexpected response format")
             elif attested != _STRUCTURED_FORMAT:
@@ -974,6 +1013,15 @@ class ClaudeAgentSdkProvider(ModelProvider):
             elif data.get("response_tools") != structured_tools:
                 raise RuntimeError(
                     "Claude Agent SDK worker attested a different response tool allowlist")
+            elif structured_batch and data.get("response_read_batch") is not True:
+                # A worker which predates the batch, or silently ignored the
+                # flag, enforced a schema that forbids ``reads`` -- so the host
+                # must not go on to parse this response as if one were possible.
+                raise RuntimeError(
+                    "Claude Agent SDK worker did not attest read-batch response mode")
+            elif not structured_batch and "response_read_batch" in data:
+                raise RuntimeError(
+                    "Claude Agent SDK worker attested an unrequested read batch")
             text = data.get("text")
             if not isinstance(text, str):
                 raise RuntimeError("Claude Agent SDK response is missing assistant text")
@@ -988,11 +1036,23 @@ class ClaudeAgentSdkProvider(ModelProvider):
             )
             allowed_tools = ({str(schema.get("name") or "") for schema in tool_schemas}
                              if tool_schemas else None)
-            envelope = _parse_response_envelope(text, allowed_tools=allowed_tools)
+            envelope = _parse_response_envelope(text, allowed_tools=allowed_tools,
+                                                read_batch=read_batch)
             if envelope and envelope[0] == "tool":
                 tool_call = envelope[1]
                 status = "completed"
                 completion = Completion(tool_calls=[tool_call], usage=usage,
+                                        stop_reason="tool_use", request_count=1)
+                completion.api_key_source = api_key_source
+                return completion
+            if envelope and envelope[0] == "reads":
+                # Ordinary read_file calls from here on.  One logical model
+                # request produced several of them, but each one still goes
+                # through the loop's own validation, permission prompt, receipt,
+                # tool event, redaction and cancellation check -- this transport
+                # deliberately adds no compound tool that could bypass those.
+                status = "completed"
+                completion = Completion(tool_calls=list(envelope[1]), usage=usage,
                                         stop_reason="tool_use", request_count=1)
                 completion.api_key_source = api_key_source
                 return completion
@@ -1015,7 +1075,8 @@ class ClaudeAgentSdkProvider(ModelProvider):
                 # rejected assistant text -- only the structural category of the miss, which is
                 # what lets that one corrective turn say something the model can act on.
                 status = "completed"
-                reason = contract_miss_reason(text, allowed_tools=allowed_tools)
+                reason = contract_miss_reason(text, allowed_tools=allowed_tools,
+                                              read_batch=read_batch)
                 completion = Completion(
                     text="ERROR(claude-agent-sdk): response contract error",
                     usage=usage, stop_reason="error", error_status=422,
