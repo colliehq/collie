@@ -278,7 +278,10 @@ _REPRO_OTHER_RE = re.compile(
 # command boundaries so prose such as ``echo pytest`` is not mistaken for execution.
 _TEST_RUNNER_RE = re.compile(
     r'(^|[;&|]\s*)\s*('
-    r'(python3?|py)\s+-m\s+(pytest|unittest|nose)\b'
+    # Common non-executing interpreter flags (not -c, help/version, or -O).
+    # In particular -B is used for artifact checks that must not create caches.
+    r'(python(?:3(?:\.\d+)?)?|py)(?:\.exe)?'
+    r'(?:\s+-(?:[BEIsSu]+|3(?:\.\d+)?))*\s+-m\s+(pytest|unittest|nose)\b'
     r'|(uv|poetry)\s+run\s+(pytest|python\s+-m\s+pytest)\b'
     r'|pytest\b|tox\b|nox\b'
     r'|(npm|pnpm|yarn|bun)\s+(run\s+)?test(?=[:\s]|$)'
@@ -431,9 +434,14 @@ def _is_test_runner_cmd(command: str) -> bool:
     if not any(_shell_unquoted_at(c, match.start(2))
                for match in _TEST_RUNNER_RE.finditer(c)):
         return False
-    low = c.lower()
-    return not any(flag in low for flag in (
-        "--collect-only", "--co ", "--no-run", "--listtests", "--list-tests"))
+    try:
+        words = shlex.split(c)
+    except ValueError:
+        return False
+    listing_flags = {"--collect-only", "--co", "--no-run", "--listtests", "--list-tests",
+                     "--help", "-h", "--version", "--fixtures", "--fixtures-per-test",
+                     "--markers"}
+    return not any(word == "-V" or word.lower() in listing_flags for word in words)
 
 
 # Does the command actually CHECK a result, as opposed to merely proving the code builds?
@@ -556,6 +564,10 @@ def _is_repro_cmd(name, args):
         return False
     if _is_test_runner_cmd(c):
         return True
+    if any(_shell_unquoted_at(c, match.start(2)) for match in _TEST_RUNNER_RE.finditer(c)):
+        # A recognized runner in help/list/collection mode must not fall through
+        # to the broader Python/compile-check patterns below.
+        return False
     if any(b in c.lower() for b in ("pip ", "pip3 ", "python -m venv", "setup.py")):
         return False
     return (bool(_REPRO_RE.search(c)) or bool(_REPRO_STDIN_RE.search(c))
@@ -578,6 +590,13 @@ def _repro_failed(output, name: str = "bash", command: str = "", receipt=None) -
     o = output if isinstance(output, str) else str(output)
     if name == "run_in_env":
         return _env_repro_failed(receipt)
+    if (name == "bash" and _is_test_runner_cmd(command)
+            and re.search(r"\s-m\s+unittest\b", command)
+            and re.search(r"(?m)^\s*Ran 0 tests? in \S+", o)):
+        # Older supported Python versions exit zero when discovery runs no tests
+        # (3.14 already uses exit 5). This can only withhold verification;
+        # a positive printed count never proves success.
+        return True
     return o.startswith("ERROR") or o.startswith("[exit")
 
 
