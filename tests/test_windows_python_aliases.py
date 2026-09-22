@@ -41,15 +41,31 @@ def test_only_brokered_names_are_shadowed(monkeypatch, tmp_path, names):
     assert str(real).replace("\\", "/") in (folder / names[0]).read_text()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job and actual execution alias")
+@pytest.fixture
+def brokered_python3_environment(monkeypatch):
+    # The hosted runner can have a real python3.exe beside python.exe. Exercise
+    # alias routing regardless of that machine-wide installation: only discovery
+    # is simulated; the generated launcher, interpreter and Job are all real.
+    alias = str(Path(os.environ.get("LOCALAPPDATA", "C:/Users/test/AppData/Local"))
+                / "Microsoft" / "WindowsApps" / "python3.exe")
+    original_which = plat.shutil.which
+    def discover(name, **kwargs):
+        if name == "python3":
+            return alias
+        if name == "python":
+            return sys.executable
+        return original_which(name, **kwargs)
+    monkeypatch.setattr(plat.shutil, "which", discover)
+    return plat.shell_environment(dict(os.environ))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job and alias launcher")
 @pytest.mark.parametrize("shell", ["bash", "cmd"])
-def test_python3_alias_launch_is_in_the_parent_job_and_forwards_arguments(tmp_path, shell):
-    aliases = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps"
-    if not (aliases / "python3.exe").exists() or not plat.has_posix_shell():
-        pytest.skip("requires an installed WindowsApps Python3 alias and Git Bash")
-    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + str(aliases)
-               + os.pathsep + os.environ.get("PATH", ""))
-    env = plat.shell_environment(env)
+def test_python3_alias_launch_is_in_the_parent_job_and_forwards_arguments(
+        tmp_path, shell, brokered_python3_environment):
+    if not plat.has_posix_shell():
+        pytest.skip("requires Git Bash")
+    env = brokered_python3_environment
     script = tmp_path / "probe.py"
     script.write_text('''import ctypes,json,sys
 from ctypes import wintypes
@@ -118,13 +134,11 @@ def test_full_suite_launcher_resolves_real_interpreter_with_spaces(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows alias cancellation")
-def test_cancelled_python3_cannot_finish_a_delayed_write(tmp_path):
+def test_cancelled_python3_cannot_finish_a_delayed_write(tmp_path, brokered_python3_environment):
     from harness import tool_process
-    aliases = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps"
-    if not (aliases / "python3.exe").exists() or not plat.has_posix_shell():
-        pytest.skip("requires WindowsApps alias and Git Bash")
-    env = plat.shell_environment(dict(os.environ,
-        PATH=str(Path(sys.executable).parent) + os.pathsep + str(aliases) + os.pathsep + os.environ.get("PATH", "")))
+    if not plat.has_posix_shell():
+        pytest.skip("requires Git Bash")
+    env = brokered_python3_environment
     script = tmp_path / "write_later.py"
     script.write_text("from pathlib import Path\nimport time\nPath('started').write_text('yes')\ntime.sleep(2)\nPath('late').write_text('wrong')\n",encoding="utf-8")
     args, shell = plat.shell_argv("python3 write_later.py")

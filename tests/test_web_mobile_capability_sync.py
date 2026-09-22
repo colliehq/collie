@@ -223,8 +223,13 @@ class Phone:
 
     # -- what a person does -------------------------------------------------
     def open_run_options(self):
+        reads = self.reads
         self.page.click("#runSetup > summary")
         expect(self.page.locator("#runSetup")).to_have_attribute("open", "")
+        # The details element queues its toggle event after changing `open`.
+        # Wait for this gesture's request before changing the staged answer or
+        # failure flag, otherwise a slow host can consume it for the prior open.
+        self.wait_for_reads(reads + 1)
         return self
 
     def close_run_options(self):
