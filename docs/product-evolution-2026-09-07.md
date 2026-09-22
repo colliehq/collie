@@ -123,6 +123,6 @@ Claude Code 完成四轮独立源码审阅，覆盖产品路径、存储与恢�
 - 主项目存在未提交改动时，应用隔离成果仍要求先处理该状态；可以保留成果并继续其他工作，不强制暂停整项任务。
 - 旧临时 worktree 不会自动迁移。已经被外部删除的未提交文件无法靠会话历史复原。
 
-实现入口：[会话与恢复](../harness/sessions.py)、[元数据索引](../harness/session_index.py)、[Web 执行入口](../harness/webapp.py)、[Web UI](../harness/webui/index.html)、[工作区交付](../harness/worktree.py)。使用方式见 [工作流说明](task-workflows.md)，其他 harness 的源码参考见 [前轮研究](agent-harness-reference-2026-09-06.md)。
+实现入口：[会话与恢复](https://github.com/colliehq/collie/blob/v0.27.0/harness/sessions.py)、[元数据索引](https://github.com/colliehq/collie/blob/v0.27.0/harness/session_index.py)、[Web 执行入口](https://github.com/colliehq/collie/blob/v0.27.0/harness/webapp.py)、[Web UI](https://github.com/colliehq/collie/blob/v0.27.0/harness/webui/index.html)、[工作区交付](https://github.com/colliehq/collie/blob/v0.27.0/harness/worktree.py)。使用方式见 [工作流说明](task-workflows.md)，其他 harness 的源码参考见 [前轮研究](agent-harness-reference-2026-09-06.md)。
 
 原始实验脚本、失败及成功日志、JSON 收据与截图保存在本机 `C:\workspace\collie-evolution-2026-09-07`，未把整份会话与机器信息放入仓库。可移植的结果摘要见 [证据 JSON](evidence/product-evolution-2026-09-07.json)。

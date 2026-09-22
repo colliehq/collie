@@ -14,7 +14,7 @@
 
 用户进一步要求核实能否提前重置。官方资料仍说明会话额度每 5 小时重置，周额度独立按固定时间重置；继续使用的额外 usage credits 单独收费。没有查到公开的免费手动提前重置机制。当前浏览器连接不可用，因此没有核实账户页面是否存在个别赠送活动，也没有声称账户绝无该入口。没有执行账户重置、购买额度或开启额外付费。[Max 官方说明](https://support.claude.com/en/articles/11049741-what-is-the-max-plan)、[usage credits 官方说明](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans)
 
-![账户用量曲线](../bench/experiments/2026-09-07/quota-timeline.png)
+![账户用量曲线](https://raw.githubusercontent.com/colliehq/collie/v0.27.0/bench/experiments/2026-09-07/quota-timeline.png)
 
 设计/源码任务启动并发为 12，原生编码批次上限 10，统一传输批次最高配置 8，网页流程上限 4；这些批次部分重叠。按编码任务起止记录计算，原生与统一传输编码任务的最大重叠数为 **18**，尚未计入源码审阅和网页流程。统一传输任务的开始时间由结束时间减耗时推算；这个数表示任务重叠，不表示服务端同时处理了 18 个模型请求。
 
@@ -66,7 +66,7 @@
 
 *Collie 的一次缓存尝试留下了通过 grader 的补丁，但在 29 次模型请求后出现 `HTTP 422 response_contract_error`，一次结构化输出修复后仍失败。它应记作“代码正确、运行异常”，不是共享基础设施失效，也不能从分母中删除。
 
-![原生轨道耗时与缓存](../bench/experiments/2026-09-07/native-comparison.png)
+![原生轨道耗时与缓存](https://raw.githubusercontent.com/colliehq/collie/v0.27.0/bench/experiments/2026-09-07/native-comparison.png)
 
 Collie 报告的缓存新建 token 总量约为直接 Claude Code 的 **14.4 倍**；各任务的中位数也有同方向差异。这是需要调查的效率信号，不能解释成实际账单贵 14.4 倍，也不能把缓存新建 token 当作全部输入 token。当前 Opus 5 的 API 等效价格映射不可靠，因此不用美元估值排名。
 
@@ -81,7 +81,7 @@ Collie 报告的缓存新建 token 总量约为直接 Claude Code 的 **14.4 倍
 | Pi | 7/9 | 9/9 | 121.3 秒 | 1,052,580 |
 | Prime | 7/9 | 9/9 | 137.3 秒 | 683,879 |
 
-![统一传输轨道耗时](../bench/experiments/2026-09-07/normalized-comparison.png)
+![统一传输轨道耗时](https://raw.githubusercontent.com/colliehq/collie/v0.27.0/bench/experiments/2026-09-07/normalized-comparison.png)
 
 Pi 和 Prime 在这一小组任务中的耗时较低。不能据此宣称它们在长任务、恢复、复杂仓库或实际产品体验上胜出；并发负载、工具接口、提示长度和适配协议都可能影响结果。这里不进行显著性检验，也不与原生产品表合并。
 
@@ -122,4 +122,4 @@ Pi 和 Prime 在这一小组任务中的耗时较低。不能据此宣称它们�
 
 六份 Claude 源码审阅还提出了 steering、截断后参数恢复、验证命令识别等静态线索；它们尚未逐项独立复现，不计作本轮已确认缺陷或已完成修复。参考实现的固定轮数上限也不应照搬为 Collie 默认停止条件。
 
-复查本轮结果可运行[离线验证器及复跑说明](../bench/experiments/2026-09-07/README.md)。原始宿主实验目录为 `C:/workspace/collie-benchmark-2026-09-07`，保留完整原始过程；公开口径以本报告和脱敏结果为准。
+复查本轮结果可运行[离线验证器及复跑说明](https://github.com/colliehq/collie/blob/v0.27.0/bench/experiments/2026-09-07/README.md)。原始宿主实验目录为 `C:/workspace/collie-benchmark-2026-09-07`，保留完整原始过程；公开口径以本报告和脱敏结果为准。

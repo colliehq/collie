@@ -40,11 +40,11 @@ Collie 已具备从多端入口、模型/worker 路由到 Mission 执行、权�
 
 相关实现：
 
-- [Live 会话、权限与异步结果](../harness/live_copilot.py)
-- [Web 启动入口](../harness/webapp.py)
-- [本地语音转换](../harness/sensevoice.py)
-- [新增边界回归](../tests/test_live_copilot_boundaries.py)
-- [HTTP 权限回归](../tests/test_web_controlplane_api.py)
+- [Live 会话、权限与异步结果](https://github.com/colliehq/collie/blob/v0.27.0/harness/live_copilot.py)
+- [Web 启动入口](https://github.com/colliehq/collie/blob/v0.27.0/harness/webapp.py)
+- [本地语音转换](https://github.com/colliehq/collie/blob/v0.27.0/harness/sensevoice.py)
+- [新增边界回归](https://github.com/colliehq/collie/blob/v0.27.0/tests/test_live_copilot_boundaries.py)
+- [HTTP 权限回归](https://github.com/colliehq/collie/blob/v0.27.0/tests/test_web_controlplane_api.py)
 
 兼容性细节：权限参数必须是 JSON `true` / `false`；启动请求中的 `null` 也会被拒绝。
 权限更新中的 `None` 仍表示“不修改该项”。旧 `share_transcript` 字段仍可作为 `listen`

@@ -30,7 +30,7 @@
 | 设备页首先展示架构图，页面名称与导航不一致 | 先展示设备状态和当前分工，协作原理折叠；统一“设备与协作”名称 |
 | 系统活动页只占不到一半窗口，导航和状态夹杂英文 | 使用可用页面高度，翻译主要页签、状态和空列表；补齐 Live 音频说明 |
 
-实现见 [Mission](../harness/mission.py)、[可选步骤策略](../harness/mission_intervention.py)、[服务入口](../harness/missionweb.py)、[Web UI](../harness/webui/index.html)。开源架构对照见 [8 个固定版本的源码参考](agent-harness-reference-2026-09-06.md)。
+实现见 [Mission](https://github.com/colliehq/collie/blob/v0.27.0/harness/mission.py)、[可选步骤策略](https://github.com/colliehq/collie/blob/v0.27.0/harness/mission_intervention.py)、[服务入口](https://github.com/colliehq/collie/blob/v0.27.0/harness/missionweb.py)、[Web UI](https://github.com/colliehq/collie/blob/v0.27.0/harness/webui/index.html)。开源架构对照见 [8 个固定版本的源码参考](agent-harness-reference-2026-09-06.md)。
 
 ## 真实模型实验
 

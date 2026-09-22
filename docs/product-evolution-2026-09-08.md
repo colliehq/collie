@@ -235,7 +235,7 @@ SDK sidecar；这比较适配后的循环、提示和工具行为，不代表各
 选择，不支持“所有工作流都已经完善”。
 
 本轮冻结结果、失败记录和零模型复核入口见
-[两窗口实验与验证证据](../bench/experiments/2026-09-08/README.md)。
+[两窗口实验与验证证据](https://github.com/colliehq/collie/blob/v0.27.0/bench/experiments/2026-09-08/README.md)。
 在仓库根目录运行 `python bench/experiments/2026-09-08/verify.py --regrade-all --source-repo .`
 可核对文件哈希、166 个补丁、任务的失败基线/正确参考实现，以及 8 个实验源码树。
 最终冻结包的 436 个内容文件全部通过哈希检查；Windows 上再次重评 166 个候选、
