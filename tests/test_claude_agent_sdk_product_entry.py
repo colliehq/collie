@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from harness import catalog, settings
 from harness.providers import provider_default_model
@@ -20,7 +21,8 @@ def test_web_settings_exposes_official_agent_sdk_provider():
 
 
 def test_model_catalog_offers_opus_through_official_agent_sdk(monkeypatch):
-    monkeypatch.setattr(catalog.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(catalog.importlib.util, "find_spec", lambda name: SimpleNamespace(
+        submodule_search_locations=[]))
     monkeypatch.setattr(catalog.shutil, "which", lambda name: "C:/bin/claude.exe")
 
     entries = {entry["id"]: entry for entry in catalog.list_entries(discover_live=False)}
