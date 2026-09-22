@@ -484,6 +484,76 @@ def test_file_becomes_a_directory_and_back_without_deleting_unexpected_work(stor
     assert (workspace / "thing").read_text(encoding="utf-8") == "a file again"
 
 
+def test_a_user_file_on_a_new_files_parent_is_reviewable_not_a_half_apply(store, tmp_path):
+    """The winner adds ``notes/summary.md``; the user spent the run writing a file called ``notes``.
+
+    Nothing can be created under a regular file, and Collie will not delete the user's note to make
+    room.  That is a conflict, and a conflict has to be visible in review BEFORE the first byte:
+    a preview that says "ready" followed by a failure that already touched other files is the
+    outcome this test exists to forbid.
+    """
+    workspace = tmp_path / "repo"
+    _write(workspace / "README.md", "v1")
+    _write(workspace / "src" / "app.py", "print(1)\n")
+    attempt = _isolate(workspace, tmp_path)
+    baseline = pa.capture_baseline(str(attempt))
+    _write(attempt / "README.md", "v2")
+    _write(attempt / "src" / "app.py", "print(2)\n")
+    _write(attempt / "notes" / "summary.md", "what changed")
+    _write(attempt / "notes" / "deep" / "detail.md", "why it changed")
+    record = pa.save_artifact(_bundle(workspace, attempt, baseline))
+
+    _write(workspace / "notes", "my scratch note")
+
+    preview = pa.apply_artifact(record["id"], str(workspace), dry_run=True)
+    assert preview["code"] == "conflict", preview["changed"]
+    assert sorted(c["path"] for c in preview["conflicts"]) == ["notes/deep/detail.md",
+                                                               "notes/summary.md"]
+    assert all("notes" in c["reason"] for c in preview["conflicts"])
+
+    result = pa.apply_artifact(record["id"], str(workspace))
+    assert result["code"] == "conflict" and not result["applied"]
+    # Nothing was written, so no other entry needed rolling back and no backup was taken.
+    assert result["changed"] == [] and result["backup_dir"] == ""
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "v1"
+    assert (workspace / "src" / "app.py").read_text(encoding="utf-8") == "print(1)\n"
+    assert (workspace / "notes").read_text(encoding="utf-8") == "my scratch note"
+
+    # Once the user moves their note out of the way the same reviewed bundle applies in full,
+    # creating the nested directories that never existed.
+    (workspace / "notes").unlink()
+    applied = pa.apply_artifact(record["id"], str(workspace))
+    assert applied["applied"], applied["conflicts"] or applied["error"]
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "v2"
+    assert (workspace / "notes" / "summary.md").read_text(encoding="utf-8") == "what changed"
+    assert (workspace / "notes" / "deep" / "detail.md").read_text(encoding="utf-8") == "why it changed"
+
+    again = pa.apply_artifact(record["id"], str(workspace))
+    assert again["applied"] and again["changed"] == []
+    assert len(again["already_applied"]) == 4
+
+
+def test_a_bundle_that_replaces_a_file_with_a_deep_tree_still_applies(store, tmp_path):
+    """The supported shape: one reviewed bundle deletes ``thing`` and creates ``thing/a/b/c.txt``.
+
+    The obstructing parent here is one the winner itself removes, so it is not the user's work and
+    not a conflict — refusing it would break every file-becomes-a-package pack.
+    """
+    workspace = tmp_path / "repo"
+    _write(workspace / "thing", "i am a file")
+    attempt = _isolate(workspace, tmp_path)
+    baseline = pa.capture_baseline(str(attempt))
+    (attempt / "thing").unlink()
+    _write(attempt / "thing" / "__init__.py", "")
+    _write(attempt / "thing" / "a" / "b" / "c.txt", "deep")
+    record = pa.save_artifact(_bundle(workspace, attempt, baseline))
+
+    result = pa.apply_artifact(record["id"], str(workspace))
+    assert result["applied"], result["conflicts"] or result["error"]
+    assert (workspace / "thing" / "a" / "b" / "c.txt").read_text(encoding="utf-8") == "deep"
+    assert (workspace / "thing" / "__init__.py").read_text(encoding="utf-8") == ""
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_executable_bit_is_part_of_the_bundle(store, tmp_path):
     workspace = tmp_path / "repo"

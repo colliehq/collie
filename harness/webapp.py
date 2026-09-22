@@ -5043,29 +5043,38 @@ class Handler(BaseHTTPRequestHandler):
         from . import pack_artifacts, pack_review, sessions, session_owner
         sid, ident = str(body.get("session") or ""), str(body.get("id") or "")
         lease = None
+
+        def reply(data, code=200):
+            # A received result lets the client immediately retry or continue.
+            # All mutations are complete before replying; the next request must
+            # not see this finished operation as an active conversation owner.
+            if lease is not None:
+                lease.release()
+            return self._send_json(data, code)
+
         try:
             if apply:
                 lease = session_owner.try_acquire(sid, label="apply saved Pack changes")
                 if lease is None:
-                    return self._send_json({"error": "This conversation is still running. Try again when it finishes."}, 409)
+                    return reply({"error": "This conversation is still running. Try again when it finishes."}, 409)
             session = sessions.load(sid)
             receipts = (session or {}).get("run_receipts") or []
             if not session or not ident or not any(
                     (row.get("artifact") or {}).get("id") == ident for row in receipts):
-                return self._send_json({"error": "These saved changes are not part of this conversation."}, 404)
+                return reply({"error": "These saved changes are not part of this conversation."}, 404)
             cwd = session.get("cwd")
             if not cwd or not os.path.isdir(cwd):
-                return self._send_json({"error": "The saved workspace is missing. Restore it before applying changes."}, 409)
+                return reply({"error": "The saved workspace is missing. Restore it before applying changes."}, 409)
             if apply:
                 if (sessions.recovery_state(sid) or {}).get("recovery_required"):
-                    return self._send_json({"error": "Resolve the interrupted run before applying saved changes."}, 409)
+                    return reply({"error": "Resolve the interrupted run before applying saved changes."}, 409)
                 data = pack_artifacts.apply_artifact(ident, cwd)
-                return self._send_json(data, 200 if data.get("ok") else 409)
-            return self._send_json(pack_review.review(ident, cwd))
+                return reply(data, 200 if data.get("ok") else 409)
+            return reply(pack_review.review(ident, cwd))
         except pack_artifacts.ArtifactNotFound as exc:
-            return self._send_json({"error": str(exc)}, 404)
+            return reply({"error": str(exc)}, 404)
         except (pack_artifacts.PackArtifactError, ValueError) as exc:
-            return self._send_json({"error": str(exc)}, 409)
+            return reply({"error": str(exc)}, 409)
         finally:
             if lease is not None:
                 lease.release()

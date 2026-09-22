@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Detect user-created files blocking the parents of saved Pack changes during review, before
+  writing any entries. Supported file-to-directory replacements and idempotent re-application
+  remain available.
+- Release a completed Pack application's conversation lease before replying, so an immediate
+  follow-up or conflict retry does not falsely report an active run.
+- Show the specific conflicting paths when a project changes after Pack review. Desktop and phone
+  hide the stale Apply action until the saved changes have been reviewed again.
+
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
 - Update optional Codex and Claude Agent SDK runtimes to verified versions. Windows installers

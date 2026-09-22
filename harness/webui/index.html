@@ -9294,7 +9294,12 @@
       fetch("/api/pack-artifact/apply?token=" + encodeURIComponent(CT), {
         method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session:sid, id:ident})
       }).then(function (response) { return response.json().then(function (data) {
-        if (!response.ok || !data.applied) throw new Error(data.error || "HTTP " + response.status);
+        if (!response.ok || !data.applied) {
+          // The project can change after review. Show the current conflicting
+          // paths and retire the stale Apply button before offering a refresh.
+          if (data.code === "conflict" && card.isConnected && currentSession === sid) display({check:data});
+          throw new Error(data.error || "HTTP " + response.status);
+        }
         return data;
       }); }).then(function () { return read(); })
         .catch(function (error) { card.dataset.state = "conflict"; status.textContent = error.message || String(error); })
