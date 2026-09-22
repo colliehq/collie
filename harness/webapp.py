@@ -2986,13 +2986,13 @@ class Handler(BaseHTTPRequestHandler):
                             try:
                                 recovery = sessions.recovery_state(sid)
                                 if recovery and recovery.get("recovery_required"):
-                                    return self._send_json({"error": "inspect the interrupted operation before moving its workspace"}, 409)
+                                    raise ValueError("inspect the interrupted operation before moving its workspace")
                                 saved = sessions.load(sid) or {}
                                 workspace = saved.get("workspace") or {}
                                 if (workspace.get("mode") == "isolated" and os.path.isdir(workspace.get("path") or "") and
                                         os.path.normcase(os.path.realpath(cwd.strip())) !=
                                         os.path.normcase(os.path.realpath(workspace["path"]))):
-                                    return self._send_json({"error": "the isolated folder still exists; apply its changes before switching projects"}, 409)
+                                    raise ValueError("the isolated folder still exists; apply its changes before switching projects")
                                 value = {"session": sid, "cwd": sessions.relocate(sid, cwd.strip())}
                             finally:
                                 lease.release()
@@ -3214,14 +3214,15 @@ class Handler(BaseHTTPRequestHandler):
                     state = sessions.reconcile_recovery(
                         sid, resolution, note=str(body.get("note") or "")[:1000], confirmed=True,
                         directory=recovery_root)
+                    reply, status = {"ok": True, "session": sid,
+                                     "state": _public_recovery(state, sid) if state else None}, 200
                 except KeyError:
-                    return self._send_json({"error": "no such session"}, 404)
+                    reply, status = {"error": "no such session"}, 404
                 except ValueError as exc:
-                    return self._send_json({"error": str(exc)}, 409)
+                    reply, status = {"error": str(exc)}, 409
                 finally:
                     lease.release()
-                return self._send_json({"ok": True, "session": sid,
-                                        "state": _public_recovery(state, sid) if state else None})
+                return self._send_json(reply, status)
             if path == "/api/doctor/repair":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -7023,6 +7024,8 @@ def main(argv=None, on_bound=None):
     bound — which is not always the one asked for, since a busy port makes this scan forward.
     A caller that needs to point something at the server (the native app window) has no other
     way to learn where it landed."""
+    from .plat import make_output_safe
+    make_output_safe()  # supervisors and app windows also call this without cli.main
     argv = list(sys.argv[1:] if argv is None else argv)
     port = 8787
     open_browser = True
