@@ -9,6 +9,7 @@ correctable) and that the payload bytes round-trip.
 An extra end-to-end check runs the finished PNG through macOS Vision when available (a genuinely
 independent decoder); it is skipped elsewhere rather than faked.
 """
+import json
 import os
 import subprocess
 import sys
@@ -242,6 +243,7 @@ def test_vision_decodes_the_png():
         f.write(chunk(b"IDAT", zlib.compress(raw, 9)))
         f.write(chunk(b"IEND", b""))
 
+    result_path = os.path.join(tmp, "decoded.json")
     script = os.path.join(tmp, "decode.swift")
     with open(script, "w") as f:
         f.write('''import Foundation
@@ -252,23 +254,30 @@ guard let image = NSImage(contentsOfFile: path), let tiff = image.tiffRepresenta
       let bitmap = NSBitmapImageRep(data: tiff), let cg = bitmap.cgImage else { print("LOAD-FAIL"); exit(1) }
 let request = VNDetectBarcodesRequest(); request.symbologies = [.qr]
 try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
-print((request.results ?? []).compactMap { $0.payloadStringValue }.first ?? "NO-CODE")
+let decoded = (request.results ?? []).compactMap { $0.payloadStringValue }
+let result = try JSONSerialization.data(withJSONObject: decoded)
+try result.write(to: URL(fileURLWithPath: CommandLine.arguments[2]), options: .atomic)
 ''')
     env = dict(os.environ)
     env["DEVELOPER_DIR"] = env.get("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")
     for var in ("LD", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS"):
         env.pop(var, None)                    # a conda env's toolchain vars break swiftc
     try:
-        out = subprocess.run(["xcrun", "swift", script, png], capture_output=True, text=True,
+        out = subprocess.run(["xcrun", "swift", script, png, result_path], capture_output=True, text=True,
                              timeout=300, env=env)
     except subprocess.TimeoutExpired:
         print("  SKIP macOS Vision round-trip (swift timed out)")
         return
-    decoded = (out.stdout or "").strip().splitlines()[-1] if out.stdout.strip() else ""
-    if not decoded or decoded in ("LOAD-FAIL", "NO-CODE") and out.returncode != 0:
+    if out.returncode != 0 and not os.path.isfile(result_path):
         print("  SKIP macOS Vision round-trip (toolchain unavailable: %s)" % (out.stderr or "")[:80])
         return
-    check(decoded == text, "macOS Vision decodes the rendered PNG back to the pairing URL")
+    # Vision can emit a VM acceleration warning to stdout without a terminating
+    # newline, immediately before the correct decoded URL. Read an explicit
+    # result file so framework diagnostics can never become barcode contents.
+    with open(result_path, encoding="utf-8") as result:
+        decoded = json.load(result)
+    check(out.returncode == 0 and decoded == [text],
+          "macOS Vision decodes the rendered PNG back to the pairing URL: %r" % decoded)
 
 
 def main():

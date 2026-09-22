@@ -785,7 +785,7 @@ def test_deleting_a_conversation_withdraws_an_undelivered_claim(web):
     assert sessions.load(sid) is not None, "nothing was deleted"
 
     code, gone = _get(base, token, "/api/delete/" + sid + "?discard_pending=1")
-    assert code == 200 and gone["ok"] is True and gone["canceled"] == ["req-1"]
+    assert code == 200 and gone["ok"] is True and gone["canceled"] == ["req-1"], gone
     assert sessions.load(sid) is None
     assert task_inbox.get(sid, "req-1")["state"] == "canceled"
     assert task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES) == []
