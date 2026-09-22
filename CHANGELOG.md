@@ -7,9 +7,9 @@
   remain available.
 - Release a completed Pack application's conversation lease before replying, so an immediate
   follow-up or conflict retry does not falsely report an active run.
-- Show the specific conflicting paths when a project changes after Pack review. After conflicts
-  or failed writes, desktop and phone hide the stale Apply action until the saved changes have
-  been reviewed again, preserving error and recovery details.
+- Show the specific conflicting paths when a project changes after Pack review. After conflicts,
+  failed writes or lost replies, require a fresh review before applying again. Preserve recovery
+  details and wrap long paths on phone screens.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 

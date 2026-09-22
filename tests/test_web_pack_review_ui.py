@@ -9,13 +9,14 @@ from test_web_ui_run_status import ui, server, browser
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-@pytest.mark.parametrize("failure", ["conflict", "partial_write"])
+@pytest.mark.parametrize("failure", ["conflict", "partial_write", "network", "invalid_json"])
 def test_failed_apply_shows_current_details_and_requires_a_fresh_review(ui, width, failure):
     page = ui.page
     artifact_id = "saved-pack"
     state = {"conflict": True, "applied": False, "posts": []}
     changed = [{"path": "notes/summary.md", "action": "write"}]
     reason = "notes is a file, not a directory"
+    backup = "/project/.collie/backups/" + "0123456789abcdef" * 12
     if failure == "conflict":
         failed_response = {
             "ok": False, "applied": False, "code": "conflict", "changed": [],
@@ -26,8 +27,8 @@ def test_failed_apply_shows_current_details_and_requires_a_fresh_review(ui, widt
     else:
         failed_response = {
             "ok": False, "applied": False, "code": "io_error", "changed": changed,
-            "rolled_back": False, "backup_dir": "/project/.collie/backups/saved-pack",
-            "error": "Workspace is PARTIALLY changed; inspect /project/.collie/backups/saved-pack before retrying",
+            "rolled_back": False, "backup_dir": backup,
+            "error": "Workspace is PARTIALLY changed; inspect " + backup + " before retrying",
             "conflicts": [],
         }
         expected_detail = failed_response["error"]
@@ -41,6 +42,14 @@ def test_failed_apply_shows_current_details_and_requires_a_fresh_review(ui, widt
         if urlsplit(route.request.url).path.endswith("/apply"):
             state["posts"].append(route.request.post_data_json)
             if state["conflict"]:
+                if failure == "network":
+                    state["applied"] = True  # The write lands, but its acknowledgement is lost.
+                    route.abort("failed")
+                    return
+                if failure == "invalid_json":
+                    state["applied"] = True
+                    route.fulfill(status=502, content_type="text/html", body="<h1>Proxy unavailable</h1>")
+                    return
                 route.fulfill(status=409, content_type="application/json",
                               body=json.dumps(failed_response))
                 return
@@ -64,14 +73,23 @@ def test_failed_apply_shows_current_details_and_requires_a_fresh_review(ui, widt
     apply = card.get_by_role("button", name="Apply saved changes", exact=True)
     apply.click()
     expect(card).to_have_attribute("data-state", "conflict")
-    expect(card).to_contain_text(expected_detail)
+    if failure in ("conflict", "partial_write"):
+        expect(card).to_contain_text(expected_detail)
+        expect(card.locator("details")).to_have_count(0)
+    else:
+        expect(card.get_by_role("status")).not_to_be_empty()
     expect(apply).to_be_hidden()
-    expect(card.locator("details")).to_have_count(0)
+    assert card.evaluate("el => el.scrollWidth <= el.clientWidth"), "recovery details must fit the card"
     assert state["posts"] == [{"session": "s-read", "id": artifact_id}]
 
     # Resolve the failure, review the saved changes, then apply without another model run.
     state["conflict"] = False
     card.get_by_role("button", name="Refresh review", exact=True).click()
+    if failure in ("network", "invalid_json"):
+        expect(card).to_have_attribute("data-state", "applied")
+        expect(apply).to_be_hidden()
+        assert state["posts"] == [{"session": "s-read", "id": artifact_id}]
+        return
     expect(card).to_have_attribute("data-state", "ready")
     expect(card).not_to_contain_text(reason)
     apply.click()
