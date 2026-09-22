@@ -429,6 +429,21 @@ def test_execute_code_reaps_descendants_after_normal_exit_and_exception():
         assert not os.path.exists(os.path.join(work, "exception.late")), (
             "failed execute_code leaked a late-writing descendant")
 
+def test_execute_code_reports_why_termination_was_not_confirmed(monkeypatch):
+    """An unconfirmed tree is a recovery job; the reason is what makes it actionable."""
+    from harness import progtool
+
+    class _Unconfirmed(progtool._ProcessTree):
+        def terminate_and_wait(self):
+            self.detail = "process group still had members 5s after SIGKILL"
+            return False
+
+    monkeypatch.setattr(progtool, "_ProcessTree", _Unconfirmed)
+    out = _execute_code_for_test(tempfile.gettempdir(), 'print("ran")')
+    assert "could not be confirmed" in out
+    assert "process group still had members 5s after SIGKILL" in out, out
+
+
 def test_execute_code_timeout_reaps_descendants_before_return():
     with tempfile.TemporaryDirectory(prefix="collie_progtool_timeout_") as work:
         marker = os.path.join(work, "timeout.late")

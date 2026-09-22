@@ -108,6 +108,7 @@ def test_background_serve_does_not_open_the_extension_folder():
         "thread": bb.threading.Thread,
         "await": bb._await_extension,
         "interactive": bb._interactive_extension_setup,
+        "open_extensions": bb._open_extensions_page,
         "translocated": plat.translocated,
         "is_macos": plat.is_macos,
         "reveal": plat.reveal_in_file_manager,
@@ -149,12 +150,29 @@ def test_background_serve_does_not_open_the_extension_folder():
         bb.serve(port=8766, managed_browser=False)
         check(any(isinstance(item, tuple) and item[0] == "reveal" for item in calls),
               "an explicit terminal start retains the extension-folder install affordance")
+
+        # macOS has two more visible side effects: opening Chrome and replacing
+        # the clipboard. Neither belongs to a supervised service restart.
+        from unittest.mock import patch
+        calls.clear()
+        plat.is_macos = lambda: True
+        bb._open_extensions_page = lambda: calls.append("chrome") or True
+        bb._interactive_extension_setup = lambda: False
+        with patch("subprocess.run", side_effect=lambda *a, **kw: calls.append("clipboard")):
+            bb.serve(port=8767, managed_browser=False)
+            check(calls == ["serve", "await"],
+                  "a hidden macOS bridge preserves Chrome, Finder and the clipboard")
+            bb._interactive_extension_setup = lambda: True
+            bb.serve(port=8768, managed_browser=False)
+            check("chrome" in calls and "clipboard" in calls,
+                  "interactive macOS setup still opens Chrome and copies its install path")
     finally:
         bb.auth_off = saved["auth_off"]
         bb.ThreadingHTTPServer = saved["server"]
         bb.threading.Thread = saved["thread"]
         bb._await_extension = saved["await"]
         bb._interactive_extension_setup = saved["interactive"]
+        bb._open_extensions_page = saved["open_extensions"]
         plat.translocated = saved["translocated"]
         plat.is_macos = saved["is_macos"]
         plat.reveal_in_file_manager = saved["reveal"]
