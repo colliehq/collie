@@ -9,12 +9,28 @@ from test_web_ui_run_status import ui, server, browser
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_apply_conflict_names_the_blocking_path_and_requires_a_fresh_review(ui, width):
+@pytest.mark.parametrize("failure", ["conflict", "partial_write"])
+def test_failed_apply_shows_current_details_and_requires_a_fresh_review(ui, width, failure):
     page = ui.page
     artifact_id = "saved-pack"
     state = {"conflict": True, "applied": False, "posts": []}
     changed = [{"path": "notes/summary.md", "action": "write"}]
     reason = "notes is a file, not a directory"
+    if failure == "conflict":
+        failed_response = {
+            "ok": False, "applied": False, "code": "conflict", "changed": [],
+            "error": "1 path changed since this pack ran; nothing was applied",
+            "conflicts": [{"path": "notes/summary.md", "reason": reason}],
+        }
+        expected_detail = "notes/summary.md: " + reason
+    else:
+        failed_response = {
+            "ok": False, "applied": False, "code": "io_error", "changed": changed,
+            "rolled_back": False, "backup_dir": "/project/.collie/backups/saved-pack",
+            "error": "Workspace is PARTIALLY changed; inspect /project/.collie/backups/saved-pack before retrying",
+            "conflicts": [],
+        }
+        expected_detail = failed_response["error"]
     page.route("**/api/session/s-read", lambda route: route.fulfill(
         content_type="application/json", body=json.dumps({
             "id": "s-read", "cwd": "/project", "messages": [],
@@ -25,11 +41,8 @@ def test_apply_conflict_names_the_blocking_path_and_requires_a_fresh_review(ui, 
         if urlsplit(route.request.url).path.endswith("/apply"):
             state["posts"].append(route.request.post_data_json)
             if state["conflict"]:
-                route.fulfill(status=409, content_type="application/json", body=json.dumps({
-                    "ok": False, "applied": False, "code": "conflict", "changed": [],
-                    "error": "1 path changed since this pack ran; nothing was applied",
-                    "conflicts": [{"path": "notes/summary.md", "reason": reason}],
-                }))
+                route.fulfill(status=409, content_type="application/json",
+                              body=json.dumps(failed_response))
                 return
             state["applied"] = True
             route.fulfill(content_type="application/json", body=json.dumps({
@@ -51,11 +64,12 @@ def test_apply_conflict_names_the_blocking_path_and_requires_a_fresh_review(ui, 
     apply = card.get_by_role("button", name="Apply saved changes", exact=True)
     apply.click()
     expect(card).to_have_attribute("data-state", "conflict")
-    expect(card).to_contain_text("notes/summary.md: " + reason)
+    expect(card).to_contain_text(expected_detail)
     expect(apply).to_be_hidden()
+    expect(card.locator("details")).to_have_count(0)
     assert state["posts"] == [{"session": "s-read", "id": artifact_id}]
 
-    # Resolve the project conflict, review the saved changes, then apply without another model run.
+    # Resolve the failure, review the saved changes, then apply without another model run.
     state["conflict"] = False
     card.get_by_role("button", name="Refresh review", exact=True).click()
     expect(card).to_have_attribute("data-state", "ready")

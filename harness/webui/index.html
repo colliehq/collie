@@ -9295,9 +9295,9 @@
         method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session:sid, id:ident})
       }).then(function (response) { return response.json().then(function (data) {
         if (!response.ok || !data.applied) {
-          // The project can change after review. Show the current conflicting
-          // paths and retire the stale Apply button before offering a refresh.
-          if (data.code === "conflict" && card.isConnected && currentSession === sid) display({check:data});
+          // Review can become stale, including after a failed write/rollback.
+          // Show the current details and require a refresh before another apply.
+          if (!data.ok && card.isConnected && currentSession === sid) display({check:data});
           throw new Error(data.error || "HTTP " + response.status);
         }
         return data;

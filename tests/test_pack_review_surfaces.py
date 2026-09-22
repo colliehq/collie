@@ -46,6 +46,7 @@ def test_http_review_apply_conflict_and_other_conversation_are_distinct(web):
     try:
         code, data = _post(base, token, "/api/pack-artifact/apply", body)
         assert code == 409 and "running" in data["error"]
+        assert lease.held, "a refused apply must not release the active run's lease"
     finally:
         lease.release()
     code, data = _get(base, token, query.replace("pack-review", "other-thread"))
