@@ -13,6 +13,19 @@ from _util import _ctx, _Skip, _RecordingMemory, _ScriptProvider, run_module  # 
 import contextlib
 import inspect, io, json, os, re, sys, tempfile, time, types, warnings
 
+
+@contextlib.contextmanager
+def _loop_backoff(side_effect=None):
+    """Observe only the run's retry waits, leaving service threads' clocks alone."""
+    from unittest.mock import Mock, patch
+    from harness import loop
+
+    clock = types.SimpleNamespace(**vars(time))
+    clock.sleep = Mock(side_effect=side_effect)
+    with patch.object(loop, "time", clock):
+        yield clock.sleep
+
+
 # ------------------------------------------------------------------ loop repro-gate
 def test_is_repro_cmd():
     from harness.loop import _is_repro_cmd as R
@@ -390,7 +403,7 @@ def test_loop_retry_transient_then_success():
     ok = Completion(text="all good", stop_reason="end_turn", usage=Usage(input_tokens=5))
     h.provider = _ScriptProvider([err, err, ok])
     slept = []
-    with patch("time.sleep", lambda s: slept.append(s)):
+    with _loop_backoff(lambda s: slept.append(s)):
         res = h.run("retry_ok", "go")
     assert res.error == "" and res.answer == "all good", (res.error, res.answer)
     assert res.model_calls == 3, "physical retry attempts must be budget-visible"
@@ -416,6 +429,13 @@ def test_loop_repairs_one_response_contract_error_without_backoff():
 
     seen = {}
     def corrected(messages):
+        # A service thread can wait while this reply is finalized. That wait is
+        # unrelated to model backoff and must not make this assertion fail.
+        import threading
+        service = threading.Thread(target=lambda: time.sleep(.001))
+        service.start()
+        service.join(timeout=3)
+        assert not service.is_alive()
         seen["messages"] = messages
         return Completion(text="fixed", stop_reason="end_turn",
                           usage=Usage(input_tokens=5, output_tokens=1))
@@ -428,7 +448,7 @@ def test_loop_repairs_one_response_contract_error_without_backoff():
     p = _ScriptProvider([_contract_error(), corrected])
     h.provider = p
 
-    with patch("time.sleep") as sleep:
+    with _loop_backoff() as sleep:
         res = h.run("contract_ok", "go")
 
     assert res.error == "" and res.answer == "fixed"
@@ -460,7 +480,7 @@ def test_loop_response_contract_repair_is_bounded_and_content_free():
                              AssertionError("third request must not be sent"))])
     h.provider = p
 
-    with patch("time.sleep") as sleep:
+    with _loop_backoff() as sleep:
         res = h.run("contract_bounded", "go")
 
     assert p.calls == 2 and res.model_calls == 2
@@ -484,7 +504,7 @@ def test_loop_contract_repair_respects_model_call_cap():
                              AssertionError("request beyond cap"))])
     h.provider = p
 
-    with patch("time.sleep") as sleep:
+    with _loop_backoff() as sleep:
         res = h.run("contract_cap", "go")
 
     assert p.calls == 1 and res.model_calls == 1
@@ -503,7 +523,7 @@ def test_loop_contract_repair_respects_local_token_budget():
     p = _ScriptProvider([_contract_error(input_tokens=7, output_tokens=2)])
     h.provider = p
 
-    with patch.dict(os.environ, {"COLLIE_MAX_TOTAL_TOKENS": "9"}), patch("time.sleep") as sleep:
+    with patch.dict(os.environ, {"COLLIE_MAX_TOTAL_TOKENS": "9"}), _loop_backoff() as sleep:
         res = h.run("contract_token_cap", "go")
 
     assert p.calls == 1 and res.model_calls == 1
@@ -567,7 +587,7 @@ def test_transport_retry_and_contract_repair_use_separate_bounded_policies():
     h.provider = p
 
     slept = []
-    with patch("time.sleep", lambda seconds: slept.append(seconds)):
+    with _loop_backoff(lambda seconds: slept.append(seconds)):
         res = h.run("retry_then_contract", "go")
 
     assert res.answer == "done" and not res.error
@@ -596,7 +616,7 @@ def test_loop_model_call_cap_stops_before_retry_or_synthesis():
     ])
     h.provider = p
 
-    with patch("time.sleep") as sleep:
+    with _loop_backoff() as sleep:
         res = h.run("call_cap", "go")
 
     assert p.calls == 1
@@ -1048,7 +1068,8 @@ def test_budget_off_by_default():
         input_tokens = 10**9; output_tokens = 10**9
     assert L._budget_exceeded("claude-opus-4-8", T()) is False, "no ceiling set -> never exceeded"
 
-def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap(monkeypatch):
+def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap():
+    from unittest.mock import patch
     from harness import loop as L
 
     class T:
@@ -1057,13 +1078,13 @@ def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap(monke
         cache_read = 0
         cache_creation = 0
 
-    monkeypatch.setenv("COLLIE_MAX_COST", "0.01")
-    monkeypatch.delenv("COLLIE_MAX_TOTAL_TOKENS", raising=False)
-    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=False) is True
-    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is False
+    with patch.dict(os.environ, {"COLLIE_MAX_COST": "0.01"}):
+        os.environ.pop("COLLIE_MAX_TOTAL_TOKENS", None)
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=False) is True
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is False
 
-    monkeypatch.setenv("COLLIE_MAX_TOTAL_TOKENS", "100")
-    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is True
+        os.environ["COLLIE_MAX_TOTAL_TOKENS"] = "100"
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is True
 
 def test_loop_whiteflag_rescue_and_restore():
     """sphinx-10435 regression lock: a model that edits, REVERTS itself, then insists on
