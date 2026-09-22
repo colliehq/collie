@@ -782,13 +782,124 @@ def test_deleting_a_conversation_withdraws_an_undelivered_claim(web):
     code, refused = _get(base, token, "/api/delete/" + sid)
     assert code == 409 and refused["ok"] is False and refused["pending"] == 1
     assert [row["id"] for row in refused["entries"]] == ["req-1"]
+    # The refusal is also where the crash gets settled: the delete holds the lease,
+    # so the claim left by the dead executor must already have been returned to
+    # pending against the journal.  A request still reported as claimed here is why
+    # a later discard cannot withdraw it, so name that state rather than letting the
+    # second call fail with a bare status code.
+    assert [row["state"] for row in refused["entries"]] == ["pending"], refused
+    assert task_inbox.get(sid, "req-1")["state"] == "pending"
     assert sessions.load(sid) is not None, "nothing was deleted"
 
     code, gone = _get(base, token, "/api/delete/" + sid + "?discard_pending=1")
-    assert code == 200 and gone["ok"] is True and gone["canceled"] == ["req-1"], gone
+    assert code == 200 and gone["ok"] is True and gone["canceled"] == ["req-1"]
     assert sessions.load(sid) is None
     assert task_inbox.get(sid, "req-1")["state"] == "canceled"
     assert task_inbox.list_entries(sid, states=task_inbox.OPEN_STATES) == []
 
     code, pending = _get(base, token, "/api/task-inbox/pending")
     assert code == 200 and [row["session"] for row in pending["sessions"]] == []
+
+
+# ------------------------------------------- answering a delete without still owning it
+
+def _lease_is_free(session):
+    """Can another thread take `session`'s lease right now?  Answered, not waited for.
+
+    This is the next HTTP request's question, asked from the same place it asks
+    it: a different thread, never blocking, and never taking a lease away from
+    whoever holds it.  The probe joins before it answers, so there is nothing to
+    time out or sleep on.
+    """
+    answer = []
+
+    def probe():
+        from harness import session_owner
+        lease = session_owner.try_acquire(session, label="release-order-probe")
+        answer.append(lease is not None)
+        if lease is not None:
+            lease.release()
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    thread.join(timeout=30)
+    assert answer, "the probe thread never answered for %s" % session
+    return answer[0]
+
+
+@pytest.fixture
+def delete_replies(monkeypatch):
+    """Every ``/api/delete/`` answer, with the lease's state as the bytes go out.
+
+    The check has to happen at the send, not after the handler returns: the bytes
+    are what release the client to make its next request, so a lease held past
+    this point is a lease held *during* a request that will be refused for it.
+    """
+    from harness import webapp
+
+    seen = []
+    original = webapp.Handler._send_json
+
+    def _send_json(self, obj, code=200, **kwargs):
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/delete/"):
+            session = urllib.parse.unquote(path[len("/api/delete/"):])
+            seen.append({"code": code, "lease_free": _lease_is_free(session), "body": obj})
+        return original(self, obj, code, **kwargs)
+
+    monkeypatch.setattr(webapp.Handler, "_send_json", _send_json)
+    return seen
+
+
+def test_a_delete_lets_go_of_the_session_before_it_answers(web, delete_replies):
+    """The refusal and the delete both answer with the session already free.
+
+    A delete decides everything under the lease and then flushed its answer while
+    still holding it, so the repeat the refusal itself asks for — the same client,
+    on the next connection and therefore the next server thread — could arrive
+    before the handler's ``finally`` ran and be told "this conversation is
+    running" about a conversation nothing was executing.  That is a false busy:
+    the lease is real, so it cannot be waited for or stolen and a retry would only
+    hide it.  What changes is the order — released, then sent.
+    """
+    from harness import sessions
+
+    base, token, state = web
+    sid = "inbox-delete-release-order"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "finish the migration")
+
+    code, refused = _get(base, token, "/api/delete/" + sid)
+    assert code == 409 and refused["ok"] is False and refused["pending"] == 1
+    code, gone = _get(base, token, "/api/delete/" + sid + "?discard_pending=1")
+    assert code == 200 and gone["ok"] is True and gone["canceled"] == ["req-1"]
+    assert sessions.load(sid) is None
+
+    assert [reply["code"] for reply in delete_replies] == [409, 200]
+    assert [reply["lease_free"] for reply in delete_replies] == [True, True], delete_replies
+
+
+def test_the_delete_release_probe_still_sees_a_session_someone_else_owns(web,
+                                                                        delete_replies):
+    """The other half of the previous test: the probe can say "no".
+
+    A check that cannot fail would let the release order rot back, so hold the
+    lease in a process this server has no say over.  The refusal is the true one —
+    the session really is owned — and the probe reports it as owned at the send.
+    """
+    from harness import sessions
+
+    base, token, state = web
+    sid = "inbox-delete-really-busy"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+
+    child = _hold_lease_in_another_process(state, sid)
+    try:
+        code, busy = _get(base, token, "/api/delete/" + sid)
+        assert code == 409 and "running" in busy["error"]
+    finally:
+        child.terminate(); child.wait(timeout=30)
+
+    assert [reply["code"] for reply in delete_replies] == [409]
+    assert [reply["lease_free"] for reply in delete_replies] == [False], delete_replies
+    assert sessions.load(sid) is not None

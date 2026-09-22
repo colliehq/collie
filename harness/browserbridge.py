@@ -28,7 +28,8 @@ import time
 import urllib.parse
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from . import plat
 from .tools import Tool

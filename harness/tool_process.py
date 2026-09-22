@@ -315,6 +315,8 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
             reap()
         return True, ""
     except OSError as e:
+        listing = subprocess.run(['/bin/ps','-axo','pid=,ppid=,pgid=,state='],capture_output=True,text=True,timeout=5)
+        print('KILL ERROR GROUP',pgid,str(e),[r for r in listing.stdout.splitlines() if len(r.split())>=3 and r.split()[2]==str(pgid)],flush=True)
         return False, "%s: %s" % (type(e).__name__, e)
     if reap is not None:
         reap()
@@ -325,6 +327,8 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
         except ProcessLookupError:
             return True, ""
         except PermissionError as e:
+            listing = subprocess.run(['/bin/ps','-axo','pid=,ppid=,pgid=,state='],capture_output=True,text=True,timeout=5)
+            print('PROBE ERROR GROUP',pgid,str(e),[r for r in listing.stdout.splitlines() if len(r.split())>=3 and r.split()[2]==str(pgid)],flush=True)
             return False, "%s: %s" % (type(e).__name__, e)
         if time.monotonic() >= deadline:
             listing = subprocess.run(['/bin/ps','-axo','pid=,ppid=,pgid=,state='], capture_output=True,text=True,timeout=5)

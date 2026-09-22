@@ -79,7 +79,8 @@ def _scope(cwd: str) -> str:
     the scope after this one hid everything learned here from the same repo's CLI and Slack dogs."""
     from .memory import project_scope
     return project_scope(cwd)
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from .recorder import note_host_error
 
@@ -2597,6 +2598,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(
                         {"ok": False, "error": "this conversation is running; stop it "
                                                "before deleting it"}, 409)
+
+                def reply(obj, code: int = 200):
+                    """Answer a delete: decided under the lease, sent without it.
+
+                    Every caller below has finished its mutations by the time it
+                    builds `obj`, and the client's next request — a repeat with
+                    ``discard_pending=1`` after a refusal is the ordinary one —
+                    arrives on another thread as soon as these bytes land.  A
+                    lease still held until this handler's ``finally`` would
+                    answer that request "this conversation is running" for a
+                    conversation nothing is executing.  Releasing is idempotent,
+                    so the ``finally`` stays a real safeguard for the paths that
+                    leave by raising.
+                    """
+                    lease.release()
+                    return self._send_json(obj, code)
+
                 try:
                     try:
                         if task_inbox.list_entries(sid, states=("claimed",), limit=1):
@@ -2611,7 +2629,7 @@ class Handler(BaseHTTPRequestHandler):
                             web_tasks.reconcile_open_claims(sid, lease)
                     except (task_inbox.InboxError, session_owner.OwnershipRequired,
                             OSError) as exc:
-                        return self._send_json(
+                        return reply(
                             {"ok": False, "error": "this conversation's accepted requests "
                                                    "could not be read, so it was not "
                                                    "deleted: %s" % exc}, 409)
@@ -2642,14 +2660,14 @@ class Handler(BaseHTTPRequestHandler):
                             # evidence about what became of a request nothing can
                             # withdraw.  Deleting it would trade a recoverable
                             # conversation for a record nobody can settle.
-                            return self._send_json(
+                            return reply(
                                 {"ok": False, "pending": len(exc.unwithdrawable),
                                  "canceled": [],
                                  "error": "%d accepted request(s) in this conversation "
                                           "could not be withdrawn, so it was not deleted; "
                                           "open it and clear them first"
                                           % len(exc.unwithdrawable)}, 409)
-                        return self._send_json(
+                        return reply(
                             {"ok": False, "pending": len(exc.entries),
                              "entries": [web_tasks.public_entry(e) for e in exc.entries],
                              "error": "%d accepted request(s) are still waiting in this "
@@ -2660,24 +2678,23 @@ class Handler(BaseHTTPRequestHandler):
                         if journal_before and sessions.load_checked(sid)["status"] == "missing":
                             # The failure came after the journal went.  Saying it
                             # was not deleted would be inventing a conversation.
-                            return self._send_json(
+                            return reply(
                                 {"ok": False, "deleted": True,
                                  "error": "this conversation's transcript was removed "
                                           "before the deletion failed, so it stays "
                                           "deleted: %s" % exc}, 500)
-                        return self._send_json(
+                        return reply(
                             {"ok": False, "error": "this conversation's accepted requests "
                                                    "could not be read, so it was not "
                                                    "deleted: %s" % exc}, 409)
                     if removed or not closure.removed:
                         # Either it plainly worked, or the transcript is still
                         # there and the conversation is open again.
-                        return self._send_json({"ok": removed,
-                                                "canceled": closure.canceled})
+                        return reply({"ok": removed, "canceled": closure.canceled})
                     # The transcript is gone but the delete reported failure, so
                     # the receipt may not say the conversation was preserved: it
                     # stays closed and refuses new input.
-                    return self._send_json(
+                    return reply(
                         {"ok": False, "deleted": True, "canceled": closure.canceled,
                          "error": "this conversation's transcript was removed, but the "
                                   "deletion could not be completed; it stays deleted and "
