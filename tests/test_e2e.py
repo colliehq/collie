@@ -21,6 +21,33 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness import e2e                                            # noqa: E402
 
+
+def _utf8_report():
+    """Give this file's report a stream that can carry the names of its own checks.
+
+    These checks are named in the characters they are about — "a server→client frame cannot be
+    reflected as client→server", "a SWAPPED desktop key fails the tag — MITM detected". Redirected
+    stdout on Windows is the ANSI code page (cp1252 on the CI runners), where `print` of U+2192
+    raises UnicodeEncodeError: the file exited 1 halfway through a passing run and CI reported
+    "e2e FAIL" about crypto that was entirely green. The crypto assertions are byte comparisons and
+    were never in question, so widen the report rather than rename what it checks.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if (getattr(stream, "encoding", "") or "").lower().replace("-", "") in ("utf8", "cp65001"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            try:
+                # A stream that cannot become UTF-8 (a test double, an unusual wrapper) must still
+                # not turn a label into a crash: escape what it cannot carry, never drop it.
+                stream.reconfigure(errors="backslashreplace")
+            except Exception:
+                pass
+
+
+_utf8_report()
+
 _fails = []
 
 
@@ -188,7 +215,9 @@ def write_vectors(path):
         "chunk_nonce": b64(nonce),
         "chunk_sealed": b64(ct),
     }
-    with open(path, "w") as f:
+    # Explicit UTF-8: the Swift half (Tests/E2ECheck) reads these vectors as UTF-8, so the file must
+    # not be written in whatever code page the machine that generated it happened to have.
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(vectors, f, indent=2)
     print("  wrote cross-language vectors -> %s" % path)
 

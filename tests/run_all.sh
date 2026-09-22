@@ -30,6 +30,27 @@ if [ -z "$PY" ]; then
   echo "ERROR: Python 3 is required to run the regression suites" >&2
   exit 2
 fi
+
+# One standalone check, with its output kept for the case that needs it. `>/dev/null 2>&1` made
+# every failure look identical and unactionable: a UnicodeEncodeError that killed tests/test_e2e.py
+# on its own check name left "e2e FAIL" in the Windows CI log and nothing else — no traceback, no
+# failing label, no exit code, nothing to distinguish a broken relay from a console that cannot
+# print an arrow. A green run stays as quiet as it was; a failure prints the tail of what the
+# script actually said, indented under its line.
+#   check_script <label> <command...>       (returns the script's own exit status)
+check_script() {
+  local label="$1"; shift
+  local out status
+  out=$("$@" 2>&1); status=$?
+  if [ "$status" = "0" ]; then
+    echo "  $label OK"
+  else
+    echo "  $label FAIL (exit $status)"
+    printf '%s\n' "$out" | tail -25 | sed 's/^/      /'
+  fi
+  return $status
+}
+
 rc=0
 NODE_OK=0
 if command -v node >/dev/null 2>&1; then
@@ -53,32 +74,32 @@ echo "── core component tests (Python) ────────────�
 [ "${PIPESTATUS[0]}" = "0" ] || rc=1
 
 echo "── verifier protocol (done-check equivalence) ───────────"
-if "$PY" tests/test_verifier.py >/dev/null 2>&1; then echo "  verifier OK"; else echo "  verifier FAIL"; rc=1; fi
-if "$PY" tests/test_observe.py >/dev/null 2>&1; then echo "  observe (real-socket e2e) OK"; else echo "  observe FAIL"; rc=1; fi
-if "$PY" tests/test_actions.py >/dev/null 2>&1; then echo "  actions (confirm/executor/receipt) OK"; else echo "  actions FAIL"; rc=1; fi
-if "$PY" tests/test_jobs.py >/dev/null 2>&1; then echo "  jobs (lifecycle/registry/executor) OK"; else echo "  jobs FAIL"; rc=1; fi
-if "$PY" tests/test_leash.py >/dev/null 2>&1; then echo "  leash (authority allow/ask/deny) OK"; else echo "  leash FAIL"; rc=1; fi
-if "$PY" tests/test_capabilities.py >/dev/null 2>&1; then echo "  capabilities (note.append live e2e) OK"; else echo "  capabilities FAIL"; rc=1; fi
-if "$PY" tests/test_scheduler.py >/dev/null 2>&1; then echo "  scheduler (durable wait/catch-up) OK"; else echo "  scheduler FAIL"; rc=1; fi
-if "$PY" tests/test_gate_freshness.py >/dev/null 2>&1; then echo "  gate freshness (loop regression) OK"; else echo "  gate freshness FAIL"; rc=1; fi
-if "$PY" tests/test_mandate.py >/dev/null 2>&1; then echo "  mandate (NL compiler) OK"; else echo "  mandate FAIL"; rc=1; fi
-if "$PY" tests/test_research.py >/dev/null 2>&1; then echo "  research (web capability) OK"; else echo "  research FAIL"; rc=1; fi
-if "$PY" tests/test_everyday.py >/dev/null 2>&1; then echo "  everyday (translate/summarize/reminder/note.list) OK"; else echo "  everyday FAIL"; rc=1; fi
-if "$PY" tests/test_jobsweb.py >/dev/null 2>&1; then echo "  jobs web (dashboard + CSRF) OK"; else echo "  jobs web FAIL"; rc=1; fi
-if "$PY" tests/test_cli_jobs.py >/dev/null 2>&1; then echo "  cli jobs (inbox/confirm/receipts) OK"; else echo "  cli jobs FAIL"; rc=1; fi
-if "$PY" tests/test_plat.py >/dev/null 2>&1; then echo "  plat (OS layer: detect/kill_tree/rmtree/open_excl) OK"; else echo "  plat FAIL"; rc=1; fi
-if "$PY" tests/test_mission.py >/dev/null 2>&1; then echo "  mission (multi-step campaign: plan/loop/gate/hand-off) OK"; else echo "  mission FAIL"; rc=1; fi
-if "$PY" tests/test_missionweb.py >/dev/null 2>&1; then echo "  mission web (NL front-door service: start/confirm/resume) OK"; else echo "  mission web FAIL"; rc=1; fi
-if "$PY" tests/test_primitives.py >/dev/null 2>&1; then echo "  primitives (real: research/compose/observe/web.submit+verify/web.send) OK"; else echo "  primitives FAIL"; rc=1; fi
-if "$PY" tests/test_router.py >/dev/null 2>&1; then echo "  router (front-door classify: chat/code/mission + threshold/abstain/override) OK"; else echo "  router FAIL"; rc=1; fi
-if COLLIE_SKIP_NET=1 "$PY" tests/test_update.py >/dev/null 2>&1; then echo "  update (version compare + refuses unsigned/tampered downloads) OK"; else echo "  update FAIL"; rc=1; fi
-if "$PY" tests/test_platform_purity.py >/dev/null 2>&1; then echo "  platform purity (one codebase, three OSes: no unguarded Windows-only API) OK"; else echo "  platform purity FAIL"; rc=1; fi
-if "$PY" tests/test_desktop.py >/dev/null 2>&1; then echo "  desktop (ambient widgets/music: clean/lrc/intent/config/pick/resolve caps) OK"; else echo "  desktop FAIL"; rc=1; fi
-if "$PY" tests/test_desktopweb.py >/dev/null 2>&1; then echo "  desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate) OK"; else echo "  desktop web FAIL"; rc=1; fi
+check_script "verifier" "$PY" tests/test_verifier.py || rc=1
+check_script "observe (real-socket e2e)" "$PY" tests/test_observe.py || rc=1
+check_script "actions (confirm/executor/receipt)" "$PY" tests/test_actions.py || rc=1
+check_script "jobs (lifecycle/registry/executor)" "$PY" tests/test_jobs.py || rc=1
+check_script "leash (authority allow/ask/deny)" "$PY" tests/test_leash.py || rc=1
+check_script "capabilities (note.append live e2e)" "$PY" tests/test_capabilities.py || rc=1
+check_script "scheduler (durable wait/catch-up)" "$PY" tests/test_scheduler.py || rc=1
+check_script "gate freshness (loop regression)" "$PY" tests/test_gate_freshness.py || rc=1
+check_script "mandate (NL compiler)" "$PY" tests/test_mandate.py || rc=1
+check_script "research (web capability)" "$PY" tests/test_research.py || rc=1
+check_script "everyday (translate/summarize/reminder/note.list)" "$PY" tests/test_everyday.py || rc=1
+check_script "jobs web (dashboard + CSRF)" "$PY" tests/test_jobsweb.py || rc=1
+check_script "cli jobs (inbox/confirm/receipts)" "$PY" tests/test_cli_jobs.py || rc=1
+check_script "plat (OS layer: detect/kill_tree/rmtree/open_excl)" "$PY" tests/test_plat.py || rc=1
+check_script "mission (multi-step campaign: plan/loop/gate/hand-off)" "$PY" tests/test_mission.py || rc=1
+check_script "mission web (NL front-door service: start/confirm/resume)" "$PY" tests/test_missionweb.py || rc=1
+check_script "primitives (real: research/compose/observe/web.submit+verify/web.send)" "$PY" tests/test_primitives.py || rc=1
+check_script "router (front-door classify: chat/code/mission + threshold/abstain/override)" "$PY" tests/test_router.py || rc=1
+check_script "update (version compare + refuses unsigned/tampered downloads)" env COLLIE_SKIP_NET=1 "$PY" tests/test_update.py || rc=1
+check_script "platform purity (one codebase, three OSes: no unguarded Windows-only API)" "$PY" tests/test_platform_purity.py || rc=1
+check_script "desktop (ambient widgets/music: clean/lrc/intent/config/pick/resolve caps)" "$PY" tests/test_desktop.py || rc=1
+check_script "desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate)" "$PY" tests/test_desktopweb.py || rc=1
 
 echo "── model catalog + codex provider (offline) ─────────────"
 if catalog_out=$("$PY" tests/test_catalog.py 2>&1); then echo "  catalog OK"; else echo "  catalog FAIL"; echo "$catalog_out" | tail -30 | sed 's/^/      /'; rc=1; fi
-if "$PY" tests/test_codex_oauth.py >/dev/null 2>&1; then echo "  codex_oauth OK"; else echo "  codex_oauth FAIL"; rc=1; fi
+check_script "codex_oauth" "$PY" tests/test_codex_oauth.py || rc=1
 
 echo "── renderer tests (JS) ──────────────────────────────────"
 if [ "$NODE_OK" = "1" ]; then
@@ -97,7 +118,7 @@ else
 fi
 
 echo "── browser bridge tools (batching / spaces / warnings) ──"
-if "$PY" tests/test_browserbridge.py >/dev/null 2>&1; then echo "  browserbridge OK"; else echo "  browserbridge FAIL"; rc=1; fi
+check_script "browserbridge" "$PY" tests/test_browserbridge.py || rc=1
 
 echo "── browser, LIVE (opt-in: COLLIE_BROWSER_LIVE=1 + extension) ─"
 # The checks stubs cannot make — does CDP input reach a background tab, is a cross-origin iframe
@@ -125,30 +146,30 @@ else
 fi
 
 echo "── phone notifications: when a run is worth a buzz ──────"
-if "$PY" tests/test_notify.py >/dev/null 2>&1; then echo "  notify OK"; else echo "  notify FAIL"; rc=1; fi
-if "$PY" tests/test_pairprompt.py >/dev/null 2>&1; then echo "  pairprompt OK"; else echo "  pairprompt FAIL"; rc=1; fi
-if "$PY" tests/test_e2e_persist.py >/dev/null 2>&1; then echo "  e2e_persist OK"; else echo "  e2e_persist FAIL"; rc=1; fi
-if "$PY" tests/test_playhere.py >/dev/null 2>&1; then echo "  playhere OK"; else echo "  playhere FAIL"; rc=1; fi
+check_script "notify" "$PY" tests/test_notify.py || rc=1
+check_script "pairprompt" "$PY" tests/test_pairprompt.py || rc=1
+check_script "e2e_persist" "$PY" tests/test_e2e_persist.py || rc=1
+check_script "playhere" "$PY" tests/test_playhere.py || rc=1
 if app_out=$("$PY" tests/test_app_port.py 2>&1); then echo "  app_port OK"; else echo "  app_port FAIL"; echo "$app_out" | tail -20 | sed 's/^/      /'; rc=1; fi
-if "$PY" tests/test_output_encoding.py >/dev/null 2>&1; then echo "  output_encoding OK"; else echo "  output_encoding FAIL"; rc=1; fi
-if "$PY" tests/test_data_dir.py >/dev/null 2>&1; then echo "  data_dir OK"; else echo "  data_dir FAIL"; rc=1; fi
-if "$PY" tests/test_model_pin.py >/dev/null 2>&1; then echo "  model_pin OK"; else echo "  model_pin FAIL"; rc=1; fi
-if "$PY" tests/test_no_console_flash.py >/dev/null 2>&1; then echo "  no_console_flash OK"; else echo "  no_console_flash FAIL"; rc=1; fi
-if "$PY" tests/test_settings_fallback.py >/dev/null 2>&1; then echo "  settings_fallback OK"; else echo "  settings_fallback FAIL"; rc=1; fi
-if "$PY" tests/test_relay_keepalive.py >/dev/null 2>&1; then echo "  relay_keepalive OK"; else echo "  relay_keepalive FAIL"; rc=1; fi
-if "$PY" -m pytest -q tests/test_remote_protocol_v2.py >/dev/null 2>&1; then echo "  remote_protocol_v2 OK"; else echo "  remote_protocol_v2 FAIL"; rc=1; fi
-if "$PY" tests/test_repos_deadline.py >/dev/null 2>&1; then echo "  repos_deadline OK"; else echo "  repos_deadline FAIL"; rc=1; fi
-if "$PY" tests/test_runs_registry.py >/dev/null 2>&1; then echo "  runs_registry OK"; else echo "  runs_registry FAIL"; rc=1; fi
-if "$PY" tests/test_mirror_backlog.py >/dev/null 2>&1; then echo "  mirror_backlog OK"; else echo "  mirror_backlog FAIL"; rc=1; fi
-if "$PY" tests/test_worktree.py >/dev/null 2>&1; then echo "  worktree OK"; else echo "  worktree FAIL"; rc=1; fi
-if "$PY" tests/test_mcp_catalog.py >/dev/null 2>&1; then echo "  mcp_catalog OK"; else echo "  mcp_catalog FAIL"; rc=1; fi
-if "$PY" tests/test_mcp_confidential.py >/dev/null 2>&1; then echo "  mcp_confidential OK"; else echo "  mcp_confidential FAIL"; rc=1; fi
-if "$PY" tests/test_slackbot.py >/dev/null 2>&1; then echo "  slackbot OK"; else echo "  slackbot FAIL"; rc=1; fi
-if "$PY" tests/test_slack_guard.py >/dev/null 2>&1; then echo "  slack guard (parent/process-tree ownership) OK"; else echo "  slack guard FAIL"; rc=1; fi
-if "$PY" tests/test_slack_setup.py >/dev/null 2>&1; then echo "  slack setup (one app per dog) OK"; else echo "  slack setup FAIL"; rc=1; fi
-if "$PY" tests/test_dogmail.py >/dev/null 2>&1; then echo "  dog mail (sealed to the dog, replay-proof) OK"; else echo "  dog mail FAIL"; rc=1; fi
-if "$PY" tests/test_dogmail_wire.py >/dev/null 2>&1; then echo "  dog mail wire (python ↔ worker agree on the bytes) OK"; else echo "  dog mail wire FAIL"; rc=1; fi
-if "$PY" tests/test_packaging_facts.py >/dev/null 2>&1; then echo "  packaging OK"; else echo "  packaging FAIL"; rc=1; fi
+check_script "output_encoding" "$PY" tests/test_output_encoding.py || rc=1
+check_script "data_dir" "$PY" tests/test_data_dir.py || rc=1
+check_script "model_pin" "$PY" tests/test_model_pin.py || rc=1
+check_script "no_console_flash" "$PY" tests/test_no_console_flash.py || rc=1
+check_script "settings_fallback" "$PY" tests/test_settings_fallback.py || rc=1
+check_script "relay_keepalive" "$PY" tests/test_relay_keepalive.py || rc=1
+check_script "remote_protocol_v2" "$PY" -m pytest -q tests/test_remote_protocol_v2.py || rc=1
+check_script "repos_deadline" "$PY" tests/test_repos_deadline.py || rc=1
+check_script "runs_registry" "$PY" tests/test_runs_registry.py || rc=1
+check_script "mirror_backlog" "$PY" tests/test_mirror_backlog.py || rc=1
+check_script "worktree" "$PY" tests/test_worktree.py || rc=1
+check_script "mcp_catalog" "$PY" tests/test_mcp_catalog.py || rc=1
+check_script "mcp_confidential" "$PY" tests/test_mcp_confidential.py || rc=1
+check_script "slackbot" "$PY" tests/test_slackbot.py || rc=1
+check_script "slack guard (parent/process-tree ownership)" "$PY" tests/test_slack_guard.py || rc=1
+check_script "slack setup (one app per dog)" "$PY" tests/test_slack_setup.py || rc=1
+check_script "dog mail (sealed to the dog, replay-proof)" "$PY" tests/test_dogmail.py || rc=1
+check_script "dog mail wire (python ↔ worker agree on the bytes)" "$PY" tests/test_dogmail_wire.py || rc=1
+check_script "packaging" "$PY" tests/test_packaging_facts.py || rc=1
 
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
@@ -178,19 +199,19 @@ fi
 
 echo "── remote E2E crypto (zero-knowledge relay) ─────────────"
 if "$PY" -c "import cryptography" >/dev/null 2>&1; then
-  if "$PY" tests/test_e2e.py >/dev/null 2>&1; then echo "  e2e OK"; else echo "  e2e FAIL"; rc=1; fi
+  check_script "e2e" "$PY" tests/test_e2e.py || rc=1
 else
   echo "  e2e SKIP (needs collie-harness[remote])"
 fi
 
 echo "── pair code (collie's own optical format) ──────────────"
-if "$PY" tests/test_paircode.py >/dev/null 2>&1; then echo "  paircode OK"; else echo "  paircode FAIL"; rc=1; fi
+check_script "paircode" "$PY" tests/test_paircode.py || rc=1
 
 echo "── QR encoder (fallback pairing code) ───────────────────"
-if "$PY" tests/test_qr.py >/dev/null 2>&1; then echo "  qr OK"; else echo "  qr FAIL"; rc=1; fi
+check_script "qr" "$PY" tests/test_qr.py || rc=1
 
 echo "── web --lan host guard (phone pairing) ─────────────────"
-if "$PY" tests/test_web_lan.py >/dev/null 2>&1; then echo "  web --lan OK"; else echo "  web --lan FAIL"; rc=1; fi
+check_script "web --lan" "$PY" tests/test_web_lan.py || rc=1
 
 echo "── all collected pytest regressions ─────────────────────"
 # Many files are written as bare `def test_*` with no __main__ block, so `"$PY" tests/x.py` imports
@@ -212,22 +233,30 @@ else
 fi
 
 echo "── what collie slack does with an ask ───────────────────"
-if "$PY" tests/test_slack_worker.py >/dev/null 2>&1; then echo "  slack worker OK"; else echo "  slack worker FAIL"; rc=1; fi
-if "$PY" tests/test_whoami.py >/dev/null 2>&1; then echo "  whoami (which dog is this) OK"; else echo "  whoami FAIL"; rc=1; fi
-if "$PY" tests/test_slack_answer.py >/dev/null 2>&1; then echo "  slack answer (executed) OK"; else echo "  slack answer FAIL"; rc=1; fi
+check_script "slack worker" "$PY" tests/test_slack_worker.py || rc=1
+check_script "whoami (which dog is this)" "$PY" tests/test_whoami.py || rc=1
+check_script "slack answer (executed)" "$PY" tests/test_slack_answer.py || rc=1
 
 echo "── a face per dog (deterministic logo variants) ─────────"
-if "$PY" tests/test_avatar.py >/dev/null 2>&1; then echo "  avatar OK"; else echo "  avatar FAIL"; rc=1; fi
+check_script "avatar" "$PY" tests/test_avatar.py || rc=1
 
 echo "── which directories are a user's projects (star-map) ───"
-if "$PY" tests/test_repo_discovery.py >/dev/null 2>&1; then echo "  repo discovery OK"; else echo "  repo discovery FAIL"; rc=1; fi
+check_script "repo discovery" "$PY" tests/test_repo_discovery.py || rc=1
 
 echo "── what the star-map shows when you just open it ────────"
-if "$PY" tests/test_map_landing.py >/dev/null 2>&1; then echo "  map landing OK"; else echo "  map landing FAIL"; rc=1; fi
+check_script "map landing" "$PY" tests/test_map_landing.py || rc=1
 
 echo "── CLI surfaces (run/dashboard/repl/tui/acp/bridge, mock) ─"
-"$PY" tests/surfaces_test.py 2>&1 | grep -E "PASS|FAIL|SURFACES:"
-[ "${PIPESTATUS[0]}" = "0" ] || rc=1
+# Same rule as the GUI suite: the grep is for the happy path, and a failure gets everything. Piping
+# straight into it meant a suite that died before its first PASS — an import error, a decode error
+# in the harness itself — left the section header and nothing else.
+surfaces_out=$("$PY" tests/surfaces_test.py 2>&1); surfaces_rc=$?
+printf '%s\n' "$surfaces_out" | grep -E "PASS|FAIL|SKIP|SURFACES:"
+if [ "$surfaces_rc" != "0" ]; then
+  echo "  surfaces FAIL (exit $surfaces_rc) — tail of the full output:"
+  printf '%s\n' "$surfaces_out" | tail -25 | sed 's/^/      /'
+  rc=1
+fi
 
 echo "── selftest (mock provider, \$0 — informational) ─────────"
 # NOTE: mock can't actually count files, so count_py fails by construction -> 2/3 is the
