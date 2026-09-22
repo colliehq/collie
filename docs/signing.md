@@ -4,6 +4,28 @@ This page describes the release path implemented by
 `.github/workflows/release.yml`. A downloadable release is built from its public tagged commit on
 GitHub-hosted runners after the complete Python, Node, and browser quality gate passes.
 
+## Public build location
+
+Collie is MIT-licensed. Official builds, release rehearsals, CI, and documentation deployment run
+in the public [colliehq/collie repository](https://github.com/colliehq/collie/actions), using
+GitHub-hosted Windows, macOS, and Linux runners. The repository has no self-hosted runner dependency.
+
+| Workflow | What it builds or validates |
+| --- | --- |
+| CI | Complete Windows, macOS, and Linux test gates |
+| Release | Windows installer, macOS arm64 DMG, Python distributions, VS Code and browser extensions |
+| Docs | Strict MkDocs build and GitHub Pages deployment |
+
+Maintainers can build all release packages without publishing by running:
+
+```bash
+gh workflow run release.yml --repo colliehq/collie --ref main
+```
+
+For a candidate build, replace `main` with its pushed branch. Build logs and artifacts appear on
+the public Actions run. A release tag must be pushed to `https://github.com/colliehq/collie.git`
+explicitly; a checkout's `origin` can point at a different fork.
+
 ## Published artifacts
 
 A tagged release contains:
@@ -11,11 +33,13 @@ A tagged release contains:
 - **`Collie-Setup.exe`** for Windows, signed with Azure Artifact Signing;
 - **`Collie-arm64.dmg`** for Apple-silicon Macs, Developer ID signed, notarised, and stapled;
 - **`Collie-VSCode.vsix`** for VS Code;
+- the credential-free browser extension ZIP;
 - the Python wheel and source distribution.
 
-Stable tags additionally publish the wheel and source distribution to PyPI through its OpenID
-Connect Trusted Publishing flow. Prerelease tags remain GitHub-only until their channel policy is
-explicitly changed.
+Stable tags additionally attempt a PyPI upload through its OpenID Connect Trusted Publishing
+flow, which requires a matching publisher configuration. The v0.27.0 PyPI upload was rejected with
+`invalid-publisher`; its verified Python packages are available from GitHub Releases. Prerelease
+tags remain GitHub-only until their channel policy is explicitly changed.
 
 The canonical download location is the
 [GitHub Releases page](https://github.com/colliehq/collie/releases). A manual workflow run may build

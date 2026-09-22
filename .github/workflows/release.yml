@@ -1,9 +1,12 @@
 name: Release
 
-# Cut a release by pushing a version tag that matches harness/__init__.py:
-#   git tag v0.19.0 && git push origin v0.19.0
+# Official builds run in the public colliehq/collie repository on GitHub-hosted runners.
+# Build without publishing: gh workflow run release.yml --repo colliehq/collie --ref main
+# Cut a release by pushing a version tag that matches harness/__init__.py to the canonical repo:
+#   git push https://github.com/colliehq/collie.git vX.Y.Z
+# Do not assume origin names the canonical repository; a checkout may use it for a personal fork.
 # Produces a GitHub Release with the Windows one-click installer (Collie-Setup.exe), the macOS disk
-# image (arm64), VS Code extension, and the Python wheel + sdist attached.
+# image (arm64), VS Code and browser extensions, and the Python wheel + sdist attached.
 #
 # The macOS job signs and notarises only if these repository secrets are set; without them it still
 # builds, and says plainly that the result is not shippable:

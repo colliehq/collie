@@ -14,6 +14,29 @@ placed in an end-user installer.
 | **Everyone** | `Collie-Setup.exe` — bundles Python + collie + WebView2. From the [releases page](https://github.com/colliehq/collie/releases). |
 | **Developers** | Clone the repo and run `pip install -e ".[local]"`, or install the wheel from a release; then `collie setup`. |
 
+## Official builds on GitHub
+
+Use the public [colliehq/collie Actions](https://github.com/colliehq/collie/actions) for official
+builds, release rehearsals, and cross-platform validation. The Release workflow builds the Windows
+installer, macOS arm64 DMG, Python wheel and source distribution, VS Code extension, and browser
+extension on GitHub-hosted runners. CI and documentation builds run in the same public repository.
+
+To build all release packages from `main` without publishing a version:
+
+```bash
+gh workflow run release.yml --repo colliehq/collie --ref main
+gh run list --repo colliehq/collie --workflow release.yml --limit 5
+```
+
+Use `--ref` with a pushed candidate branch for a release rehearsal. Download its packages from
+that run's **Artifacts** section. For a release, push the matching version tag explicitly to
+`https://github.com/colliehq/collie.git`; `origin` may point at a personal fork. Tagged runs publish
+only after their quality, packaging, and signing checks succeed. See the
+[release integrity guide](https://colliehq.github.io/collie/signing/) for signing and channel details.
+
+The local commands below document the underlying scripts for contributor reproduction; the
+official downloadable packages come from the public workflow.
+
 ## What's in this directory
 
 | File | Role |
