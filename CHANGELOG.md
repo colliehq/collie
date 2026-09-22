@@ -25,6 +25,16 @@
   timed-out checks no longer leave a false recovery fence because the parent retained a zombie.
 - Apply Pack file-to-directory changes consistently on POSIX and Windows while retaining conflict
   checks and refusal of linked paths. Link-cleanup tests now use each platform's correct operation.
+- Start local HTTP services without reverse DNS, preventing macOS resolver stalls in the UI,
+  browser bridge, tool execution and sign-in callbacks. Direct Web/bridge entry points handle
+  Windows output encoding even when the preferred port is occupied.
+- Release session leases before sending deletion and recovery responses, so an immediate follow-up
+  does not report a conversation as running after the prior operation has finished.
+- Keep macOS background bridge restarts from opening Chrome or replacing the clipboard.
+- Wait through transient macOS process-group probe denials after SIGKILL, still requiring confirmed
+  extinction before reporting cleanup complete. Persistent permission failures remain errors.
+- Preserve standalone test failure diagnostics and use explicit UTF-8 decoding and event-based UI
+  observations so platform checks exercise actual behavior consistently.
 
 See [the release review](docs/release-0.27.0.md) for versions, evidence and validation scope.
 

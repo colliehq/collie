@@ -79,7 +79,8 @@ def _scope(cwd: str) -> str:
     the scope after this one hid everything learned here from the same repo's CLI and Slack dogs."""
     from .memory import project_scope
     return project_scope(cwd)
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from .recorder import note_host_error
 
@@ -2597,6 +2598,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(
                         {"ok": False, "error": "this conversation is running; stop it "
                                                "before deleting it"}, 409)
+
+                def reply(obj, code: int = 200):
+                    """Answer a delete: decided under the lease, sent without it.
+
+                    Every caller below has finished its mutations by the time it
+                    builds `obj`, and the client's next request — a repeat with
+                    ``discard_pending=1`` after a refusal is the ordinary one —
+                    arrives on another thread as soon as these bytes land.  A
+                    lease still held until this handler's ``finally`` would
+                    answer that request "this conversation is running" for a
+                    conversation nothing is executing.  Releasing is idempotent,
+                    so the ``finally`` stays a real safeguard for the paths that
+                    leave by raising.
+                    """
+                    lease.release()
+                    return self._send_json(obj, code)
+
                 try:
                     try:
                         if task_inbox.list_entries(sid, states=("claimed",), limit=1):
@@ -2611,7 +2629,7 @@ class Handler(BaseHTTPRequestHandler):
                             web_tasks.reconcile_open_claims(sid, lease)
                     except (task_inbox.InboxError, session_owner.OwnershipRequired,
                             OSError) as exc:
-                        return self._send_json(
+                        return reply(
                             {"ok": False, "error": "this conversation's accepted requests "
                                                    "could not be read, so it was not "
                                                    "deleted: %s" % exc}, 409)
@@ -2642,14 +2660,14 @@ class Handler(BaseHTTPRequestHandler):
                             # evidence about what became of a request nothing can
                             # withdraw.  Deleting it would trade a recoverable
                             # conversation for a record nobody can settle.
-                            return self._send_json(
+                            return reply(
                                 {"ok": False, "pending": len(exc.unwithdrawable),
                                  "canceled": [],
                                  "error": "%d accepted request(s) in this conversation "
                                           "could not be withdrawn, so it was not deleted; "
                                           "open it and clear them first"
                                           % len(exc.unwithdrawable)}, 409)
-                        return self._send_json(
+                        return reply(
                             {"ok": False, "pending": len(exc.entries),
                              "entries": [web_tasks.public_entry(e) for e in exc.entries],
                              "error": "%d accepted request(s) are still waiting in this "
@@ -2660,24 +2678,23 @@ class Handler(BaseHTTPRequestHandler):
                         if journal_before and sessions.load_checked(sid)["status"] == "missing":
                             # The failure came after the journal went.  Saying it
                             # was not deleted would be inventing a conversation.
-                            return self._send_json(
+                            return reply(
                                 {"ok": False, "deleted": True,
                                  "error": "this conversation's transcript was removed "
                                           "before the deletion failed, so it stays "
                                           "deleted: %s" % exc}, 500)
-                        return self._send_json(
+                        return reply(
                             {"ok": False, "error": "this conversation's accepted requests "
                                                    "could not be read, so it was not "
                                                    "deleted: %s" % exc}, 409)
                     if removed or not closure.removed:
                         # Either it plainly worked, or the transcript is still
                         # there and the conversation is open again.
-                        return self._send_json({"ok": removed,
-                                                "canceled": closure.canceled})
+                        return reply({"ok": removed, "canceled": closure.canceled})
                     # The transcript is gone but the delete reported failure, so
                     # the receipt may not say the conversation was preserved: it
                     # stays closed and refuses new input.
-                    return self._send_json(
+                    return reply(
                         {"ok": False, "deleted": True, "canceled": closure.canceled,
                          "error": "this conversation's transcript was removed, but the "
                                   "deletion could not be completed; it stays deleted and "
@@ -2969,13 +2986,13 @@ class Handler(BaseHTTPRequestHandler):
                             try:
                                 recovery = sessions.recovery_state(sid)
                                 if recovery and recovery.get("recovery_required"):
-                                    return self._send_json({"error": "inspect the interrupted operation before moving its workspace"}, 409)
+                                    raise ValueError("inspect the interrupted operation before moving its workspace")
                                 saved = sessions.load(sid) or {}
                                 workspace = saved.get("workspace") or {}
                                 if (workspace.get("mode") == "isolated" and os.path.isdir(workspace.get("path") or "") and
                                         os.path.normcase(os.path.realpath(cwd.strip())) !=
                                         os.path.normcase(os.path.realpath(workspace["path"]))):
-                                    return self._send_json({"error": "the isolated folder still exists; apply its changes before switching projects"}, 409)
+                                    raise ValueError("the isolated folder still exists; apply its changes before switching projects")
                                 value = {"session": sid, "cwd": sessions.relocate(sid, cwd.strip())}
                             finally:
                                 lease.release()
@@ -3197,14 +3214,15 @@ class Handler(BaseHTTPRequestHandler):
                     state = sessions.reconcile_recovery(
                         sid, resolution, note=str(body.get("note") or "")[:1000], confirmed=True,
                         directory=recovery_root)
+                    reply, status = {"ok": True, "session": sid,
+                                     "state": _public_recovery(state, sid) if state else None}, 200
                 except KeyError:
-                    return self._send_json({"error": "no such session"}, 404)
+                    reply, status = {"error": "no such session"}, 404
                 except ValueError as exc:
-                    return self._send_json({"error": str(exc)}, 409)
+                    reply, status = {"error": str(exc)}, 409
                 finally:
                     lease.release()
-                return self._send_json({"ok": True, "session": sid,
-                                        "state": _public_recovery(state, sid) if state else None})
+                return self._send_json(reply, status)
             if path == "/api/doctor/repair":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -7006,6 +7024,8 @@ def main(argv=None, on_bound=None):
     bound — which is not always the one asked for, since a busy port makes this scan forward.
     A caller that needs to point something at the server (the native app window) has no other
     way to learn where it landed."""
+    from .plat import make_output_safe
+    make_output_safe()  # supervisors and app windows also call this without cli.main
     argv = list(sys.argv[1:] if argv is None else argv)
     port = 8787
     open_browser = True

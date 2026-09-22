@@ -588,6 +588,7 @@ def _terminate_owned_posix_group(pgid: int, *, proc=None,
         # unit-testable from a Windows host where ``signal.SIGKILL`` is absent.
         os.killpg(int(pgid), getattr(signal, "SIGKILL", 9))
         deadline = time.monotonic() + min(5.0, max(0.0, float(timeout_s)))
+        probe_error = ""
         while time.monotonic() < deadline:
             # A killed direct child remains a zombie until this parent reaps
             # it. killpg(..., 0) still sees that zombie, so waiting for ESRCH
@@ -602,12 +603,16 @@ def _terminate_owned_posix_group(pgid: int, *, proc=None,
                     return False, "%s: %s" % (type(exc).__name__, exc)
             try:
                 os.killpg(int(pgid), 0)
+                probe_error = ""
             except ProcessLookupError:
                 return True, ""
             except PermissionError as e:
-                return False, "%s: %s" % (type(e).__name__, e)
+                # Darwin may report EPERM during group teardown after SIGKILL.
+                # Only a later ESRCH confirms extinction; a persistent denial
+                # still fails closed at the same bounded deadline.
+                probe_error = "%s: %s" % (type(e).__name__, e)
             time.sleep(.01)
-        return False, "process group did not become extinct after SIGKILL"
+        return False, probe_error or "process group did not become extinct after SIGKILL"
     except ProcessLookupError:
         return True, ""
     except OSError as e:

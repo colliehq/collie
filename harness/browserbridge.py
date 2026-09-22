@@ -28,7 +28,8 @@ import time
 import urllib.parse
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from . import plat
 from .tools import Tool
@@ -551,6 +552,8 @@ def _await_extension(bridge, _poll=1.0):
 
 
 def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
+    from .plat import make_output_safe
+    make_output_safe()
     bridge = _Bridge()
     if not auth_off():
         token()                          # make it before the first poll can be turned away

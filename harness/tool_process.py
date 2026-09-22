@@ -319,15 +319,21 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
     if reap is not None:
         reap()
     deadline = time.monotonic() + max(0.0, float(timeout_s))
+    probe_error = ""
     while True:
         try:
             os.killpg(int(pgid), 0)
+            probe_error = ""
         except ProcessLookupError:
             return True, ""
         except PermissionError as e:
-            return False, "%s: %s" % (type(e).__name__, e)
+            # Darwin can briefly return EPERM while a successfully killed,
+            # leaderless group is disappearing. Keep waiting for ESRCH; neither
+            # EPERM nor a successful signal is itself proof of termination.
+            probe_error = "%s: %s" % (type(e).__name__, e)
         if time.monotonic() >= deadline:
-            return False, "process group still had members %.0fs after SIGKILL" % timeout_s
+            return False, (probe_error or
+                           "process group still had members %.0fs after SIGKILL" % timeout_s)
         time.sleep(.01)
 
 

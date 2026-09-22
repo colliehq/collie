@@ -38,7 +38,7 @@ import pytest
 from harness.verification import check_result_state
 
 from test_web_ui_run_status import (  # noqa: F401  (pytest fixtures)
-    TOKEN, _Fixture, _reset_fixture_state, browser, phone, server,
+    TOKEN, _Fixture, _reset_fixture_state, browser, phone, server, mark_run, await_run,
 )
 
 # ---------------------------------------------------------------- staged receipts
@@ -93,12 +93,12 @@ def route_mirror(page, frames):
 def ask(phone, text):
     """Send one message from the phone composer and wait for the run to end."""
     phone.page.fill("#input", text)
+    token = mark_run(phone.page)
     phone.page.press("#input", "Enter")
-    phone.page.wait_for_function(
-        "() => document.getElementById('send').classList.contains('stop')", timeout=8000)
-    phone.page.wait_for_function(
-        "() => !document.getElementById('send').classList.contains('stop')", timeout=8000)
-    phone.page.wait_for_timeout(150)
+    # A fulfilled SSE response can finish between two Playwright calls. Observe
+    # this send's actual start/end edges instead of sampling the transient Stop
+    # button after the run may already have ended.
+    await_run(phone.page, token)
 
 
 def open_thread(phone, title):

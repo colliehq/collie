@@ -33,6 +33,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from .httpserver import ThreadingHTTPServer
 from .providers import _parse_response_envelope
 
 
@@ -772,7 +773,7 @@ class SidecarHandler(http.server.BaseHTTPRequestHandler):
             return
 
 
-class SidecarServer(http.server.ThreadingHTTPServer):
+class SidecarServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 

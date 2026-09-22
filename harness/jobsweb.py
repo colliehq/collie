@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from . import capabilities as _caps
 from .actions import ActionStore, RefusedError

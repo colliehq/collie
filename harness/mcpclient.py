@@ -824,7 +824,8 @@ def login(name, cfg=None, timeout=300, announce=None):
                or (BYO_PORT if use_cimd else 0))
     host = str(cfg.get("redirect_host") or ("localhost" if use_cimd else "127.0.0.1"))
     try:
-        srv = http.server.HTTPServer(("127.0.0.1", want), _CB)
+        from .httpserver import HTTPServer
+        srv = HTTPServer(("127.0.0.1", want), _CB)
     except OSError as e:
         if use_cimd:
             raise RuntimeError(

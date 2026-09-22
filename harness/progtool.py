@@ -29,7 +29,8 @@ import sys
 import tempfile
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from .tools import Tool
 

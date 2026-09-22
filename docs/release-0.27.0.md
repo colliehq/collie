@@ -106,6 +106,27 @@ with inherited scratch-directory permissions. It never changes the permissions
 of an existing workspace. Owner-only private workspaces remain a known vendor
 sandbox limitation; passing the ordinary fixture does not certify that case.
 
+## Cross-platform findings
+
+Cross-platform release checks also exposed local HTTP startup waiting for reverse DNS on macOS,
+and Windows service entry points crashing when a busy-port notice reached a legacy output codec.
+Local servers now bind without reverse lookup, and Web/bridge entry points prepare their output
+streams directly. Background bridge restarts leave Chrome, Finder and the clipboard alone.
+
+Delete responses now release the session lease before becoming visible to the client. Immediate
+discard-and-delete requests can proceed without a false busy response; genuine active owners still
+block deletion. Recovery and workspace-change error responses follow the same ordering.
+
+On the macOS CI host, a successful SIGKILL could be followed briefly by EPERM from the group
+existence probe. Cleanup now keeps polling within its existing deadline and succeeds only on
+ESRCH. An initial signal refusal or a persistent probe denial still fails closed. The checks cover
+all three outcomes as well as real process cancellation and late-write prevention.
+
+The macOS Vision barcode check writes decoded results separately from framework diagnostics;
+the original QR matrices independently round-trip through ZXing and match a second encoder.
+Mobile UI tests record each send's start and end so an immediately completed SSE response cannot
+slip between samples. These changes preserve the assertions rather than retrying failed tests.
+
 ## Primary references
 
 - [OpenAI changelog](https://learn.chatgpt.com/docs/changelog)

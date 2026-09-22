@@ -133,7 +133,7 @@ def test_candidate_connection_rejects_private_network_endpoint_before_persisting
 
 
 def test_cimd_login_uses_published_client_id_and_fixed_redirect(monkeypatch):
-    import http.server
+    from harness import httpserver
     import urllib.parse
     import webbrowser
     from harness import mcpclient
@@ -151,7 +151,7 @@ def test_cimd_login_uses_published_client_id_and_fixed_redirect(monkeypatch):
         def server_close(self):
             return None
 
-    monkeypatch.setattr(http.server, "HTTPServer", FakeServer)
+    monkeypatch.setattr(httpserver, "HTTPServer", FakeServer)
     monkeypatch.setattr(webbrowser, "open", lambda _url: True)
     monkeypatch.setattr(mcpclient, "_discover_oauth", lambda _url: {
         "authorization_endpoint": "https://auth.example.test/authorize",
@@ -172,13 +172,13 @@ def test_cimd_login_uses_published_client_id_and_fixed_redirect(monkeypatch):
 
 
 def test_cimd_bind_failure_does_not_suggest_an_unpublished_port(monkeypatch):
-    import http.server
+    from harness import httpserver
     from harness import mcpclient
 
     def occupied(_address, _handler):
         raise OSError("address already in use")
 
-    monkeypatch.setattr(http.server, "HTTPServer", occupied)
+    monkeypatch.setattr(httpserver, "HTTPServer", occupied)
     monkeypatch.setattr(mcpclient, "_discover_oauth", lambda _url: {
         "authorization_endpoint": "https://auth.example.test/authorize",
         "token_endpoint": "https://auth.example.test/token",

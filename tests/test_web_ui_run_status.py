@@ -685,8 +685,8 @@ def server():
 _RUN_OBSERVER_JS = r"""
 (() => {
   if (window.__runObserver) return;
-  var seq = 0, gesture = 0, runs = [], pill = null, live = false;
-  function hasLive(cls) { return (" " + (cls || "") + " ").indexOf(" live ") >= 0; }
+  var seq = 0, gesture = 0, runs = [], pill = null, live = false, liveClass = "live";
+  function hasLive(cls) { return (" " + (cls || "") + " ").indexOf(" " + liveClass + " ") >= 0; }
   function note(now) {                       // one run = one live stretch; they never overlap
     if (now === live) return;
     live = now;
@@ -694,8 +694,9 @@ _RUN_OBSERVER_JS = r"""
     else if (runs.length) runs[runs.length - 1].end = ++seq;
   }
   function watch() {
-    pill = document.getElementById("statePill");
+    pill = document.getElementById("statePill") || document.getElementById("send");
     if (!pill) return false;
+    liveClass = pill.id === "send" ? "stop" : "live";
     note(hasLive(pill.className));
     new MutationObserver(function (records) {
       // Replay each record's prior value before reading the current one: a run that went live and
