@@ -10,6 +10,8 @@
 - Show the specific conflicting paths when a project changes after Pack review. After conflicts,
   failed writes or lost replies, require a fresh review before applying again. Preserve recovery
   details and wrap long paths on phone screens.
+- Keep protocol-conformance fixtures alive until their transport owns the process, preventing
+  intermittent Windows startup failures without weakening process-tree ownership checks.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
