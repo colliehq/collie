@@ -61,6 +61,7 @@ def main():
     env = dict(os.environ,
                COLLIE_SETTINGS_PATH=os.path.join(tmp, "settings.json"),
                COLLIE_SESSIONS_DIR=os.path.join(tmp, "sessions"),
+               COLLIE_STATE_DIR=os.path.join(tmp, "state"),
                PYTHONUNBUFFERED="1")
     env.pop("COLLIE_PROVIDER", None)          # the file decides, so the picker is not pinned
     with open(env["COLLIE_SETTINGS_PATH"], "w") as fh:

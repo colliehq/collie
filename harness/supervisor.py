@@ -321,10 +321,7 @@ class InstanceLock:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.file = open(path, "a+b")
-        self.file.seek(0, os.SEEK_END)
-        if self.file.tell() == 0:
-            self.file.write(b"\0")
-            self.file.flush()
+        # The OS can lock an empty file; initialization must not race an owner.
         self.file.seek(0)
         try:
             if os.name == "nt":

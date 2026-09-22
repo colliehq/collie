@@ -60,6 +60,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -603,7 +604,17 @@ def _instrument(runner: Any, transport: Any, snapshotter: Any = None) -> Any:
 # --- the fixture workspace --------------------------------------------------
 def _make_fixture(root: str, key: str) -> tuple[str, str]:
     """A throwaway git repo with one file in it.  Returns ``(path, note)``."""
-    path = tempfile.mkdtemp(prefix="collie-compat-%s-" % key.replace("/", "-"), dir=root)
+    prefix = "collie-compat-%s-" % key.replace("/", "-")
+    if plat.is_windows():
+        # Python 3.13+ mkdtemp installs an owner-only ACL on Windows. Codex's
+        # restricted token cannot read that fixture even when it can edit an
+        # ordinary project. This directory contains only synthetic public test
+        # code: create it with the scratch parent's inherited permissions.
+        # Never change ACLs on an existing workspace or on the scratch parent.
+        path = os.path.join(root, prefix + uuid.uuid4().hex)
+        os.mkdir(path)
+    else:
+        path = tempfile.mkdtemp(prefix=prefix, dir=root)
     with open(os.path.join(path, _FIXTURE_FILE), "w", encoding="utf-8", newline="\n") as handle:
         handle.write(_FIXTURE_BODY)
     return path, _git_init(path)

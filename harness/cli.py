@@ -1652,14 +1652,16 @@ def cmd_slack(args):
         # Provisioning takes a different set of flags, and `--cwd`/`--provider` default to
         # something on every run — passing them through would look like they meant something here.
         argv = ["setup"]
-        for flag in ("name", "config_token", "bot_token", "app_token"):
+        for flag in ("name", "config_token", "bot_token", "app_token",
+                     "presence_url", "presence_token"):
             v = getattr(args, flag, "")
             if v:
                 argv += ["--" + flag.replace("_", "-"), str(v)]
         if getattr(args, "list_dogs", False):
             argv += ["--list"]
         return slackbot.main(argv)
-    for flag in ("name", "autonomy", "cwd", "provider", "announce", "channels", "allow"):
+    for flag in ("name", "autonomy", "cwd", "provider", "announce", "channels", "allow",
+                 "presence_url"):
         v = getattr(args, flag, "")
         if v:
             argv += ["--" + flag, str(v)]
@@ -2525,7 +2527,7 @@ def cmd_prefix(args):
     from .providers import measure_prefix
     cwd = args.cwd or os.getcwd()
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-    h = make_harness(cwd, provider=provider, model=args.model, project=args.project or "demo")
+    h = make_harness(cwd, provider=provider, model=args.model, project=args.project)
     system, _msgs, meta = h.composer.build({"messages": []}, ".", cwd, h.project, h.mode)
     schemas = h.registry.active_schemas()
     measured = measure_prefix(h.provider, system, schemas)
@@ -3419,7 +3421,11 @@ def cmd_mem(args):
         print("  [embed] %s%s" % (
             m.embedder.name if m.embedder else "bm25-only",
             " (dim=%d)" % m.embedder.dim if m.embedder else ""))
-    project = args.project or "demo"
+    # search/add write and read one scope: the codebase, not the surface (memory.project_scope).
+    # Review actions keep the empty default meaning "every project", so `mem list` still shows
+    # proposals raised from anywhere on this machine.
+    from .memory import project_scope
+    project = args.project or project_scope(os.getcwd())
 
     if args.action in ("pending", "list"):
         status = "proposed" if args.action == "pending" else (args.status or None)
@@ -4359,7 +4365,8 @@ def cmd_init(args):
         else:
             print("  … generating AGENTS.md with the model (one short run)")
             provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-            h = make_harness(cwd, provider=provider, project="init")
+            from .memory import project_scope
+            h = make_harness(cwd, provider=provider, project=project_scope(cwd))
             res = h.run("init", (
                 "Explore this repository briefly (README, entry points, key modules, how tests run) "
                 "and CREATE a concise AGENTS.md at the repo root with: what the project is (2-3 "
@@ -4752,6 +4759,17 @@ def _setup_wizard(force=False):
             ("mock",            "Mock (offline demo — try the harness before connecting anything)"),
         ]
         print("Welcome to collie — one-time setup. Where should completions come from?\n")
+    # Installed provider plugins are offered in BOTH lists: someone who installed one wants it
+    # findable without already knowing its name, and the short first-run list is where a fresh
+    # machine actually gets configured. `setups` is how such a provider asks for what it needs.
+    from .providers import plugin_provider_menu
+    setups, known = {}, {v for v, _ in opts}
+    for _val, _label, _setup in plugin_provider_menu():
+        if _setup:
+            setups[_val] = _setup
+        if _val not in known:
+            opts.append((_val, _label))
+            known.add(_val)
     for i, (val, label) in enumerate(opts, 1):
         print("  %d) %s%s" % (i, label, "   ← current" if val == cur else ""))
     if not force:
@@ -4765,6 +4783,19 @@ def _setup_wizard(force=False):
         print()
         return
     pick = opts[int(c) - 1][0] if c.isdigit() and 1 <= int(c) <= len(opts) else default
+    # A plugin provider may need one more answer before it can work. Ask BEFORE saving, so a
+    # cancelled or failed enrolment never leaves PROVIDER pointing at something that cannot run.
+    if pick in setups:
+        try:
+            if setups[pick]() is False:
+                print("→ %s not configured — nothing saved." % pick)
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\n→ cancelled — nothing saved.")
+            return
+        except Exception as e:
+            print("→ %s setup failed: %s\n  nothing saved." % (pick, e))
+            return
     data = dict(st._load())            # save() replaces the whole file — merge, don't clobber
     data["PROVIDER"] = pick
     if force:                          # model id, prefilled; `-` clears back to the provider default
@@ -4864,7 +4895,9 @@ def main(argv=None):
                          "see `collie runners`")
     pr.add_argument("--verify-command", default=None,
                     help="editable objective check for Test/Required (otherwise detect from repo)")
-    pr.add_argument("--cwd", default=None); pr.add_argument("--project", default="demo")
+    # `--project` defaults to None so main() can resolve one scope per codebase
+    # (memory.project_scope); an explicit value still overrides.
+    pr.add_argument("--cwd", default=None); pr.add_argument("--project", default=None)
     pr.add_argument("-p", "--print", action="store_true", help="print only the answer")
     pr.add_argument("--json", action="store_true", help="print a JSON result")
     pr.add_argument("--stream-json", action="store_true", dest="stream_json",
@@ -4898,7 +4931,7 @@ def main(argv=None):
     pp.add_argument("--measure", action="store_true", help="(default action; accepted for clarity)")
     pp.add_argument("--provider", default=None, help="mock|anthropic|deepseek|... (env COLLIE_PROVIDER)")
     pp.add_argument("--model", default=None)
-    pp.add_argument("--cwd", default=None); pp.add_argument("--project", default="demo")
+    pp.add_argument("--cwd", default=None); pp.add_argument("--project", default=None)
     pp.set_defaults(fn=cmd_prefix)
 
     # pack: best-of-N with execution-based selection (run N isolated attempts, pick what passes)
@@ -4938,7 +4971,7 @@ def main(argv=None):
     # repl: lightweight interactive chat that keeps the full thread (and persists it as a session)
     prp = sub.add_parser("repl", help="interactive REPL that keeps the conversation thread")
     prp.add_argument("--provider", default=None); prp.add_argument("--model", default=None)
-    prp.add_argument("--cwd", default=None); prp.add_argument("--project", default="demo")
+    prp.add_argument("--cwd", default=None); prp.add_argument("--project", default=None)
     prp.add_argument("--goal", default=None)
     prp.add_argument("--continue", dest="cont", action="store_true", help="continue the latest session")
     prp.add_argument("--resume", default=None, metavar="ID", help="resume session by id")
@@ -4947,7 +4980,7 @@ def main(argv=None):
     # tui: rich full-experience terminal chat (live gate/diff/receipt timeline)
     pt = sub.add_parser("tui", help="rich terminal chat with a live tool/gate/diff timeline")
     pt.add_argument("--provider", default=None); pt.add_argument("--model", default=None)
-    pt.add_argument("--cwd", default=None); pt.add_argument("--project", default="demo")
+    pt.add_argument("--cwd", default=None); pt.add_argument("--project", default=None)
     pt.add_argument("--goal", default=None)
     pt.add_argument("--continue", dest="cont", action="store_true", help="continue the latest session")
     pt.add_argument("--resume", default=None, metavar="ID", help="resume session by id")
@@ -5008,6 +5041,10 @@ def main(argv=None):
                      help="setup: app-configuration token (xoxe.xoxp-…) from api.slack.com/apps")
     psl.add_argument("--bot-token", dest="bot_token", default="", help="setup: xoxb-… if you have it")
     psl.add_argument("--app-token", dest="app_token", default="", help="setup: xapp-… if you have it")
+    psl.add_argument("--presence-url", dest="presence_url", default="",
+                     help="Collie Presence Worker base URL; setup saves it for this dog")
+    psl.add_argument("--presence-token", dest="presence_token", default="",
+                     help="setup: per-dog Presence credential (stored privately; never put in autostart)")
     psl.add_argument("--list", dest="list_dogs", action="store_true", help="setup: show the pack")
     psl.add_argument("--name", default="", help="the name this collie answers to (kept across restarts)")
     psl.add_argument("--autonomy", default="", choices=["propose", "branch", "main"],
@@ -5082,7 +5119,7 @@ def main(argv=None):
                          "(e.g. --until \"pytest -q\")")
     pl.add_argument("--max", type=int, default=5, help="max iterations (default 5)")
     pl.add_argument("--provider", default=None); pl.add_argument("--model", default=None)
-    pl.add_argument("--cwd", default=None); pl.add_argument("--project", default="demo")
+    pl.add_argument("--cwd", default=None); pl.add_argument("--project", default=None)
     pl.set_defaults(fn=cmd_loop)
 
     pa = sub.add_parser("acp", help="run as an ACP agent over stdio (Zed/JetBrains/neovim/"
@@ -5361,7 +5398,7 @@ def main(argv=None):
         "pending", "list", "approve", "attest", "reject", "invalidate"])
     pm.add_argument("text", nargs="?", default="")
     pm.add_argument("--project", default="",
-                    help="project filter (search/add default to demo; review defaults to all)")
+                    help="project filter (search/add default to this codebase; review to all)")
     pm.add_argument("--embed", default="auto")
     pm.add_argument("--status", default=None, choices=[
         "proposed", "active", "attested", "verified", "rejected", "invalidated"],
@@ -5521,6 +5558,11 @@ def main(argv=None):
     pmcp.set_defaults(fn=cmd_mcp)
 
     args = p.parse_args(argv)
+    # One scope per codebase, resolved once. Left to the argparse defaults this said "demo"
+    # everywhere, which is a surface's name and not a project's — see memory.project_scope.
+    if hasattr(args, "project") and getattr(args, "project", None) is None:
+        from .memory import project_scope
+        args.project = project_scope(getattr(args, "cwd", None) or os.getcwd())
     # any chat surface started interactively with nothing configured gets the one-time wizard —
     # without this, a fresh install's `collie web`/`collie tui`/`collie run` silently lands on the
     # mock provider and answers with canned "Based on the tool output" nonsense. Never prompts when:

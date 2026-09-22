@@ -2389,13 +2389,18 @@ class Harness:
                         comp.error_detail or comp.text or "", comp.error_status,
                         getattr(comp, "error_code", ""))
                     retry_at = provider_retry_at(getattr(comp, "retry_at", 0))
-                    if cls == "retryable" and retry_at:
+                    if cls in ("retryable", "exhausted") and retry_at:
                         # Checkpoint instead of sleeping or spending more calls
                         # before a provider-attested quota reset. Mission owns
                         # the durable timer; a foreground run returns its reason.
+                        # `exhausted` is here too: the usage-limit envelope that
+                        # now classifies as a spent plan is the very error this
+                        # wait was built for, and reading it as anything else
+                        # would spend the reset window on doomed calls or on a
+                        # silent step down a model nobody chose.
                         res.retry_at = retry_at
-                        comp.text = "retryable: [provider quota reset at %s UTC] HTTP %d %s" % (
-                            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(retry_at)),
+                        comp.text = "%s: [provider quota reset at %s UTC] HTTP %d %s" % (
+                            cls, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(retry_at)),
                             comp.error_status, comp.error_detail or "rate limit")
                         self._emit("provider_wait", retry_at=retry_at,
                                    error_code=getattr(comp, "error_code", ""))
@@ -2478,6 +2483,8 @@ class Harness:
                             if canceled:
                                 break
                         continue
+                    # Exhaustion never changes the accepted model. A different
+                    # model needs a new explicit selection, with its own receipt.
                     # terminal / retries exhausted / overflow-already-tried: class-prefix res.error
                     # The HTTP status goes in too. Without it a recorded failure cannot be told
                     # apart afterwards: a 529 overload, a 429 rate limit and a 400 read identically
@@ -2506,6 +2513,15 @@ class Harness:
                         comp.text = "protocol: [%s] %sresponse_contract_error%s" % (
                             note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
                             (" [%s]" % reason) if reason else "")
+                    elif cls == "exhausted":
+                        # A spent plan is the one failure where the provider's own words are the
+                        # least useful part: the envelope names a plan_type and never the provider,
+                        # so "which subscription ran out, and what else do I have" — the only two
+                        # questions the reader has — are answered here or nowhere.
+                        from .providers import explain_exhausted
+                        comp.text = explain_exhausted(
+                            getattr(self.provider, "name", ""),
+                            comp.error_detail or comp.text or "", comp.error_status)
                     else:
                         known = is_known_terminal(comp.error_detail or comp.text or "")
                         note = ("not retried (fatal)" if known else

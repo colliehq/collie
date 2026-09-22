@@ -411,3 +411,15 @@ def test_a_real_anthropic_key_is_still_refused():
     """Widening the session exemption must not widen the billing rule."""
     with pytest.raises(BillingOverrideError):
         assert_no_billing_override(_parent(ANTHROPIC_API_KEY=SECRET), "claude")
+
+
+def test_current_codex_version_metadata_does_not_block_nested_worker():
+    parent = _parent(CODEX_VERSION="0.155.1", CODEX_SESSION_ID="parent-session")
+    assert_no_billing_override(parent, "codex")
+    env, receipt = child_env("codex", environ=parent)
+    assert "CODEX_VERSION" not in env
+    assert "CODEX_SESSION_ID" not in env
+    assert "CODEX_VERSION" in receipt["stripped"]
+    for dangerous in ("CODEX_API_KEY", "CODEX_BASE_URL", "CODEX_UNKNOWN_OVERRIDE"):
+        with pytest.raises(BillingOverrideError):
+            assert_no_billing_override(dict(parent, **{dangerous: SECRET}), "codex")

@@ -15,7 +15,6 @@ from test_web_ui_run_status.
 """
 import os
 import threading
-from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -23,7 +22,9 @@ import pytest
 from playwright.sync_api import expect
 
 from test_web_mission_updates_ui import stage as stage_mission
-from test_web_ui_run_status import TOKEN, WEBUI, _Fixture, browser, server, ui  # noqa: F401
+from test_web_ui_run_status import (  # noqa: F401
+    TOKEN, WEBUI, _Fixture, FixtureHTTPServer, browser, server, ui,
+)
 
 DRAFT = "Draft I typed before reloading the page"
 # Only the sources nothing but the Today dashboard reads. The queue and approvals pollers keep the
@@ -286,7 +287,7 @@ class HalfLoaded:
 def half_loaded(browser):                                          # noqa: F811
     """Opens such a page — at any address, with any boot replies held open."""
     _Split.gate.clear(); _Split.late.clear(); _Split.held = ()
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Split)
+    httpd = FixtureHTTPServer(("127.0.0.1", 0), _Split)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     address = "http://127.0.0.1:%d" % httpd.server_address[1]
     contexts = []
@@ -312,6 +313,7 @@ def half_loaded(browser):                                          # noqa: F811
         for context in contexts:
             context.close()
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_new_task_pressed_before_the_script_arrived_is_still_honoured(half_loaded):

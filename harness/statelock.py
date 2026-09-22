@@ -125,18 +125,9 @@ def _open(path: str):
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    handle = open(path, "a+b")
-    try:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            # Windows byte-range locking needs a byte to lock.
-            handle.write(b"\0")
-            handle.flush()
-        handle.seek(0)
-    except BaseException:
-        handle.close()
-        raise
-    return handle
+    # Windows can lock beyond EOF. Initializing byte 0 here would write into
+    # another process's lock during simultaneous first opens.
+    return open(path, "a+b")
 
 
 def _try_lock(handle) -> bool:

@@ -1157,5 +1157,54 @@ def test_verify_nudge_names_the_repos_own_toolchain():
     # an unknown language must not silently fall back to python
     assert "python3" not in swe._swe_assert_verify_nudge("")
 
-if __name__ == "__main__":                 # LAST, always: a guard with definitions after it
-    sys.exit(run_module(globals(), "LOOP"))  # silently skips every one of them.
+def test_overload_keeps_the_selected_model_with_bounded_retries():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    h = make_harness(os.getcwd(), provider="mock", project="selected_model", embed="hash")
+    h.max_turns = 2; h.max_retries = 1; h.retry_base = 0
+    busy = Completion(stop_reason="error", error_status=529, error_detail="overloaded_error")
+    h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-opus-5")
+    with patch("harness.catalog.fallback_model", return_value="claude-sonnet-5") as fallback:
+        res = h.run("selected_model", "go")
+    assert res.error.startswith("retryable:"), res.error
+    assert h.provider.calls == 2
+    assert h.provider.model == res.model == "claude-opus-5"
+    fallback.assert_not_called()
+
+
+def test_request_cap_does_not_allow_an_extra_model_fallback():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    h = make_harness(os.getcwd(), provider="mock", project="selected_cap", embed="hash")
+    h.max_turns = 2; h.max_retries = 3; h.retry_base = 0; h.max_model_calls = 1
+    busy = Completion(stop_reason="error", error_status=529, error_detail="overloaded_error")
+    h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-opus-5")
+    with patch("harness.catalog.fallback_model", return_value="claude-sonnet-5") as fallback:
+        res = h.run("selected_cap", "go")
+    assert h.provider.calls == 1
+    assert h.provider.model == res.model == "claude-opus-5"
+    fallback.assert_not_called()
+
+
+def test_exhausted_plan_waits_for_its_reset_without_changing_model():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    h = make_harness(os.getcwd(), provider="mock", project="selected_reset", embed="hash")
+    h.max_turns = 2; h.max_retries = 3; h.retry_base = 0
+    reset = int(time.time()) + 3600
+    spent = Completion(stop_reason="error", error_status=429,
+                       error_detail="usage_limit_reached", retry_at=reset)
+    h.provider = _ScriptProvider([spent], name="anthropic-relay", model="claude-opus-5")
+    with patch("harness.catalog.fallback_model", return_value="claude-sonnet-5") as fallback:
+        res = h.run("selected_reset", "go")
+    assert res.retry_at == reset
+    assert h.provider.calls == 1
+    assert h.provider.model == res.model == "claude-opus-5"
+    fallback.assert_not_called()
+
+
+if __name__ == "__main__":
+    sys.exit(run_module(globals(), "LOOP"))

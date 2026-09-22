@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.27.0 — Current agent runtimes and reliable release workflows
+
+- Update optional Codex and Claude Agent SDK runtimes to verified versions. Windows installers
+  supply the missing native Claude CLI with a pinned archive checksum and executable startup check.
+  The model picker recognizes a bundled SDK runtime without a separate CLI on PATH.
+- Accept Codex's new parent version metadata without misclassifying it as a billing override;
+  strip it from child environments while preserving credential and endpoint protections.
+- Preserve failed Codex SDK threads for recovery, configure its Windows workspace sandbox,
+  and make the SDK's fallback approval handler decline. SDK-only installation stays supported.
+- Keep the selected model when a provider is overloaded or its plan is exhausted. Trusted reset
+  timestamps remain durable waits and retries stay within the accepted request budget.
+- Resolve Windows Python aliases to owned interpreters, fix simultaneous cold-start locks,
+  preserve private directory traversal, and clean read-only temporary Git objects safely.
+- Unify project memory scopes and expose plugin providers consistently across setup, settings
+  and the model picker. Older live-discovered models remain searchable in a folded list.
+  The added disclosure and model counts include Simplified and Traditional Chinese translations.
+- Make legacy pytest checks report actual failures, resolve the test interpreter explicitly,
+  and validate optional SDK dependencies in the full release gate.
+- Exclude generated browser credentials from both wheel and source-distribution artifacts.
+- Initialize shared typing support before background startup to prevent a cold-start race from
+  leaving Live Copilot unavailable while the main UI appears healthy.
+
+See [the release review](docs/release-0.27.0.md) for versions, evidence and validation scope.
+
 ## v0.26.0 — Reliable agent handoffs and response accounting
 
 - The Claude Agent SDK receives the tool results selected by the context composer without a
@@ -654,6 +678,187 @@
   asserts code/metadata versions and required assets, excludes the live browser-bridge token, includes the
   OAuth adapter assets, and the installer removes only stale Collie/pip package directories before overlay.
   User state under `~/.collie` remains untouched.
+The entries below, from `v0.20.38` down to `v0.20.32 — a provider plugin can introduce itself`,
+continue the upstream `colliehq/main` numbering, which kept releasing on the `v0.20.x` line while
+this line moved on to `v0.21.0`. They all descend from `v0.20.31` and are kept in full. Note that
+the `v0.20.32` heading therefore appears twice, for two unrelated sets of changes: the unreleased
+one above was folded into `v0.21.0`, the one below is the upstream release.
+
+## v0.20.38 — the verification gate stops announcing that nothing is happening
+
+- **Idle no longer occupies the corner.** The gate has six states and only one of them —
+  `idle` — has nothing to report, yet that is the state the sidebar sat in all day: a ring, a
+  heading and two lines of copy, permanently, to say "no task yet". It now appears with a run and
+  stays afterwards as that run's evidence, including the "nothing needed verifying" outcome. What
+  it no longer does is stand there when there is nothing to stand for.
+
+  Deliberately not deleted. "Finishes only when the check goes green" is the claim the whole
+  harness is built on, and this panel is the one visible proof of it — a gate that is never seen is
+  a promise with nothing behind it. The change is to when it speaks, not whether.
+
+- **The welcome copy pointed at a corner that would now be empty.** That screen shows exactly when
+  the gate is idle, so "the verification gate keeps watch from the bottom-left corner" was about to
+  become the only untrue thing on screen. Reworded in all nine languages to say when it appears
+  rather than where it waits.
+
+- **Merged into this line:** the hide-when-idle rule was already here, reached independently, so the
+  two identical declarations became one and the reasoning above is recorded at it. The reworded
+  welcome copy did not carry over: this line's welcome screen was replaced by the Today dashboard
+  and an outcome-led welcome, so the sentence being corrected no longer exists on any surface.
+
+## v0.20.37 — a busy model costs a rung, not the answer
+
+- **An overloaded model steps down instead of ending the turn.** Spending the whole retry budget on
+  a frontier model that is overloaded and then handing back an error throws away an answer that was
+  available one rung down the entire time — and `overloaded_error` on the popular model is the
+  commonest way a correctly configured setup stops working. When retries are spent (or the plan is),
+  the loop now steps once down a family ladder — opus → sonnet → haiku — and carries on.
+
+- **Down the same provider only.** Inside one provider the plan is already paid for and the only
+  open question is which model has capacity. Crossing providers can move the bill from a flat plan
+  onto a metered key — the difference between "wait a minute" and "a charge nobody chose" — so it
+  is never done automatically. `subscription_fallbacks()` from v0.20.33 still lays out the
+  cross-provider option for a person to choose deliberately.
+
+- **Once per run.** A cascade would slide down the whole ladder on one bad minute with nobody
+  deciding to, and by the third rung the answer is not the one anyone asked for.
+
+- **And it says so in the ANSWER, not only in an event.** A reply that came from a smaller model
+  than the one someone picked has to say so where they will actually read it; an event reaches only
+  a panel they may not have open, and silently answering from a lesser model is the one outcome
+  worse than saying the frontier one was busy. `res.model` keeps the model that was CHOSEN — the
+  record of someone's choice should not be quietly rewritten by what the day's capacity allowed.
+
+- **Release integration decision:** the automatic step down is not enabled in this
+  line. It would change the accepted model during a run and price tokens from different models as
+  one. The selected model, bounded retries, request limits and provider-attested reset waits remain
+  authoritative. Catalog discovery helpers are retained for explicit choices.
+
+## v0.20.36 — the classifier stops running on a frontier model, and says why when it cannot run
+
+- **The router picked its model from a hardcoded pair of provider names.** `DEFAULT_ROUTER_MODEL if
+  _name in ("anthropic-oauth", "anthropic")` meant any other Anthropic-family provider — one
+  arriving as a plugin, say — fell through to its own default, which is a frontier model, and then
+  ran the classifying head on every single message's critical path. Expensive on a good day; on a
+  bad one it is an `overloaded_error` where the cheap classifier would have answered fine, and that
+  is exactly how it was found. Which providers take a claude model id is a question about what the
+  provider IS, so it is asked that way now: build it, check `isinstance(prov, AnthropicProvider)`,
+  and re-build with the router's model if it wants one. Both constructions are local.
+
+- **"model unavailable — set a working provider in Settings" was frequently a lie.** The server
+  already knows why the route failed and puts it in `detail`; the browser threw that away and
+  printed one sentence blaming the configuration. An upstream overload — nothing to do with the
+  settings, and over in a minute — therefore read as a setup error, and sent at least one person
+  auditing a configuration that had been correct the whole time. The real reason is shown when
+  there is one.
+
+- **Merged into this line:** the server-side router fix is kept as written. The browser half is not,
+  because the browser no longer routes — this line resolves model, effort and intent on the server
+  with the actual task and history, so the pre-flight `/api/route` call the message was printed from
+  does not happen. `/api/route` itself is unchanged and still answers with `detail`.
+
+## v0.20.35 — the same providers on every screen, and a shorter list
+
+- **The Settings panel and the model picker never asked plugins anything.** v0.20.32 taught
+  `collie init` about provider plugins and stopped there — but three surfaces enumerate providers,
+  and a plugin reached one. A provider could therefore be installed, selectable and working from
+  the command line while being simply absent from the two screens people actually configure collie
+  on, which reads as "it was never built". Both now offer what the wizard offers: the panel merges
+  plugin providers into the PROVIDER knob, and the catalog reads `catalog` / `via` / `kind` /
+  `auth` / `auth_hint` / `discover` out of `COLLIE_PROVIDER_INFO`. The panel copies SCHEMA rather
+  than appending to it — SCHEMA is module state shared by every request, and appending would grow
+  the options once per request until the list was mostly duplicates.
+
+- **A plugin can be pinned below the everyday list with `rank`, which is compared BEFORE auth.**
+  That ordering is the point: something marked advanced belongs at the bottom whether or not it
+  currently works, and ranking auth first meant it sank only while it was broken and sprang back up
+  among the ordinary choices the moment it started working. Live-discovered rows inherit their
+  provider's rank — the first version missed that, and a pinned provider scattered back through the
+  middle of the list as soon as discovery succeeded. The ordering invariant in `tests/test_catalog.py`
+  is now per-rank rather than global: inside one rank nothing usable is ever buried under something
+  that is not, which was the original rule's real intent.
+
+- **"More models" folds the long tail behind a disclosure.** The split is CURATED vs DISCOVERED,
+  deliberately not a hand-written "these are the latest" set — a hand-written one is precisely what
+  goes stale, and this catalog had already offered three Claude models for a machine that could
+  serve ten. What the maintained list names stays outside; what only live discovery turns up —
+  older generations, dated snapshots, internal ids — folds away. Local models never fold: they are
+  on the machine because somebody deliberately pulled them. A search reaches everything, folded or
+  not, because hiding a model whose name was just typed would be a bug rather than tidiness.
+
+## v0.20.34 — one checkout, one memory
+
+- **Memory was scoped by the surface you spoke through, not by the project.** The web app wrote its
+  facts under `project="web"`; every argparse default wrote under `"demo"`. On one machine, in one
+  checkout, that is two memories divided by nothing but which window the person happened to type
+  into — and the dog answering in Slack could not recall a word of what the same dog had worked out
+  in the desktop panel an hour earlier. Nothing about a project changes when you move from a chat
+  panel to Slack, so nothing about its memory should. `memory.project_scope()` now derives the scope
+  from the working directory: a git checkout by its ROOT, so a subdirectory is the same project as
+  the repo above it, and the directory itself outside a checkout. `--project` still overrides.
+
+- Deliberate limitation, stated here rather than discovered later: the key is the directory
+  basename, so a fork checked out beside its upstream shares one memory. That is usually what is
+  wanted — they are the same project — and `--project` exists for when it is not.
+
+- The fallback is `"default"`, never `"global"`. `recall()` reads `project=? OR project='global'`,
+  so a scope that fell into `global` would quietly publish one repo's facts to every other project
+  on the machine.
+
+**Upgrading.** Facts already stored under `"demo"` or `"web"` stay exactly where they are and are no
+longer in scope by default. Nothing is deleted and `--project demo` still reaches them, but a
+machine with memory worth keeping should move it into the new scope.
+
+## v0.20.33 — a spent plan is not a rate limit
+
+- **`usage_limit_reached` was being classified as retryable**, because it arrives as a 429 and 429 is
+  in the retryable set. A dog whose flat plan had run out therefore spent three backoffs discovering
+  that a refusal resetting in two days had not stopped resetting in two days, and then posted the
+  vendor's raw JSON at whoever asked — once per ask, for as long as the window lasted.
+  `classify_error` now returns a fourth class, `exhausted`, ranked above both terminal and retryable:
+  the same text can match either of those and neither answer is useful — one gives up without saying
+  the plan comes back, the other retries what cannot succeed until it does. Callers that only know
+  `retryable` are unaffected; every one of them already routes everything else to its terminal path,
+  which is the correct handling for a spent plan.
+
+- **The refusal now says which plan, when it returns, and what else would work.** The vendor envelope
+  carries a `plan_type` and no provider name at all, so a reader holding two subscriptions could not
+  tell which had run out, and `resets_in_seconds: 173470` is not a time anyone reads. All three
+  answers were already knowable locally; `explain_exhausted` gives them.
+
+- **`provider_kind()` and `subscription_fallbacks()` write down the rule any automatic switch has to
+  obey: a spent flat plan may hand work to another flat plan, never to a metered key.** In the moment
+  those two are indistinguishable — both are "it stopped working" — but one resolves by waiting and
+  the other resolves as a bill nobody chose. An unrecognised provider classifies as metered on
+  purpose, so a name added tomorrow cannot be spent by accident. Acting on this automatically is
+  deliberately NOT wired in yet: the message tells a human what to switch to, and a human switches.
+
+- Behaviour change worth stating plainly: `classify_error("insufficient_quota", 429)` used to return
+  `"terminal"` and now returns `"exhausted"`. Both are non-retryable, so nothing downstream changes
+  its mind about whether to retry — only about what it can say.
+
+## v0.20.32 — a provider plugin can introduce itself
+
+- **Installed provider plugins now appear in `collie init`.** The menu was built from the settings
+  schema alone, so a provider that arrived as a plugin was reachable only by someone who already
+  knew its name to type — discoverable precisely to the people who did not need it discovered. A
+  plugin that declares `COLLIE_PROVIDER_INFO = {"name": {"label": ..., "setup": ...}}` is now listed
+  beside the built-ins, in the short first-run list as well as the full menu, because a fresh
+  machine is where a provider actually gets chosen. `COLLIE_PROVIDERS` on its own still means
+  "usable when asked for by name, not advertised"; nothing about the existing hook changed.
+
+- **...and can ask for what it needs at the moment it is picked.** Some providers need more than an
+  exported env var — a pairing code, a device enrolment. With no hook for that, choosing one
+  "succeeds" and then the first completion fails over a step nobody mentioned, long after the person
+  was holding the answer. The optional `setup` callable runs on selection and returns False for "not
+  configured", and the wizard then saves nothing: a saved PROVIDER that cannot complete is worse
+  than no choice at all.
+
+- **`test_no_plugins_configured_is_silent` was measuring the machine, not the code.** It asserted
+  that discovery finds nothing, which stops being true on any box with a provider plugin pip-
+  installed — entry-point discovery finding an installed plugin is the feature working. Entry points
+  are stubbed in that test now, so it tests what its name claims, and the new menu tests borrow the
+  same fixture.
 
 ## v0.20.31 — @-able, an address of its own, and a gate on the part that leaves your machine
 

@@ -2,7 +2,7 @@
 responds, and exits cleanly (no crash). Strict per-surface timeouts + hard kills (a stuck server
 must never hang the suite).
     .venv/bin/python tests/surfaces_test.py     (exit 0 = all pass)"""
-import json, os, subprocess, sys, threading, time, urllib.error, urllib.request
+import json, os, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = dict(os.environ, COLLIE_PROVIDER="mock", PYTHONUNBUFFERED="1",
@@ -16,8 +16,8 @@ def check(name, cond, detail=""):
     results.append((name, bool(cond)))
     print(("  PASS " if cond else "  FAIL ") + name + (("  :: " + detail) if detail and not cond else ""))
 
-def run(args, timeout=45, stdin=None):
-    p = subprocess.run(COLLIE + args, cwd=ROOT, env=ENV, capture_output=True,
+def run(args, timeout=45, stdin=None, env=None):
+    p = subprocess.run(COLLIE + args, cwd=ROOT, env=ENV if env is None else env, capture_output=True,
                        text=True, timeout=timeout, input=stdin)
     return p.stdout, p.stderr, p.returncode
 
@@ -32,9 +32,19 @@ def test_run_stream_json():
     check("run --stream-json valid NDJSON", rc == 0 and len(lines) >= 1 and all(isinstance(x, dict) for x in lines))
 
 def test_dashboard():
-    out, _, rc = run(["dashboard"])
-    p = os.path.join(ROOT, "data", "dashboard.html")
-    check("dashboard builds valid html", rc == 0 and os.path.exists(p) and "<html" in open(p).read().lower())
+    # Seed this dashboard's own data instead of depending on a preceding test
+    # or a maintainer's repository-local runs.db. The CLI honors DATA_DIR.
+    with tempfile.TemporaryDirectory(prefix="collie_dashboard_test_") as data:
+        env = dict(ENV, COLLIE_DATA_DIR=data)
+        _, error, seeded = run(["run", "hello", "--json"], env=env)
+        check("dashboard fixture run succeeds", seeded == 0, error)
+        out, error, rc = run(["dashboard"], env=env)
+        p = os.path.join(data, "dashboard.html")
+        html = ""
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as handle:
+                html = handle.read()
+        check("dashboard builds valid html", rc == 0 and "<html" in html.lower(), error or out)
 
 def test_repl():
     out, _, rc = run(["repl"], stdin="hi\n/exit\n", timeout=45)

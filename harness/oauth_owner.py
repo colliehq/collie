@@ -34,10 +34,7 @@ class RefreshOwner:
     def acquire(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         handle = open(self.path, "a+b")
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
+        # Locking beyond EOF avoids an unowned initialization write.
         deadline = self._clock() + self.timeout
         while True:
             try:

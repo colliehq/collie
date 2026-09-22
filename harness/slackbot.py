@@ -23,6 +23,7 @@ to do**, so its autonomy is never something you find out afterwards.
 """
 from __future__ import annotations
 
+import atexit
 import base64
 import hashlib
 import json
@@ -315,6 +316,44 @@ def save_kennel(dogs: dict) -> None:
     os.replace(tmp, STORE)
 
 
+def _start_presence(base_url: str, kept: dict, pack: str, dog: str,
+                    slack_ready: threading.Event, worker):
+    """Start the optional lease client without making Slack depend on the relay.
+
+    `dog` is Slack's bot-user id, not the display name.  Names are for people and may contain
+    Unicode or change during an offline migration; the Slack id is the stable routing identity the
+    operator uses at enrollment.  A partial/invalid presence configuration is visible, but never
+    stops the listener that presence is meant to describe.
+    """
+    base_url = (base_url or kept.get("presence_url", "")).strip().rstrip("/")
+    token = os.environ.get("COLLIE_PRESENCE_TOKEN", "") or kept.get("presence_token", "")
+    values = {"Worker URL": base_url, "credential": token, "workspace id": pack, "bot user id": dog}
+    # Presence is opt-in. Slack ids alone are ordinary kennel metadata, not a half-configured relay.
+    if not base_url and not token:
+        return None
+    missing = [label for label, value in values.items() if not value]
+    if missing:
+        print("[slack] presence disabled: missing %s" % ", ".join(missing), file=sys.stderr)
+        return None
+
+    try:
+        from .presence import PresenceClient
+        client = PresenceClient(
+            base_url, pack, dog, token,
+            # A live process is not enough.  If either the Slack Socket Mode connection or the
+            # task worker dies, keep renewing only a degraded lease so nobody sends work here.
+            health_fn=lambda: slack_ready.is_set() and worker.is_alive(),
+            logf=lambda message: print("[slack] %s" % message, file=sys.stderr),
+        )
+        client.start()
+    except Exception as exc:
+        detail = str(exc).replace(token, "[redacted]") if token else str(exc)
+        print("[slack] presence disabled: %s" % detail, file=sys.stderr)
+        return None
+    atexit.register(client.stop)
+    return client
+
+
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "collie-icon-512.png")
 
 
@@ -591,10 +630,8 @@ class SlackInstanceLock:
         os.makedirs(QUEUE_DIR, exist_ok=True)
         self.path = os.path.join(QUEUE_DIR, "slack-%s.lock" % safe)
         self._file = open(self.path, "a+b")
-        self._file.seek(0, os.SEEK_END)
-        if self._file.tell() == 0:
-            self._file.write(b"\0")
-            self._file.flush()
+        # Byte-range locks work beyond EOF. Writing a bootstrap byte before
+        # acquiring ownership races another process's first successful lock.
         self._file.seek(0)
         try:
             if os.name == "nt":
@@ -1944,6 +1981,10 @@ def setup(argv=None) -> int:
                     help="app-configuration token (xoxe.xoxp-…) from api.slack.com/apps")
     ap.add_argument("--bot-token", default="", help="xoxb-… , if you already have it")
     ap.add_argument("--app-token", default="", help="xapp-… , if you already have it")
+    ap.add_argument("--presence-url", default="",
+                    help="Collie Presence Worker base URL (saved for this dog)")
+    ap.add_argument("--presence-token", default="",
+                    help="per-dog Presence credential (saved beside the Slack tokens)")
     ap.add_argument("--list", action="store_true", help="show the pack and stop")
     a = ap.parse_args(argv)
 
@@ -1954,7 +1995,9 @@ def setup(argv=None) -> int:
             return 0
         for n, d in sorted(dogs.items()):
             ready = "ready" if (d.get("bot_token") and d.get("app_token")) else "needs its tokens"
-            print("  %-10s %-12s app %s" % (n, ready, d.get("app_id", "?")))
+            stable = ((" · pack %s · dog %s" % (d["team_id"], d["bot_user_id"]))
+                      if d.get("team_id") and d.get("bot_user_id") else "")
+            print("  %-10s %-12s app %s%s" % (n, ready, d.get("app_id", "?"), stable))
         return 0
 
     name = a.name or next((k for k in KENNEL if k.lower() not in
@@ -1965,20 +2008,33 @@ def setup(argv=None) -> int:
     # the same breath that it needs its tokens. The one command that could finish it was the one
     # command that would not run.
     have = dogs.get(name) or {}
+    entry = dict(have)
+    presence_changed = False
+    if a.presence_url:
+        entry["presence_url"] = a.presence_url.rstrip("/")
+        presence_changed = True
+    if a.presence_token:
+        entry["presence_token"] = a.presence_token
+        presence_changed = True
     if have.get("bot_token") and have.get("app_token"):
         # A finished dog is not a dead end: it is the one that goes STALE. Scopes, the display name
         # and the face are all fixed at creation, so every dog provisioned before a change to the
         # manifest keeps the old one forever — and the only fix was to reach for the API by hand,
         # once per dog, which is exactly the per-dog handwork this command exists to remove. Given
         # the credential that can, bring it up to today's manifest instead of refusing.
-        if a.config_token and have.get("app_id"):
-            return _refresh(name, have, a.config_token)
+        if presence_changed:
+            dogs[name] = entry
+            save_kennel(dogs)
+        if a.config_token and entry.get("app_id"):
+            return _refresh(name, entry, a.config_token)
+        if presence_changed:
+            print("%s presence credential saved; its launcher reads it from the private kennel."
+                  % name)
+            return 0
         print("%s already has papers (app %s). Pick another name, run `collie slack --name %s`, "
               "or pass --config-token to bring its app up to the current manifest (scopes, name "
               "and face)." % (name, have.get("app_id", "?"), name))
         return 1
-
-    entry = dict(dogs.get(name) or {})
 
     # THIS dog's face, drawn BEFORE anything can fail, so there is something of its own to upload
     # and something on disk if the rest of setup stops early. Derived from the name, so it is the
@@ -2057,6 +2113,18 @@ def setup(argv=None) -> int:
     if not who.get("ok"):
         print("the bot token does not authenticate: %s" % who.get("error"), file=sys.stderr)
         return 1
+    # Older kennel rows predate team_id. Presence is partitioned by Slack workspace, so learn the
+    # stable id while auth.test is already in flight rather than asking someone to copy it by hand.
+    identity_changed = False
+    if who.get("team_id") and entry.get("team_id") != who.get("team_id"):
+        entry["team_id"] = who["team_id"]
+        identity_changed = True
+    if who.get("user_id") and entry.get("bot_user_id") != who.get("user_id"):
+        entry["bot_user_id"] = who["user_id"]
+        identity_changed = True
+    if identity_changed:
+        dogs[name] = entry
+        save_kennel(dogs)
     print("\n%s is ready — @%s in %s. Start it with:\n  collie slack --name %s --announce <channel id>"
           % (name, who.get("user", name.lower()), who.get("team", "your workspace"), name))
     if face:
@@ -2118,7 +2186,7 @@ def _plist(label: str, argv: list, cwd: str, log: str) -> str:
 
 
 def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str = "",
-                          autonomy: str = "") -> int:
+                          autonomy: str = "", presence_url: str = "") -> int:
     """The macOS half: a LaunchAgent, which is what a per-user background job is here.
 
     No wrapper script, unlike Windows: launchd takes an argv and two log paths directly, so the
@@ -2128,7 +2196,8 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
     label, path = _agent_label(name), _agent_path(name)
     log = os.path.expanduser("~/.collie/slack-%s.log" % _agent_label(name).rsplit(".", 1)[-1])
     argv = [sys.executable, "-m", "harness.cli", "slack", "--name", name, "--cwd", cwd]
-    for flag, v in (("--channels", channels), ("--provider", provider), ("--autonomy", autonomy)):
+    for flag, v in (("--channels", channels), ("--provider", provider), ("--autonomy", autonomy),
+                    ("--presence-url", presence_url)):
         if v:
             argv += [flag, v]
     # Announce on every start would post a greeting on every wake and every crash-restart. The
@@ -2175,7 +2244,7 @@ def _uninstall_launch_agent(name: str) -> int:
 
 
 def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "",
-                      autonomy: str = "") -> int:
+                      autonomy: str = "", presence_url: str = "") -> int:
     """Bring this dog back after a restart.
 
     A dog started from a terminal dies with the terminal, which is how one sat silent through a
@@ -2193,7 +2262,7 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     from . import plat
     if not plat.is_windows():
         if sys.platform == "darwin":
-            return _install_launch_agent(name, cwd, channels, provider, autonomy)
+            return _install_launch_agent(name, cwd, channels, provider, autonomy, presence_url)
         print("collie slack --install-autostart has no Linux form yet "
               "(a systemd --user unit is the shape it wants).", file=sys.stderr)
         return 2
@@ -2211,6 +2280,11 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     # one knob whose entire purpose is that nobody discovers it by watching it get crossed.
     if autonomy:
         argv += ["--autonomy", autonomy]
+    # The endpoint is public configuration and may be written into a launcher. The bearer
+    # credential is deliberately NOT an argument: it stays in the private kennel, out of process
+    # listings, generated scripts and launchd plists.
+    if presence_url:
+        argv += ["--presence-url", presence_url]
     with open(boot, "w", encoding="utf-8") as f:
         # repr() every path: a username with an apostrophe closes a raw string early and the
         # generated launcher dies with a SyntaxError, silently, at logon.
@@ -2276,6 +2350,8 @@ def main(argv=None) -> int:
                     help="comma-separated channel ids it will work in (default: only --announce)")
     ap.add_argument("--allow", default=os.environ.get("COLLIE_SLACK_ALLOW", ""),
                     help="comma-separated slack user ids that may task it (default: anyone in those channels)")
+    ap.add_argument("--presence-url", default=os.environ.get("COLLIE_PRESENCE_URL", ""),
+                    help="Collie Presence Worker base URL (credential comes from setup/kennel)")
     ap.add_argument("--install-autostart", action="store_true",
                     help="bring this dog back after a restart (opt-in; writes two files)")
     ap.add_argument("--uninstall-autostart", action="store_true",
@@ -2286,7 +2362,7 @@ def main(argv=None) -> int:
         return uninstall_autostart(args.name or "collie")
     if args.install_autostart:
         return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider,
-                                 args.autonomy)
+                                 args.autonomy, args.presence_url)
 
     # The kennel first, the environment second. A pack means several dogs with several pairs of
     # tokens, and one pair of environment variables cannot hold them — but an env var still wins
@@ -2390,11 +2466,36 @@ def main(argv=None) -> int:
     # from the name, and answering your own mention is the one loop with no second party to tire of
     # it. Failing to find out is not fatal — it costs the self-check, not the dog.
     my_user = my_bot = ""
+    me = {}
     try:
         me = api("auth.test", bot_token)
+        if not me.get("ok"):
+            raise RuntimeError(me.get("error") or "Slack refused the bot token")
         my_user, my_bot = me.get("user_id", ""), me.get("bot_id", "")
     except Exception as e:
         print("[slack] auth.test failed (%s) — self-mentions will not be filtered" % e, file=sys.stderr)
+
+    # Save stable Slack ids for future starts and for the one-time enrollment command. Older kennel
+    # rows did not have them; auth.test is already required here, so learning them costs no call.
+    # Presence may use stored ids for operator-facing enrollment instructions, but runtime identity
+    # is accepted only from this bot token's fresh auth.test. Falling back to a stale kennel id after
+    # a token swap could make one Slack app renew another dog's lease.
+    team_id = me.get("team_id", "")
+    bot_user_id = my_user
+    if kept and ((team_id and kept.get("team_id") != team_id) or
+                 (bot_user_id and kept.get("bot_user_id") != bot_user_id)):
+        saved = dict(kept)
+        if team_id:
+            saved["team_id"] = team_id
+        if bot_user_id:
+            saved["bot_user_id"] = bot_user_id
+        dogs[ident["name"]] = saved
+        save_kennel(dogs)
+        kept = saved
+
+    slack_ready = threading.Event()
+    presence = _start_presence(args.presence_url, kept, team_id, bot_user_id,
+                               slack_ready, worker)
 
     pack: dict = {}                 # thread -> dog-to-dog turns taken in it
     seen: set[str] = set()          # envelope ids, for Slack's redeliveries
@@ -2405,6 +2506,9 @@ def main(argv=None) -> int:
             url = _open_socket_url(app_token)
             ws = wsclient.WebSocketClient.connect(url)
             health_state.update(state="connected", error="")
+            slack_ready.set()
+            if presence:
+                presence.heartbeat_now()
             print("[slack] connected as %s" % ident["name"])
         except Exception as e:
             health_state.update(state="retrying", error="%s: %s" % (type(e).__name__, e))
@@ -2608,6 +2712,10 @@ def main(argv=None) -> int:
         finally:
             health_state.update(state="retrying", error=health_state.get("error") or
                                 "Socket Mode connection closed")
+            # The roster must say offline the moment the socket is gone, not at lease expiry.
+            slack_ready.clear()
+            if presence:
+                presence.heartbeat_now()
             try:
                 ws.close()
             except Exception:

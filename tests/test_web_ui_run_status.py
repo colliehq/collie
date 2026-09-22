@@ -655,13 +655,24 @@ class _Fixture(BaseHTTPRequestHandler):
             pass
 
 
+class FixtureHTTPServer(ThreadingHTTPServer):
+    # Match Collie's burst-sized listener. A page reload starts several parallel
+    # API requests; the stdlib backlog of five can drop one on Windows and turn
+    # a UI assertion into an unrelated intermittent "Failed to fetch".
+    request_queue_size = max(ThreadingHTTPServer.request_queue_size, 128)
+
+
 @pytest.fixture(scope="module")
 def server():
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Fixture)
+    httpd = FixtureHTTPServer(("127.0.0.1", 0), _Fixture)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-    yield "http://127.0.0.1:%d" % httpd.server_address[1]
-    httpd.shutdown()
+    try:
+        yield "http://127.0.0.1:%d" % httpd.server_address[1]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
 
 
 # --------------------------------------------------------------- run observation

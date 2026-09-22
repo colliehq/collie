@@ -46,3 +46,14 @@ COLLIE_RELAY=wss://collie.run collie web --remote
 For an isolated worker hostname, set `COLLIE_RELAY=wss://<worker-host>` instead. After deployment,
 verify `/relay/agent` and `/r/*` reach this Worker before treating Remote as live; source changes do
 not update the existing `collie.run` deployment by themselves.
+
+## Dog presence
+
+The same Worker also hosts Collie's authenticated online roster. A shared deployment creates one
+`PresencePack` Durable Object per Slack workspace/pack; each dog renews a 75-second lease, so a
+crashed or powered-off machine becomes offline without needing to announce its own failure.
+
+Presence is separate from phone-remote `RelayRoom` traffic and from Slack's native green dot. The
+Collie roster is implemented here; native Slack presence is not currently wired to it. See
+[Collie Presence](../docs/presence.md) for identity, enrollment, runtime configuration, privacy, and
+deployment details.

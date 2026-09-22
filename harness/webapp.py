@@ -32,8 +32,53 @@ import re
 import sys
 import threading
 import time
+import typing  # finish ClassVar initialization before background imports create dataclasses
 import urllib.parse
 import urllib.request
+
+
+def _schema_for_panel():
+    """settings.SCHEMA, plus any provider a plugin contributes.
+
+    The panel and `collie init` have to offer the same list. When only the wizard consulted plugins,
+    an installed provider was real, selectable and working from the command line while being simply
+    absent from the screen most people configure collie on — which reads as "it was never built".
+
+    Copied, never mutated: SCHEMA is module state shared by every request, so appending to it would
+    grow the options once per request until the list was mostly duplicates.
+
+    A plugin carrying a `setup` callable needs an answer no panel can ask for — a pairing code, an
+    enrolment — so the knob's hint says where to give it. Saving such a provider from here stays
+    allowed: that is the same half-configured state as naming a provider whose API key you have not
+    exported yet, and the first completion says precisely what is missing.
+    """
+    from . import settings as _settings
+    from .providers import plugin_provider_menu
+    plugins = plugin_provider_menu()
+    if not plugins:
+        return _settings.SCHEMA
+    extra = [{"value": v, "label": label} for v, label, _setup in plugins]
+    needs_setup = [v for v, _label, setup in plugins if setup]
+    out = []
+    for knob in _settings.SCHEMA:
+        if knob.get("key") == "PROVIDER":
+            known = {o.get("value") for o in knob.get("options", [])}
+            knob = dict(knob, options=list(knob.get("options", []))
+                        + [e for e in extra if e["value"] not in known])
+            if needs_setup:
+                knob["hint"] = (knob.get("hint", "") +
+                                "  Plugin providers that need a one-time pairing or enrolment (%s) "
+                                "cannot be set up from this screen: run `collie init`, pick it "
+                                "there, and it asks for what it needs." % ", ".join(needs_setup))
+        out.append(knob)
+    return out
+
+
+def _scope(cwd: str) -> str:
+    """Memory/session scope for this request. Never "web": a surface is not a project, and naming
+    the scope after this one hid everything learned here from the same repo's CLI and Slack dogs."""
+    from .memory import project_scope
+    return project_scope(cwd)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .recorder import note_host_error
@@ -1527,7 +1572,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 answer = summary(result)
                 if said and answer:
-                    sessions.append_exchange(sid, said, answer, cwd=cwd)
+                    # Named like every other write on this surface: the scope is the codebase, not
+                    # "web". A desktop command can be the first thing said in a new session, and
+                    # that session's project is set once, here.
+                    sessions.append_exchange(sid, said, answer, project=_scope(cwd), cwd=cwd)
                 saved = sessions.load_checked(sid)
                 if saved["status"] != "ok":
                     raise ValueError("command journal could not be read")
@@ -2172,7 +2220,7 @@ class Handler(BaseHTTPRequestHandler):
                         vals["WALLPAPER"] = "on" if os.path.exists(_wp._startup_vbs()) else "off"
                 except Exception:
                     pass
-                return self._send_json({"schema": settings.SCHEMA, "values": vals,
+                return self._send_json({"schema": _schema_for_panel(), "values": vals,
                                         "identity": whoami()})
             if path == "/api/work-identities":
                 from .workidentity import public_connections
@@ -4161,11 +4209,23 @@ class Handler(BaseHTTPRequestHandler):
                     if not _name:      # same rule as the run path: never route on a fixture
                         return self._send_json({"error": "model_unavailable",
                                                 "detail": "no model configured"}, 503)
+                    # Which providers take a claude model id is a question about what the
+                    # provider IS, not about its name. Matching on a hardcoded pair meant any
+                    # further Anthropic-family provider — one arriving as a plugin, say — silently
+                    # fell through to its own default, which is a frontier model, and then ran on
+                    # every single message's critical path. That is expensive on a good day and on
+                    # a bad one it is an `overloaded_error` where a cheap classifier would have
+                    # answered fine. Build first, ask the type, then re-build if it wants the
+                    # router's model: both constructions are local and touch no network.
+                    from .providers import AnthropicProvider
+                    prov = make_provider(_name, None)
                     _rmodel = os.environ.get("COLLIE_ROUTER_MODEL") or (
-                        DEFAULT_ROUTER_MODEL if _name in ("anthropic-oauth", "anthropic") else None)
+                        DEFAULT_ROUTER_MODEL if isinstance(prov, AnthropicProvider) else None)
                     # Classification is tiny and reversible.  Keep it at the
                     # lowest supported effort regardless of the execution run's
                     # configured depth; the resolved task gets its own decision.
+                    # Rebuilt unconditionally for that reason — the first build above exists to be
+                    # asked what it is, not to answer with.
                     prov = make_provider(_name, _rmodel, effort="low")
                     return self._send_json(classify(text, prov))
                 except ModelUnavailable as e:
@@ -5765,7 +5825,7 @@ class Handler(BaseHTTPRequestHandler):
             request_journaled = True
             try:
                 sessions.checkpoint(
-                    sid, journaled, project="web", cwd=cwd, run_id=run_id,
+                    sid, journaled, project=_scope(cwd), cwd=cwd, run_id=run_id,
                     state="external_action", detail=boundary_detail)
             except Exception as persist_exc:
                 error = _public_error(
@@ -5794,7 +5854,7 @@ class Handler(BaseHTTPRequestHandler):
                 return ""
             try:
                 sessions.checkpoint(
-                    sid, [], project="web", cwd=cwd, run_id=run_id,
+                    sid, [], project=_scope(cwd), cwd=cwd, run_id=run_id,
                     terminal=True)
                 return ""
             except Exception as persist_exc:
@@ -5836,7 +5896,7 @@ class Handler(BaseHTTPRequestHandler):
                 Handler._mirror_pub(sid, kind, payload)
 
             boundary = _verification.open_check_boundary(
-                sid, getattr(res, "messages", None) or [], project="web", cwd=cwd,
+                sid, getattr(res, "messages", None) or [], project=_scope(cwd), cwd=cwd,
                 run_id=run_id, command=verify_command, surface=surface)
             if boundary["error"]:
                 # Refuse to launch rather than run an unfenced host command.
@@ -6006,9 +6066,9 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if request_journaled:
                         web_tasks.append_exchange_with_input(
-                            sid, None, error, [], project="web", cwd=cwd)
+                            sid, None, error, [], project=_scope(cwd), cwd=cwd)
                     else:
-                        sessions.append_exchange(sid, user_msg, error, project="web", cwd=cwd)
+                        sessions.append_exchange(sid, user_msg, error, project=_scope(cwd), cwd=cwd)
                     history_saved = True
                 except Exception as history_exc:
                     error += "; " + _public_error(
@@ -6090,10 +6150,10 @@ class Handler(BaseHTTPRequestHandler):
                     # The queued request was stamped into the transcript before
                     # any candidate ran; this adds the winner's answer to it.
                     web_tasks.append_exchange_with_input(
-                        sid, None, saved_answer, [], project="web", cwd=cwd)
+                        sid, None, saved_answer, [], project=_scope(cwd), cwd=cwd)
                 else:
                     sessions.append_exchange(sid, user_msg, saved_answer,
-                                             project="web", cwd=cwd)
+                                             project=_scope(cwd), cwd=cwd)
                 history_saved = True
             except Exception as e:
                 error = error or _public_error(
@@ -6399,9 +6459,9 @@ class Handler(BaseHTTPRequestHandler):
                         # would answer again.
                         web_tasks.append_exchange_with_input(
                             sid, None if request_journaled else q, saved_answer,
-                            handed_steers, project="web", cwd=cwd)
+                            handed_steers, project=_scope(cwd), cwd=cwd)
                     else:
-                        sessions.append_exchange(sid, q, saved_answer, project="web", cwd=cwd)
+                        sessions.append_exchange(sid, q, saved_answer, project=_scope(cwd), cwd=cwd)
                     history_saved = True
                 except Exception as persist_exc:
                     persistence_error = _public_error(
@@ -6522,11 +6582,11 @@ class Handler(BaseHTTPRequestHandler):
                     if request_journaled:
                         web_tasks.append_exchange_with_input(
                             sid, None, "_[Worker error: %s]_" % error,
-                            [], project="web", cwd=cwd)
+                            [], project=_scope(cwd), cwd=cwd)
                     else:
                         sessions.append_exchange(
                             sid, q, "_[Worker error: %s]_" % error,
-                            project="web", cwd=cwd)
+                            project=_scope(cwd), cwd=cwd)
                 except Exception:
                     pass
                 try:
@@ -6561,7 +6621,7 @@ class Handler(BaseHTTPRequestHandler):
                          ("plan", "review", "test") else None)
             h = make_harness(cwd, provider=prov, model=decision.model,
                              effort=decision.effort, speed=decision.speed,
-                             project="web",
+                             project=_scope(cwd),
                              code_search=True, web_search=True, exec_code=True, delegate=True,
                              # The ceilings resolved for this run, handed over by value: the
                              # loop is held to them for its whole length, and the provider gets
@@ -6762,7 +6822,7 @@ class Handler(BaseHTTPRequestHandler):
             # save() keeps an uncertain in-flight boundary on purpose: this thread
             # stays fenced until it is reconciled, and /api/run refuses to continue
             # it. Report that with the run instead of only on the next attempt.
-            sessions.save(sid, res.messages, project="web", cwd=cwd, answer=res.answer or "")
+            sessions.save(sid, res.messages, project=_scope(cwd), cwd=cwd, answer=res.answer or "")
             try:
                 run_recovery = sessions.recovery_state(sid)
                 recovery_known = True

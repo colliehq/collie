@@ -13,6 +13,7 @@ replaces every future answer with a fixture.
 import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -55,7 +56,7 @@ def _restore(old):
             os.environ[k] = v
 
 
-def main():
+def _main():
     # 1. nothing pinned: the picker is in charge and says nothing about environments
     settings, catalog, old = _fresh({})
     check(not settings.pinned("PROVIDER"), "with no env var, PROVIDER is not pinned")
@@ -92,6 +93,21 @@ def main():
 
     print("\n  " + ("%d FAILED" % len(fails) if fails else "model pin: all green"))
     return 1 if fails else 0
+
+
+def main():
+    # A persisted mock selection is legitimately visible even without a hard
+    # env pin. This suite checks fresh settings, not the caller's saved state.
+    previous = os.environ.get("COLLIE_SETTINGS_PATH")
+    with tempfile.TemporaryDirectory(prefix="model-pin-") as folder:
+        os.environ["COLLIE_SETTINGS_PATH"] = os.path.join(folder, "settings.json")
+        try:
+            return _main()
+        finally:
+            if previous is None:
+                os.environ.pop("COLLIE_SETTINGS_PATH", None)
+            else:
+                os.environ["COLLIE_SETTINGS_PATH"] = previous
 
 
 if __name__ == "__main__":

@@ -352,18 +352,138 @@ def is_overflow(text: str) -> bool:
     return bool(_OVERFLOW_RE.search(t)) and not _NOT_OVERFLOW_RE.search(t)
 
 
+_EXHAUSTED_RE = re.compile(
+    r"usage.?limit.?(reached|exceeded)|quota.?(exceeded|exhausted)|insufficient.?quota"
+    # OpenAI puts the noun last ("exceeded your current quota"); requiring quota-then-verb missed
+    # the single most common metered exhaustion string there is. Bounded so it cannot span clauses.
+    r"|exceeded your .{0,24}quota"
+    r"|out of credits?|credit balance is too low"
+    r"|monthly.?(limit|quota).?(reached|exceeded)", re.I)
+
+
+def is_exhausted(text: str) -> bool:
+    """True iff the failure means this provider's ALLOWANCE is spent — not that the call went wrong.
+
+    Worth separating from a rate limit even though both arrive as 429, because the remedy inverts.
+    "Too many requests" means slow down, and waiting a few seconds fixes it. `usage_limit_reached`
+    on a flat plan means come back in two days: every retry is a guaranteed identical refusal, and
+    the backoff spent discovering that is pure waste — three attempts, three walls of the same JSON,
+    repeated at whoever asks next for as long as the window lasts.
+    """
+    return bool(_EXHAUSTED_RE.search(text or ""))
+
+
+# What using a provider COSTS, which is the only axis an automatic switch is allowed to reason on.
+_SUBSCRIPTION_PROVIDERS = ("anthropic-oauth", "claude-sub", "codex-oauth", "codex-sub", "codex",
+                           # the Agent SDK path bills the same Claude plan, so naming it here keeps
+                           # a flat plan from being described as a metered key.
+                           "claude-agent-sdk",
+                           "claude-cli", "cli")
+_LOCAL_PROVIDERS = ("ollama", "mock")
+
+
+def provider_kind(name: str) -> str:
+    """'subscription' | 'local' | 'metered' — how the bill for this provider is paid.
+
+    'metered' is the fall-through ON PURPOSE. An unrecognised name is assumed to cost money per
+    token, because the single mistake this classification must never make is waving something
+    through as free when it is not.
+    """
+    n = (name or "").strip().lower()
+    if n in _SUBSCRIPTION_PROVIDERS:
+        return "subscription"
+    if n in _LOCAL_PROVIDERS:
+        return "local"
+    return "metered"
+
+
+def subscription_fallbacks(current: str = "") -> list:
+    """Flat-plan providers OTHER than `current` that hold a credential on THIS machine.
+
+    The policy this encodes, and the reason it is a list of subscriptions rather than of providers:
+    a spent flat plan may hand work to another flat plan, never to a metered key. In the moment the
+    two are indistinguishable — both are "it stopped working" — but one resolves by waiting and the
+    other resolves as a bill nobody chose. Anything metered has to be asked for by name.
+    """
+    out = []
+    cur = (current or "").strip().lower()
+    if cur not in ("anthropic-oauth", "claude-sub"):
+        try:
+            if _read_oauth_token():
+                out.append("anthropic-oauth")
+        except Exception:                                   # noqa: BLE001 - absence, not an error
+            pass
+    if cur not in ("codex-oauth", "codex-sub", "codex"):
+        try:
+            from .codex_oauth import _auth_path
+            if os.path.exists(_auth_path()):
+                out.append("codex-oauth")
+        except Exception:                                   # noqa: BLE001
+            pass
+    if cur not in ("claude-cli", "cli"):
+        import shutil as _shutil
+        if _shutil.which("claude"):
+            out.append("claude-cli")
+    return out
+
+
+def explain_exhausted(provider_name: str, detail: str, status: int = 0) -> str:
+    """A sentence a person can act on, instead of the provider's raw refusal envelope.
+
+    The envelope is JSON with `plan_type` in it and no provider name anywhere, so the reader of a
+    chat message could not tell WHICH of their subscriptions had run out, nor when it returns, nor
+    what else on the machine would have worked. All three are knowable here.
+    """
+    when = ""
+    m = re.search(r'"resets_at"\s*:\s*(\d{9,13})', detail or "")
+    if m:
+        ts = int(m.group(1))
+        if ts > 10 ** 11:                                   # milliseconds, not seconds
+            ts //= 1000
+        left = ts - time.time()
+        when = " until %s" % time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+        if left > 0:
+            when += " (%.1fh away)" % (left / 3600.0)
+    alts = subscription_fallbacks(provider_name)
+    if alts:
+        advice = ("Other flat plans with a credential on this machine: %s.\n"
+                  "  Switch with `--provider %s`, or in the Settings panel."
+                  % (", ".join(alts), alts[0]))
+    else:
+        advice = ("No other flat plan has a credential on this machine, so waiting is the only\n"
+                  "  free fix. A metered provider would work but is never selected automatically.")
+    return ("exhausted: %s has spent its allowance%s.\n  %s\n  provider said:%s %s"
+            % (provider_name or "the provider", when, advice,
+               (" HTTP %d" % status) if status else "", (detail or "").strip()[:300]))
+
+
 def classify_error(detail: str, status: int = 0, code: str = "") -> str:
     """Classify an error completion without owning retry policy.
+
+    'protocol' | 'overflow' | 'exhausted' | 'retryable' | 'terminal' from detail+status+code
+    (point 5). Pure — no policy. Priority: overflow-text > protocol(code|422) > exhausted-text >
+    terminal-text > retryable(status|text) > terminal (unknown fails fast: never burn backoff
+    blind).
 
     ``protocol`` is a completed model response that could not be bridged to the active structured
     response contract.  It is deliberately distinct from transport retryability: the host may give
     the model one corrective turn, with no network backoff.  Unknown failures still fail fast.
+
+    'exhausted' sits ABOVE both terminal and retryable deliberately. Its text can match either —
+    "quota" reads as terminal, its 429 reads as retryable — and neither answer is useful: one gives
+    up without saying the plan returns, the other retries something that cannot succeed until it
+    does. Callers that only know 'retryable' keep working: everything else already falls through to
+    their terminal path, which is the right handling for a spent plan. The one caller that must
+    know the difference is the loop: a provider-attested reset (Completion.retry_at) is still
+    honoured as a wait for an exhausted plan, not spent as blind retries — see Harness.run.
     """
     t = detail or ""
     if is_overflow(t):
         return "overflow"
     if code in _PROTOCOL_CODES or (status == 422 and _PROTOCOL_RE.search(t)):
         return "protocol"
+    if is_exhausted(t):
+        return "exhausted"
     if _TERMINAL_RE.search(t):
         return "terminal"
     if status in _RETRYABLE_HTTP or _RETRYABLE_RE.search(t):
@@ -1997,6 +2117,11 @@ def _plugin_providers() -> tuple:
     behaviour this must never have — it reads as "unknown provider" and sends people hunting the
     wrong bug.
     """
+    return _plugin_attr("COLLIE_PROVIDERS")
+
+
+def _plugin_attr(attr: str) -> tuple:
+    """(merged mapping, import_errors) for one plugin attribute, across both discovery paths."""
     found, errors = {}, []
     for mod_name in (os.environ.get("COLLIE_PROVIDER_PLUGINS") or "").split(os.pathsep):
         mod_name = mod_name.strip()
@@ -2004,7 +2129,7 @@ def _plugin_providers() -> tuple:
             continue
         try:
             import importlib
-            found.update(getattr(importlib.import_module(mod_name), "COLLIE_PROVIDERS", {}) or {})
+            found.update(getattr(importlib.import_module(mod_name), attr, {}) or {})
         except Exception as e:
             errors.append("%s: %s" % (mod_name, e))
     try:
@@ -2012,14 +2137,45 @@ def _plugin_providers() -> tuple:
         for ep in entry_points(group="collie.providers"):
             try:
                 obj = ep.load()
-                # an entry point may point at the mapping itself or at the module holding it
-                found.update(obj if isinstance(obj, dict)
-                             else (getattr(obj, "COLLIE_PROVIDERS", {}) or {}))
+                # an entry point may point at the mapping itself or at the module holding it —
+                # only meaningful for COLLIE_PROVIDERS, which is what the group is named for.
+                if attr == "COLLIE_PROVIDERS" and isinstance(obj, dict):
+                    found.update(obj)
+                else:
+                    found.update(getattr(obj, attr, {}) or {})
             except Exception as e:
                 errors.append("%s: %s" % (ep.name, e))
     except Exception as e:                                  # pragma: no cover - metadata unavailable
         errors.append("entry_points: %s" % e)
     return found, errors
+
+
+def plugin_provider_menu() -> list:
+    """[(value, label, setup)] for plugins that want to be OFFERED, not merely usable.
+
+    ``COLLIE_PROVIDERS`` makes a provider work when asked for by name — which requires already
+    knowing the name. A plugin that also declares
+
+        COLLIE_PROVIDER_INFO = {"name": {"label": str, "setup": callable}}
+
+    appears in the `collie init` menu as well, so it can be found by someone who does not.
+
+    ``setup`` is optional and runs the moment that provider is picked, returning False for "not
+    configured — do not save". It is how a provider that needs more than an exported env var (a
+    pairing code, a device enrolment) can ask at the one moment the user is holding the answer,
+    instead of failing on the first completion over a step nobody mentioned.
+
+    Metadata only — nothing here builds a provider — so a plugin with broken info costs a menu row,
+    not a broken run.
+    """
+    info, _errors = _plugin_attr("COLLIE_PROVIDER_INFO")
+    out = []
+    for name in sorted(info):
+        d = info.get(name)
+        if not isinstance(d, dict):
+            continue
+        out.append((name, d.get("label") or name, d.get("setup")))
+    return out
 
 
 def provider_default_model(name: str) -> str:

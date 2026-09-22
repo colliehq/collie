@@ -67,7 +67,7 @@ def test_verification_timeout_kills_process_tree_and_drains_bounded_output(monke
 
     assert "start_new_session" not in calls["kwargs"]
     assert calls["kwargs"]["creationflags"] == 123
-    assert calls["args"][0][:3] == [sys.executable, "-I", "-c"]
+    assert calls["args"][0][:3] == [getattr(sys, "_base_executable", None) or sys.executable, "-I", "-c"]
     assert calls["kwargs"]["stdin"] == subprocess.PIPE
     assert calls["killed"] == []
     assert calls["job_terminated"] == 1
@@ -108,7 +108,7 @@ def test_verification_success_uses_popen_and_preserves_receipt_semantics(monkeyp
             return ("z" * 5000, None)
 
     def popen(*args, **kwargs):
-        assert args[0][:3] == [sys.executable, "-I", "-c"]
+        assert args[0][:3] == [getattr(sys, "_base_executable", None) or sys.executable, "-I", "-c"]
         assert kwargs["shell"] is False
         assert kwargs["stdin"] == subprocess.PIPE
         events.append("gate-created")

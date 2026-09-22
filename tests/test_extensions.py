@@ -18,6 +18,15 @@ from harness.skills import discover_skills
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def isolated_skill_library(monkeypatch, tmp_path):
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("COLLIE_SKILL_DIRS", raising=False)
+
+
 def _platform():
     if sys.platform.startswith("win"):
         return "windows"

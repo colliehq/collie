@@ -259,18 +259,9 @@ def _open(path):
     if not _same_file(fd, path):
         os.close(fd)
         raise ValueError("lock path is a link or was replaced while opening: %s" % path)
-    handle = os.fdopen(fd, "r+b")
-    try:
-        # Windows locks a byte range; keep one real byte so the file a human
-        # inspects is never zero-length. Beyond EOF locking works too, so a
-        # failure here (another process already holds byte 0) is not fatal.
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
-    except OSError:
-        pass
-    return handle
+    # Locking beyond EOF is valid. A speculative buffered write here can fail
+    # again on seek/close even if its first flush error was caught.
+    return os.fdopen(fd, "r+b")
 
 
 def _read_identity(path):

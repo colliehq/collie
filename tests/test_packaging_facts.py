@@ -10,6 +10,7 @@ weeks later when Gatekeeper next looks.
 """
 import os
 import sys
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,6 +26,18 @@ def check(ok, label):
 
 
 def main():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as fh:
+        package_cfg = fh.read()
+    exclusion_table = package_cfg.split("[tool.setuptools.exclude-package-data]", 1)[-1]
+    excluded = re.findall(r'"([^"\n]+)"', exclusion_table.split("\n[", 1)[0])
+    check("browser_ext/token.txt" in excluded,
+          "the per-machine browser bearer is explicitly excluded from wheels")
+    with open(os.path.join(root, "MANIFEST.in"), encoding="utf-8") as fh:
+        manifest = fh.read()
+    check("exclude harness/browser_ext/token.txt" in manifest,
+          "the per-machine browser bearer is explicitly excluded from sdists")
+
     # A checkout is neither, which is the case every developer is in.
     check(plat.in_app_bundle() is False, "a source checkout is not an app bundle")
     check(plat.translocated() is False, "and is not translocated")

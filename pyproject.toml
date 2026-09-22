@@ -27,8 +27,8 @@ Issues = "https://github.com/colliehq/collie/issues"
 local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
 fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
-claude = ["claude-agent-sdk>=0.2.136,<0.3"] # official Claude-plan runtime for overnight Missions
-codex = ["openai-codex"]                  # official SDK + its pinned Codex runtime
+claude = ["claude-agent-sdk==0.2.157"]    # verified SDK; installer also stages its native Windows CLI
+codex = ["openai-codex==0.155.1"]         # official SDK + matching verified Codex runtime
 remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
 online = ["cryptography"]               # device signing + sealed connected-mode envelopes
 extensions = ["cryptography"]           # Ed25519 publisher signatures and local publisher trust roots
@@ -39,7 +39,7 @@ tui = ["rich"]                          # the full-experience terminal chat (col
 acp = ["agent-client-protocol"]         # editor integration (collie acp)
 search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)
 speech = ["sherpa-onnx>=1.13,<1.14", "soundfile"] # local SenseVoice Live transcription; model stays user-local
-dev = ["pytest", "pyyaml"]
+dev = ["pytest", "pyyaml", "numpy", "Pillow>=10", "aiohttp"]
 docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / build); see mkdocs.yml
 
 [project.scripts]

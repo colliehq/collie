@@ -399,6 +399,7 @@ def _pstat(page):
 @pytest.mark.parametrize("viewport", [DESKTOP, PHONE])
 def test_run_flow_status_copy_is_localized(server, browser, lang, viewport):
     """Hold a run, then cancel it: working..., the composer hint, and stopping... in-language."""
+    expect = pytest.importorskip("playwright.sync_api").expect
     context, page, errors, _state = _open(server, browser, lang, viewport)
     want = FLOW[lang]
     try:
@@ -408,7 +409,9 @@ def test_run_flow_status_copy_is_localized(server, browser, lang, viewport):
                                timeout=8000)
         page.wait_for_selector(".pstat", timeout=8000)
         assert _pstat(page) == want["working"], "status line: %r" % _pstat(page)
-        assert page.locator("#input").get_attribute("placeholder") == want["placeholder"]
+        # The composer stays unavailable until the independent capabilities
+        # response arrives. A running status alone does not settle that fetch.
+        expect(page.locator("#input")).to_have_attribute("placeholder", want["placeholder"])
 
         page.click("#send")
         page.wait_for_function("() => document.getElementById('send').disabled === true",

@@ -12,7 +12,10 @@ import os, json, hashlib, shutil, subprocess, sys, ctypes, time
 from . import plat
 
 HOME = os.path.expanduser("~")
-COLLIE_DIR = os.path.join(HOME, ".collie")
+# Honour the same state-root override as the rest of the harness. Besides making embedded/test
+# servers isolated, this prevents a throwaway web process from inheriting and stopping the user's
+# real now-playing process through ~/.collie/nowplaying.json.
+COLLIE_DIR = os.environ.get("COLLIE_STATE_DIR") or os.path.join(HOME, ".collie")
 CONFIG_PATH = os.path.join(COLLIE_DIR, "desktop.json")
 ICON_DIR = os.path.join(COLLIE_DIR, "dock-icons")
 _NOWIN = 0x08000000  # CREATE_NO_WINDOW — never flash a console
@@ -793,7 +796,9 @@ def play_here(query, artist="", title="", region=""):
     _playing["track"] = {"title": info.get("title") or query,
                          "uploader": info.get("uploader") or "",
                          "duration": info.get("duration")}
-    _np_write(_playing["track"], proc.pid if proc is not None else 0)   # cross-process now-playing
+    # Some platform players are handles without a child pid (and tests use the same minimal
+    # protocol). The in-process handle is still stoppable; only cross-process recovery needs a pid.
+    _np_write(_playing["track"], getattr(proc, "pid", 0) if proc is not None else 0)
     # A menu-bar control, so stopping this never requires asking the agent again. Reported back, so
     # the reply can tell the person where the button is — or not claim one exists when it does not.
     indicator = _show_indicator(_playing["track"]["title"])

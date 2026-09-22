@@ -547,7 +547,7 @@ def _read_line(console, have_rich):
         return None
 
 
-def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=None,
+def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None,
             cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
     from .cli import (apply_accepted_capabilities, apply_accepted_limits,
@@ -556,6 +556,9 @@ def run_tui(cwd, provider, model, project="demo", resume=None, cont=False, goal=
                       turn_decision_receipt, turn_receipt_fence)
     from . import run_ownership, terminal_queue
     from . import sessions as sess
+    from .memory import project_scope
+
+    project = project or project_scope(cwd)   # the codebase, not the surface it was reached from
 
     have_rich = _HAVE_RICH
     console = Console() if have_rich else None
@@ -933,7 +936,7 @@ def main(argv=None):
     p.add_argument("--provider", default=None)
     p.add_argument("--model", default=None)
     p.add_argument("--cwd", default=None)
-    p.add_argument("--project", default="demo")
+    p.add_argument("--project", default=None)
     p.add_argument("--goal", default=None)
     p.add_argument("--continue", dest="cont", action="store_true",
                    help="continue the latest session's thread")

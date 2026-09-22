@@ -119,13 +119,14 @@ def _isolated_home():
     """Point HOME at an empty tmp so ~/.claude/skills and ~/.collie/skills resolve to nothing —
     makes the skill tests hermetic regardless of the dev machine's real skill library."""
     hp = tempfile.mkdtemp()
-    old = os.environ.get("HOME")
-    os.environ["HOME"] = hp
+    old = {key: os.environ.get(key) for key in ("HOME", "USERPROFILE", "COLLIE_SKILL_DIRS")}
+    os.environ.update(HOME=hp, USERPROFILE=hp, COLLIE_SKILL_DIRS="")
     try:
         yield hp
     finally:
-        if old is not None: os.environ["HOME"] = old
-        else: os.environ.pop("HOME", None)
+        for key, value in old.items():
+            if value is not None: os.environ[key] = value
+            else: os.environ.pop(key, None)
 
 def _write_skill(base, name, desc, extra=""):
     d = os.path.join(base, ".collie", "skills", name)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -335,26 +336,67 @@ class _KillOnCloseJob:
                 raise OSError("Windows Job handle could not be closed")
 
 
+_PYTHON_SHIMS = {}
+_PYTHON_SHIMS_LOCK = threading.Lock()
+
+
+def _python_alias_shims(targets):
+    """Private per-process launchers for aliases, for both Git Bash and cmd.exe."""
+    import shlex
+    import tempfile
+    key = tuple(sorted(targets.items()))
+    with _PYTHON_SHIMS_LOCK:
+        cached = _PYTHON_SHIMS.get(key)
+        if cached is not None and os.path.isdir(cached.name):
+            return cached.name
+        folder = tempfile.TemporaryDirectory(prefix="collie-python-")
+        try:
+            for name, target in key:
+                # sys.executable cannot contain quotes/newlines on Windows. Reject
+                # corrupt injected paths rather than producing executable syntax.
+                if any(c in target for c in ('"', '\r', '\n', '\x00')):
+                    raise ValueError("invalid Python executable path")
+                with open(os.path.join(folder.name, name), "w", encoding="utf-8", newline="\n") as f:
+                    f.write("#!/bin/sh\nexec " + shlex.quote(target.replace("\\", "/")) + ' "$@"\n')
+                with open(os.path.join(folder.name, name + ".cmd"), "w", encoding="ascii", newline="\r\n") as f:
+                    # Keep non-ASCII paths in the Unicode environment, not a
+                    # batch file decoded using the user's active OEM code page.
+                    f.write('@echo off\nsetlocal DisableDelayedExpansion\n"%COLLIE_PYTHON_ALIAS_TARGET%"'
+                            + ' %*\nexit /b %errorlevel%\n')
+            _PYTHON_SHIMS[key] = folder
+            return folder.name
+        except BaseException:
+            folder.cleanup()
+            raise
+
+
 def shell_environment(env=None):
     """Keep ordinary Python commands inside the shell's owned process tree.
 
     Windows App Execution Aliases can launch Python through the install manager,
-    outside the caller's Job. Prefer Collie's resolved interpreter for that alias
-    only. A selected venv or any real Python already on PATH retains priority.
+    outside the caller's Job. Route both python and python3 aliases to a real
+    interpreter. Prepending its directory alone does not shadow python3.exe when
+    it only contains python.exe. A selected venv or real command retains priority.
     Explicit absolute commands are not rewritten; this is not an OS sandbox.
     """
     import sys
     if not is_windows():
         return env
     values = dict(os.environ if env is None else env)
-    executable = shutil.which("python", path=values.get("PATH", "")) or ""
-    normalized = executable.replace("\\", "/").lower()
-    if "/microsoft/windowsapps/" not in normalized:
+    commands = {name: shutil.which(name, path=values.get("PATH", "")) or ""
+                for name in ("python", "python3")}
+    def is_alias(path):
+        return "/microsoft/windowsapps/" in path.replace("\\", "/").lower()
+    aliases = [name for name, path in commands.items() if is_alias(path)]
+    if not aliases:
         return env
-    actual = sys.executable
+    selected = commands["python"]
+    actual = (selected if selected.lower().endswith(".exe") and not is_alias(selected)
+              else sys.executable)
     if not actual or not os.path.isfile(actual):
-        return env
-    directory = os.path.dirname(os.path.abspath(actual))
+        raise RuntimeError("Cannot resolve a real Python interpreter for Windows execution aliases")
+    directory = _python_alias_shims({name: os.path.abspath(actual) for name in aliases})
+    values["COLLIE_PYTHON_ALIAS_TARGET"] = os.path.abspath(actual)
     values["PATH"] = directory + os.pathsep + values.get("PATH", "")
     return values
 
@@ -513,8 +555,30 @@ def kill_tree(proc) -> None:
 
 # ── filesystem ───────────────────────────────────────────────────────────────
 def rmtree(path: str) -> None:
-    """Recursively remove a directory tree, cross-platform (replaces `rm -rf`)."""
-    shutil.rmtree(path, ignore_errors=True)
+    """Best-effort tree cleanup, including Windows read-only Git objects."""
+    if not is_windows():
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    root = os.path.normcase(os.path.realpath(path))
+
+    def retry_readonly(function, filename, exc_info):
+        # Keep busy files and genuine access failures. Never change attributes on
+        # a link or on an object outside the tree being cleaned.
+        if function not in (os.unlink, os.remove) or not isinstance(exc_info[1], PermissionError):
+            return
+        try:
+            info = os.lstat(filename)
+            resolved = os.path.normcase(os.path.realpath(filename))
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & stat.S_IWRITE
+                    or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    or os.path.commonpath([root, resolved]) != root):
+                return
+            os.chmod(filename, info.st_mode | stat.S_IWRITE)
+            function(filename)
+        except (OSError, ValueError):
+            pass
+
+    shutil.rmtree(path, onerror=retry_readonly)
 
 
 def open_with_default(path: str) -> bool:
@@ -702,13 +766,16 @@ def open_excl(path: str, mode: int = 0o600) -> int:
 
 
 def chmod_private(path: str) -> None:
-    """Restrict a file to its owner (for secrets/tokens). On Windows this is a no-op
+    """Restrict a file or directory to its owner. On Windows this is a no-op
     — the POSIX permission bits don't map to Windows ACLs — rather than an error."""
     if is_windows():
         return
     try:
         import stat
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        mode = stat.S_IRUSR | stat.S_IWUSR
+        if os.path.isdir(path):
+            mode |= stat.S_IXUSR  # directories need search permission to access their contents
+        os.chmod(path, mode)
     except OSError:
         pass
 

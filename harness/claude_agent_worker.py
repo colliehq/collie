@@ -360,7 +360,8 @@ def _build_options(sdk, request: dict):
         # A consumer stopping at a failed formatter receipt cannot prevent the
         # CLI from already starting its next request. Disable that native retry
         # path explicitly; only Collie's separately reserved repair may run.
-        # Documented CLI env control; SDK 0.2.136 uses bundled CLI 2.1.228.
+        # Documented CLI env control, re-verified in the CLI SDK 0.2.157 ships
+        # and stages (2.1.277 / 2.1.278).
         kwargs["env"]["MAX_STRUCTURED_OUTPUT_RETRIES"] = "0"
         # Structured mode only.  The tool-less planner keeps a byte-identical
         # plain configuration, because its own action contract is not this

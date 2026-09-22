@@ -197,6 +197,9 @@ _PARENT_SESSION_NAMES = frozenset({
     # inheriting them can nest the child into the parent's permissions, while
     # refusing them would make every worker unusable from the primary UI.
     "CODEX_CI", "CODEX_SESSION_ID",
+    # Codex 0.155.1 inject_session_env exports its harness version to tools.
+    # It is parent metadata, not a billing override; discard it in the child.
+    "CODEX_VERSION",
     "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT",
     "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_PERMISSION_PROFILE",
     "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID",

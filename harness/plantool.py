@@ -64,8 +64,7 @@ def _locked(path):
         try:
             if os.name == "nt":
                 import msvcrt
-                if os.path.getsize(lock_path) == 0:
-                    fh.write(b"\0"); fh.flush()
+                # Lock the range even when empty; never write before ownership.
                 fh.seek(0); msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
             else:
                 import fcntl

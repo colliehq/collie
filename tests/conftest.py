@@ -8,6 +8,8 @@ another module's temp dir — causing FileNotFoundError when their note.append
 tests run. This autouse fixture restores each test module's own env right
 before the test runs, so modules stay isolated regardless of import order.
 """
+import functools
+import inspect
 import os
 
 import pytest
@@ -45,11 +47,33 @@ def tmp(tmp_path):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
-    """Test modules that predate pytest raise their own `_Skip` exception to
-    signal "not supported on this OS" (e.g. symlink creation without Windows
-    Developer Mode). Translate that into a real pytest skip instead of a fail.
+    """Make the standalone suites' soft checks real pytest failures as well.
+
+    Their main() inspects a failure list, but pytest never calls main(). Keep
+    collecting checks so test cleanup still runs, then fail this exact item.
     """
-    outcome = yield
+    module = getattr(item, "module", None)
+    original = getattr(module, "check", None)
+    signature = inspect.signature(original) if inspect.isfunction(original) else None
+    condition = next((name for name in ("cond", "ok")
+                      if signature and name in signature.parameters), None)
+    failed = []
+    if condition:
+        @functools.wraps(original)
+        def checked(*args, **kwargs):
+            values = signature.bind(*args, **kwargs).arguments
+            if not values[condition]:
+                failed.append(str(next((value for name, value in values.items()
+                                        if name != condition), "legacy check failed")))
+            return original(*args, **kwargs)
+        module.check = checked
+    try:
+        outcome = yield
+    finally:
+        if condition:
+            module.check = original
     exc = outcome.excinfo
     if exc is not None and exc[0].__name__ == "_Skip":
         outcome.force_exception(pytest.skip.Exception(str(exc[1])))
+    elif exc is None and failed:
+        outcome.force_exception(AssertionError("Legacy checks failed:\n" + "\n".join(failed)))

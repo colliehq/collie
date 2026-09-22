@@ -956,7 +956,7 @@ def test_confirmed_timeout_cancels_only_its_own_mission_worker():
     cap = Capability(
         "slow.code", execute=lambda _rec: release.wait(2) or {"done": True},
         verify=lambda _r, _x: Verdict(VERIFIED, "done"),
-        reversible=False, risk="write", semantic_args=("target",))
+        reversible=False, risk="irreversible", semantic_args=("target",))
     cap.cancel_for = lambda mission_id: (
         lambda: scoped.append(mission_id) or release.set() or True)
     cap.cancel_current = lambda: (_ for _ in ()).throw(
@@ -968,7 +968,9 @@ def test_confirmed_timeout_cancels_only_its_own_mission_worker():
         store, "parked-timeout", "run one bounded code action",
         leash=world_leash(
             may=["slow.code"], autonomous=False, max_step_seconds=1))
-    check(drv.advance("parked-timeout") == NEEDS_YOU, "action parked")
+    state = drv.advance("parked-timeout")
+    check(state == NEEDS_YOU, "action parked (got %s)" % state)
+    check(not scoped and not release.is_set(), "worker remains idle before confirmation")
     _name, nonce = store.last_parked("parked-timeout")
 
     check(drv.confirm_and_resume("parked-timeout", nonce) == RECOVERY_REQUIRED,

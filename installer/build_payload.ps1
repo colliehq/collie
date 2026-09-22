@@ -183,6 +183,11 @@ Step "pip install collie-harness[local,remote,online,claude] from the repo"
 & (Join-Path $py "python.exe") -m pip install --upgrade --no-build-isolation --no-warn-script-location "$repo[local,remote,online,claude]"
 Assert-NativeExit "install Collie into payload" $LASTEXITCODE
 
+# SDK 0.2.157 currently has no Windows wheel. Its sdist installs Python code
+# without the native CLI, so an import-only smoke would ship a nonworking agent.
+& (Join-Path $py "python.exe") (Join-Path $PSScriptRoot "bundle_claude.py") --site-packages $site
+Assert-NativeExit "stage and verify native Claude CLI" $LASTEXITCODE
+
 # distlib console launchers embed the absolute interpreter path that existed while pip built them.
 # The payload is staged under installer\payload\python and then relocated to
 # %LOCALAPPDATA%\Programs\Collie\python, so a copied Scripts\collie.exe would keep pointing back to

@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import secrets
 import sqlite3
@@ -68,6 +69,37 @@ def _contains_secret(value: str) -> bool:
         if candidate not in _NON_VALUES and len(candidate) >= 4:
             return True
     return False
+
+
+def project_scope(cwd: str = "") -> str:
+    """The memory scope for a working directory: the CODEBASE, not the surface it was reached from.
+
+    Every entry point used to name this after itself — the web app passed "web", every argparse
+    default passed "demo" — so one machine, one checkout and one dog kept two memories that could
+    not see each other, divided by which window the person happened to type into. Nothing about a
+    project changes when you move from a chat panel to Slack, so nothing about its memory should:
+    what was learned answering in one place is exactly what is missing in the other.
+
+    A git checkout is scoped by its ROOT, so a subdirectory is the same project as the repo above
+    it. Outside a checkout the directory itself is the project.
+
+    Deliberate limitation: the key is the basename, so two checkouts of one repo (a fork beside its
+    upstream) share a memory. That is usually what is wanted — they are the same project — and
+    `--project` overrides it when it is not.
+    """
+    start = os.path.abspath(cwd or os.getcwd())
+    root = start
+    while True:
+        if os.path.exists(os.path.join(root, ".git")):
+            break
+        parent = os.path.dirname(root)
+        if parent == root:                  # walked to the filesystem root: not a checkout
+            root = start
+            break
+        root = parent
+    # never "global": that is the read-by-everyone tier, and a scope that fell back into it would
+    # quietly publish one project's facts to every other.
+    return os.path.basename(root).lower() or "default"
 
 
 class BlockOverflow(Exception):
