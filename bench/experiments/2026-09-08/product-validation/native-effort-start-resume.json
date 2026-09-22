@@ -1,0 +1,172 @@
+{
+  "source_commit": "e7d712a327460aa60a65812cf6ec4abfa64be6ca",
+  "passed": true,
+  "cases": [
+    {
+      "case": "read",
+      "checks": {
+        "first_settled": true,
+        "second_settled": true,
+        "no_error": true,
+        "no_recovery_required": true,
+        "same_session": true,
+        "remembered_marker": true,
+        "effort_on_both": true,
+        "resumed_cli": true
+      },
+      "passed": true,
+      "seconds": 8.152,
+      "calls": [
+        {
+          "argv": [
+            "C:\\Users\\Sining Xu\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\claude_agent_sdk\\_bundled\\claude.exe",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "acceptEdits",
+            "--tools",
+            "Read,Edit,Write,Grep,Glob",
+            "--allowedTools",
+            "Read,Edit,Write,Grep,Glob",
+            "--safe-mode",
+            "--no-chrome",
+            "--disable-slash-commands",
+            "--prompt-suggestions",
+            "false",
+            "--strict-mcp-config",
+            "--session-id",
+            "9cac8a71-fead-4670-810c-4d559a0613ed",
+            "--model",
+            "claude-opus-5",
+            "--effort",
+            "high"
+          ],
+          "cwd": "C:\\workspace\\collie-benchmark-2026-09-07-evening\\native-effort-real-smoke\\read\\work"
+        },
+        {
+          "argv": [
+            "C:\\Users\\Sining Xu\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\claude_agent_sdk\\_bundled\\claude.exe",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "acceptEdits",
+            "--tools",
+            "Read,Edit,Write,Grep,Glob",
+            "--allowedTools",
+            "Read,Edit,Write,Grep,Glob",
+            "--safe-mode",
+            "--no-chrome",
+            "--disable-slash-commands",
+            "--prompt-suggestions",
+            "false",
+            "--strict-mcp-config",
+            "--resume",
+            "9cac8a71-fead-4670-810c-4d559a0613ed",
+            "--model",
+            "claude-opus-5",
+            "--effort",
+            "high"
+          ],
+          "cwd": "C:\\workspace\\collie-benchmark-2026-09-07-evening\\native-effort-real-smoke\\read\\work"
+        }
+      ],
+      "usage": {
+        "input_tokens": 6,
+        "output_tokens": 141,
+        "cache_read_input_tokens": 15000,
+        "cache_creation_input_tokens": 2563,
+        "total_cost_usd": 0.033288,
+        "cost_micro_usd": 33288
+      },
+      "invocations": 2
+    },
+    {
+      "case": "edit",
+      "checks": {
+        "first_settled": true,
+        "second_settled": true,
+        "no_error": true,
+        "no_recovery_required": true,
+        "same_session": true,
+        "remembered_marker": true,
+        "effort_on_both": true,
+        "resumed_cli": true,
+        "edits_preserved": true
+      },
+      "passed": true,
+      "seconds": 12.676,
+      "calls": [
+        {
+          "argv": [
+            "C:\\Users\\Sining Xu\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\claude_agent_sdk\\_bundled\\claude.exe",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "acceptEdits",
+            "--tools",
+            "Read,Edit,Write,Grep,Glob",
+            "--allowedTools",
+            "Read,Edit,Write,Grep,Glob",
+            "--safe-mode",
+            "--no-chrome",
+            "--disable-slash-commands",
+            "--prompt-suggestions",
+            "false",
+            "--strict-mcp-config",
+            "--session-id",
+            "1040c67c-1e0e-4415-9e40-77a91d7b1f77",
+            "--model",
+            "claude-opus-5",
+            "--effort",
+            "high"
+          ],
+          "cwd": "C:\\workspace\\collie-benchmark-2026-09-07-evening\\native-effort-real-smoke\\edit\\work"
+        },
+        {
+          "argv": [
+            "C:\\Users\\Sining Xu\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\claude_agent_sdk\\_bundled\\claude.exe",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "acceptEdits",
+            "--tools",
+            "Read,Edit,Write,Grep,Glob",
+            "--allowedTools",
+            "Read,Edit,Write,Grep,Glob",
+            "--safe-mode",
+            "--no-chrome",
+            "--disable-slash-commands",
+            "--prompt-suggestions",
+            "false",
+            "--strict-mcp-config",
+            "--resume",
+            "1040c67c-1e0e-4415-9e40-77a91d7b1f77",
+            "--model",
+            "claude-opus-5",
+            "--effort",
+            "high"
+          ],
+          "cwd": "C:\\workspace\\collie-benchmark-2026-09-07-evening\\native-effort-real-smoke\\edit\\work"
+        }
+      ],
+      "usage": {
+        "input_tokens": 12,
+        "output_tokens": 443,
+        "cache_read_input_tokens": 33572,
+        "cache_creation_input_tokens": 3168,
+        "total_cost_usd": 0.041115,
+        "cost_micro_usd": 41115
+      },
+      "invocations": 2
+    }
+  ],
+  "claim": "Real native product start/resume smoke, not coding benchmark attempts."
+}

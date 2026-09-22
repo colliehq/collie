@@ -5,7 +5,8 @@ transcript has that) but **"why was I not asked about that?"**. So the invariant
 
     every call that ran WITHOUT a prompt records the rule that let it through.
 
-`project` mode, a repo allowance, a standing rule, an override, an explicit approval —
+`project` mode, a repo allowance, a standing rule, an outcome-based user authorization,
+an override, an explicit approval —
 each writes the reason it applied. A row that says "allowed" and cannot say why would be
 the one row you actually needed, so `reason` is not optional anywhere.
 
@@ -15,7 +16,9 @@ that are sensitive by position rather than by value: what someone typed into a p
 body of a message. Belt and braces, because an audit log is exactly the file people
 forget is readable and mail to each other when something goes wrong.
 
-Local only. Nothing here is sent anywhere; there is no collie server to send it to.
+The ledger and raw procedural observations stay local. A separate procedural-memory
+store may distill repeated action shapes into a sealed suggestion; raw rows are never
+eligible for sync.
 """
 
 from __future__ import annotations
@@ -58,11 +61,19 @@ class AuditLog:
         self.db.execute("""CREATE TABLE IF NOT EXISTS gate_events(
             id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, session TEXT, cwd TEXT,
             tool TEXT, risk TEXT, target TEXT, stage TEXT, outcome TEXT,
-            reason TEXT, rule TEXT, args TEXT)""")
+            reason TEXT, rule TEXT, args TEXT, effect TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '', authorization_basis TEXT NOT NULL DEFAULT '')""")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(gate_events)").fetchall()}
+        for name in ("effect", "action", "authorization_basis"):
+            if name not in columns:
+                self.db.execute("ALTER TABLE gate_events ADD COLUMN %s TEXT NOT NULL DEFAULT ''" % name)
         self.db.commit()
+        self._procedure_path = os.path.join(d or ".", "procedural-memory.db")
+        self._procedures = None
 
     def record(self, *, session="", cwd="", tool="", risk="", target="", stage="",
-               outcome="", reason="", rule="", args=None) -> None:
+               outcome="", reason="", rule="", args=None, effect="", action="",
+               authorization_basis="") -> None:
         """One decision. Never raises into the caller — an audit failure must not take
         down the run it was recording, and a run that dies because logging failed is a
         worse outcome than a gap in the log."""
@@ -70,13 +81,30 @@ class AuditLog:
             with self._lock:
                 self.db.execute(
                     "INSERT INTO gate_events(at,session,cwd,tool,risk,target,stage,"
-                    "outcome,reason,rule,args) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "outcome,reason,rule,args,effect,action,authorization_basis) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (int(time.time()), session, cwd, tool, risk, target or "", stage,
-                     outcome, reason[:500], rule or "",
-                     json.dumps(sanitize(tool, args), default=str)[:2000]))
+                      outcome, reason[:500], rule or "",
+                      json.dumps(sanitize(tool, args), default=str)[:2000],
+                      str(effect or "")[:40], str(action or "")[:100],
+                      str(authorization_basis or "")[:300]))
                 self.db.commit()
         except Exception:
             pass
+        # Only actions which actually passed the gate teach procedural memory.  This is
+        # best-effort like the audit write itself and intentionally receives pre-secret-
+        # restore args. ProcedureMemory applies a second, stricter content filter.
+        if stage in ("approved", "auto") and tool:
+            try:
+                if self._procedures is None:
+                    from .procedure_memory import ProcedureMemory
+                    self._procedures = ProcedureMemory(self._procedure_path)
+                self._procedures.observe_tool(
+                    tool, args, session=session, project=cwd, target=target,
+                    result=outcome or stage, source="gate",
+                    metadata={"risk": risk, "effect": effect, "stage": stage})
+            except Exception:
+                pass
 
     def list(self, limit=100, tool=None, stage=None, session=None) -> list:
         sql, params, where = "SELECT * FROM gate_events", [], []
@@ -109,6 +137,11 @@ class AuditLog:
                 if r["stage"] == "auto" and not (r["reason"] or r["rule"])]
 
     def close(self):
+        try:
+            if self._procedures is not None:
+                self._procedures.close()
+        except Exception:
+            pass
         try:
             self.db.close()
         except Exception:

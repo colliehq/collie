@@ -18,7 +18,7 @@ Point Collie at a real bug with a cheap model:
 DEEPSEEK_API_KEY=... collie -p "fix the off-by-one in utils/timeparse.py"
 ```
 
-Watch the [verification gate](index.md#it-proves-its-work-the-verification-gate): it writes a
+Watch the [verification gate](index.md#evidence-you-can-inspect-the-verification-gate): it writes a
 reproduction that fails, makes the smallest edit, and re-runs it. The run ends **verified ✓**, not
 "done."
 

@@ -16,6 +16,7 @@ Prices are registered into costs.PRICES so $/instance receipts are correct for e
 catalog model (fixes the "no price for gpt-5.6-terra" $0 misprice).
 """
 from __future__ import annotations
+import importlib.util
 import json
 import os
 import shutil
@@ -24,6 +25,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from .providers import OPENAI_COMPAT_PRESETS
+from . import plat
 
 # provider -> (base_url, api-key env, default model). Reuse the preset table where it exists;
 # add the non-compat providers so auth-probing + discovery have one source of truth.
@@ -37,9 +39,11 @@ _KEY_ENV = {
 }
 
 # ---- prices ($/1M tokens: input, cached_input, output) ------------------------------------
-# Subscription entries (anthropic-oauth / codex-oauth) bill at the EQUIVALENT metered rate in
-# receipts — same convention collie already uses for Claude-sub Opus — while the picker labels
-# them "$0 marginal". Registered into costs.PRICES on import (idempotent).
+# Login-backed entries bill at the EQUIVALENT metered rate in receipts so budgets stay
+# conservative.  That accounting must not be read as a billing claim: in particular,
+# anthropic-oauth is an experimental raw direct route whose availability and billing are
+# established only by runtime admission, not by this catalog.  Registered into costs.PRICES on
+# import (idempotent).
 PRICES = {
     # (input, cache-read, output) per 1M tokens. Opus 4.8 sat at the old 15/75 Opus-3-era rates,
     # which overstated every Opus receipt by 3x; both Opus 5 and 4.8 are 5/25.
@@ -156,13 +160,16 @@ def _plugin_entries() -> list:
 def _static() -> list:
     P = PRICES
     return [
-        # Claude — subscription first (the recommended $0-marginal path), then metered API.
+        ModelEntry("claude-agent-sdk", "claude-opus-4-8", "Claude Opus 4.8",
+                   "Claude plan · official Agent SDK", "subscription",
+                   ["coding", "frontier", "overnight"], price=P["claude-opus-4-8"]),
+        # Claude direct is experimental; keep its route visibly distinct from the metered API.
         ModelEntry("anthropic-oauth", "claude-opus-5", "Claude Opus 5",
-                   "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-5"]),
+                   "Claude direct (experimental)", "subscription", ["coding", "frontier"], price=P["claude-opus-5"]),
         ModelEntry("anthropic-oauth", "claude-opus-4-8", "Claude Opus 4.8",
-                   "Claude subscription", "subscription", ["coding", "frontier"], price=P["claude-opus-4-8"]),
+                   "Claude direct (experimental)", "subscription", ["coding", "frontier"], price=P["claude-opus-4-8"]),
         ModelEntry("anthropic-oauth", "claude-sonnet-5", "Claude Sonnet 5",
-                   "Claude subscription", "subscription", ["coding", "fast"], price=P["claude-sonnet-5"]),
+                   "Claude direct (experimental)", "subscription", ["coding", "fast"], price=P["claude-sonnet-5"]),
         ModelEntry("anthropic", "claude-opus-5", "Claude Opus 5",
                    "Anthropic API key", "metered", ["coding", "frontier"], price=P["claude-opus-5"]),
         ModelEntry("anthropic", "claude-opus-4-8", "Claude Opus 4.8",
@@ -238,6 +245,28 @@ def probe_auth(provider: str) -> str:
         return "ok" if os.path.exists(
             os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),
                          "auth.json")) else "not-logged-in"
+    if provider == "claude-agent-sdk":
+        try:
+            spec = importlib.util.find_spec("claude_agent_sdk")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            return "not-logged-in"
+        # The official SDK prefers its bundled runtime. An installer-only
+        # machine need not have a separate `claude` command on PATH. This is
+        # the same cheap runtime-availability badge as the CLI route below;
+        # actual subscription authentication is checked at run admission.
+        windows = plat.is_windows()
+        binary = "claude.exe" if windows else "claude"
+        if any(os.path.isfile(os.path.join(folder, "_bundled", binary))
+               for folder in (spec.submodule_search_locations or ())):
+            return "ok"
+        cli = shutil.which(binary)
+        if cli and (not windows or cli.lower().endswith((".exe", ".com"))):
+            return "ok"
+        if os.path.isfile(os.path.expanduser("~/.local/bin/" + binary)):
+            return "ok"
+        return "not-logged-in"
     if provider == "claude-cli":
         return "ok" if shutil.which("claude") else "not-logged-in"
     if provider == "ollama":
@@ -256,6 +285,7 @@ def probe_auth(provider: str) -> str:
 
 
 _LOGIN_HINT = {
+    "claude-agent-sdk": "install `collie-harness[claude]` and log in with `claude`",
     "anthropic-oauth": "run `claude` once to log in",
     "codex-oauth": "run `codex login` (ChatGPT account)",
     "claude-cli": "install the claude CLI and log in",
@@ -348,19 +378,16 @@ def discover(provider: str) -> list:
                                {"x-api-key": key, "anthropic-version": "2023-06-01"})
                 ids = [m["id"] for m in d.get("data", []) if m.get("id")]
         elif provider == "anthropic-oauth":
-            # The subscription path had NO discovery branch at all — only the API-key one existed,
-            # and it needs ANTHROPIC_API_KEY, which a subscription user does not have. So the picker
-            # showed the hand-written list forever: Opus 5 shipped and Collie went on offering 4.8,
-            # with no way to notice. The same endpoint answers a Bearer token.
+            # Experimental raw bearer discovery. Keep Collie's identity explicit;
+            # this must never be presented to Anthropic as a Claude Code request.
             from . import providers as _p
             tok = _p._read_oauth_token()
             if tok:
                 d = _http_json("https://api.anthropic.com/v1/models?limit=40",
                                {"authorization": "Bearer " + tok,
                                 "anthropic-version": "2023-06-01",
-                                "anthropic-beta": _p._CC_BETAS,
-                                "user-agent": "claude-code/%s (external, cli)" % _p._claude_version(),
-                                "x-app": "cli"})
+                                "anthropic-beta": _p._RAW_OAUTH_BETAS,
+                                "user-agent": _p._RAW_OAUTH_USER_AGENT})
                 ids = [m["id"] for m in d.get("data", []) if m.get("id")]
         elif provider in OPENAI_COMPAT_PRESETS or provider in _KEY_ENV:
             base, keyenv, _d = OPENAI_COMPAT_PRESETS.get(
@@ -384,8 +411,10 @@ def _via_kind(provider: str) -> tuple:
     _pi = _plugin_info().get(provider)
     if _pi is not None:
         return _pi.get("via") or provider, _pi.get("kind") or "metered"
-    if provider in ("anthropic-oauth", "codex-oauth", "claude-cli"):
-        return {"anthropic-oauth": "Claude subscription", "codex-oauth": "ChatGPT subscription",
+    if provider in ("claude-agent-sdk", "anthropic-oauth", "codex-oauth", "claude-cli"):
+        return {"claude-agent-sdk": "Claude plan · official Agent SDK",
+                "anthropic-oauth": "Claude direct (experimental)",
+                "codex-oauth": "ChatGPT subscription",
                 "claude-cli": "your claude CLI"}[provider], "subscription"
     if provider in ("ollama", "mock"):
         return "local", "local"

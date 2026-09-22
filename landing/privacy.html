@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" data-privacy-notice-version="live-copilot-v1">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0c11">
+  <meta name="description" content="How the collie.run website and Collie app handle data.">
+  <title>Privacy — Collie</title>
+  <link rel="icon" href="/collie-logo.svg" type="image/svg+xml">
+  <style>
+    :root{color-scheme:dark;--bg:#0b0c11;--panel:#13151d;--ink:#f0f2f8;--muted:#a2a8ba;--line:#2e323e;--accent:#aab4f0}*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 Inter,"Segoe UI",system-ui,sans-serif}header,main,footer{width:min(760px,calc(100% - 32px));margin:auto}header{padding:26px 0;border-bottom:1px solid var(--line)}header a{display:inline-flex;align-items:center;gap:10px;color:var(--ink);font-weight:700;text-decoration:none}header img{width:30px;height:30px}main{padding:48px 0}h1{font-size:clamp(36px,8vw,56px);line-height:1.05;margin:0 0 12px}h2{font-size:22px;margin:36px 0 8px}p,li{color:var(--muted)}strong{color:var(--ink)}a{color:var(--accent);text-underline-offset:3px}li+li{margin-top:8px}.date{margin-bottom:34px}footer{padding:24px 0 36px;border-top:1px solid var(--line);color:var(--muted)}:where(a,button):focus-visible{outline:3px solid var(--accent);outline-offset:4px}@media(max-width:380px){header,main,footer{width:min(100% - 24px,760px)}main{padding:34px 0}ul{padding-left:22px}}
+  </style>
+</head>
+<body>
+  <header><a href="/"><img src="/collie-logo.svg" alt="">Collie</a></header>
+  <main>
+    <h1>Privacy</h1>
+    <p class="date">Effective August 30, 2026 · notice interview-assist-v1</p>
+    <p>Collie’s open-source local core is designed to run on your computer and needs no Collie account. It has no advertising, usage analytics, or telemetry. The optional Collie Online preview uses an account only when you choose to connect it.</p>
+
+    <h2>This website</h2>
+    <p>The static collie.run pages load no analytics or tracking scripts. Your hosting provider may process ordinary request data, such as your network address, to deliver and secure the site.</p>
+
+    <h2>“Ask Collie” website demo</h2>
+    <p>Nothing is sent until you submit the form. The question and up to six recent messages from that demo are sent through a Cloudflare Pages Function to Cloudflare Workers AI. Product files and local Collie sessions are not attached.</p>
+    <p>To limit abuse, the service processes your network address through a secret-keyed one-way function to derive a new identifier each day. The raw address is not used as a Durable Object name or stored by the site code. The object stores only a number and expiry and is deleted within 48 hours. The limit is applied before an AI request is made.</p>
+    <p>The site code does not write questions or answers to R2, KV, or Durable Object content storage; its Durable Object stores only the abuse counter. Cloudflare publishes separate <a href="https://developers.cloudflare.com/workers-ai/platform/data-usage/">Workers AI data-usage information</a>.</p>
+
+    <h2>The app</h2>
+    <ul>
+      <li><strong>Your chosen model provider:</strong> prompts and the context required for a task go to the provider you configure. With a local Ollama model, model traffic stays on your machine.</li>
+      <li><strong>Optional web features:</strong> searches, page requests, and browser automation contact the sites you ask Collie to use.</li>
+      <li><strong>Optional MCP discovery:</strong> Collie first matches connection needs on your device. Searching the public MCP Registry is off until one disclosed consent; it sends only generic allowlisted labels such as <code>calendar</code>, <code>github</code>, or <code>music</code>, not your original request, project names, paths, URLs, searches, or conversation. Public metadata is cached locally and is not a security review. Connecting an exact provider is a separate action.</li>
+      <li><strong>Optional Personal intelligence:</strong> outside-AI learning is off by default and enabled with one visible consent. Browser-history access is a separate optional Chrome permission. Raw URLs, titles, paths, queries, and searches are discarded in extension memory; only local origin/time/count summaries are kept for up to 14 days and are not uploaded. Disconnecting revokes access and deletes those summaries.</li>
+      <li><strong>Optional Live Copilot:</strong> every session is explicitly started and may have no initial task description. Basic app awareness keeps application names only. A separate active-interface option keeps a bounded summary of accessibility control types and labels, which may contain visible page or document text; continuous observation discards field values and does not log keys, clipboard, titles, or screenshots. Conversation mode requires participant consent and uses Collie's first-party microphone/system-audio capture. Short audio chunks are deleted after the configured speech service returns text; transcript and compact understanding may go to the providers shown in the app. Suggestions do not act by themselves. Pressing the shortcut is an explicit handoff: Collie then retains the exact foreground process, PID/window handle, window title, and bounded interface labels so a command can return to the right window. It still excludes field values, keys, clipboard, and screenshots. The shortcut's one-shot command audio is recognized by Windows locally; only recognized text goes to the configured Collie model. A handoff can start a normal task or a durable Mission, both under Collie's ordinary permission controls. Stopping clears live capture and surface authority.</li>
+      <li><strong>Optional Collie Online:</strong> selected sealed project memory, policy, learned-workflow derivatives, and Mission payloads are end-to-end encrypted between your devices. The service processes the account, device, project, timing, and approximate-size metadata required to route and coordinate them. Raw activity observations, browser-history summaries, and personal events are not uploaded by this build. Any separately labeled <code>cloud_indexed</code> data is outside the sealed-content guarantee and requires an explicit choice.</li>
+      <li><strong>Optional phone remote:</strong> hosted remote request and response contents are end-to-end encrypted. The relay handles necessary routing metadata such as room or device identifiers, request timing, and approximate message sizes.</li>
+      <li><strong>Local data:</strong> settings, sessions, memory, pairing state, and recordings remain on your machine unless you choose to send or sync them elsewhere.</li>
+    </ul>
+
+    <h2>Your choices</h2>
+    <p>You can avoid the website demo, use the local core without an account, choose a local model, leave outside-AI, Online, and other optional network features off, disconnect browser history in one click, and delete Collie’s local state under <code>~/.collie</code>. See the <a href="https://colliehq.github.io/collie/privacy/">full product privacy notes</a> and <a href="https://github.com/colliehq/collie">source code</a>.</p>
+
+    <h2>Questions</h2>
+    <p>Open an issue at <a href="https://github.com/colliehq/collie/issues">github.com/colliehq/collie/issues</a>.</p>
+  </main>
+  <footer>Collie · free and open-source (MIT)</footer>
+</body>
+</html>

@@ -104,6 +104,23 @@ def test_mcp_tools_default_to_external():
     assert R.classify("mcp__fs__read_file") is RiskClass.EXTERNAL
 
 
+def test_mcp_discovery_is_read_but_connecting_a_candidate_is_external():
+    assert R.classify("mcpctl_recommend") is RiskClass.READ
+    assert R.classify("mcpctl_connect_candidate") is RiskClass.EXTERNAL
+
+
+def test_live_copilot_risk_follows_the_requested_effect():
+    assert R.classify("live_copilot", args={"action": "status"}) is RiskClass.READ
+    assert R.classify("live_copilot", args={"action": "stop"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("live_copilot", args={"action": "note"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("live_copilot", args={"action": "diagram_preview"}) is RiskClass.WRITE_LOCAL
+    assert R.classify("live_copilot", args={"action": "work"}) is RiskClass.EXTERNAL
+    assert R.classify("live_copilot", args={"action": "diagram_apply"}) is RiskClass.EXTERNAL
+    assert R.classify("live_copilot", args={"action": "start"}) is RiskClass.EXTERNAL
+    assert R.classify("live_copilot", args={"action": "permissions"}) is RiskClass.EXTERNAL
+    assert R.classify("live_copilot", args={}) is RiskClass.EXTERNAL
+
+
 def test_override_wins_over_table():
     """A user who trusts a server can relax it; that is the only way down."""
     assert R.classify("bash") is RiskClass.EXEC
@@ -130,7 +147,8 @@ def test_tool_self_declaration_used_only_when_unknown():
 @pytest.mark.parametrize("name", [
     "browser_click", "browser_type", "browser_press", "browser_upload",
     "browser_eval", "browser_script", "desktop_click", "desktop_type",
-    "enable_capability", "delegate",
+    "desktop_uia", "desktop_win32",
+    "enable_capability",
 ])
 def test_reaching_off_machine_is_external(name):
     assert R.classify(name) is RiskClass.EXTERNAL
@@ -138,7 +156,7 @@ def test_reaching_off_machine_is_external(name):
 
 @pytest.mark.parametrize("name", [
     "browser_read", "browser_snapshot", "browser_links", "browser_screenshot",
-    "read_file", "grep", "glob", "web_fetch", "desktop_read",
+    "read_file", "grep", "glob", "web_fetch", "desktop_read", "delegate",
 ])
 def test_observing_is_read(name):
     assert R.classify(name) is RiskClass.READ

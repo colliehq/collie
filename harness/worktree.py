@@ -87,6 +87,11 @@ def prepare(cwd, session, label=""):
         return {"ok": False, "dir": cwd, "branch": "", "root": "", "kind": "none",
                 "error": "not a git repository — nothing to isolate against"}
 
+    ok_base, base_commit = _git(["rev-parse", "HEAD"], root)
+    if not ok_base or not base_commit:
+        return {"ok": False, "dir": cwd, "branch": "", "root": root, "kind": "none",
+                "error": "repository has no commit to isolate"}
+    base_commit = base_commit.splitlines()[-1].strip()
     branch = PREFIX + _slug(label or session, fallback=_slug(session))
     # A session that runs twice must not collide with its own leftover branch.
     ok, _ = _git(["rev-parse", "--verify", "--quiet", branch], root)
@@ -100,13 +105,90 @@ def prepare(cwd, session, label=""):
                 break
             n += 1
 
-    dst = os.path.join(tempfile.mkdtemp(prefix="collie_wt_"), _slug(session))
+    # These are saved task results. OS temporary-directory cleanup must not remove them.
+    from . import sessions
+    parent = os.path.join(os.path.dirname(sessions.store_root()), "workspaces")
+    try:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        dst = os.path.join(tempfile.mkdtemp(prefix="collie_wt_", dir=parent), _slug(session))
+    except OSError as exc:
+        return {"ok": False, "dir": cwd, "branch": "", "root": root, "kind": "none",
+                "error": "could not create saved workspace: %s" % exc}
     ok, out = _git(["worktree", "add", "-b", branch, dst, "HEAD"], root, timeout=180)
     if not ok:
         shutil.rmtree(os.path.dirname(dst), ignore_errors=True)
         return {"ok": False, "dir": cwd, "branch": "", "root": root, "kind": "none",
                 "error": ("git worktree add failed: " + out)[:400]}
-    return {"ok": True, "dir": dst, "branch": branch, "root": root, "kind": "worktree", "error": ""}
+    return {"ok": True, "dir": dst, "branch": branch, "root": root,
+            "base_commit": base_commit, "kind": "worktree", "error": ""}
+
+
+def _git_input(args, cwd, data=None, timeout=120):
+    """Transport patches as bytes: newline conversion damages binary and CRLF diffs."""
+    try:
+        from . import plat
+        proc = subprocess.run(["git"] + list(args), cwd=cwd, timeout=timeout, input=data,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              **plat.no_window_kwargs())
+        return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, ("%s: %s" % (type(exc).__name__, exc)).encode("utf-8")
+
+
+def handoff_to_local(wt_dir, local_root, base_commit, *, confirm=False, before_apply=None):
+    """Copy an isolated diff into a clean local checkout after explicit confirmation."""
+    if confirm is not True:
+        return {"ok": False, "applied": False, "error": "explicit confirmation required"}
+    wt_dir, local_root = os.path.abspath(wt_dir), os.path.abspath(local_root)
+    common = main_root(wt_dir)
+    if not common or os.path.normcase(os.path.realpath(common)) != os.path.normcase(os.path.realpath(local_root)):
+        return {"ok": False, "applied": False,
+                "error": "isolated workspace does not belong to the requested local checkout"}
+    ok, dirty = _git(["status", "--porcelain"], local_root)
+    if not ok or dirty.strip():
+        return {"ok": False, "applied": False,
+                "error": "local checkout has changes; commit or stash them before handoff"}
+    ok, _ = _git(["cat-file", "-e", str(base_commit) + "^{commit}"], wt_dir)
+    if not ok:
+        return {"ok": False, "applied": False, "error": "handoff base commit is unavailable"}
+    # Intent-to-add includes new files in the binary-safe patch without staging their contents.
+    staged, detail = _git(["add", "-A", "--intent-to-add"], wt_dir)
+    if not staged:
+        return {"ok": False, "applied": False, "error": ("could not include new files: " + detail)[:500]}
+    ok, patch = _git_input(["diff", "--binary", str(base_commit)], wt_dir, timeout=180)
+    if not ok:
+        return {"ok": False, "applied": False, "error": patch.decode("utf-8", "replace")[:300]}
+    if not patch:
+        return {"ok": True, "applied": False, "files": [], "error": ""}
+    ok, detail = _git_input(["apply", "--check", "-"], local_root, patch, timeout=180)
+    if not ok:
+        return {"ok": False, "applied": False, "error": ("handoff conflicts: " + detail.decode("utf-8", "replace"))[:500]}
+    if before_apply:
+        before_apply()
+    ok, detail = _git_input(["apply", "-"], local_root, patch, timeout=180)
+    if not ok:
+        return {"ok": False, "applied": False, "error": ("handoff apply failed: " + detail.decode("utf-8", "replace"))[:500]}
+    ok, changed = _git(["status", "--porcelain"], local_root)
+    files = []
+    if ok:
+        for line in changed.splitlines():
+            part = line.strip().split(None, 1)
+            if len(part) == 2:
+                files.append(part[1].split(" -> ")[-1])
+    return {"ok": True, "applied": True, "files": files[:500], "error": ""}
+
+
+def find_prepared(cwd, session, label=""):
+    """Find the deterministic worktree from an interrupted prepare-before-bind window."""
+    root = repo_root(cwd)
+    if not root:
+        return None
+    branch = PREFIX + _slug(label or session, fallback=_slug(session))
+    for item in listing(root):
+        if item.get("branch") == branch and os.path.isdir(item.get("dir") or ""):
+            return {"ok": True, "dir": item["dir"], "branch": branch, "root": root,
+                    "kind": "worktree", "error": "", "recovered": True}
+    return None
 
 
 def status(wt_dir):
@@ -156,6 +238,15 @@ def release(wt_dir, force=False):
     """
     if not wt_dir or not os.path.isdir(wt_dir):
         return {"ok": True, "removed": False, "error": ""}
+    wt_dir = os.path.realpath(os.path.abspath(wt_dir))
+    root = main_root(wt_dir)
+    if not root or os.path.normcase(os.path.realpath(root)) == os.path.normcase(wt_dir):
+        return {"ok": False, "removed": False, "error": "refusing to remove the main checkout or an unregistered directory"}
+    listed, trees = _git(["worktree", "list", "--porcelain"], root)
+    registered = {os.path.normcase(os.path.realpath(line[9:])) for line in trees.splitlines()
+                  if line.startswith("worktree ")}
+    if not listed or os.path.normcase(wt_dir) not in registered:
+        return {"ok": False, "removed": False, "error": "refusing to remove an unregistered directory"}
     st = status(wt_dir)
     if not force and (st["dirty"] or st["commits"]):
         return {"ok": False, "removed": False,
@@ -164,7 +255,6 @@ def release(wt_dir, force=False):
                             st["commits"], "" if st["commits"] == 1 else "s")}
     # NOT repo_root(wt_dir): that answers with the worktree itself, and git would then be deleting
     # the directory it is standing in — see main_root.
-    root = main_root(wt_dir) or repo_root(wt_dir) or wt_dir
     args = ["worktree", "remove", wt_dir] + (["--force"] if force else [])
     ok, out = _git(args, root, timeout=120)
     if not ok and os.path.isdir(wt_dir):
@@ -178,7 +268,12 @@ def release(wt_dir, force=False):
         if not os.path.isdir(wt_dir):
             ok, out = True, ""
     if ok:
-        shutil.rmtree(os.path.dirname(wt_dir), ignore_errors=True)
+        parent = os.path.dirname(wt_dir)
+        if os.path.basename(parent).startswith("collie_wt_"):
+            try:
+                os.rmdir(parent)   # only the empty allocation wrapper, never siblings or ancestors
+            except OSError:
+                pass
     return {"ok": ok, "removed": ok, "error": "" if ok else out[:300]}
 
 

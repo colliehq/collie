@@ -129,6 +129,45 @@ def test_payload_tamper_refused():
     st.close()
 
 
+def test_nonfinite_action_payloads_fail_closed():
+    print("test_nonfinite_action_payloads_fail_closed")
+    st = ActionStore(_tmp())
+    try:
+        st.propose("pay.charge", {"amt": float("nan")})
+        check(False, "non-finite action args must be rejected before persistence")
+    except ValueError:
+        pass
+    check(not st.list(), "a rejected non-finite proposal must leave no durable row")
+
+    n = st.propose("pay.charge", {"amt": 50})
+    st.confirm(n)
+    st.db.execute("UPDATE pending_actions SET args_json=? WHERE nonce=?",
+                  ('{"amt":NaN}', n))
+    st.db.commit()
+    fired = {"v": False}
+    try:
+        st.execute(n, side_effect_fn=lambda _r: fired.__setitem__("v", True))
+        check(False, "corrupt durable action JSON must be refused")
+    except RefusedError:
+        pass
+    check(not fired["v"], "corrupt durable JSON must never reach the side effect")
+    check(st._row(n)["state"] == "refused", "corrupt approved action must be terminally refused")
+    st.close()
+
+
+def test_action_authority_flags_and_ttl_are_exact():
+    print("test_action_authority_flags_and_ttl_are_exact")
+    st = ActionStore(_tmp())
+    for kwargs in ({"auto": "false"}, {"ttl_s": float("nan")}, {"ttl_s": .5}):
+        try:
+            st.propose("note.append", {"text": "x"}, **kwargs)
+            check(False, "invalid action authority metadata must be rejected: %r" % kwargs)
+        except ValueError:
+            pass
+    check(not st.list(), "invalid action authority metadata must leave no action")
+    st.close()
+
+
 def test_leash_tamper_refused():
     print("test_leash_tamper_refused")
     st = ActionStore(_tmp())

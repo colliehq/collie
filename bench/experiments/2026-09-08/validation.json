@@ -1,0 +1,14 @@
+{
+  "created_at_utc": "2026-09-08T07:44:45.122680+00:00",
+  "candidate_hashes": 166,
+  "independent_candidates_regraded": 166,
+  "model_calls": 0,
+  "sessions_completed": 2,
+  "second_session_status": "complete",
+  "meaning_of_session_complete": "Planned and exploratory work finished in the two allowance windows; not a claim that both allowances were exhausted.",
+  "product_validation_source_commit": "1a0f548a775c9d4d146d3abac976751c4632deb7",
+  "held_out_tasks": [
+    "ordered-pathrule-priority-engine",
+    "capacity-ledger-reservation-audit"
+  ]
+}

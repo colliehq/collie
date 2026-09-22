@@ -1,0 +1,11 @@
+{
+  "source_commit": "4eaad5f6b3b6777866863c4deccf86c322ec2a43",
+  "tracked_diff_sha256": "f54640ec646c0354c172d7175ffadb820edd52dc693721a5ddbeb4f77f55e92b",
+  "tests": [
+    "tests/test_web_busy_send_ui.py"
+  ],
+  "exit": 0,
+  "seconds": 67.277,
+  "finished_at": "2026-09-08T07:25:42.362918+00:00",
+  "model_calls": 0
+}

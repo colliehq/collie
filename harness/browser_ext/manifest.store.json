@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Collie Browser Bridge",
+  "version": "4.0",
+  "description": "Use Collie with the page you choose and optionally grant broader reach for autonomous browser work.",
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "alarms",
+    "storage",
+    "debugger",
+    "downloads",
+    "webNavigation",
+    "sidePanel",
+    "contextMenus"
+  ],
+  "optional_permissions": [
+    "history"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "Collie bridge — status",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    },
+    "default_popup": "popup.html"
+  }
+}

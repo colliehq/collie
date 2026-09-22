@@ -1,0 +1,20 @@
+{
+  "source_commit": "fd35828b8b28288fa2b694977b50933f579befae",
+  "tracked_diff_sha256": "1c3b838683537f391fccc5206ba2942b0432826733cacc25acc879ac7dc1289e",
+  "tests": [
+    "tests/test_session_durable_write.py",
+    "tests/test_session_checkpoint.py",
+    "tests/test_session_resume.py",
+    "tests/test_session_owner.py",
+    "tests/test_task_inbox.py",
+    "tests/test_input_assets.py",
+    "tests/test_session_index.py",
+    "tests/test_interruption_lifecycle.py",
+    "tests/test_native_inbox.py",
+    "tests/test_web_task_inbox.py"
+  ],
+  "exit": 0,
+  "seconds": 50.135,
+  "finished_at": "2026-09-08T06:24:55.646771+00:00",
+  "model_calls": 0
+}

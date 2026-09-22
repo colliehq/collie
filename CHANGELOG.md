@@ -1,5 +1,704 @@
 # Changelog
 
+## v0.27.0 — Current agent runtimes and reliable release workflows
+
+- Update optional Codex and Claude Agent SDK runtimes to verified versions. Windows installers
+  supply the missing native Claude CLI with a pinned archive checksum and executable startup check.
+  The embedded Python build supplies the SDK's source-build backend before installing it.
+  The model picker recognizes a bundled SDK runtime without a separate CLI on PATH.
+- Accept Codex's new parent version metadata without misclassifying it as a billing override;
+  strip it from child environments while preserving credential and endpoint protections.
+- Preserve failed Codex SDK threads for recovery, configure its Windows workspace sandbox,
+  and make the SDK's fallback approval handler decline. SDK-only installation stays supported.
+- Keep the selected model when a provider is overloaded or its plan is exhausted. Trusted reset
+  timestamps remain durable waits and retries stay within the accepted request budget.
+- Resolve Windows Python aliases to owned interpreters, fix simultaneous cold-start locks,
+  preserve private directory traversal, and clean read-only temporary Git objects safely.
+- Unify project memory scopes and expose plugin providers consistently across setup, settings
+  and the model picker. Older live-discovered models remain searchable in a folded list.
+  The added disclosure and model counts include Simplified and Traditional Chinese translations.
+- Make legacy pytest checks report actual failures, resolve the test interpreter explicitly,
+  and validate optional SDK dependencies in the full release gate.
+- Exclude generated browser credentials from both wheel and source-distribution artifacts.
+- Initialize shared typing support before background startup to prevent a cold-start race from
+  leaving Live Copilot unavailable while the main UI appears healthy.
+- Reap the verifier's direct child while confirming POSIX process-group extinction. Cancelled or
+  timed-out checks no longer leave a false recovery fence because the parent retained a zombie.
+- Apply Pack file-to-directory changes consistently on POSIX and Windows while retaining conflict
+  checks and refusal of linked paths. Link-cleanup tests now use each platform's correct operation.
+- Start local HTTP services without reverse DNS, preventing macOS resolver stalls in the UI,
+  browser bridge, tool execution and sign-in callbacks. Direct Web/bridge entry points handle
+  Windows output encoding even when the preferred port is occupied.
+- Release session leases before sending deletion and recovery responses, so an immediate follow-up
+  does not report a conversation as running after the prior operation has finished.
+- Keep macOS background bridge restarts from opening Chrome or replacing the clipboard.
+- Wait through transient macOS process-group probe denials after SIGKILL, still requiring confirmed
+  extinction before reporting cleanup complete. Persistent permission failures remain errors.
+- Preserve standalone test failure diagnostics and use explicit UTF-8 decoding and event-based UI
+  observations so platform checks exercise actual behavior consistently.
+
+See [the release review](docs/release-0.27.0.md) for versions, evidence and validation scope.
+
+## v0.26.0 — Reliable agent handoffs and response accounting
+
+- The Claude Agent SDK receives the tool results selected by the context composer without a
+  second, silent 2,000-character cut. Provider rejections preserve their validated category,
+  subscription authentication evidence and measured usage.
+- Request budgets count physically issued calls across the main loop, critics, compaction and
+  Mission planning. A denied request counts as zero; a multi-request completion keeps its actual
+  count. An unavailable critic follows the existing optional-check failure policy.
+- Native structured formatting remains opt-in after coding comparisons exposed completion
+  failures. A formatter refusal becomes an accounted protocol error eligible for the host's
+  bounded repair; native formatter retries are disabled before inference begins.
+- Codex steering supplies the active turn ID and waits for the server's acceptance. Rejected or
+  uncertain delivery is recorded without replaying a possibly delivered instruction.
+- Container verification uses the host's execution receipts. A passing fix can satisfy the SWE
+  finish gate, while command output imitating a successful result cannot provide evidence.
+- Continue preserves unsent text, images and IDE context for review before sending. An empty
+  composer keeps its direct continuation shortcut, and narrow screens retain the active task title.
+- Claude subscription quota resets become durable Mission waits. SDK and native Claude Code
+  workers preserve the provider's reset timestamp and resume the saved task after it, within the
+  task's deadline. Incomplete tool effects and missing usage evidence still require attention.
+  Waiting task cards show the next check's local date, time and timezone.
+- Output-truncation recovery restores the provider's configured generation limit when the run
+  ends, so a later task does not inherit an earlier task's temporary increase.
+- Pack uses its candidate check on desktop and phone without demanding a second verification
+  command. Empty checks and invalid attempt counts still prevent launch, including in a fresh
+  installed workspace where no repository check can be detected.
+- Successful model responses restore the allowance for a later response-format correction.
+  Consecutive malformed replies remain bounded, and all corrections still count toward the
+  task's actual request and token limits; separate recovered errors no longer end a long task.
+- Claude Code workers receive the selected reasoning effort on initial and resumed turns,
+  including queued Web requests and every Pack candidate. Auto retains the CLI default.
+- Resuming older tool-call records no longer repeatedly appends their history. Checkpoints
+  retain original stored records and preserve new incoming metadata. Journal writes encode once
+  before the existing atomic replace, reducing serialization overhead without changing the format.
+- A send refused because its conversation is already running becomes a queued follow-up.
+  Navigation, reloads and delayed save responses preserve its text, settings and attachments
+  without replacing newer drafts. Unconfirmed requests are retained for review; inbox receipts
+  clear uncertainty automatically, and retries reuse the same request identity. Missing attachments
+  require reattachment or explicit omission, and new-task recovery restores the captured setup.
+  Attachment-only submissions also survive navigation and reload; recovery returns their files
+  to the composer when there is no text to queue.
+
+## v0.25.0 — Tasks keep their place
+
+- Conversations retain their run setup across refreshes in the same tab, including Required
+  verification. Check discovery follows the saved project; new tasks can choose a working folder.
+  Reset to Auto is explicit, and permission to apply a Pack result is never remembered.
+- Text drafts belong to their conversation. Attachments survive navigation within the page;
+  after reload, missing attachments must be reattached or explicitly omitted before sending.
+  Late queue acknowledgements retire only the accepted draft, including after navigation.
+- Saved requests waiting after Stop appear on Today, in the sidebar and in Needs you. Mission
+  scheduler failures are visible when scheduled tasks cannot make progress.
+- Isolated tasks save and reuse their workspace across turns. The UI shows the actual folder and
+  offers an explicit handoff to the main project, preserving the isolated copy. Dirty main projects
+  are refused; execution leases and a durable effect boundary protect interrupted handoffs.
+  New workspaces live beside the session store. Handoffs preserve binary and CRLF patch bytes;
+  confirmed recovery advances the saved folder, and native workers restart in a changed folder
+  with a recent text recap. Missing folders have an explicit recovery control.
+- Desktop shortcuts share the conversation execution lease and record their results in that thread.
+  Recovery reads and writes use the same store and owner lock as the executor.
+- A disposable SQLite metadata index makes repeated history navigation independent of transcript
+  size when files are unchanged. The original JSON journals remain authoritative for execution and
+  recovery; a missing, corrupt or unavailable index falls back to those journals.
+- Optional name customization can be skipped across browser restarts. Simplified and Traditional
+  Chinese cover the new workspace and draft controls.
+- Background verification discovery no longer blocks Send for an unchanged folder, and the Run
+  setup popup stays above the composer when Pack settings expand.
+
+## v0.24.0 — Live Copilot becomes a general work mode
+
+- Live now begins a timestamped, bounded context log immediately: foreground windows, semantic
+  interface changes, content-free interaction pulses, and consented speech continuously prewarm the
+  model. The capsule exists only during direct interaction, and its exact command supplies scoped
+  authority for the captured target instead of causing redundant routine approvals.
+- Added natural-language Live Session start from the ordinary desktop composer and replaced the
+  global shortcut's full-window wake-up with a small always-on-top voice capsule. The shortcut
+  freezes the exact prior process/window before focus changes, uses local Windows Chinese/English
+  speech recognition, and targets the recognized command back to that prior app; long work may
+  continue as a Mission without opening the full Collie UI.
+- Replaced the narrow interview integration with a top-level Live Copilot session that accepts an
+  optional or empty starting context, continuously compresses approved conversation and foreground-
+  app signals, and keeps suggestions non-executing until the user hands something off.
+- Brought microphone and meeting/system-audio capture into Collie's first-party UI. Audio chunks are
+  transient and deleted after speech processing; the durable live stream contains bounded transcript
+  events and derived context, not recordings. Live window awareness retains app names and titles;
+  semantic interface and interaction signals still exclude raw keys, field values, and screenshots.
+- Added a Windows-native Ctrl+Alt+Space handoff. It wakes Collie from any application, freezes the
+  current context point, and supports either a normal interactive task or a durable Mission that can
+  continue asynchronously. Browser canvases and whiteboards remain optional work surfaces.
+
+## v0.23.0 — Live system-design interview collaboration
+
+- Added an explicit, session-scoped System Design Interview mode that consumes only VocalCode's
+  local append-only transcript text, never its audio. Transcript sharing to the selected model and
+  whiteboard editing are separate one-session permissions and are cleared when the session stops.
+- Added a provider-neutral architecture diagram contract plus editable browser-canvas adapters for
+  Miro, FigJam, Excalidraw, and tldraw; provider-aware guided support for Eraser, Lucid,
+  Whimsical, Microsoft Whiteboard, Canva, diagrams.net, CoderPad, and HackerRank; and a generic
+  HTTPS whiteboard fallback. Browser control attaches only the tab the user explicitly selects.
+- Added Eraser's official OAuth MCP endpoint to the reviewed connection catalog for structured
+  architecture-diagram creation and updates. Interview assistance remains visible, does not delete
+  board content, and does not support stealth, impersonation, or proctoring bypass.
+
+## v0.22.0 — The control center closes the operations loop
+
+- Added versioned, opt-in outside-AI learning with Off, Activity only, and Personal intelligence
+  modes; content-free local observation; separately permissioned, locally reduced browser-history
+  signals; reviewable procedural suggestions; typed evidence-backed reminders; and explicit
+  device-only/raw versus sealed-derivative sync boundaries. Repositioned the public product around
+  this private local-first intelligence layer while keeping Missions as its execution control plane,
+  and made each release tag freeze a validated homepage/privacy content manifest.
+- Added local-first Meeting Notes with browser microphone/system-audio capture, live rough notes,
+  explicit per-meeting participant-consent confirmation, private local recordings, opt-in OpenAI
+  diarized transcription, configured-provider summaries, timestamp evidence, Markdown export, and
+  scoped deletion. Ordered idempotent chunks, durable finalization, restartable processing, and
+  source-preserving retry behavior keep interrupted recordings and failed AI work honest. Added
+  local `.ics` calendar import, recurring-event expansion, browser/in-app start and end reminders,
+  title-private notifications, series preferences, sensitive-meeting suppression, and meeting-audio
+  interruption prompts; reminders can prefill a note but can never start capture or reuse consent.
+- Added a unified Control Center for recovery, notification/service health, Automation Studio,
+  memory review, budgets, and permission posture, plus `collie doctor` diagnostics and bounded,
+  explicitly confirmed repairs.
+- Added an experimental local-stdio Codex App Server worker with bidirectional approvals, steer and
+  interrupt, strict host-configuration isolation, fail-closed server requests, process-tree
+  ownership, and offline protocol conformance. Added the official Codex Python SDK as an optional,
+  sanitized background sidecar with multimodal input, thread fork/resume, compaction, and usage.
+- Promoted Pi RPC to phase 2 with shell disabled, explicit file tools, native steer/follow-up,
+  resume/fork/compaction, usage/cost reporting, strict host-customization isolation, and abort-to-tree
+  escalation. Added a container-only Hermes Gateway wire adapter while keeping it phase-gated until
+  an isolated runtime passes conformance; Prime and Hermes remain unselectable.
+- Wired App Server approvals into Collie's normal CLI Gate and Web/phone Inbox, relayed Web
+  steering across the process-start race, and fixed TTY/Inbox enum outcomes that had been
+  conservatively misread as denials. Doctor's command probes are now windowless on Windows.
+- Added Ed25519 extension publisher signatures and a local explicit publisher-key trust store.
+  Publisher verification never approves a package's authority scopes, and signing keys remain
+  outside Collie. Added stable/beta update channels and a tokenless PyPI Trusted Publishing job for
+  stable tags.
+- Added `collie resilience matrix|soak|status`: isolated deterministic fault injection for network
+  loss, notification dead letters, daemon restart/lease fencing, corrupt durable JSON, disk-full
+  atomicity, update rollback requests, extension tampering, and owned process-tree cancellation.
+  Soak reports checkpoint after every cycle and resume after process restart or system sleep.
+- Expanded the release gate and documentation for the new worker, operations, extension trust, and
+  recovery surfaces. A real 8–12 hour soak remains an operator-run release qualification and is
+  never claimed merely because the restartable harness exists.
+- Added typed runner inputs/interactions/message delivery, capability handshakes in external
+  receipts, and a five-field Mission completion contract backed by stored verification evidence and
+  real artifact references. Added signed HTTPS webhook, authority-monotonic delegation envelope,
+  and bounded live-session supervision library boundaries without opening a network service.
+
+## v0.21.32 — Browser control you can see and stop
+
+- Added a persistent current-page side chat, selection context menu, visible acting/paused presence,
+  pointer feedback, a hard Stop control, and explicit user-takeover/resume behavior to the Chrome
+  bridge while keeping every consequential page action behind Collie's existing approval gate.
+- Added a recommended site-access policy that remembers ordinary websites but continues asking for
+  banks, brokerages, payment services, and crypto sites; navigation permission remains separate from
+  permission to click, type, upload, send, buy, delete, or change settings.
+- Made extension/backend version matching and multi-checkout discovery explicit, released controlled
+  tabs safely at run completion, and added a credential-free browser-extension package to the signed
+  GitHub release pipeline.
+- Audited the cumulative v0.21.27–v0.21.32 changes with the complete cross-surface release gate,
+  clean wheel/sdist installation, documentation, secret, and packaged-asset checks.
+
+## v0.21.31 — Capability acceptance hardening
+
+- Made verification snapshots fail closed instead of crashing when a Windows workspace contains a
+  reserved device-style entry whose path cannot be relativized against the drive mount.
+- Fixed `collie automations status` so it can report enabled and disabled configurations with the
+  keyword-only store API, and pinned the behavior with a CLI regression test.
+- Exercised the installed product against a real local browser, native Windows UI Automation,
+  durable memory, Missions, Pack selection, automation budgets, native speech synthesis, and
+  WeChat's logged-out desktop surface using isolated/self-owned targets.
+
+## v0.21.30 — Logic-audited desktop release
+
+- Kept the Run Setup sheet above the growing composer so every desktop and Pack configuration can
+  still reach Send, and restored the single-column shell on narrow desktop and phone viewports.
+- Isolated semantic-memory cosine recall by embedding model, preventing legacy vectors from a
+  different vector space from degrading current dense results while retaining them for BM25 recall.
+- Made memory startup forward-compatible with persisted delta-sync triggers from another Collie
+  development track by registering their connection-local SQLite function ABI before migrations.
+- Re-ran the complete compile, component, browser-extension, Remote, GUI, API, CLI, packaging, and
+  Python regression gates, including the opt-in trusted browser bridge against local fixture pages.
+
+## v0.21.29 — Quiet, unified interface
+
+- Reworked the main workbench, sidebar, top bar, welcome state, and composer around a compact neutral design system.
+- Simplified onboarding, model selection, run setup, and settings while preserving every existing control and capability.
+- Made Activity and Capabilities dedicated workspaces, and unified the visual language across mobile, Remote, Ambient, Map, and Wallpaper surfaces.
+
+## v0.21.28 — Evidence-gated agents and native desktop control
+
+- **Windows desktop control now uses semantic interfaces before simulated input.** The automatic
+  ladder is application API/browser DOM → UI Automation → MSAA/IAccessible → allow-listed Win32
+  control messages → keyboard → mouse, and every result reports the method/layer actually used.
+  Advanced Selection, Grid/Table, Scroll, Window, Transform, Dock, MultipleView and virtualized-item
+  patterns are available through `desktop_uia`; classic buttons, edits, checkboxes and list/combo
+  selection are exposed through `desktop_win32`. Window-bound unattended scripts remain target
+  scoped, and Windows integrity/UAC, secure-desktop and anti-cheat boundaries are never bypassed.
+
+- **Missions can delegate through a durable agent graph.** Model-facing `agent.spawn`,
+  `agent.send`, `agent.poll`, and `agent.cancel` create descendant-scoped specialist Missions.
+  Structured child results use replayable fold-then-ack delivery, wake waiting parents, and prevent
+  a parent from declaring completion while delegated work is still live. File-writing specialists
+  run in isolated Git worktrees and require authority covering the complete source workspace.
+- **Fan-out shares one Mission budget.** Durable parent lineage makes model tokens, cost, active
+  wall time, retries, storage, model turns, irreversible-action count, and action rate cumulative
+  across the entire descendant tree. Sibling model-turn and irreversible-action/rate reservations
+  are checked atomically in SQLite; semantic keys for irreversible effects now fence the whole
+  campaign, not only the specialist that proposed them. TaskTree replay binds the immutable spawn
+  workspace and counts cached tokens instead of letting either escape its original authority or
+  aggregate budget.
+- **Agent memory is a claim before it is a fact.** `remember` and automatic run consolidation now
+  create quarantined proposals. Normal recall sees only legacy, attested, or verified claims;
+  executed host checks promote or reject only proposals whose immutable run, task, project, scope,
+  provider, and model provenance matches. Recall, consolidation, and migrations preserve project
+  and scope boundaries.
+- **`execute_code` owns its ordinary child process tree and bounded output.** Brokered helper calls
+  still traverse argument repair, permission, audit, lifecycle, secret, checkpoint, and verification
+  accounting. Isolated interpreter startup blocks ambient Python import injection, output is drained
+  into fixed-size buffers, and descendants are reaped on success, failure, or timeout. Direct Python
+  I/O remains intentionally equivalent to `bash`, so untrusted code still requires a container/VM.
+- **Cross-harness claims have a fail-closed protocol.** Controlled and product tracks freeze their
+  declared inputs separately, expand a complete repeated run matrix, enforce aggregate
+  root-plus-descendant budgets, and require an independently metered usage receipt plus hashed
+  trace, patch, serial-run timing, and grader evidence before reporting paired,
+  task-cluster-aware results.
+
+## v0.21.27 — External coding harnesses become workers Collie can hire
+
+- **Collie can now hand a task to another coding harness and stay the only control plane.**
+  `collie run "<task>" --runner codex-exec` and `--runner claude-code` carry the work out through
+  the vendor's own CLI, under that CLI's own login, while budget, approval policy, the verification
+  gate, the receipt, session persistence, and cancellation all remain Collie's. The worker's
+  natural-language "done" is not a completion signal: `verified` is still written only by an
+  executed host check, and a run whose worker declared success but whose check failed is still a
+  failed run. Process ownership goes through the same start gate and Job/process-group teardown the
+  benchmark runners already used, so a cancelled external worker leaves no surviving process tree.
+- **Worker is a separate axis from Brain, and it never moves your billing quietly.** `RUNNER`
+  chooses who carries out the task; `PROVIDER`/`MODEL` still choose who thinks. `RUNNER=auto` picks
+  only from the members you list in `RUNNER_POOL` — writing an external worker there *is* the
+  consent to use its login and billing route — and an explicit `--runner` that cannot run is an
+  error with a reason, never a silent substitution onto a different account. Every run records the
+  worker key, credential family, and billing class in its receipt. Prompts travel over stdin, the
+  child environment is stripped to an allowlist, and a run aborts before launch if an API key or
+  OAuth token in the parent environment would have redirected the worker onto metered billing.
+- **`collie runners` tells you what this machine can actually do.** The command lists every known
+  worker with its install state, version, login route, billing class, and declared capabilities;
+  `collie runners probe <key> --live` asks the vendor CLI's own status command; and
+  `collie runners compat` runs a conformance matrix (probe, environment hygiene, handshake, framing,
+  double-control, billing, plus live one-turn/resume/cancel/usage columns) and writes a dated
+  report. Capabilities a report could not verify on this host are downgraded rather than assumed,
+  so the capability table describes your machine and not the design document.
+- **The default path is unchanged, byte for byte.** With `RUNNER` left at `collie` and no
+  `--runner`, nothing probes an external CLI, no new subprocess starts, and the run takes exactly
+  the code path it took in 0.21.26.
+- **Measured against the real CLIs, which corrected three things the design got wrong.**
+  `codex exec` 0.149.0 rejects `--ask-for-approval` outright, so the policy rides on
+  `-c approval_policy="never"`; on Windows, `--ignore-user-config` also discards `[windows] sandbox`
+  and every write is then refused *while the process still exits 0*, so the launch line sets the
+  sandbox level explicitly. A worker turn that Codex refused on policy grounds and that changed
+  nothing is now reported as a failed turn instead of a clean one — silently banking it as progress
+  was the worst failure mode this layer could have had. `claude -p` reports no top-level model, so
+  the receipt names the most expensive entry of its per-model cost breakdown rather than leaving the
+  Brain line blank.
+- **The conformance matrix is believed, including when it says no.** `collie runners compat` stores
+  its result where the selector reads it back, so a capability this host failed to demonstrate is
+  downgraded for real. On this machine that immediately took `codex-exec` out of `auto`'s reach:
+  its one-turn and resume columns fail on Windows — writes are refused intermittently when it is
+  launched under Collie's process-tree owner — while `claude-code` passes all ten columns. Both are
+  still selectable explicitly; `auto` will not gamble on an unverified one.
+- **Interface in place, not yet wired (next release).** Mission, Pack, and the web GUI do not accept
+  a worker selection yet — the selection layer and the Mission code-slice entry point exist and are
+  tested, but the call sites still run Collie's own harness. `auto` currently ranks candidates on
+  pool order, declared capability fit, history, and billing preference only; live usage and quota
+  signals (rate-limit cooldowns, remaining plan allowance) are not yet fed into the choice.
+  Streaming, mid-turn steering, and routing an external worker's approval requests back to Collie's
+  gate are also not shipped: `codex exec` refuses approvals fail-closed and `claude -p` runs with an
+  allowlist that excludes Bash, which is why those two are constrained rather than trusted.
+
+## v0.21.26 — Release gate reliability
+
+- Make the mission watchdog timing regression resilient to normal shared-CI
+  scheduling latency while continuing to prove that a hung decider is bounded.
+
+## v0.21.25 — Release gate reliability
+
+- **The release gate is now dependency-complete and repeatable on clean runners.** The development
+  extra includes the YAML parser required by the normalized Hermes regression suite; model-picker
+  and multi-thread browser checks use unambiguous, adopted fixture state; and a failed catalog
+  check prints its diagnostic instead of disappearing behind the compact runner output.
+- **Windows child-process launches stay windowless through trusted gates.** The agent-runner,
+  verification, and subscription-status subprocess paths all carry the platform-safe flag.
+
+## v0.21.23 — Continue across branch waits and remember completed work
+
+- **A timer can pause one workstream without pausing the Mission.** A named follow-up is recorded
+  durably while Collie continues independent work. Repeating the same timer immediately proves
+  that no other branch is ready and sleeps the Mission until the earliest scheduled check.
+- **Due work returns as an explicit planner obligation.** A fired timer surfaces the exact branch
+  in Mission context, and only a result explicitly bound to that branch can resolve it. Provider
+  backoff, browser-resource contention, and legacy whole-Mission waits remain blocking.
+- **A reversible uncertainty no longer stops every branch.** Failed or inconclusive reads,
+  research, drafts, and browser preparation become bounded planner diagnostics so Collie can
+  repair the branch or continue unrelated work. Consequential submission still requires a newest
+  verified preparation result.
+- **The audit trail is now a working activity ledger.** Verified, failed, uncertain, authorization,
+  and scheduled outcomes are condensed from append-only events and placed in every model turn.
+  Completed consequential actions also produce a durable do-not-repeat list backed by the existing
+  semantic idempotency fence.
+- **Mission cards show recent activity directly.** Operators can see human-readable outcomes,
+  timestamps, uncertainty, scheduled checks, and repeat-protected external actions without opening
+  raw case state or reconstructing work from receipts.
+- **Large Mission context stays valid JSON.** Total-envelope compaction now shrinks the largest
+  fields while retaining recovery-critical field names instead of byte-slicing the serialized case.
+
+## v0.21.22 — Keep Missions moving across authorization waits
+
+- **Missing authorization is branch-scoped.** Collie records a structured Needs You request and
+  continues independent Mission work; it pauses the whole Mission only when every remaining path
+  depends on that request.
+- **Confirmed profile facts are reusable without becoming blanket consent.** A local age threshold
+  can satisfy an exact low/medium-risk form claim, while CAPTCHA, person-required MFA, KYC,
+  biometrics, legal signatures, security keys, and spending stay person-required. Verification
+  codes from an authorized Google Voice/mail connection remain ordinary connected work and are
+  never persisted in Mission history.
+- **Google Voice can be Collie's assigned work line.** The Connection grants operational use of
+  messages, calls, voicemail, verification codes, and routine Voice settings while storing only a
+  masked number. Number transfer/release, purchases, and Google-account security remain separate
+  authority. Codes still move through a dedicated transient read-and-fill path without exposure
+  to the model, Mission state, audit log, or Receipt.
+- **Mission cards now say what is happening.** Current work, verified steps, next action, blockers,
+  and waiting authorizations are summarized before bounded details and receipts.
+- **Takeover is no longer ambiguous.** The terminal button is labeled **End mission & take over**
+  and requires confirmation. **Return to Collie** creates an audited successor that inherits
+  completed semantic action keys, preventing already-fired work from replaying.
+- **Opening LinkedIn's composer is reversible again.** `Start a post` may prepare the editor,
+  while the actual `Post` control remains behind Verification Gate.
+
+## v0.21.21 — Keep OAuth consent active and verify delayed redirects
+
+- **A final browser action activates its already-bound Mission tab before snapshotting.** Consent
+  pages that intentionally disable approval in background tabs can now become actionable without
+  weakening exact-button or TOCTOU binding.
+- **Composite no-write inspection instructions remain read-only.** Goals such as “without
+  navigating, reloading, opening, clicking, typing, or submitting” no longer misclassify semantic
+  page expectations as form fields when a planner omits the optional `read_only` flag.
+- **A fired click is re-observed for a bounded window, never repeated.** OAuth redirects and SPA
+  success states that land shortly after the trusted click can verify normally, while unresolved
+  actions remain inconclusive. Persisted targets now strip query strings and OAuth state, using an
+  opaque digest for exact URL binding instead.
+
+## v0.21.20 — Lock read-only OAuth pages and bind delayed consent controls
+
+- **A read-only CURRENT-page task cannot silently guess another URL on the same host.** When the
+  goal explicitly forbids navigation, reload, or opening another page, Collie binds the step to the
+  exact starting URL and fails closed on any drift without persisting OAuth query credentials.
+- **Short consent-button safety delays no longer cause needless replanning.** Final-action snapshot
+  preparation briefly rereads one exact unique disabled target and binds it only after it becomes
+  enabled; missing or ambiguous controls still fail immediately and no click is attempted.
+
+## v0.21.19 — Recover stale reversible action latches
+
+- **A timed-out reversible child cannot permanently prevent Mission retry.** A failed Mission with
+  no live run or resource lease may retire an old research/compose/browse/observe/code execution
+  latch after its watchdog window and create a durable inconclusive receipt.
+- **Consequential uncertainty is never auto-cleared.** Publish, send, commerce, destructive, and
+  other irreversible execution latches still block retry until explicitly inspected and reconciled.
+
+## v0.21.18 — Trusted exact-ref final clicks
+
+- **Sites that reject synthetic events can now accept gated final actions.** `browse.submit` uses a
+  genuine CDP click while retaining the exact accessibility ref captured by the outer Gate.
+- **A real click cannot drift onto a different control.** After the visible cursor delay, the
+  extension re-resolves the approved node, recomputes its center, and refuses the action if that
+  node disappeared, moved off-screen, or became covered.
+
+## v0.21.17 — Localized final-action binding
+
+- **A verified form can bind its final button across UI languages.** Common Post, Publish, Save,
+  Send, and Submit labels are matched through a deliberately small localization table, including
+  bilingual planner descriptions such as `保存 / Save`.
+- **Localization does not weaken the irreversible-action boundary.** Collie still requires one
+  unique enabled live button; multiple localized candidates, duplicate controls, and disabled
+  controls remain refused before any click can fire.
+
+## v0.21.16 — Self-contained browser payloads and submit sequencing
+
+- **A failed form preparation can no longer be followed by `browse.submit`.** The Mission container
+  deterministically requires the newest browse result to be independently verified before it will
+  materialize a final browser click.
+- **Browser children may not invent content hidden in the outer case.** Mutating browse payloads
+  must embed every complete expected value directly; references such as “use the case draft” fail
+  before the browser is touched.
+- **Rich-editor verification is exact instead of prefix-based.** A correct opening sentence can no
+  longer hide an invented tail or wrong link in the actual post body.
+
+## v0.21.15 — Bounded browser-agent latency
+
+- **Routine browser execution no longer inherits open-ended deep reasoning.** Mission browse
+  children use medium reasoning effort by default while preserving the configured model and
+  allowing explicit browser-specific overrides.
+- **A reversible browser step has an 18-turn default ceiling instead of 35.** The outer Mission can
+  repair from a bounded diagnostic rather than letting a two-field form monopolize the full
+  ten-minute action watchdog.
+- **The browser workflow now has an explicit no-spin condition.** One- or two-field tasks use one
+  read/fill/verify pass and stop with a precise diagnostic after two failures on the same field.
+
+## v0.21.14 — Trusted rich-editor input and active-field verification
+
+- **Label-addressed typing now uses genuine browser input when high-fidelity mode is enabled.**
+  React/contenteditable editors such as X receive real click, select-all, and text-insertion events,
+  so a DOM-filled draft can no longer leave the live Post button disabled merely because the app
+  never accepted the synthetic event.
+- **Duplicate mounted composers no longer steal writes.** Label targeting ranks rendered,
+  in-viewport, modal-local fields ahead of stale off-screen copies, and browser field/form snapshots
+  exclude hidden controls from actionable verification.
+- **Per-site input authorization is inspectable.** Browser mode responses report the requested
+  origin's effective high-fidelity setting as well as the currently active tab setting.
+
+## v0.21.13 — OAuth boundary verification and flow-secret redaction
+
+- **A cross-domain OAuth redirect cannot pass form verification by accident.** The restricted
+  browser child now reports the domain it actually ended on; leaving a single-action boundary is a
+  failed step even when the provider login page contains many prefilled or hidden fields.
+- **OAuth transitions can be resumed as explicit gated steps.** `browse.submit` now documents final
+  account creation and app-authorization buttons, with success URL/text postconditions, while still
+  refusing commerce.
+- **OAuth flow state is treated as secret.** CSRF/authenticity values, OAuth tokens, redirect state,
+  page/session identifiers, and referers are redacted in both extension and Python form snapshots.
+
+## v0.21.12 — Reversible browser advancement and privacy hardening
+
+- **Mission browsing can now cross ordinary multi-step UI.** A new exact-ref `browser_advance`
+  action opens menus, follows sign-in navigation, chooses non-final options, and focuses rich-text
+  editors. The extension itself refuses final publishes/account creation, CAPTCHA, consent grants,
+  commerce, destructive actions, and consequential links, which remain behind the outer Gate.
+- **Explicit write intent can no longer be reclassified as a read.** `read_only: false` now wins over
+  language heuristics, so failed social-editor fills cannot receive a false verified receipt.
+- **CAPTCHA response fields are redacted before durable storage.** Both the CSP-safe extension
+  snapshot and Python defense-in-depth sanitizer recognize CAPTCHA/recaptcha tokens as secrets.
+- **The newest recovery note keeps its complete tail.** Context compaction preserves an ordinary
+  operator instruction, including its final URL or constraint, before spending budget on history.
+
+## v0.21.11 — CSP-proof browser verification and self-repair
+
+- **Rich form verification no longer depends on page `eval`.** A structured extension snapshot
+  rereads full input and contenteditable values even on strict-CSP sites such as X, while retaining
+  sensitive-field redaction. It also records whether final Post/Publish/Next actions are enabled.
+- **Final-action targeting prefers an enabled button over same-named navigation links.** Disabled
+  submit controls are rejected before the irreversible boundary instead of accidentally targeting a
+  global “Post” link.
+- **Failed reversible steps feed a bounded diagnostic back to the Mission planner.** Campaigns can
+  shorten an overlong post, correct a form, or choose another read path autonomously; cumulative
+  retry and model-turn budgets still stop loops.
+
+## v0.21.10 — Safe failed-Mission retry
+
+- **A normally failed Mission can now be retried without erasing its audit trail.** `mission retry`
+  creates a fenced successor with the same goal and authority, carries bounded predecessor context
+  and receipts forward for duplicate avoidance, and refuses to start while an earlier external
+  action or resource is still outcome-uncertain. Failed Mission status now advertises `retry` as
+  its explicit recovery control.
+
+## v0.21.9 — Rich social-media editor support
+
+- **Mission browsing can now see and fill contenteditable post composers.** The browser field
+  inventory includes rich-text editors used by X, LinkedIn, and Reddit; label- and snapshot-ref
+  typing update those editors and emit the input/change events expected by modern web apps. The
+  restricted browser child is also explicitly guided to fall back from labelled fields to an exact
+  accessibility-snapshot textbox ref, without granting it generic or final-submit clicks.
+
+## v0.21.8 — Read-only browser verification precedence
+
+- **Semantic inspection hints no longer become imaginary form fields.** An explicit no-write
+  browser inspection now verifies against the independently reread live page even when a planner
+  also supplies semantic expectations such as account identity or Company Page availability.
+  Those hints can no longer turn a successful authenticated-account read into a terminal
+  “form fields not filled” failure.
+
+## v0.21.7 — Deliverable-aware Mission composition
+
+- **Writing requests can no longer masquerade as finished copy.** If a Mission planner mistakenly
+  puts an unmistakable “write/create/draft a post” request in the final-text field, the compose
+  primitive repairs it into an actual model-generation request. The Verification Gate also rejects
+  both an exact prompt echo and any returned text that is still another writing instruction, while
+  preserving legitimate imperative slogans as literal copy.
+
+## v0.21.6 — Exact settings preservation during upgrades
+
+- **Upgrades snapshot and restore the complete settings file.** In addition to skipping the
+  first-install language command, Setup now preserves an exact pre-upgrade `settings.json`, restores
+  it before supervisor children start, restores it again at successful completion, and restores it
+  on rollback. This protects provider, model, language, identity, and every other preference from
+  any stale UI request or future post-install helper that writes during the upgrade window.
+
+## v0.21.5 — Durable multi-site Mission context
+
+- **Recent Mission evidence now keeps the newest entries.** When the model context is bounded, the
+  driver retains the tail of result/event timelines instead of the oldest prefix. A newly verified
+  account or page state therefore informs the very next decision instead of being silently cut off.
+
+- **Browser discoveries accumulate by domain.** Read-only results for VocalCode, X, Reddit,
+  LinkedIn, Product Hunt, and other sites remain in a compact per-site map (including the two latest
+  observations), so inspecting one platform no longer erases the others or causes discovery loops.
+
+- **CLI human-assist notes are durable.** `mission continue --note ...` now passes the operator's
+  actual recovery guidance into the Mission case instead of replacing it with a generic message.
+
+## v0.21.4 — Multi-platform Mission discovery
+
+- **Different sites no longer trigger polling backoff.** The Mission anti-spin guard now tracks the
+  resource being observed: refreshing the same inbox still pauses after three consecutive reads,
+  while first-time checks of X, Reddit, LinkedIn, Product Hunt, and other distinct sites can proceed
+  in one run.
+
+- **The planner distinguishes literal polling from semantic inspection.** `observe.expect` is now
+  documented to the planner as an exact page substring. Account identity and page-state discovery
+  use one read-only browser action per site, preventing false “not logged in” conclusions and
+  preventing a reversible browser child from attempting to cross unrelated site boundaries.
+
+## v0.21.3 — Verified read-only browser work
+
+- **Browser inspection is no longer mistaken for a failed form fill.** A Mission can explicitly
+  mark navigation/inspection as `read_only`; the Gate then verifies the independently reread live
+  page identity instead of demanding form fields. If a planner omits the flag, an unmistakable
+  “inspect/check” plus “do not change/submit” goal is recognized conservatively. Empty-form fill
+  operations remain inconclusive, so the new path cannot weaken draft or submission verification.
+
+- **Silent upgrades no longer rewrite user settings.** The installer seeds the selected language on
+  first install only; upgrades retain the existing language, provider, model and every other saved
+  preference without running a settings write.
+
+## v0.21.2 — Mission composition that produces the deliverable
+
+- **Compose requests and final copy now have distinct fields.** Mission planning puts writing
+  instructions in `instruction`, while `text` is reserved for already-final literal copy. The
+  composer follows the requested format and returns the ready-to-use deliverable; an echoed
+  instruction is rejected by verification instead of being recorded as a successful draft.
+
+- **Polling backoff applies only to actual observation loops.** Research and local multi-channel
+  composition can proceed in one startup burst; repeated inbox/page observation still receives the
+  durable one-hour anti-spin delay.
+
+## v0.21.1 — Hands-off Missions without command-line ceremony
+
+- **Plain `/mission` now means sustained execution inside your rules.** The saved Mission autonomy
+  mode defaults to Hands-off, so publish/send steps already inside the Leash do not ask again merely
+  because they are irreversible. `--review` is the clear per-Mission override; legacy `--auto`
+  remains compatible but is no longer the main UI or documentation path.
+
+- **Slash commands are discoverable.** Typing `/` opens a keyboard-accessible palette for Mission,
+  reviewed Mission, Code and Chat, and the Home starter now inserts the simple `/mission` form.
+  Receipts say `execution attempted` instead of the ambiguous `action fired` when verification fails.
+
+- **A connected work identity is usable, not decorative.** User-authorized mailboxes, phone/Google
+  Voice numbers, signed-in sessions and verification-code inboxes may support routine signup and OTP
+  completion without persisting secrets or codes in Mission history. Person-required CAPTCHA/MFA,
+  unavailable identity, new consent/spending, scope expansion and duplicate uncertainty remain
+  resumable Needs You boundaries; Collie does not bypass platform security checks.
+
+- **Browser verification understands platforms and rich editors.** A live page origin now proves the
+  platform/site expectation, while `content`, `body`, `post_text` and similar semantic expectations
+  are checked against independently reread editor values. Abstract `platform` and `tweet_text`
+  fields no longer make a valid X draft unverifiable, and the same Gate still rejects the right text
+  on the wrong site.
+
+- **Duration is part of completion.** The Mission driver is explicitly required to wait and continue
+  for goals that name a cadence or time window instead of declaring a 24-hour campaign complete
+  after its first action.
+
+- **Windows upgrades keep their rollback guarantee when directory rename is unavailable.** The
+  installer still prefers an atomic runtime rename, but can make a complete known-good backup copy
+  when Windows retains a non-delete-sharing directory handle. A later install failure removes the
+  partial runtime and restores that backup exactly as before.
+
+## v0.21.0 — A personal AI operations system, from one calm entrance
+
+- **The companion is named, renameable, and no longer trapped on a coloured tile.** First run now
+  offers an adoption-style name step with a calm default and Skip; **My Collie** keeps the durable
+  rename control. The validated Unicode display name updates Home, Mobile, Remote, and Ambient live,
+  with a name-versioned, non-cacheable transparent avatar. Explicit `web --name` kennel selection
+  and pinned environment names remain visibly authoritative. Slack app names, `@` handles, and mail
+  addresses are deliberately not relabelled. Plated avatar generation remains the compatible
+  default for tiny external/Slack icons where the background still carries recognition.
+
+- **The desktop is now an operations home, not a harness dashboard.** Home, Missions, Pack,
+  Library, Activity, Needs You, Settings, Mobile, Remote and Ambient share one identity and one
+  truthful state model. The default composer stays calm while intent, depth, effort, speed,
+  verification, workspace and Pack remain independently controllable. Responsive and reconnect
+  paths preserve the user's latest navigation and never turn a failed request into a green state.
+
+- **Library adds a reviewable extension lifecycle.** Data-only packages can contribute Skills,
+  exact-hash hooks, connection descriptors, templates and assets, but install inert and cannot add
+  arbitrary tools or workers. Exact inventory, digest, publisher identity, component mapping,
+  declared authority, compatibility and data policy are validated before approval; enable,
+  disable, rollback, revocation, integrity failure and uninstall all fail closed and are audited.
+
+- **24x7 work now has fencing all the way down.** Automation leases carry owner tokens and recover
+  orphaned executions without replaying unsafe effects. Task trees enforce ancestor budgets,
+  mailbox delivery and resource locks; cancelling a parent propagates through specialist children.
+  Mission completion requires structured independent evidence, and verification turns stale if the
+  workspace changes while a check runs. Audit/checkpoint failures stop consequential tool calls.
+
+- **Every entrance shares the same supervised runtime.** The VS Code panel starts only a verified
+  Collie process on a free port and uses a per-process authenticated embed. Mobile, Ambient and
+  Remote restore cross-session approvals; Pack reports real worker freshness and active assignments.
+  The relay persists device delivery before acknowledgement, bounds replay/in-flight state and uses
+  encrypted WSS outside exact loopback.
+
+- **The release chain is recoverable and bootstrap-pinned.** Windows upgrades back up and restore the
+  complete owned runtime, pin bootstrap downloads, verify signed bootstrap publishers and preserve
+  user state. The landing build generates its exact CSP hashes, rate limits before model use without
+  storing raw client addresses, and the full Python/Node/GUI suites are part of the release runner.
+
+## v0.20.32 (unreleased; folded into v0.21.0) — Auto that really routes, and durable work that really comes back
+
+- **Auto now means a per-task decision, not a disguised model pin.** Within the configured provider,
+  Codex routes small, clear work to GPT-5.6 Luna at low effort, everyday engineering to Terra at
+  medium effort, and risky/architectural work or recent failures to Sol at high effort. English and
+  Chinese task cues are covered; an explicit model/effort still wins. The same resolver and compact
+  receipt now serve headless Run, Web, REPL, TUI and ACP. Changing an unrelated Setting can no longer
+  persist a synthetic Claude default, and the model picker has an explicit Auto/unpin action.
+
+- **Speed, depth and correctness are separate controls.** Quick/Balanced/Thorough changes loop room;
+  Standard/Fast changes the same model's provider service tier and records the credit/price multiplier;
+  reasoning effort, Build/Plan/Test/Review, verification, worktree isolation and Pack remain independent.
+  Required completion needs executed post-edit evidence, while Plan/Review are gate-enforced read-only.
+
+- **Long work has a crash-safe spine.** Continuous session checkpoints fence uncertain tool calls from
+  replay; explicit recovery reconciliation is available in CLI and Web. Mission adds hard per-step
+  watchdogs, cumulative token/cost/time/retry/storage budgets, compact context checkpoints, independent
+  goal verification, resource locks, escalation deadlines and an executable durable specialist run tree
+  with progress, steer, cancellation, mailbox acknowledgement and ancestor accounting.
+
+- **Windows gets an actual per-user supervisor and durable automations.** Task Scheduler (with Startup
+  fallback) owns Web, Jobs/Missions, automation execution, the browser bridge and opted-in Slack workers;
+  health probes, crash backoff/circuit breaking, sleep catch-up, rotating logs, OAuth refresh ownership and
+  retry/DLQ notifications are observable through `collie activity --health` and the authenticated Web
+  Activity panel. Timer/file/page/webhook automations separate trigger ingestion from bounded execution,
+  use isolated Git worktrees and fail closed on ambient shell/browser/MCP authority.
+  Existing Slack listeners are adopted by their fresh per-dog heartbeat, so upgrades have one recovery
+  owner instead of racing the legacy launcher into a false circuit-open alarm.
+
+- **Hooks and handoffs are first-class artifacts.** Exact-hash-reviewed lifecycle hooks can gate tool and
+  completion boundaries. Editable versioned Plans require explicit user approval before Build; Review
+  findings are structured, selectable and handed to a real follow-up Build. The Web control plane exposes
+  allowlisted Health, Activity, Recovery, Hooks and specialist controls without task, prompt, result or
+  tool-argument content.
+
+- **Windows upgrades stop accumulating mixed runtimes.** The payload build now fails on native/pip errors,
+  asserts code/metadata versions and required assets, excludes the live browser-bridge token, includes the
+  OAuth adapter assets, and the installer removes only stale Collie/pip package directories before overlay.
+  User state under `~/.collie` remains untouched.
+The entries below, from `v0.20.38` down to `v0.20.32 — a provider plugin can introduce itself`,
+continue the upstream `colliehq/main` numbering, which kept releasing on the `v0.20.x` line while
+this line moved on to `v0.21.0`. They all descend from `v0.20.31` and are kept in full. Note that
+the `v0.20.32` heading therefore appears twice, for two unrelated sets of changes: the unreleased
+one above was folded into `v0.21.0`, the one below is the upstream release.
+
 ## v0.20.38 — the verification gate stops announcing that nothing is happening
 
 - **Idle no longer occupies the corner.** The gate has six states and only one of them —
@@ -16,6 +715,11 @@
   the gate is idle, so "the verification gate keeps watch from the bottom-left corner" was about to
   become the only untrue thing on screen. Reworded in all nine languages to say when it appears
   rather than where it waits.
+
+- **Merged into this line:** the hide-when-idle rule was already here, reached independently, so the
+  two identical declarations became one and the reasoning above is recorded at it. The reworded
+  welcome copy did not carry over: this line's welcome screen was replaced by the Today dashboard
+  and an outcome-led welcome, so the sentence being corrected no longer exists on any surface.
 
 ## v0.20.37 — a busy model costs a rung, not the answer
 
@@ -40,6 +744,11 @@
   worse than saying the frontier one was busy. `res.model` keeps the model that was CHOSEN — the
   record of someone's choice should not be quietly rewritten by what the day's capacity allowed.
 
+- **Release integration decision:** the automatic step down is not enabled in this
+  line. It would change the accepted model during a run and price tokens from different models as
+  one. The selected model, bounded retries, request limits and provider-attested reset waits remain
+  authoritative. Catalog discovery helpers are retained for explicit choices.
+
 ## v0.20.36 — the classifier stops running on a frontier model, and says why when it cannot run
 
 - **The router picked its model from a hardcoded pair of provider names.** `DEFAULT_ROUTER_MODEL if
@@ -57,6 +766,11 @@
   settings, and over in a minute — therefore read as a setup error, and sent at least one person
   auditing a configuration that had been correct the whole time. The real reason is shown when
   there is one.
+
+- **Merged into this line:** the server-side router fix is kept as written. The browser half is not,
+  because the browser no longer routes — this line resolves model, effort and intent on the server
+  with the actual task and history, so the pre-flight `/api/route` call the message was printed from
+  does not happen. `/api/route` itself is unchanged and still answers with `detail`.
 
 ## v0.20.35 — the same providers on every screen, and a shorter list
 

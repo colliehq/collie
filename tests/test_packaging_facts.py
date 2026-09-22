@@ -10,6 +10,7 @@ weeks later when Gatekeeper next looks.
 """
 import os
 import sys
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,8 +29,9 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as fh:
         package_cfg = fh.read()
-    check("[tool.setuptools.exclude-package-data]" in package_cfg and
-          'harness = ["browser_ext/token.txt"]' in package_cfg,
+    exclusion_table = package_cfg.split("[tool.setuptools.exclude-package-data]", 1)[-1]
+    excluded = re.findall(r'"([^"\n]+)"', exclusion_table.split("\n[", 1)[0])
+    check("browser_ext/token.txt" in excluded,
           "the per-machine browser bearer is explicitly excluded from wheels")
     with open(os.path.join(root, "MANIFEST.in"), encoding="utf-8") as fh:
         manifest = fh.read()

@@ -5,9 +5,9 @@
 <h1 align="center">Collie</h1>
 
 <p align="center">
-  <b>A coding agent that lives on your computer — and can actually run it.</b><br>
-  <sub>Local and private. It reaches your real environment — your logged-in browser, your desktop,
-  your screen, your files — and proves its work by running it.</sub>
+  <b>Your private, local-first personal intelligence system.</b><br>
+  <sub>Collie learns the workflows you choose to share, coordinates work across your computer and
+  devices, and helps before every need becomes another disconnected prompt.</sub>
 </p>
 
 <p align="center">
@@ -18,51 +18,80 @@
 
 ---
 
-Most coding agents live in a cloud tab or an editor pane and can only touch the files you hand
-them. **Collie runs on your machine** — so it works the way you already do: it drives your *real*
-logged-in browser, arranges your desktop, records your screen, takes tasks from your phone, and
-edits your code. Nothing leaves your computer unless you send it there; there's no account and no
-telemetry.
+Collie gives you one persistent personal intelligence at the front door and a **Pack** underneath:
+models, specialist agents, remote MCP connections, and devices. Its local operations core keeps
+desktop, terminal, IDE, phone, browser, and messaging surfaces in the same durable context instead
+of creating disconnected chats.
 
-And it doesn't just *claim* to be done. When Collie fixes something it writes a reproduction that
-must fail on the broken code, makes the smallest edit that flips it, and re-runs the assertion — a
-run isn't "done," it's **verified ✓**.
+It runs close to your real environment, so it can work in your signed-in browser, desktop, screen,
+files, and code. Local mode needs no Collie account and has no product telemetry. Optional Connected
+Mode adds an account only when you choose cross-device/team features. Task context goes only to the
+model provider and external services you explicitly connect.
+
+Completion is accountable, not magical. Collie records the checks it actually ran, the scope those
+checks cover, the permissions used, and what remains unverified. A passing check is evidence for a
+named contract—not a claim that every property of the result is proven.
+
+For queued follow-ups, Mission updates, stopping and resuming work, and reviewing saved Pack
+changes, see the [task workflow guide](docs/task-workflows.md).
 
 ## Why it's different
 
-**It's local, and it reaches your real world.** A cloud agent can read a repo. Collie can open the
-site in the browser you're already logged into, click through the actual flow, watch what happens on
-your screen, and change the code — all on one machine, all under your control. That's a different
-class of task: not "edit these files," but "get this working, end to end."
+**Memory lives inside the workflow.** Optional outside-AI learning turns content-free local activity
+and separately connected sources into reviewable habits, suggested routines, and evidence-backed
+reminders. Raw observations stay on the device, and a learned routine begins with zero authority.
 
-**The range is the proof.** Collie isn't a coding agent with a pile of unrelated features bolted on.
-The breadth below — the desktop console, the browser control, the screen recorder, the phone remote —
-is there because **Collie's coding agent built all of it.** The features *are* the benchmark: a
-harness strong enough to ship its own desktop app and iOS companion is strong enough for your bug.
+**Mission-first, not chat-first.** A Mission survives waits, retries, restarts, and handoffs. `Needs
+You` is a global inbox for decisions that require authority, rather than a question buried in an old
+conversation.
 
-## The range
+**Local reach with an explicit leash.** Collie can open the site in the browser you are already
+logged into, operate the real flow, inspect the screen, and change the code. Sensitive actions are
+bounded by permissions, budgets, and user-visible receipts.
+
+**One Collie, many brains.** Models are replaceable execution resources. The user asks for an
+outcome; Auto chooses an appropriate run plan, while Advanced controls remain available when a task
+needs a specific boundary.
+
+## The ecosystem
 
 | | Capability | What it means |
 |---|---|---|
-| 🧠 | **Coding agent** | Semantic code navigation, syntax-gated edits, and a self-verifying repair loop — the core, covered below. |
+| 🎯 | **Missions** | Durable outcomes with plans, retries, waits, handoffs, evidence, and receipts. |
+| 🧠 | **Brains & Pack** | Route work across models and isolated specialist workers while keeping one front-door identity. |
 | 🌐 | **Your real browser** | A Chrome extension lets Collie act *in your logged-in browser* — the real session, real cookies — so it can operate sites, not just scrape them. Every action is a fenced, CSRF-checked localhost call. |
-| 🖥️ | **Living desktop** | `collie web` powers an interactive ambient wallpaper: clock, weather, an app dock, projects, a music player (real audio + synced karaoke lyrics), and a command bar — all agent-manageable via one JSON config. When Collie is working, the wallpaper becomes a live star-map of your code. |
+| 🖥️ | **Desktop home** | Home, Missions, Pack, Library, Activity, and Needs You form the control plane; optional Ambient mode keeps status and handoff one gesture away. |
 | 🎬 | **Screen recorder** | `collie record` captures screen + camera + mic (Windows and macOS) — a built-in way to demo or document a run. |
-| 📱 | **Phone remote** | Pair once by scanning a code; then tail runs and start new ones from your phone — on the same Wi-Fi (`--lan`) or anywhere through a relay (`--remote`), with the companion iOS app. |
-| 🔌 | **Everywhere else** | Terminal, browser GUI, VS Code, and any ACP editor (Zed/JetBrains/neovim) — one harness, every surface. |
+| 📝 | **Meeting notes** | Import a local calendar, get privacy-aware meeting prompts, record mic + meeting audio, jot guidance, and optionally create timestamp-cited transcripts, decisions, and action items. Reminders never start capture; explicit participant consent is required every time. |
+| 🎨 | **Comfy visual AI** | Connect Comfy's official Cloud MCP or detect a local ComfyUI service, inspect graph workflows, and run image, video, audio, or 3D jobs without copying a private Comfy API into Collie. |
+| 📱 | **Phone supervision** | Pair once, then follow runs, answer approvals, steer, stop, or start work from the phone. |
+| 🧠 | **Private procedural memory** | Learn repeated workflows from content-free local action metadata. Raw observations never sync; suggestions require review and accepted routines start with zero authority. |
+| ☁️ | **Optional Online layer** | Pair devices, sync sealed project memory and learned-workflow derivatives plus restrictive policy, share reviewed MCP connections, hand Missions to local nodes, and build schedules/reports. Cloud LLM use stays off unless a bounded task explicitly opts in. |
+| 🔌 | **Remote-MCP-first Library** | Describe an outcome, rank existing and reviewed remote connections locally, then optionally search public Registry metadata using generic labels only. Community results are unreviewed; executable local MCP packages are never one-click installed. |
 
 ## Where it runs
 
-Collie is **terminal-first** and reaches editors through an open protocol, not a bespoke extension:
+The desktop is Collie's **home and control plane**. The supervisor and durable stores are the
+runtime, so work can continue when a window closes. Every surface below reaches that same runtime:
 
 | Surface | Command | Reaches |
 |---|---|---|
 | **Terminal** | `collie` (TUI) · `collie -p "task"` | anywhere — SSH, CI, tmux |
-| **Browser GUI** | `collie web` | chat, the live verification gate, diffs, the star-map, the ambient desktop, settings |
-| **iPhone** | `collie web --lan` (same Wi-Fi) or `--remote` (anywhere, via the relay) + the companion app | scan the pair code once, then run from the phone |
-| **VS Code** | the bundled `vscode-collie` extension | Collie docked in a sidebar panel (manages its own server) |
+| **Desktop / Browser Home** | `collie web` | Home, Missions, Pack, Library, Activity, approvals, evidence, diffs, and settings |
+| **iPhone** | `collie web --lan` (same Wi-Fi) or `--remote` (anywhere, via the relay) + the companion app | supervise runs, answer approvals, steer, stop, or start work |
+| **VS Code** | install `Collie-VSCode.vsix` from the latest release | Collie docked in a sidebar panel (manages its own server) |
 | **Editors (ACP)** | `collie acp` | Zed · JetBrains · neovim · VS Code — one adapter, every [ACP](https://agentclientprotocol.com) editor |
 | **Streaming / CI** | `collie run "task" --stream-json` | NDJSON events (tool · edit · repro-gate · receipt) |
+
+The composer defaults to an automatically generated Run Plan. Advanced controls keep the underlying
+intent, depth, verification policy, effort, service tier, workspace, and Single/Pack strategy
+independent. Plan and Review are tool-enforced read-only; Required blocks edited work until its
+named post-edit assertion executes and passes. Pack requires a check command so “best” has an
+observable meaning.
+
+On Windows, `collie supervisor install` registers a least-privilege per-user supervisor for Web,
+Jobs/Missions, automations, and the browser bridge. It restarts crashed workers and catches durable
+triggers up after sleep/sign-in; a sleeping or powered-off computer cannot execute work.
 
 ## Install
 
@@ -70,9 +99,14 @@ Collie is **terminal-first** and reaches editors through an open protocol, not a
 [latest release](https://github.com/colliehq/collie/releases/latest) and double-click it. A small
 app-style installer lays down a self-contained runtime (Python + Collie + semantic memory, nothing to
 preinstall) and opens Collie in a native desktop window. On first launch you **pick a brain** — an
-existing Claude, Codex, or Grok login is detected and connects in one click; or paste an API key.
+existing Claude, Codex, or Grok login is detected and connects in one click; API-key providers are
+configured in the environment that starts Collie, so secrets are not stored in the browser.
 
-**macOS / Linux — pip.** The core is stdlib-only, so the base install is tiny:
+**macOS — drag and open.** Apple-silicon Macs can download the signed and notarised
+**`Collie-arm64.dmg`** from the [latest release](https://github.com/colliehq/collie/releases/latest),
+drag Collie to Applications, and open it normally.
+
+**Linux and developers — pip.** The core is stdlib-only, so the base install is tiny:
 
 ```bash
 pip install -e ".[local,dev]"      # from a clone (PyPI publish is planned)
@@ -81,11 +115,13 @@ collie                             # the terminal chat (TUI) opens
 ```
 
 No account, no telemetry, and the core has **zero third-party dependencies** — `mock` and `ollama`
-run without any key, and memory works out of the box on BM25 keyword recall.
+run without any key, and memory works out of the box on BM25 keyword recall. **Collie Online is
+optional**: Local mode is complete; Connected Mode adds paired devices, project/memory/policy sync,
+shared reviewed MCP connections, schedules, reports, and local-node Mission handoff.
 
-Optional extras: `pip install ".[local,tui,search]"` — `local` (semantic memory: granite-107m via
+Optional extras: `pip install ".[local,tui,search,online]"` — `local` (semantic memory: granite-107m via
 onnxruntime, ~55MB, multilingual), `tui` (rich terminal chat), `search` (keyless web search), `acp`
-(editor protocol), `browser` (Playwright — only for `collie browser-bridge --browser`, a managed
+(editor protocol), `online` (device signing and sealed Connected Mode sync), `browser` (Playwright — only for `collie browser-bridge --browser`, a managed
 Chromium with the extension preloaded, for CI or when you'd rather not use your own Chrome). Per-OS
 setup — especially the real-browser bridge (`collie browser-bridge` + `harness/browser_ext/`) — is in
 **[docs/PLATFORMS.md](docs/PLATFORMS.md)**.
@@ -94,7 +130,7 @@ setup — especially the real-browser bridge (`collie browser-bridge` + `harness
 
 ```bash
 collie                     # terminal chat (TUI); first run picks a provider
-collie web                 # browser GUI — chat, live gate, diffs, star-map, ambient desktop
+collie web                 # desktop Home — missions, approvals, evidence, Pack, Library, Activity
 collie selftest            # $0 deterministic end-to-end (mock model, real tools + memory)
 
 # a real cheap model (provider key in env)
@@ -114,9 +150,18 @@ collie loop --goal "get the suite passing" --until "pytest -q" --max 8
 collie pack "fix the failing test" -n 3 --check "pytest -q" --apply
 
 collie acp                 # serve as an ACP agent (an editor spawns this over stdio)
+
+# optional Connected Mode (requires the `online` extra)
+collie online login
+collie online project-create "My project" --local-project my-project
+collie online sync
+collie online node-serve                 # this machine may claim compatible Online Missions
+# optional team: create/switch a workspace, then add known Collie user IDs
+collie online workspace-create "My team"
+collie online workspace-use --workspace-id WORKSPACE_ID
 ```
 
-Providers: `mock`, `ollama`, `anthropic`, `anthropic-oauth`, and OpenAI-compatible presets
+Providers: `mock`, `ollama`, `anthropic`, `claude-agent-sdk`, `anthropic-oauth`, and OpenAI-compatible presets
 `deepseek` · `qwen`/`dashscope` · `openrouter` · `moonshot` · `groq` · `zhipu` · `openai`.
 
 ---
@@ -161,12 +206,15 @@ it draws a line and asks before crossing it. Every tool declares how far it reac
 | **read** | no side effects | never asks |
 | **write_local** | changes files here | inside your directory: goes ahead |
 | **exec** | runs commands here | inside your directory: goes ahead |
-| **external** | **leaves this machine** — your logged-in browser, your desktop, an MCP server | **asks, every time** |
+| **external** | **leaves this machine** — your logged-in browser, your desktop, an MCP server | classified by outcome; asks only at an ungranted commit/person boundary |
 
 **Running `collie` in your repo is the consent** for the middle two. That is the whole point of the
 default `project` mode: an agent that interrupts every `pytest` is not usable, and asking about work
-you already asked for is theatre. What you did *not* consent to by launching it is `browser_click`
-sending mail under your cookies — so that asks.
+you already asked for is theatre. Authority v2 classifies an external outcome as `observe`,
+`prepare`, `act`, `commit`, or `restricted`: reads and preparation are quiet, routine reversible
+work is notified, and an exact Send/Publish the authenticated user explicitly requested does not ask
+a second time. Drafting never authorizes sending; page text, MCP output, and model prose can never
+create authority.
 
 ```bash
 collie -p "fix the bug"                  # project (default)
@@ -178,7 +226,9 @@ collie risk                              # what collie can reach, grouped by how
 
 Three things worth knowing:
 
-- **"Always allow" is pinned to a target, never to a tool.** Approving clicks on
+- **A standing grant is bounded by the result.** Mission/workflow/project/connection grants bind
+  action, target, account, recipients and amount where applicable, and remain visible/revocable in
+  Control Center. The legacy **"Always allow" is pinned to a target, never to a tool.** Approving clicks on
   `http://localhost:5173` does not approve clicks on your bank — the rule is
   `browser_click → http://localhost:5173`, the origin is re-read live on every call, and it lasts
   one run. There is deliberately no way to express "always allow browser_click".
@@ -186,7 +236,10 @@ Three things worth knowing:
   machine, the question goes to the Inbox and the run *suspends*; your phone gets a nudge, and you
   answer from there, from the browser, or with `collie inbox allow <id>`. One record, so whoever
   answers first is the one that counts. With no surface at all (piped, CI), off-machine calls are
-  refused with a reason the model can work around — never run because no one objected.
+  refused with a reason the model can work around — never run because no one objected. Connected,
+  authorized email/SMS verification-code inboxes are the narrow exception: the dedicated primitive
+  can read and fill a code without putting it in prompts or logs. CAPTCHA, biometric, passkey,
+  hardware-key, legal and identity-attestation challenges remain **Needs You**.
 - **Only you can widen anything.** A repo's `.collie/allow.toml` is inert until you `collie trust`
   that exact directory; a persona can only *narrow* what you allowed; and the risk overrides have
   no tool and no config hook, because something collie loaded must never be able to reclassify
@@ -218,7 +271,7 @@ should always print nothing.
      ▼                                  ▼                                  ▼
  ContextComposer                  ModelProvider                     ToolRegistry
  STABLE/CONTEXT/VOLATILE          OpenAI-compat · Anthropic ·       read/write/edit/bash/
- + token budgeter                 Ollama · subscription-OAuth       grep/glob + code_search
+ + token budgeter                 Ollama · Claude Agent SDK/OAuth   grep/glob + code_search
      ▼                                  │                                  │
  memory.SqliteMemory                    ▼                            recorder.Recorder
  hybrid recall (BM25+dense+RRF)   emit → stream-json / ACP          runs.db (+ dashboard)
@@ -226,11 +279,17 @@ should always print nothing.
 
 | Seam (abstract base) | shipped impl |
 |---|---|
-| `ModelProvider` | **OpenAICompat** (DeepSeek/Qwen/GLM/OpenRouter…) · Anthropic · Ollama · subscription-OAuth |
+| `ModelProvider` | **OpenAICompat** (DeepSeek/Qwen/GLM/OpenRouter…) · Anthropic · Ollama · Claude Agent SDK · subscription-OAuth |
 | `ToolRegistry` | read/write/**edit** (syntax-gated) · bash · grep · glob · **`code_search`** · **`web_search`** + **`web_fetch`** (keyless) · **`plan`** · **`undo`** · browser · **MCP** (deferred tier + `load_tools`) |
 | `EmbeddingProvider` | **OnnxEmbedding** granite-107m (Apache, 55MB, multilingual) · bge-m3 / e5 · jina-v3 opt-in · **BM25-only** when no model |
-| `SqliteMemory` | CORE + facts + FTS5 + cosine, hybrid RRF + optional rerank + consolidation |
+| `SqliteMemory` | CORE + evidence-gated claims + FTS5 + cosine, hybrid RRF + optional rerank |
 | `ContextComposer` | STABLE/CONTEXT/VOLATILE + auto-prefetch · a ~1K-token fixed prefix (kept deliberately lean) |
+
+The local **Studio** turns repeated runs into evaluated, explicitly approved Skills; imports local
+Claude/Cursor/Codex/Pi/Hermes setup through a digest-pinned no-overwrite migration plan; coordinates
+dependency-ready tasks with renewable file leases; anchors review comments to exact artifacts; and
+forks or hands sessions between the local checkout and isolated Git worktrees. Meeting reminders can
+also use an opt-in native background notifier while the Collie host is running.
 
 **`code_search`** extracts the identifiers from a natural-language query and greps the repo (ripgrep,
 else grep), ranking files by how many of your terms each contains — so the agent reasons about *where*
@@ -239,6 +298,20 @@ exact-match, whitespace-tolerant, and **rejects any edit that would break Python
 Untrusted web/page content is **fenced as data** (prompt-injection defense), and the browser bridge
 refuses any request missing its CSRF header. A token/cost **budget**
 (`COLLIE_MAX_COST` / `COLLIE_MAX_TOTAL_TOKENS`) stops a run at a ceiling.
+
+Agent-authored memories are quarantined as proposals: they enter normal recall only after user
+attestation or an executed host check. Review them with `collie mem pending`, then
+`collie mem approve <id>`, `collie mem attest <id>`, or `collie mem reject <id>` (and use
+`collie mem invalidate <id>` on an accepted claim).
+`execute_code` is a
+batching surface, not an authority shortcut—executable inner calls pass through the same
+permission, audit, secret-redaction, checkpoint, and verification-accounting path as ordinary tool
+calls; invariant-violating calls are denied and recorded at that boundary. It is **not an OS
+sandbox**: direct Python operations such as `open()`, sockets, subprocesses, and ctypes do not pass
+through that broker and have the same host authority as `bash`. Run untrusted workloads in a
+separately sandboxed container/VM. Process-tree cleanup contains ordinary background children;
+on POSIX, deliberately escaping into another session (`setsid`/double-fork) also requires that
+external sandbox boundary.
 
 ## Platforms
 
@@ -249,7 +322,7 @@ isolated in `harness/plat.py`, so the same wheel runs everywhere.
 | OS | Status | Notes |
 |---|---|---|
 | **Linux** | ✅ native | the primary target |
-| **macOS** | ✅ native | POSIX; the browser bridge is *simplest* here (Chrome + Collie on one OS) |
+| **macOS** | ✅ packaged app | signed, notarised Apple-silicon DMG; POSIX underneath |
 | **Windows** | ✅ one-click | the packaged installer; the agent prefers the file/search tools over `bash` |
 | **WSL2** | ✅ | a Windows-Chrome ↔ WSL bridge uses the LAN IP + `wslpath` (handled for you) |
 
@@ -265,15 +338,27 @@ python -m bench.polyglot_eval --langs python,cpp,javascript  # Aider-Polyglot, m
 python -m harness.cli compare --vs all                       # vs Claude Code / Aider / …
 ```
 
+Cross-harness publication uses the fail-closed
+[benchmark protocol](docs/harness-benchmark.md): frozen model/task/grader/container revisions,
+fresh memory, pass@1, three or more seeds, aggregate root-plus-subagent budgets, and hashed
+trace/patch/usage/grader evidence. `python -m harness.benchmark_protocol validate manifest.json` spends
+nothing and refuses mutable or incomplete configurations before a paid run starts.
+
 ## Honesty & policy
 
 - The benchmark harness is version-tagged and reproducible. "Progress is a number" cuts both ways —
   Collie surfaces the levers that turn out **net-neutral**, not just the wins.
 - Token counts are real usage (the model's own `usage`, or `harness/apitap.py` metering for CLIs that
   report none) — apples-to-apples, same source both sides.
-- Collie draws a personal Max/Pro subscription only through the first-party OAuth path
-  (`anthropic-oauth`), the same mechanism the official CLI uses; it never scrapes or resells
-  subscription tokens. Cheap API keys and local models are the default.
+- Native Opus overnight uses `claude-agent-sdk`, Anthropic's official Claude Agent SDK, against an
+  eligible signed-in Claude Pro/Max plan (the live route was tested on Max). Collie invokes the SDK directly—not `claude -p` and not a
+  raw OAuth Messages call—and supplies its own replacement system prompt. SDK settings sources,
+  built-in tools, skills, plugins, agents, and slash commands are disabled so Collie remains the
+  harness and tool loop. The route has no API-key, paid-credit, provider, or model fallback.
+- Subscription allowance is bounded by the plan and provider policy. The current evidence is a
+  short end-to-end route test, not a 12-hour soak, and neither Collie nor the SDK promises unlimited
+  use or unchanged future billing policy. Cheap API keys and local models remain the default for
+  ordinary runs.
 
 ## License
 

@@ -1,0 +1,22 @@
+{
+  "source_commit": "c9e35decbc9a4f62db1cf324b453c85e2ed8deb1",
+  "wheel": "collie_harness-0.26.0-py3-none-any.whl",
+  "wheel_sha256": "83f3d1e66cb0fcea7aea5c1afef5709e18936667314a7955d9a5c8272871ef46",
+  "version": "0.26.0",
+  "install_exit": 0,
+  "checks": [
+    {
+      "name": "package",
+      "exit": 0
+    },
+    {
+      "name": "cli-help",
+      "exit": 0
+    }
+  ],
+  "required_assets_present": true,
+  "device_credentials_excluded": true,
+  "experimental_session_not_shipped": true,
+  "model_calls": 0,
+  "passed": true
+}

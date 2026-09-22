@@ -16,10 +16,12 @@ mission.ModelDecider(provider). Proven here:
   - an out-of-leash action fails closed (never runs unauthorized)
 """
 import os
+import json
 import sqlite3
 import sys
 import tempfile
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -33,6 +35,7 @@ from harness.jobs import (  # noqa: E402
 from harness.primitives import register_primitives  # noqa: E402
 from harness.mission import (  # noqa: E402
     MissionStore, MissionDriver, ModelDecider, create_mission, world_leash,
+    _model_case_json,
 )
 from harness.providers import Completion  # noqa: E402
 from harness.verifier import Verdict, VERIFIED  # noqa: E402
@@ -176,6 +179,90 @@ def test_anti_poll_spin():
     actions.close()
 
 
+def test_distinct_observe_targets_are_not_poll_backoff():
+    """Reading several different platforms once is discovery, not a tight poll."""
+    print("test_distinct_observe_targets_are_not_poll_backoff")
+    clear_registry()
+    register_primitives(stub=True)
+    reads = [
+        {"action": "observe", "args": {"url": f"https://site{i}.test/home", "authed": True},
+         "reason": "inspect a distinct account"}
+        for i in range(5)
+    ]
+    drv, store, actions = _driver(reads + [HAND])
+    create_mission(store, "multi-site-read", "inspect several signed-in platforms",
+                   leash=world_leash(autonomous=True))
+
+    state = drv.advance("multi-site-read")
+    completed = [s for s in store.steps("multi-site-read") if s["name"] == "observe"]
+    check(state == NEEDS_YOU and len(completed) == 5 and
+          store.next_wait("multi-site-read") is None,
+          "different observe targets proceed without the one-hour polling delay")
+    store.close()
+    actions.close()
+
+
+def test_model_context_keeps_newest_results_and_per_site_browse_facts():
+    print("test_model_context_keeps_newest_results_and_per_site_browse_facts")
+    recent = [{"marker": f"result-{i}", "body": "x" * 900} for i in range(8)]
+    encoded = _model_case_json({"_recent_results": recent}, 1800)
+    check("result-7" in encoded and "result-0" not in encoded,
+          "bounded model context keeps newest timeline evidence, not the oldest prefix")
+
+    drv, store, actions = _driver([])
+    create_mission(store, "site-facts", "inspect several platforms",
+                   leash=world_leash(autonomous=True))
+    mission = store.get("site-facts")
+    for host, summary in (("x.com", "authenticated; composer available"),
+                          ("www.reddit.com", "u/nestlyze; r/SideProject available")):
+        drv._fold(mission, "browse", {"result": summary, "form": [],
+                                      "page": {"host": host, "title": host},
+                                      "case": {"browsed": True, "browse_result": summary}})
+    case = store.get("site-facts").case
+    check(set(case.get("browse_sites", {})) == {"x.com", "www.reddit.com"},
+          "browse facts accumulate by domain rather than overwriting the prior site")
+    model_case = json.loads(_model_case_json(case, 5000))
+    check("x.com" in model_case.get("browse_sites", {}) and
+          "www.reddit.com" in model_case.get("browse_sites", {}),
+          "per-site browser facts survive model-context compaction")
+    store.close()
+    actions.close()
+
+
+def test_model_context_preserves_complete_latest_human_update():
+    print("test_model_context_preserves_complete_latest_human_update")
+    tail = " FINAL-URL=https://vocalcode.app/ NEVER-DUPLICATE"
+    note = "Use this exact approved copy: " + ("x" * 340) + tail
+    encoded = _model_case_json({"old": "z" * 30000,
+                                "human_updates": [{"at": 1, "note": "older"},
+                                                  {"at": 2, "note": note}]}, 2400)
+    check(tail in encoded,
+          "the newest ordinary operator note keeps its final URL/constraint after compaction")
+
+
+def test_local_compose_work_is_not_treated_as_polling():
+    """Several writing steps before the first external action must not inherit
+    the one-hour inbox-poll backoff."""
+    print("test_local_compose_work_is_not_treated_as_polling")
+    clear_registry()
+    register_primitives(stub=True)
+    writes = [
+        {"action": "compose", "args": {"facts": "fact", "instruction": f"post {i}"},
+         "reason": "prepare channel copy"}
+        for i in range(5)
+    ]
+    drv, store, actions = _driver(writes + [HAND])
+    create_mission(store, "compose-burst", "prepare a multi-channel campaign",
+                   leash=world_leash(autonomous=True))
+    state = drv.advance("compose-burst")
+    completed = [s for s in store.steps("compose-burst") if s["name"] == "compose"]
+    check(state == NEEDS_YOU and len(completed) == 5 and
+          store.next_wait("compose-burst") is None,
+          "local composition proceeds without the durable polling delay")
+    store.close()
+    actions.close()
+
+
 def test_browse_mission_gates_publish():
     """The FB path: a mission uses `browse` (reversible, auto) to fill the form, then
     `browse.submit` (irreversible) PARKS for confirm; confirm+resume publishes."""
@@ -248,6 +335,20 @@ def test_pause_preserves_due_wait_and_cancel_is_terminal():
     check(drv.advance("life") == CANCELLED and drv.tick_missions(10**11) == 0,
           "cancel is terminal and cannot be woken")
     store.close(); actions.close()
+
+
+def test_browse_submit_requires_latest_verified_preparation():
+    print("test_browse_submit_requires_latest_verified_preparation")
+    failed = [{"kind": "result", "name": "browse",
+               "payload": {"verdict": "failed", "reason": "body did not match"}}]
+    ok = [{"kind": "result", "name": "browse",
+           "payload": {"verdict": "verified", "reason": "exact form reread"}}]
+    check(MissionDriver._browse_submit_ready(failed)[0] is False,
+          "a failed fill deterministically blocks the final browser click")
+    check(MissionDriver._browse_submit_ready(ok)[0] is True,
+          "an independently verified fill permits the final browser click")
+    check(MissionDriver._browse_submit_ready([])[0] is False,
+          "submit without any preparation evidence fails closed")
 
 
 def test_cancel_revokes_a_parked_action():
@@ -631,6 +732,8 @@ def test_browser_target_change_refuses_confirmed_click():
     drv, store, actions = _driver([
         {"action": "browse.submit", "args": {"button": "Publish"}}])
     create_mission(store, "target", "publish one post", leash=world_leash())
+    store.record_event("target", "result", "browse",
+                       payload={"verdict": VERIFIED, "reason": "exact form reread"})
     check(drv.advance("target") == NEEDS_YOU, "snapshotted publish parked")
     _name, nonce = store.last_parked("target")
     rec = actions.get(nonce)
@@ -785,6 +888,48 @@ def test_transient_model_failure_becomes_durable_backoff():
           "temporary provider outage schedules durable exponential backoff")
 
 
+def test_model_decider_accepts_first_valid_json_object_without_greedy_capture():
+    print("test_model_decider_accepts_first_valid_json_object_without_greedy_capture")
+
+    class Explained:
+        def complete(self, *_a, **_kw):
+            return Completion(text=(
+                "Decision:\n```json\n"
+                '{"action":"needs_human","args":{"summary":"review"}}'
+                "\n```\nExplanation with another object: {not valid JSON}."))
+
+    decision = ModelDecider(Explained())("goal", {}, [])
+    check(decision["action"] == "needs_human" and
+          decision["args"]["summary"] == "review" and
+          decision.get("reason") != "decider unavailable",
+          "planner parses the first complete JSON decision despite trailing braces")
+
+
+def test_model_decider_exposes_unambiguous_primitive_contracts():
+    print("test_model_decider_exposes_unambiguous_primitive_contracts")
+
+    class Capture:
+        def __init__(self):
+            self.system = ""
+            self.user = ""
+
+        def complete(self, system, messages, _tools):
+            self.system = system
+            self.user = messages[0]["content"]
+            return Completion(text='{"action":"needs_human","args":{"summary":"done"}}')
+
+    provider = Capture()
+    primitive = {"name": "compose", "reversible": True,
+                 "description": "Create final ready-to-use copy.",
+                 "args": '{"facts","instruction","text (final literal only)"}'}
+    ModelDecider(provider)("prepare a campaign", {}, [primitive])
+    check("args.instruction" in provider.system and "ONLY" in provider.system and
+          "LITERAL substring" in provider.system and "one separate read-only 'browse'" in
+          provider.system and "final literal only" in provider.user and
+          "newsletter" in provider.system,
+          "the planner sees unambiguous compose and browser-observation contracts")
+
+
 def test_credentials_handoff_before_any_durable_action_payload():
     print("test_credentials_handoff_before_any_durable_action_payload")
     clear_registry(); register_primitives(stub=True)
@@ -801,11 +946,130 @@ def test_credentials_handoff_before_any_durable_action_payload():
           "the handoff explains the privacy boundary")
     store.close(); actions.close()
 
+
+def test_confirmed_timeout_cancels_only_its_own_mission_worker():
+    print("test_confirmed_timeout_cancels_only_its_own_mission_worker")
+    clear_registry()
+    release = threading.Event()
+    scoped = []
+
+    cap = Capability(
+        "slow.code", execute=lambda _rec: release.wait(2) or {"done": True},
+        verify=lambda _r, _x: Verdict(VERIFIED, "done"),
+        reversible=False, risk="irreversible", semantic_args=("target",))
+    cap.cancel_for = lambda mission_id: (
+        lambda: scoped.append(mission_id) or release.set() or True)
+    cap.cancel_current = lambda: (_ for _ in ()).throw(
+        AssertionError("unscoped cancellation must never be used"))
+    register(cap)
+    drv, store, actions = _driver([
+        {"action": "slow.code", "args": {"target": "repo"}}])
+    create_mission(
+        store, "parked-timeout", "run one bounded code action",
+        leash=world_leash(
+            may=["slow.code"], autonomous=False, max_step_seconds=1))
+    state = drv.advance("parked-timeout")
+    check(state == NEEDS_YOU, "action parked (got %s)" % state)
+    check(not scoped and not release.is_set(), "worker remains idle before confirmation")
+    _name, nonce = store.last_parked("parked-timeout")
+
+    check(drv.confirm_and_resume("parked-timeout", nonce) == RECOVERY_REQUIRED,
+          "confirmed timeout enters explicit recovery")
+    check(scoped == ["parked-timeout"],
+          "timeout cancellation is scoped to this Mission")
+    store.close(); actions.close()
+
+
+def test_missing_authorization_defers_only_its_branch():
+    print("test_missing_authorization_defers_only_its_branch")
+    clear_registry(); register_primitives(stub=True)
+    ask = {"action": "needs_authorization", "args": {
+        "kind": "profile_claim", "claim": "age_at_least_16",
+        "risk": "medium", "domain": "producthunt.com",
+        "summary": "Confirm that the account holder is at least 16"}}
+    drv, store, actions = _driver([ask, R, {"action": "done", "reason": "other work done"}])
+    authority = {
+        "auto_apply_profile_claims": False,
+        "defer_missing_authorizations": True,
+        "max_auto_risk": "medium", "claims": {}, "never_auto": []}
+    create_mission(store, "branch-auth", "prepare a launch",
+                   leash=world_leash(autonomous=True))
+    with patch("harness.mission._standing_authority", return_value=authority):
+        state = drv.advance("branch-auth")
+    case = store.get("branch-auth").case
+    check(state == NEEDS_YOU and case.get("researched"),
+          "an authorization wait does not stop independent research")
+    check(case.get("pending_authorizations", [])[0]["claim"] == "age_at_least_16",
+          "the branch-scoped authorization request remains durable")
+    store.close(); actions.close()
+
+
+def test_exact_saved_profile_claim_is_reused_automatically():
+    print("test_exact_saved_profile_claim_is_reused_automatically")
+    clear_registry(); register_primitives(stub=True)
+    ask = {"action": "needs_authorization", "args": {
+        "kind": "profile_claim", "claim": "age_at_least_16",
+        "risk": "medium", "domain": "producthunt.com",
+        "summary": "Confirm that the account holder is at least 16"}}
+    drv, store, actions = _driver([ask, R, HAND])
+    authority = {
+        "auto_apply_profile_claims": True,
+        "defer_missing_authorizations": True,
+        "max_auto_risk": "medium",
+        "claims": {"age_at_least_16": True}, "never_auto": []}
+    create_mission(store, "saved-fact", "prepare a launch",
+                   leash=world_leash(autonomous=True))
+    with patch("harness.mission._standing_authority", return_value=authority):
+        state = drv.advance("saved-fact")
+    case = store.get("saved-fact").case
+    check(state == NEEDS_YOU and case.get("researched"),
+          "an exact confirmed profile fact authorizes the matching form and work continues")
+    check(case.get("resolved_authorizations", [])[0]["resolution"] == "standing_authority" and
+          not case.get("pending_authorizations"),
+          "the reused fact has a durable non-secret authorization receipt")
+    store.close(); actions.close()
+
+
+def test_person_required_security_checks_never_auto_authorize():
+    print("test_person_required_security_checks_never_auto_authorize")
+    clear_registry(); register_primitives(stub=True)
+    ask = {"action": "needs_authorization", "args": {
+        "kind": "captcha", "risk": "low", "blocking": True,
+        "summary": "Complete the human verification challenge"}}
+    drv, store, actions = _driver([ask])
+    authority = {
+        "auto_apply_profile_claims": True,
+        "defer_missing_authorizations": True,
+        "max_auto_risk": "medium",
+        "claims": {"age_at_least_16": True}, "never_auto": []}
+    create_mission(store, "captcha-boundary", "finish signup",
+                   leash=world_leash(autonomous=True))
+    with patch("harness.mission._standing_authority", return_value=authority):
+        state = drv.advance("captcha-boundary")
+    check(state == NEEDS_YOU and store.get("captcha-boundary").case.get(
+          "pending_authorizations", [])[0]["kind"] == "captcha",
+          "CAPTCHA remains a person-required boundary regardless of the standing risk ceiling")
+    store.close(); actions.close()
+
+
+def test_world_leash_normalizes_epoch_expiry_for_runtime_comparison():
+    print("test_world_leash_normalizes_epoch_expiry_for_runtime_comparison")
+    leash = world_leash(expires=1786495837)
+    check(leash["expires"] == "2026-08-12T00:50:37Z",
+          "epoch deadlines normalize to the UTC string used by leash evaluation")
+    check(isinstance(leash["expires"], str),
+          "an epoch never survives the builder to cause a str-vs-int runtime failure")
+
 def main():
     test_confirm_gate_then_resume()
     test_autonomous_with_durable_wait()
     test_leash_denies_out_of_scope()
     test_anti_poll_spin()
+    test_distinct_observe_targets_are_not_poll_backoff()
+    test_model_context_keeps_newest_results_and_per_site_browse_facts()
+    test_model_context_preserves_complete_latest_human_update()
+    test_local_compose_work_is_not_treated_as_polling()
+    test_browse_submit_requires_latest_verified_preparation()
     test_browse_mission_gates_publish()
     test_code_step_in_a_mission()
     test_pause_preserves_due_wait_and_cancel_is_terminal()
@@ -830,7 +1094,9 @@ def main():
     test_registered_semantic_projection_canonicalizes_aliases()
     test_irreversible_capability_without_semantic_projection_fails_closed()
     test_transient_model_failure_becomes_durable_backoff()
+    test_model_decider_exposes_unambiguous_primitive_contracts()
     test_credentials_handoff_before_any_durable_action_payload()
+    test_world_leash_normalizes_epoch_expiry_for_runtime_comparison()
     if _fails:
         print(f"\n{len(_fails)} FAILED")
         sys.exit(1)

@@ -93,6 +93,10 @@ def main():
     os.environ["COLLIE_MCP_MANAGE"] = "1"
     tmpdir = tempfile.mkdtemp(prefix="collie_mcptool_")
     old_cfg, old_tok = m._CONFIG, m._TOKENS
+    old_discover = m._discover_oauth
+    # This is an offline contract test: provider metadata must not depend on today's
+    # network response. Dynamic metadata support has its own dedicated regressions.
+    m._discover_oauth = lambda _url: {}
     m._CONFIG = os.path.join(tmpdir, "mcp.json")
     m._TOKENS = os.path.join(tmpdir, "tokens.json")       # never touch the real credential store
     try:
@@ -145,7 +149,8 @@ def main():
                   "%s is not marked (its server registers clients dynamically)" % svc)
 
         out = m.MCPAddTool().run({"name": "github"}, None)
-        check("client_id" in out, "mcpctl_add on one of them says so instead of pointing at connect")
+        check("mcpctl_connect" in out and "OAuth metadata" in out and "client setup" in out,
+              "mcpctl_add explains the metadata check and possible client setup")
 
         opened = []
         real_login = m.login
@@ -218,7 +223,7 @@ def main():
 
         m._http_json = fake_http
         try:
-            doc = m._discover_oauth("https://mcp.example.com/mcp")
+            doc = old_discover("https://mcp.example.com/mcp")
         finally:
             m._http_json = real_http
         check(doc.get("resource_scopes") == ["a:read", "b:write"],
@@ -239,6 +244,7 @@ def main():
               "and points at the one command that finishes it")
     finally:
         m._CONFIG, m._TOKENS = old_cfg, old_tok
+        m._discover_oauth = old_discover
         os.environ.pop("COLLIE_MCP_MANAGE", None)
 
     print("\n  " + ("%d FAILED" % len(fails) if fails else "mcp catalog: all green"))

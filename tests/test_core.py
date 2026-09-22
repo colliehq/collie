@@ -56,12 +56,23 @@ def test_cost_cache_creation():
     from harness.costs import cost_usd
     base = cost_usd("claude-opus-4-8", 1000, 500, cache_read=2000)
     withc = cost_usd("claude-opus-4-8", 1000, 500, cache_read=2000, cache_creation=1000)
-    assert abs((withc - base) - (1000 * 15 * 1.25 / 1e6)) < 1e-9, "cache-creation must bill at 1.25x input"
+    assert abs((withc - base) - (1000 * 5 * 1.25 / 1e6)) < 1e-9, "cache-creation must bill at 1.25x input"
 
 def test_cost_unknown_model_zero():
     from harness.costs import cost_usd
     assert cost_usd("some-unlisted-model", 1000, 500) == 0.0
-    assert cost_usd("claude-opus-4-8", 1_000_000, 0) == 15.0   # opus input $15/M
+    assert cost_usd("claude-opus-4-8", 1_000_000, 0) == 5.0
+
+def test_cost_price_match_prefers_exact_then_longest(monkeypatch):
+    from harness import costs
+    # Keep the generic fallback first to prove lookup does not depend on registration order.
+    monkeypatch.setattr(costs, "PRICES", {
+        "opus": (15.0, 1.5, 75.0),
+        "claude-opus-4-8": (5.0, 0.5, 25.0),
+    })
+    assert costs.price_for("claude-opus-4-8") == (5.0, 0.5, 25.0)
+    assert costs.price_for("anthropic:claude-opus-4-8-20260801") == (5.0, 0.5, 25.0)
+    assert costs.price_for("opus") == (15.0, 1.5, 75.0)
 
 # ------------------------------------------------------------------ embeddings cache
 def test_embedder_singleton():
@@ -85,8 +96,15 @@ def test_panel_settings_survive_a_fork():
     # escaping there: on Windows `sys.path.insert(0, 'C:\Users\…')` made \U a truncated unicode
     # escape, the grandchild died of SyntaxError before printing, and the assert blamed settings.
     # Non-COLLIE_ names on purpose — apply() treats every inherited COLLIE_* as "the user set this".
+    # Redirect the actual settings path as well as the broader state directory.
+    # COLLIE_STATE_DIR does not define settings._PATH; without this explicit path
+    # the subprocess writes its LANG fixture into the developer's real
+    # ~/.collie/settings.json while the suite is running.
     env = {**os.environ, "COLLIE_STATE_DIR": state,
+           "COLLIE_SETTINGS_PATH": os.path.join(state, "settings.json"),
            "FORKTEST_REPO": os.getcwd(), "FORKTEST_STATE": state}
+    # This case tests a panel setting, not an explicit inherited override.
+    env.pop("COLLIE_LANG", None)
     parent = ("import os, sys\n"
               "sys.path.insert(0, os.environ['FORKTEST_REPO'])\n"
               "from harness import settings as st\n"
@@ -199,15 +217,17 @@ def test_update_inventory_and_restart_include_live_slack_listener():
     assert up._restart_script("slack:../bad.pyw", root) == "", \
         "restart inventory cannot inject an arbitrary path into PowerShell"
 
-def test_new_windows_installer_migrates_pre_slack_updaters():
+def test_new_windows_installer_migrates_slack_to_single_supervisor_owner():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     iss = open(os.path.join(root, "installer", "collie.iss"), encoding="utf-8").read()
     prepare = iss.split("function PrepareToInstall", 1)[1].split("procedure InitializeWizard", 1)[0]
     run = iss.split("[Run]", 1)[1].split("[UninstallRun]", 1)[0]
     assert "taskkill.exe /PID $_.Id /T /F" in prepare, \
         "the first upgrade must quiesce each legacy listener's external child tree"
-    assert "slack-*.pyw" in run and "subprocess.Popen([sys.executable,p]" in run, \
-        "the new installer itself must restart Slack when the old updater did not inventory it"
+    assert "-m harness.supervisor install" in run and "-m harness.supervisor run" in run, \
+        "the new installer must hand opted-in Slack recovery to the supervisor"
+    assert "slack-*.pyw" not in run and "subprocess.Popen([sys.executable,p]" not in run, \
+        "the installer must not race the supervisor by starting each legacy launcher again"
 
 def test_macos_update_kickstarts_loaded_slack_agents():
     from harness import update as up
@@ -330,6 +350,20 @@ def test_codeindex_ripgrep_fresh():
     assert idx.search("find_widget_by_name", k=3) == [] or \
         all("find_widget_by_name" not in h for h in idx.search("find_widget_by_name", k=3))
 
+
+def test_codeindex_normalizes_windows_paths_without_stripping_dot_directories(monkeypatch):
+    from harness import codeindex as C
+
+    output = (".\\mod.py:1:def hidden_setting():\n"
+              ".\\.config\\settings.py:7:hidden_setting = True\n")
+    monkeypatch.setattr(
+        C.subprocess, "run",
+        lambda *_args, **_kwargs: type("Result", (), {"stdout": output})())
+
+    matches = C._grep_matches("unused", ["hidden_setting"])
+
+    assert set(matches) == {"mod.py", ".config/settings.py"}
+
 def test_every_agent_cli_is_resolved_on_path_before_exec():
     """A competitor that cannot start must be an error, not a loss.
 
@@ -338,10 +372,17 @@ def test_every_agent_cli_is_resolved_on_path_before_exec():
     as "the other harness produced no patch" (a bogus 10:0, then a bogus 2:0). Fixing the call
     site in adapters.py did not fix the identical call in swe.py, so lock the CLASS: every place
     that execs an external agent CLI resolves argv[0] through shutil.which first.
+
+    The runner-selection layer widened the blast radius: `collie run --runner claude-code`
+    launches the same npm-shim CLIs from production code, not just from the benchmark
+    harness, so an unresolved argv[0] there would surface as "the worker produced nothing"
+    on a user's real run. Every module that can spawn an external agent CLI is enrolled.
     """
     import ast
-    from harness import swe, adapters
-    for mod in (swe, adapters):
+    from harness import swe, adapters, claude_code_runner, runner_registry, runner_compat
+    # runner_slice.py is deliberately absent: it drives runners through the AgentRunner
+    # interface and never spawns a process itself.
+    for mod in (swe, adapters, claude_code_runner, runner_registry, runner_compat):
         src = inspect.getsource(mod)
         assert "shutil.which" in src, "%s execs a CLI without resolving it on PATH" % mod.__name__
         tree = ast.parse(src)

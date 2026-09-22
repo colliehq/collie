@@ -5,10 +5,15 @@
 // is clickable and typable even though it lives on the wallpaper layer.
 
 using System;
+using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Speech.Recognition;
+using System.Speech.Synthesis;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;   // disambiguate from System.Threading.Timer
@@ -22,13 +27,21 @@ class CollieWallpaper : Form
     const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
     const long WS_EX_NOACTIVATE = 0x08000000L, WS_EX_TOOLWINDOW = 0x00000080L;
     const uint SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4;
-    const int WM_WINDOWPOSCHANGING = 0x0046;
+    const int WM_WINDOWPOSCHANGING = 0x0046, WM_NCHITTEST = 0x0084, WM_NCLBUTTONDOWN = 0x00A1,
+              WM_SYSCOMMAND = 0x0112, WM_HOTKEY = 0x0312;
+    const int LIVE_HANDOFF_HOTKEY = 0xC011;
+    const uint MOD_ALT = 0x0001, MOD_CONTROL = 0x0002, MOD_NOREPEAT = 0x4000;
+    const int SC_MAXIMIZE = 0xF030, SC_RESTORE = 0xF120;
+    const int HTCLIENT = 1, HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12,
+              HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOM = 15, HTBOTTOMLEFT = 16,
+              HTBOTTOMRIGHT = 17;
     [StructLayout(LayoutKind.Sequential)] struct WINDOWPOS { public IntPtr hwnd, hwndInsertAfter; public int x, y, cx, cy; public uint flags; }
     const int WH_MOUSE_LL = 14, WH_KEYBOARD_LL = 13;
     const int WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202,
               WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_MOUSEWHEEL = 0x020A,
+              WM_XBUTTONDOWN = 0x020B, WM_XBUTTONUP = 0x020C,
               WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_CHAR = 0x0102, WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105;
-    const int MK_LBUTTON = 0x0001, MK_RBUTTON = 0x0002;
+    const int MK_LBUTTON = 0x0001, MK_RBUTTON = 0x0002, XBUTTON2 = 0x0002;
 
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int x, y; }
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int left, top, right, bottom; }
@@ -47,11 +60,19 @@ class CollieWallpaper : Form
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextLengthW(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int m);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int m);
     [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr p);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int command);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterHotKey(IntPtr h, int id, uint modifiers, uint key);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool UnregisterHotKey(IntPtr h, int id);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookExW(int id, HookProc proc, IntPtr hMod, uint thread);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
@@ -90,11 +111,158 @@ class CollieWallpaper : Form
         SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020);
     }
 
+    void ReportWindowState()
+    {
+        if (!_windowMode || _web == null || _web.CoreWebView2 == null) return;
+        try
+        {
+            _web.CoreWebView2.PostWebMessageAsJson("{\"type\":\"window-state\",\"maximized\":" +
+                (_customMaximized ? "true" : "false") + "}");
+        }
+        catch { }
+    }
+
+    // WinForms' built-in Maximized state is not reliable for a FormBorderStyle.None window. On a
+    // wide/high-DPI desktop it can apply the working-area offset twice (we observed x=1288 with a
+    // 5120px-wide window on a 0..5120 screen), pushing Collie's restore button off-screen. Keep the
+    // ordinary bounds ourselves and make maximization a plain, reversible geometry change instead.
+    Rectangle _restoreBounds = Rectangle.Empty;
+    bool _customMaximized, _changingWindowBounds;
+
+    Rectangle DefaultRestoreBounds(Screen screen)
+    {
+        Rectangle work = screen.WorkingArea;
+        int width = Math.Min(1180, Math.Max(MinimumSize.Width, (int)(work.Width * 0.8)));
+        int height = Math.Min(820, Math.Max(MinimumSize.Height, (int)(work.Height * 0.85)));
+        return new Rectangle(work.Left + Math.Max(0, (work.Width - width) / 2),
+                             work.Top + Math.Max(0, (work.Height - height) / 2), width, height);
+    }
+
+    bool RestoreBoundsAreUsable(Rectangle value)
+    {
+        if (value.Width < MinimumSize.Width || value.Height < MinimumSize.Height) return false;
+        foreach (Screen screen in Screen.AllScreens)
+        {
+            Rectangle visible = Rectangle.Intersect(value, screen.WorkingArea);
+            if (visible.Width >= 160 && visible.Height >= 80) return true;
+        }
+        return false;
+    }
+
+    void RememberRestoreBounds()
+    {
+        if (!_windowMode || _customMaximized || _changingWindowBounds ||
+            WindowState != FormWindowState.Normal || !Visible) return;
+        if (Bounds.Width >= MinimumSize.Width && Bounds.Height >= MinimumSize.Height)
+            _restoreBounds = Bounds;
+    }
+
+    void ToggleMaximizeWindow()
+    {
+        if (_customMaximized || WindowState == FormWindowState.Maximized)
+        {
+            RestoreWindow();
+            return;
+        }
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Rectangle current = Bounds;
+        if (current.Width >= MinimumSize.Width && current.Height >= MinimumSize.Height)
+            _restoreBounds = current;
+        Screen screen = Screen.FromHandle(Handle);
+        _changingWindowBounds = true;
+        try
+        {
+            // Set the flag before Bounds: the resulting Resize event must not overwrite the saved
+            // normal rectangle with the full-screen rectangle.
+            _customMaximized = true;
+            WindowState = FormWindowState.Normal;
+            Bounds = screen.WorkingArea;
+        }
+        finally { _changingWindowBounds = false; }
+        ReportWindowState();
+    }
+
+    void RestoreWindow()
+    {
+        Screen screen = Screen.FromHandle(Handle);
+        Rectangle target = RestoreBoundsAreUsable(_restoreBounds) ? _restoreBounds : DefaultRestoreBounds(screen);
+        _changingWindowBounds = true;
+        try
+        {
+            WindowState = FormWindowState.Normal;
+            Bounds = target;
+            _customMaximized = false;
+        }
+        finally { _changingWindowBounds = false; }
+        ReportWindowState();
+    }
+
+    void BeginWindowDrag()
+    {
+        if (_customMaximized)
+        {
+            // Match native Windows: pulling a maximized title bar restores the window under the
+            // pointer and immediately continues the drag, instead of making the title bar feel dead.
+            POINT cursor;
+            if (GetCursorPos(out cursor))
+            {
+                Screen screen = Screen.FromPoint(new Point(cursor.x, cursor.y));
+                Rectangle work = screen.WorkingArea;
+                Rectangle target = RestoreBoundsAreUsable(_restoreBounds) ? _restoreBounds : DefaultRestoreBounds(screen);
+                double ratio = work.Width > 0 ? (cursor.x - work.Left) / (double)work.Width : 0.5;
+                ratio = Math.Max(0.1, Math.Min(0.9, ratio));
+                target.X = cursor.x - (int)(target.Width * ratio);
+                target.Y = work.Top;
+                _changingWindowBounds = true;
+                try
+                {
+                    WindowState = FormWindowState.Normal;
+                    Bounds = target;
+                    _restoreBounds = target;
+                    _customMaximized = false;
+                }
+                finally { _changingWindowBounds = false; }
+                ReportWindowState();
+            }
+            else RestoreWindow();
+        }
+        ReleaseCapture();
+        SendMessageW(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+    }
+
+    void WakeWindow()
+    {
+        if (!_windowMode || IsDisposed) return;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show();
+        Activate();
+        BringToFront();
+        SetForegroundWindow(Handle);
+        ReportWindowState();
+    }
+
     static string _log = Path.Combine(Path.GetTempPath(), "collie-wallpaper.log");
     static void Log(string s) { try { File.AppendAllText(_log, DateTime.Now.ToString("HH:mm:ss") + " " + s + "\r\n"); } catch { } }
 
     WebView2 _web;
     static EventWaitHandle _quit;           // signalled by another process to request a CLEAN shutdown
+    static EventWaitHandle _show;           // a second shortcut launch restores/focuses the app window
+    static Form _capsuleForm;
+    static WebView2 _capsuleWeb;
+    static SpeechRecognitionEngine _capsuleSpeech;
+    static bool _capsuleSpeechDelivered;
+    static bool _capsuleStopOnRelease;
+    static bool _capsulePttMode, _capsulePttHeld;
+    static CollieWallpaper _mainForm;
+    static WebView2 _mainWeb;
+    static SpeechRecognitionEngine _liveSpeech;
+    static SpeechSynthesizer _liveVoice;
+    static bool _liveVoiceSpeaking;
+    static int _liveVoiceGeneration;
+    static string _liveVoiceLastCue = "";
+    static bool _liveSpeechWanted;
+    static string _liveSpeechSession = "", _liveSpeechLanguage = "";
+    static string _liveSpeechFailedFor = "";
     static IntPtr _progman, _input;         // Chromium child to post to
     static bool _pinned;                    // once true, WndProc forces our z-order below the icons
     static IntPtr _icons, _iconProc, _iconMem;   // desktop icon ListView + explorer handle + remote LVHITTESTINFO
@@ -125,6 +293,16 @@ class CollieWallpaper : Form
     // shows 127.0.0.1:8787 in the address bar and gets lost among their other tabs.
     static bool _windowMode;
     static Mutex _instanceMutex;   // held for the life of the process — keeps duplicate launches out
+    string _baseUrl = "http://127.0.0.1:8787";
+
+    class LiveTarget
+    {
+        public IntPtr Hwnd;
+        public uint Pid;
+        public string ProcessName = "";
+        public string Title = "";
+        public string SpeechLanguage = "";
+    }
 
     [STAThread]
     static void Main(string[] args)
@@ -138,7 +316,24 @@ class CollieWallpaper : Form
         bool fresh;
         try { _instanceMutex = new Mutex(true, _windowMode ? "collie-wallpaper-window" : "collie-wallpaper-bg", out fresh); }
         catch { fresh = true; }
-        if (!fresh) { Log("another " + (_windowMode ? "window" : "wallpaper") + " instance is already running — exiting"); return; }
+        if (!fresh)
+        {
+            Log("another " + (_windowMode ? "window" : "wallpaper") + " instance is already running — exiting");
+            if (_windowMode)
+            {
+                // A user commonly clicks the desktop/Start shortcut after minimizing Collie. The old
+                // single-instance path silently exited, which looked as though the app was broken.
+                try { using (EventWaitHandle show = EventWaitHandle.OpenExisting("collie-wallpaper-show-window")) show.Set(); }
+                catch { }
+                try
+                {
+                    IntPtr existing = FindWindowW(null, "Collie");
+                    if (existing != IntPtr.Zero) { ShowWindow(existing, 9); SetForegroundWindow(existing); }
+                }
+                catch { }
+            }
+            return;
+        }
         try { File.Delete(_log); } catch { }
         Log("start M4 mode=" + (_windowMode ? "window" : "wallpaper"));
         SetProcessDpiAwarenessContext((IntPtr)(-4));
@@ -166,6 +361,53 @@ class CollieWallpaper : Form
     // even for a single frame — so clicking the galaxy no longer makes the icons flash away.
     protected override void WndProc(ref Message m)
     {
+        if (_windowMode && m.Msg == WM_HOTKEY && m.WParam.ToInt32() == LIVE_HANDOFF_HOTKEY)
+        {
+            // Capture the user's exact app BEFORE our activatable capsule takes focus. The full
+            // Collie window stays where it was (usually minimized); only the lightweight voice
+            // capsule appears. No keyboard hook or background key logging is involved.
+            OpenLiveCapsule(CaptureLiveTarget());
+            return;
+        }
+        if (_windowMode && m.Msg == WM_SYSCOMMAND)
+        {
+            int command = unchecked((int)((long)m.WParam)) & 0xFFF0;
+            if (command == SC_MAXIMIZE)
+            {
+                if (!_customMaximized) ToggleMaximizeWindow();
+                return;
+            }
+            // Restoring a minimized maximized window should bring it back full-size. Only Win+Down
+            // (SC_RESTORE while it is visible) means "leave maximized mode".
+            if (command == SC_RESTORE && _customMaximized && WindowState != FormWindowState.Minimized)
+            {
+                RestoreWindow();
+                return;
+            }
+        }
+        // The app window uses Collie's own integrated chrome. Preserve native resizing by returning
+        // the standard non-client hit-test codes around an eight-pixel edge; the WebView owns the
+        // rest of the surface and asks us to drag the window through WM_NCLBUTTONDOWN.
+        if (_windowMode && m.Msg == WM_NCHITTEST)
+        {
+            base.WndProc(ref m);
+            if ((int)m.Result == HTCLIENT && WindowState == FormWindowState.Normal && !_customMaximized)
+            {
+                POINT cursor;
+                if (GetCursorPos(out cursor))
+                {
+                    Point point = PointToClient(new Point(cursor.x, cursor.y));
+                    const int grip = 8;
+                    bool left = point.X < grip, right = point.X >= ClientSize.Width - grip;
+                    bool top = point.Y < grip, bottom = point.Y >= ClientSize.Height - grip;
+                    int hit = top && left ? HTTOPLEFT : top && right ? HTTOPRIGHT :
+                              bottom && left ? HTBOTTOMLEFT : bottom && right ? HTBOTTOMRIGHT :
+                              left ? HTLEFT : right ? HTRIGHT : top ? HTTOP : bottom ? HTBOTTOM : HTCLIENT;
+                    m.Result = (IntPtr)hit;
+                }
+            }
+            return;
+        }
         if (m.Msg == WM_WINDOWPOSCHANGING && _pinned && _progman != IntPtr.Zero)
         {
             WINDOWPOS wp = (WINDOWPOS)Marshal.PtrToStructure(m.LParam, typeof(WINDOWPOS));
@@ -182,19 +424,24 @@ class CollieWallpaper : Form
         // first frame, so a light caption would flash before the page finishes loading and reports
         // its real theme. The page's own message (below) is what settles it either way.
         ApplyTitleBarTheme(true);
+        if (_windowMode && !RegisterHotKey(Handle, LIVE_HANDOFF_HOTKEY,
+                                           MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x20))
+            Log("live handoff hotkey unavailable error=" + Marshal.GetLastWin32Error());
     }
 
     CollieWallpaper()
     {
+        _mainForm = this;
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
         if (_windowMode)
         {
             Text = "Collie";
-            FormBorderStyle = FormBorderStyle.Sizable;
+            FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = true;
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(Math.Min(1180, (int)(w * 0.8)), Math.Min(820, (int)(h * 0.85)));
             MinimumSize = new Size(720, 520);
+            Padding = new Padding(1);
             Icon = AppIcon();   // the Collie mark in the title bar + taskbar
         }
         else
@@ -209,6 +456,9 @@ class CollieWallpaper : Form
         _web.Dock = DockStyle.Fill;
         _web.CoreWebView2InitializationCompleted += OnWebReady;
         Controls.Add(_web);
+        Resize += delegate { RememberRestoreBounds(); ReportWindowState(); };
+        Move += delegate { RememberRestoreBounds(); };
+        Shown += delegate { RememberRestoreBounds(); ReportWindowState(); };
         Load += delegate { InitWeb(); };
         FormClosed += delegate { Cleanup(); };
         // Also tear the hook + input attachment down on ANY process exit / unhandled crash, not only a
@@ -229,6 +479,25 @@ class CollieWallpaper : Form
             qt.IsBackground = true; qt.Start();
         }
         catch { }
+        if (_windowMode)
+        {
+            try
+            {
+                _show = new EventWaitHandle(false, EventResetMode.AutoReset, "collie-wallpaper-show-window");
+                var st = new Thread(delegate ()
+                {
+                    while (true)
+                    {
+                        _show.WaitOne();
+                        try { BeginInvoke((MethodInvoker)delegate { WakeWindow(); }); }
+                        catch { return; }
+                    }
+                });
+                st.IsBackground = true;
+                st.Start();
+            }
+            catch { }
+        }
     }
 
     async void InitWeb()
@@ -256,6 +525,7 @@ class CollieWallpaper : Form
             _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _web.CoreWebView2.Settings.IsZoomControlEnabled = false;
+            _mainWeb = _web;
             _web.DefaultBackgroundColor = Color.Black;
             // The page owns the theme (a saved choice, else the system's) and can flip it at any
             // time from the toggle in its header. It posts {type:"theme",dark:bool}; the caption is
@@ -268,6 +538,39 @@ class CollieWallpaper : Form
                 string raw = null;
                 try { raw = eT.WebMessageAsJson; } catch { }
                 if (string.IsNullOrEmpty(raw)) { try { raw = eT.TryGetWebMessageAsString(); } catch { return; } }
+                if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"live-native-speak\"", StringComparison.Ordinal) >= 0)
+                {
+                    SpeakLiveCue(JsonField(raw, "session"), JsonField(raw, "cue_id"),
+                                 JsonField(raw, "text"), JsonField(raw, "language"));
+                    return;
+                }
+                if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"live-native-state\"", StringComparison.Ordinal) >= 0)
+                {
+                    bool active = Regex.IsMatch(raw, "\\\"active\\\"\\s*:\\s*true", RegexOptions.IgnoreCase);
+                    bool listen = Regex.IsMatch(raw, "\\\"listen\\\"\\s*:\\s*true", RegexOptions.IgnoreCase);
+                    ConfigureLiveSpeech(active && listen, JsonField(raw, "session"),
+                                        JsonField(raw, "language"));
+                    return;
+                }
+                if (!string.IsNullOrEmpty(raw) && raw.IndexOf("\"type\":\"window\"", StringComparison.Ordinal) >= 0)
+                {
+                    try
+                    {
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            if (raw.IndexOf("\"action\":\"minimize\"", StringComparison.Ordinal) >= 0)
+                                WindowState = FormWindowState.Minimized;
+                            else if (raw.IndexOf("\"action\":\"maximize\"", StringComparison.Ordinal) >= 0)
+                                ToggleMaximizeWindow();
+                            else if (raw.IndexOf("\"action\":\"close\"", StringComparison.Ordinal) >= 0)
+                                Close();
+                            else if (raw.IndexOf("\"action\":\"drag\"", StringComparison.Ordinal) >= 0)
+                                BeginWindowDrag();
+                        });
+                    }
+                    catch { }
+                    return;
+                }
                 if (string.IsNullOrEmpty(raw) || raw.IndexOf("\"theme\"", StringComparison.Ordinal) < 0) return;
                 bool dark = raw.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0
                             || raw.IndexOf("\"dark\": true", StringComparison.Ordinal) >= 0;
@@ -287,6 +590,9 @@ class CollieWallpaper : Form
             // window mode shows the full GUI; wallpaper mode shows the desktop /wallpaper page
             if (string.IsNullOrEmpty(url))
                 url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/wallpaper";
+            try { _baseUrl = new Uri(url).GetLeftPart(UriPartial.Authority); } catch { }
+            if (_windowMode)
+                url += (url.IndexOf('?') >= 0 ? "&" : "?") + "native_shell=1";
             // Keep target=_blank links (the star map, the meadow) INSIDE the app. Unhandled they
             // escape to a bare popup / the system browser, which is exactly what makes a native shell
             // feel like a browser wrapper. Each opens its own titled Collie window instead.
@@ -311,7 +617,15 @@ class CollieWallpaper : Form
         catch (Exception ex) { Log("navigate EXCEPTION: " + ex.Message); }
         // Everything below is WALLPAPER-only: pinning under the desktop icons and forwarding desktop
         // mouse/keyboard into the page. A normal window is activatable and WebView2 gets input natively.
-        if (_windowMode) { Log("window mode: skipping pin + input hooks"); return; }
+        if (_windowMode)
+        {
+            // The native app has no wallpaper input child, but it still owns the global Live
+            // handoff. Install only the low-level mouse hook so X2 can be the push-to-talk gesture;
+            // MouseProc returns immediately for every other event and never records mouse data.
+            if (_mouseHook == IntPtr.Zero) InstallHooks();
+            Log("window mode: X2 Live handoff hook installed; skipping pin + desktop forwarding");
+            return;
+        }
         Pin();
 
         // resolve the Chromium child + install input hooks a moment after the page starts
@@ -364,6 +678,409 @@ class CollieWallpaper : Form
         Log("selftest posted click+text");
     }
 
+    static LiveTarget CaptureLiveTarget()
+    {
+        LiveTarget target = new LiveTarget();
+        try
+        {
+            target.Hwnd = GetForegroundWindow();
+            target.Pid = 0;
+            if (target.Hwnd != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(target.Hwnd, out target.Pid);
+                int n = Math.Min(4096, Math.Max(1, GetWindowTextLengthW(target.Hwnd) + 1));
+                StringBuilder title = new StringBuilder(n);
+                GetWindowTextW(target.Hwnd, title, title.Capacity);
+                target.Title = title.ToString();
+                try { target.ProcessName = Process.GetProcessById((int)target.Pid).ProcessName; }
+                catch { }
+            }
+            try { target.SpeechLanguage = InputLanguage.CurrentInputLanguage.Culture.Name; }
+            catch { target.SpeechLanguage = CultureInfo.CurrentUICulture.Name; }
+        }
+        catch { }
+        return target;
+    }
+
+    static string JsonString(string value)
+    {
+        StringBuilder output = new StringBuilder("\"");
+        foreach (char c in value ?? "")
+        {
+            switch (c)
+            {
+                case '\\': output.Append("\\\\"); break;
+                case '"': output.Append("\\\""); break;
+                case '\r': output.Append("\\r"); break;
+                case '\n': output.Append("\\n"); break;
+                case '\t': output.Append("\\t"); break;
+                default:
+                    if (c < 32) output.Append("\\u" + ((int)c).ToString("x4"));
+                    else output.Append(c);
+                    break;
+            }
+        }
+        output.Append('"');
+        return output.ToString();
+    }
+
+    static string JsonField(string json, string name)
+    {
+        try
+        {
+            Match match = Regex.Match(json ?? "", "\\\"" + Regex.Escape(name) +
+                "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
+            if (!match.Success) return "";
+            return match.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+        catch { return ""; }
+    }
+
+    static void PostMain(string json)
+    {
+        WebView2 web = _mainWeb;
+        if (web == null || web.IsDisposed) return;
+        try
+        {
+            if (web.InvokeRequired)
+            {
+                web.BeginInvoke((MethodInvoker)delegate { PostMain(json); });
+                return;
+            }
+            if (web.CoreWebView2 != null) web.CoreWebView2.PostWebMessageAsJson(json);
+        }
+        catch { }
+    }
+
+    static void StopLiveSpeechEngine()
+    {
+        SpeechRecognitionEngine engine = _liveSpeech;
+        _liveSpeech = null;
+        if (engine == null) return;
+        try { engine.RecognizeAsyncCancel(); } catch { }
+        try { engine.SetInputToNull(); } catch { }
+        try { engine.Dispose(); } catch { }
+    }
+
+    static void StopLiveVoice()
+    {
+        _liveVoiceGeneration++;
+        SpeechSynthesizer voice = _liveVoice;
+        _liveVoice = null;
+        _liveVoiceSpeaking = false;
+        if (voice == null) return;
+        try { voice.SpeakAsyncCancelAll(); } catch { }
+        try { voice.Dispose(); } catch { }
+    }
+
+    static void SpeakLiveCue(string session, string cueId, string text, string language)
+    {
+        session = (session ?? "").Trim(); cueId = (cueId ?? "").Trim();
+        text = (text ?? "").Trim(); language = (language ?? "").Trim();
+        if (session.Length == 0 || session != _liveSpeechSession || text.Length == 0 ||
+            (cueId.Length > 0 && cueId == _liveVoiceLastCue)) return;
+        if (cueId.Length > 0) _liveVoiceLastCue = cueId;
+        StopLiveSpeechEngine();
+        StopLiveVoice();
+        _liveVoiceSpeaking = true;
+        int generation = ++_liveVoiceGeneration;
+        SpeechSynthesizer voice = new SpeechSynthesizer();
+        _liveVoice = voice;
+        try
+        {
+            CultureInfo culture = new CultureInfo(language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                                                  ? "zh-CN" : "en-US");
+            voice.SelectVoiceByHints(VoiceGender.NotSet, VoiceAge.NotSet, 0, culture);
+        }
+        catch { }
+        voice.Rate = 2;
+        voice.Volume = 100;
+        voice.SpeakCompleted += delegate
+        {
+            try { voice.Dispose(); } catch { }
+            if (generation != _liveVoiceGeneration) return;
+            _liveVoice = null;
+            _liveVoiceSpeaking = false;
+            ResumeLiveSpeech();
+        };
+        try { voice.SpeakAsync(text); }
+        catch
+        {
+            try { voice.Dispose(); } catch { }
+            if (generation == _liveVoiceGeneration)
+            {
+                _liveVoice = null; _liveVoiceSpeaking = false; ResumeLiveSpeech();
+            }
+        }
+    }
+
+    static void ResumeLiveSpeech()
+    {
+        if (!_liveSpeechWanted || _liveVoiceSpeaking || _capsuleSpeech != null || _liveSpeech != null ||
+            string.IsNullOrEmpty(_liveSpeechSession)) return;
+        string desiredKey = _liveSpeechSession + "\0" + _liveSpeechLanguage;
+        if (_liveSpeechFailedFor == desiredKey) return;
+        try
+        {
+            RecognizerInfo info = CapsuleRecognizer(_liveSpeechLanguage);
+            if (info == null) throw new InvalidOperationException("Windows has no speech recognizer installed");
+            SpeechRecognitionEngine engine = new SpeechRecognitionEngine(info);
+            string session = _liveSpeechSession;
+            _liveSpeech = engine;
+            engine.LoadGrammar(new DictationGrammar());
+            engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
+            {
+                string spoken = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
+                if (spoken.Length == 0 || !_liveSpeechWanted || session != _liveSpeechSession) return;
+                long at = (long)(DateTime.UtcNow - new DateTime(
+                    1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+                PostMain("{\"type\":\"live-native-transcript\",\"session\":" +
+                         JsonString(session) + ",\"at_ms\":" + at + ",\"text\":" +
+                         JsonString(spoken) + "}");
+            };
+            engine.SetInputToDefaultAudioDevice();
+            engine.RecognizeAsync(RecognizeMode.Multiple);
+            _liveSpeechFailedFor = "";
+            PostMain("{\"type\":\"live-native-speech-status\",\"active\":true,\"session\":" +
+                     JsonString(session) + "}");
+        }
+        catch (Exception ex)
+        {
+            StopLiveSpeechEngine();
+            _liveSpeechFailedFor = desiredKey;
+            PostMain("{\"type\":\"live-native-speech-status\",\"active\":false,\"session\":" +
+                     JsonString(_liveSpeechSession) + ",\"message\":" +
+                     JsonString("Local continuous speech unavailable: " + ex.Message) + "}");
+        }
+    }
+
+    static void ConfigureLiveSpeech(bool wanted, string session, string language)
+    {
+        session = (session ?? "").Trim();
+        language = (language ?? "").Trim();
+        bool changed = session != _liveSpeechSession || language != _liveSpeechLanguage;
+        _liveSpeechWanted = wanted && session.Length > 0;
+        _liveSpeechSession = session;
+        _liveSpeechLanguage = language;
+        if (!_liveSpeechWanted) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); StopLiveVoice(); return; }
+        if (changed) { _liveSpeechFailedFor = ""; StopLiveSpeechEngine(); }
+        ResumeLiveSpeech();
+    }
+
+    static void SuspendLiveSpeech()
+    {
+        StopLiveSpeechEngine();
+    }
+
+    static void PostCapsule(string json)
+    {
+        Form form = _capsuleForm;
+        if (form == null || form.IsDisposed) return;
+        try
+        {
+            if (form.InvokeRequired)
+            {
+                form.BeginInvoke((MethodInvoker)delegate { PostCapsule(json); });
+                return;
+            }
+            if (_capsuleWeb != null && _capsuleWeb.CoreWebView2 != null)
+                _capsuleWeb.CoreWebView2.PostWebMessageAsJson(json);
+        }
+        catch { }
+    }
+
+    static void StopCapsuleSpeech()
+    {
+        SpeechRecognitionEngine engine = _capsuleSpeech;
+        _capsuleSpeech = null;
+        if (engine == null) return;
+        try { engine.RecognizeAsyncCancel(); } catch { }
+        try { engine.SetInputToNull(); } catch { }
+        try { engine.Dispose(); } catch { }
+    }
+
+    static void FinishCapsuleSpeech()
+    {
+        _capsuleStopOnRelease = true;
+        SpeechRecognitionEngine engine = _capsuleSpeech;
+        if (engine == null) return;
+        // Stop (rather than Cancel) lets the recognizer deliver the phrase already spoken while
+        // X2 was held. It is the native push-to-talk boundary, not a background recorder.
+        try { engine.RecognizeAsyncStop(); } catch { }
+    }
+
+    static RecognizerInfo CapsuleRecognizer(string requested)
+    {
+        RecognizerInfo first = null, language = null;
+        string wanted = (requested ?? "").Trim();
+        foreach (RecognizerInfo info in SpeechRecognitionEngine.InstalledRecognizers())
+        {
+            if (first == null) first = info;
+            string name = info.Culture == null ? "" : info.Culture.Name;
+            if (string.Equals(name, wanted, StringComparison.OrdinalIgnoreCase)) return info;
+            if (language == null && wanted.Length >= 2 && name.StartsWith(
+                    wanted.Substring(0, 2), StringComparison.OrdinalIgnoreCase)) language = info;
+        }
+        return language ?? first;
+    }
+
+    static void StartCapsuleSpeech(string requestedLanguage)
+    {
+        StopCapsuleSpeech();
+        SuspendLiveSpeech();
+        _capsuleSpeechDelivered = false;
+        try
+        {
+            RecognizerInfo info = CapsuleRecognizer(requestedLanguage);
+            if (info == null) throw new InvalidOperationException("Windows has no speech recognizer installed");
+            SpeechRecognitionEngine engine = new SpeechRecognitionEngine(info);
+            _capsuleSpeech = engine;
+            engine.LoadGrammar(new DictationGrammar());
+            engine.InitialSilenceTimeout = TimeSpan.FromSeconds(8);
+            engine.BabbleTimeout = TimeSpan.FromSeconds(18);
+            engine.EndSilenceTimeout = TimeSpan.FromMilliseconds(850);
+            engine.EndSilenceTimeoutAmbiguous = TimeSpan.FromMilliseconds(1150);
+            engine.SpeechHypothesized += delegate (object sender, SpeechHypothesizedEventArgs e)
+            {
+                if (e.Result != null && !string.IsNullOrWhiteSpace(e.Result.Text))
+                    PostCapsule("{\"type\":\"capsule-speech-partial\",\"text\":" +
+                                JsonString(e.Result.Text) + "}");
+            };
+            engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
+            {
+                string text = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
+                if (text.Length == 0) return;
+                _capsuleSpeechDelivered = true;
+                PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":" +
+                            JsonString(text) + "}");
+            };
+            engine.RecognizeCompleted += delegate
+            {
+                if (!_capsuleSpeechDelivered)
+                    PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":\"\"}");
+            };
+            engine.SetInputToDefaultAudioDevice();
+            PostCapsule("{\"type\":\"capsule-speech-start\",\"language\":" +
+                        JsonString(info.Culture.Name) + "}");
+            engine.RecognizeAsync(RecognizeMode.Single);
+            if (_capsuleStopOnRelease) FinishCapsuleSpeech();
+        }
+        catch (Exception ex)
+        {
+            StopCapsuleSpeech();
+            ResumeLiveSpeech();
+            PostCapsule("{\"type\":\"capsule-speech-error\",\"message\":" +
+                        JsonString("Local speech recognition unavailable: " + ex.Message) + "}");
+        }
+    }
+
+    void PostCapsuleTarget(LiveTarget target)
+    {
+        PostCapsule("{\"type\":\"capsule-context\",\"target\":{" +
+                    "\"hwnd\":" + target.Hwnd.ToInt64() + ",\"pid\":" + target.Pid +
+                    ",\"process\":" + JsonString(target.ProcessName) +
+                    ",\"title\":" + JsonString(target.Title) +
+                    ",\"speech_language\":" + JsonString(target.SpeechLanguage) + "}}");
+    }
+
+    void OpenLiveCapsule(LiveTarget target, bool pushToTalk = false)
+    {
+        try
+        {
+            if (_capsuleForm != null && !_capsuleForm.IsDisposed)
+            {
+                // A second X2 press while the capsule is already open is a fresh command, not a
+                // request to close it. Reuse the captured target and start a new local recording.
+                _capsulePttMode = pushToTalk;
+                _capsulePttHeld = pushToTalk;
+                PostCapsuleTarget(target);
+                if (!pushToTalk || _capsulePttHeld)
+                    PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                                (pushToTalk ? "true" : "false") + "}");
+                return;
+            }
+            _capsuleStopOnRelease = false;
+            _capsulePttMode = pushToTalk;
+            _capsulePttHeld = pushToTalk;
+            Form form = new Form();
+            _capsuleForm = form;
+            form.Text = "Collie Live";
+            form.FormBorderStyle = FormBorderStyle.None;
+            form.ShowInTaskbar = false;
+            form.TopMost = true;
+            form.StartPosition = FormStartPosition.Manual;
+            form.ClientSize = new Size(660, 176);
+            form.BackColor = Color.FromArgb(244, 246, 242);
+            form.Icon = AppIcon();
+            Screen screen = target.Hwnd == IntPtr.Zero ? Screen.PrimaryScreen : Screen.FromHandle(target.Hwnd);
+            Rectangle work = screen.WorkingArea;
+            form.Location = new Point(work.Left + Math.Max(12, (work.Width - form.Width) / 2),
+                                      work.Top + 30);
+            WebView2 web = new WebView2();
+            _capsuleWeb = web;
+            web.Dock = DockStyle.Fill;
+            web.DefaultBackgroundColor = Color.Transparent;
+            web.CoreWebView2InitializationCompleted += delegate (object sender, CoreWebView2InitializationCompletedEventArgs e)
+            {
+                if (!e.IsSuccess) { Log("capsule webview failed"); return; }
+                web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                web.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                web.CoreWebView2.Settings.IsZoomControlEnabled = false;
+                web.CoreWebView2.PermissionRequested += delegate (object s, CoreWebView2PermissionRequestedEventArgs p)
+                {
+                    if (p.PermissionKind == CoreWebView2PermissionKind.Microphone)
+                        p.State = CoreWebView2PermissionState.Allow;
+                };
+                web.CoreWebView2.WebMessageReceived += delegate (object s, CoreWebView2WebMessageReceivedEventArgs m)
+                {
+                    string raw = "";
+                    try { raw = m.WebMessageAsJson ?? ""; } catch { }
+                    if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
+                    {
+                        PostCapsuleTarget(target);
+                        if (!_capsulePttMode || _capsulePttHeld)
+                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                                        (_capsulePttMode ? "true" : "false") + "}");
+                    }
+                    else if (raw.IndexOf("capsule-listen", StringComparison.Ordinal) >= 0 ||
+                             raw.IndexOf("capsule-language", StringComparison.Ordinal) >= 0)
+                    {
+                        if (!_capsulePttMode || _capsulePttHeld)
+                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                                        (_capsulePttMode ? "true" : "false") + "}");
+                    }
+                    else if (raw.IndexOf("capsule-open-main", StringComparison.Ordinal) >= 0)
+                    {
+                        try { form.Close(); } catch { }
+                        WakeWindow();
+                    }
+                    else if (raw.IndexOf("capsule-close", StringComparison.Ordinal) >= 0)
+                        try { form.Close(); } catch { }
+                };
+                web.CoreWebView2.Navigate(_baseUrl.TrimEnd('/') + "/live-capsule");
+            };
+            form.FormClosed += delegate
+            {
+                _capsuleStopOnRelease = false;
+                _capsulePttMode = _capsulePttHeld = false;
+                StopCapsuleSpeech();
+                ResumeLiveSpeech();
+                try { web.Dispose(); } catch { }
+                _capsuleWeb = null; _capsuleForm = null;
+            };
+            form.Controls.Add(web);
+            form.Show();
+            try { int corner = 2; DwmSetWindowAttribute(form.Handle, 33, ref corner, sizeof(int)); } catch { }
+            web.EnsureCoreWebView2Async(_env);
+            form.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log("live capsule failed: " + ex.Message);
+            try { if (_capsuleForm != null) _capsuleForm.Close(); } catch { }
+        }
+    }
+
     // A second ordinary Collie window — used for target=_blank links (star map, meadow) so they stay
     // in the app instead of escaping to the browser.
     static CoreWebView2Environment _env;   // set once by InitWeb; child windows share its profile
@@ -374,7 +1091,10 @@ class CollieWallpaper : Form
             Form f = new Form();
             f.Text = "Collie";
             f.StartPosition = FormStartPosition.CenterScreen;
-            f.ClientSize = new Size(1100, 780);
+            // The Map's project selector plus source drawer needs a real editor-sized surface. The
+            // old 1100px child window forced both controls and a remembered 600px drawer into half a
+            // canvas, which looked like a broken split view even though WebGL was healthy.
+            f.ClientSize = new Size(1280, 820);
             f.BackColor = Color.Black;
             f.Icon = AppIcon();
             WebView2 w = new WebView2();
@@ -523,8 +1243,11 @@ class CollieWallpaper : Form
     void Cleanup()
     {
         if (_cleaned) return; _cleaned = true;
+        if (_windowMode && IsHandleCreated) try { UnregisterHotKey(Handle, LIVE_HANDOFF_HOTKEY); } catch { }
         if (_mouseHook != IntPtr.Zero) UnhookWindowsHookEx(_mouseHook);
         if (_keyHook != IntPtr.Zero) UnhookWindowsHookEx(_keyHook);
+        StopLiveSpeechEngine();
+        StopLiveVoice();
         DetachInput();
         try { if (_web != null) { _web.Dispose(); } } catch { }   // dispose WebView2 -> browser process exits cleanly (no orphaned COM)
     }
@@ -578,6 +1301,33 @@ class CollieWallpaper : Form
     {
         // Keep this callback CHEAP — it runs for every mouse event system-wide. No file I/O, no blocking
         // calls, and a fast early-out over desktop icons so Explorer's click/double-click is never delayed.
+        if (nCode >= 0)
+        {
+            int liveMsg = (int)wParam;
+            if (_windowMode && (liveMsg == WM_XBUTTONDOWN || liveMsg == WM_XBUTTONUP))
+            {
+                MSLLHOOKSTRUCT liveMouse = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                int button = (int)((liveMouse.mouseData >> 16) & 0xFFFF);
+                if (button == XBUTTON2)
+                {
+                    System.Threading.SynchronizationContext ctx = _uiCtx;
+                    CollieWallpaper main = _mainForm;
+                    if (liveMsg == WM_XBUTTONDOWN)
+                    {
+                        // Capture before the capsule opens so the action stays pinned to the app
+                        // the user was operating (for example the already focused browser tab).
+                        LiveTarget target = CaptureLiveTarget();
+                        if (ctx != null && main != null)
+                            try { ctx.Post(delegate { main.OpenLiveCapsule(target, true); }, null); } catch { }
+                    }
+                    else if (ctx != null)
+                        try { ctx.Post(delegate { _capsulePttHeld = false; PostCapsule("{\"type\":\"capsule-record-stop\"}"); }, null); } catch { }
+                    // X2 is deliberately claimed only while the normal Collie app is running; do
+                    // not also let the browser interpret it as Back/Forward while it is a voice key.
+                    return (IntPtr)1;
+                }
+            }
+        }
         if (nCode >= 0 && _input != IntPtr.Zero)
         {
             int msg = (int)wParam;

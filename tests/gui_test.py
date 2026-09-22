@@ -22,11 +22,12 @@ def wait_up(url, tries=40):
 
 def main():
     import tempfile
-    setpath = os.path.join(tempfile.gettempdir(), "collie_gui_test_settings.json")
+    stage = tempfile.mkdtemp(prefix="collie_gui_test_")
+    setpath = os.path.join(stage, "settings.json")
     try: os.remove(setpath)
     except OSError: pass
     # redirect settings to a temp file so the test never clobbers the user's real ~/.collie/settings.json
-    sessdir = os.path.join(tempfile.gettempdir(), "collie_gui_test_sessions")
+    sessdir = os.path.join(stage, "sessions")
     # redirect settings AND sessions to temp so the test never clobbers real ~/.collie or floods the Map
     #
     # mock goes in the SETTINGS FILE, not COLLIE_PROVIDER. An env var set before the server starts is
@@ -39,11 +40,16 @@ def main():
     # code that draws a row read a variable belonging to a different function: the first server
     # anybody configured made the whole pane stop redrawing, and mcpLoad's catch-all swallowed the
     # ReferenceError so completely that pressing Connect looked like pressing nothing.
-    mcppath = os.path.join(tempfile.gettempdir(), "collie_gui_test_mcp.json")
+    mcppath = os.path.join(stage, "mcp.json")
     with open(mcppath, "w", encoding="utf-8") as fh:
         json.dump({"servers": {"probe": {"url": "https://mcp.example.invalid/mcp"}}}, fh)
+    slackpath = os.path.join(stage, "slack.json")
+    try: os.remove(slackpath)
+    except OSError: pass
     env = dict(os.environ, PYTHONUNBUFFERED="1", COLLIE_MCP_CONFIG=mcppath,
-               COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir)
+               COLLIE_SETTINGS_PATH=setpath, COLLIE_SESSIONS_DIR=sessdir,
+               COLLIE_STATE_DIR=os.path.join(stage, "state"),
+               COLLIE_SLACK_STORE=slackpath)
     env.pop("COLLIE_PROVIDER", None)
     env.pop("COLLIE_MODEL", None)
     srv = subprocess.Popen([sys.executable if os.path.exists(sys.executable) else "python3",
@@ -64,8 +70,23 @@ def main():
             # --- collie.localhost resolves + loads (cool URL) ---
             check("collie.localhost loads", "collie" in pg.title().lower())
 
-            # --- welcome empty state ---
-            check("welcome state shown", pg.query_selector("#welcome") is not None)
+            # Home now opens Today; the task welcome belongs to New task.
+            check("Today dashboard shown", pg.query_selector("#todayDashboard") is not None)
+
+            # --- first-run companion naming: adoption is a real step, not a hidden config key ---
+            try:
+                pg.wait_for_selector("#nameOverlay.open", timeout=8000)
+                name_appeared = True
+            except Exception:
+                name_appeared = False
+            check("first run offers a companion name", name_appeared)
+            if name_appeared:
+                check("naming starts from a calm editable default",
+                      pg.input_value("#nameInput") == "Rowan")
+                pg.fill("#nameInput", "Mochi")
+                pg.click("#nameContinue")
+                pg.wait_for_selector("#nameOverlay.open", state="detached", timeout=15000)
+                pg.wait_for_function("document.title.startsWith('Mochi ·')")
 
             # --- first run shows the onboarding, and it must be dismissable ---
             # This is why the suite broke: CI runs with COLLIE_PROVIDER=mock, so there is no working
@@ -92,28 +113,175 @@ def main():
                   "open" not in ((pg.query_selector("#obOverlay").get_attribute("class") or "")
                                  if pg.query_selector("#obOverlay") else ""))
 
+            pg.click("#newChat")
+            pg.wait_for_selector("#welcome", state="visible")
+            check("chosen name updates the task identity live",
+                  pg.text_content("[data-collie-name]") == "Mochi")
+            check("renamed avatar uses a versioned transparent endpoint",
+                  "/api/avatar.png?v=" in (pg.get_attribute("[data-collie-avatar]", "src") or ""))
+
             # --- CSRF token injected ---
             tok = pg.eval_on_selector('meta[name="collie-token"]', "e => e.content")
             check("CSRF token injected", bool(tok) and len(tok) == 32, "token=%r" % tok)
 
-            # --- mode selector present w/ both modes (custom dropdown: .mode-item[data-val]) ---
-            modes = pg.eval_on_selector_all(".mode-item", "els => els.map(e => e.getAttribute('data-val'))")
-            check("mode selector (normal+herding+pack)",
-                  "normal" in modes and "herding" in modes and "pack" in modes, str(modes))
+            # Slash commands must be discoverable. A command that exists only in docs is why users
+            # typed `/` and saw nothing, and it made the old --auto syntax feel mandatory.
+            pg.fill("#input", "/")
+            pg.wait_for_selector("#slashMenu", state="visible", timeout=5000)
+            commands = pg.eval_on_selector_all(
+                "#slashMenu .slash-option:not([hidden])",
+                "els => els.map(e => e.getAttribute('data-command'))")
+            check("slash opens a command palette",
+                  commands == ["/mission ", "/mission --review ", "/code ", "/chat "],
+                  str(commands))
+            pg.press("#input", "ArrowDown")
+            pg.press("#input", "Enter")
+            check("slash palette keyboard selection fills without sending",
+                  pg.input_value("#input") == "/mission --review " and
+                  not pg.is_visible("#slashMenu"))
+            pg.fill("#input", "")
+
+            # --- run setup exposes independent axes; workspace/Pack are not quality modes ---
+            axes = pg.eval_on_selector_all(
+                ".mode-item", "els => els.map(e => [e.getAttribute('data-axis'),e.getAttribute('data-val')])")
+            check("run setup has intent/effort/verify/workspace/strategy axes",
+                  all(pair in axes for pair in [["intent", "plan"], ["quality", "thorough"],
+                                                ["verification", "required"], ["workspace", "isolated"],
+                                                ["strategy", "pack"]]), str(axes))
+            pg.click("#modeTrigger")
+            pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            # The worker selector is now the first radio group in the popup, so opening
+            # from the trigger lands on its checked row.  Exercise that new group before
+            # moving to Intent; otherwise this assertion would silently keep testing the
+            # pre-worker menu order instead of the actual keyboard contract.
+            pg.keyboard.press("ArrowDown")
+            worker_arrow_state = pg.evaluate("""() => ({
+              value: document.querySelector('#runRunner').value,
+              autoChecked: document.querySelector('[data-axis="runner"][data-val="auto"]').getAttribute('aria-checked'),
+              autoTab: document.querySelector('[data-axis="runner"][data-val="auto"]').tabIndex,
+              savedTab: document.querySelector('[data-axis="runner"][data-val=""]').tabIndex
+            })""")
+            check("worker radio arrow selects and moves the roving tab stop",
+                  worker_arrow_state == {"value": "auto", "autoChecked": "true",
+                                         "autoTab": 0, "savedTab": -1},
+                  str(worker_arrow_state))
+            pg.keyboard.press("ArrowUp")       # restore the saved worker choice
+            pg.focus('[data-axis="intent"][data-val="build"]')
+            pg.keyboard.press("ArrowDown")
+            arrow_state = pg.evaluate("""() => ({
+              value: document.querySelector('#runIntent').value,
+              planChecked: document.querySelector('[data-axis="intent"][data-val="plan"]').getAttribute('aria-checked'),
+              planTab: document.querySelector('[data-axis="intent"][data-val="plan"]').tabIndex,
+              buildTab: document.querySelector('[data-axis="intent"][data-val="build"]').tabIndex
+            })""")
+            check("radio arrow selects and moves the roving tab stop",
+                  arrow_state == {"value": "plan", "planChecked": "true", "planTab": 0, "buildTab": -1},
+                  str(arrow_state))
+            pg.keyboard.press("ArrowUp")       # restore Build before the rest of the suite
+            pg.focus('[data-axis="quality"][data-val="balanced"]')
+            pg.keyboard.press("End")
+            check("radio End key selects the last effort option",
+                  pg.eval_on_selector("#runQuality", "e => e.value") == "thorough")
+            pg.keyboard.press("Home")          # restore Balanced
+            pg.keyboard.press("Escape")
+            pg.wait_for_selector("#modeMenu", state="hidden", timeout=15000)
+
+            # A failed attachment must never silently downgrade into a text-only model run.
+            pg.route("**/api/upload*", lambda route: route.fulfill(
+                status=500, content_type="application/json", body='{"error":"upload unavailable"}'))
+            pg.evaluate("""() => {
+              window.__uploadFailureStreams = [];
+              window.EventSource = function(url) {
+                window.__uploadFailureStreams.push(url);
+                this.addEventListener = function() {};
+                this.close = function() {};
+              };
+            }""")
+            pg.set_input_files("#fileInput", {"name": "probe.png", "mimeType": "image/png", "buffer": b"image"})
+            pg.wait_for_selector("#attachStrip .thumb")
+            pg.fill("#input", "/code inspect this image")
+            pg.click("#send")
+            pg.wait_for_function("() => !![...document.querySelectorAll('.err')].find(e => e.textContent.includes('no run was started'))")
+            upload_failure = pg.evaluate("""() => ({
+              streams: window.__uploadFailureStreams.length,
+              prompt: document.getElementById('input').value,
+              thumbs: document.querySelectorAll('#attachStrip .thumb').length,
+              active: document.getElementById('send').classList.contains('stop') || document.getElementById('input').disabled
+            })""")
+            check("failed image upload restores the draft and starts no text-only run",
+                  upload_failure == {"streams": 0, "prompt": "inspect this image",
+                                     "thumbs": 1, "active": False}, str(upload_failure))
+            pg.click("#attachStrip .rm")
+            pg.fill("#input", "")
+            pg.unroute("**/api/upload*")
+
+            # Pack's number field is not inside a native <form>, so min/max only works if send()
+            # explicitly checks it. An invalid value must not open a run stream.
+            pg.evaluate("""() => {
+              window.__invalidDesktopStream = null;
+              window.EventSource = function(url) {
+                window.__invalidDesktopStream = url;
+                this.addEventListener = function() {};
+                this.close = function() {};
+              };
+            }""")
+            pg.click("#modeTrigger")
+            pg.click('[data-axis="verification"][data-val="required"]')
+            # A clean installed workspace may have no detected check. Running
+            # this only from the source repo used to hide duplicate validation.
+            pg.evaluate("document.getElementById('verifyCommand').value = ''")
+            pg.fill("#input", "/code require a check for a single run")
+            pg.click("#send")
+            check("single Required verification still needs a command",
+                  pg.evaluate("window.__invalidDesktopStream === null && document.activeElement.id === 'verifyCommand'"))
+            pg.click("#modeTrigger")
+            pg.click('[data-axis="strategy"][data-val="pack"]')
+            pg.fill("#packN", "7")
+            pg.fill("#packCheck", "pytest -q")
+            pg.fill("#input", "/code invalid pack should stay local")
+            pg.click("#send")
+            invalid_pack = pg.evaluate("""() => ({
+              stream: window.__invalidDesktopStream,
+              focused: document.activeElement && document.activeElement.id,
+              value: document.getElementById('input').value
+            })""")
+            check("desktop rejects out-of-range Pack attempts before launch",
+                  invalid_pack["stream"] is None and invalid_pack["focused"] == "packN" and
+                  "invalid pack" in invalid_pack["value"], str(invalid_pack))
+            check("desktop Pack uses its own check without a duplicate required field",
+                  pg.locator("#verifyOpts").is_hidden() and
+                  pg.eval_on_selector("#verifyCommand", "e => !e.required"))
+            pg.fill("#packN", "3")
+            pg.fill("#packCheck", "")
+            pg.click("#send")
+            check("Pack still requires its own executed check",
+                  pg.evaluate("window.__invalidDesktopStream === null && document.activeElement.id === 'packCheck'"))
+            pg.fill("#packCheck", "pytest -q")
+            pg.click("#modeTrigger")
+            pg.click('[data-axis="strategy"][data-val="single"]')
+            pg.click('[data-axis="verification"][data-val="auto"]')
+            pg.keyboard.press("Escape")
 
             # --- model picker lives in the toolbar; run details stay available without a status rail ---
             check("status rail removed", pg.query_selector(".runbar") is None and pg.query_selector("#rbGate") is None)
             check("model trigger present in toolbar", pg.query_selector(".topbar #modelTrigger") is not None)
             check("run details collapsed by default", pg.query_selector("#workpanel").is_hidden())
+            pg.click("#topbarMore > summary")
+            check("secondary toolbar actions open from More tools",
+                  pg.query_selector("#topbarMore").get_attribute("open") is not None)
             pg.click("#runDetailsBtn")
             pg.wait_for_selector("#workpanel", state="visible", timeout=15000)
-            pg.click("#runDetailsBtn")
+            pg.click("#workpanelClose")
             pg.wait_for_selector("#workpanel", state="hidden", timeout=15000)
+            pg.click("#topbarMore > summary")
             pg.click("#modelTrigger")
             pg.wait_for_selector("#modelOverlay.open", timeout=15000)
             pg.wait_for_selector(".model-option", timeout=15000)
             check("model picker opens with catalog", len(pg.query_selector_all(".model-option")) >= 1)
-            pg.fill("#modelSearch", "Mock")
+            # "Mock" also matches the synthetic Auto row through its provider
+            # name.  Search for the mock row's unique copy so ArrowDown proves
+            # keyboard selection without accidentally choosing Auto first.
+            pg.fill("#modelSearch", "canned")
             pg.wait_for_selector('.model-option[data-model-id="mock:mock"]', timeout=15000)
             pg.keyboard.press("ArrowDown")
             pg.keyboard.press("Enter")
@@ -128,7 +296,9 @@ def main():
 
             # --- theme toggle + persistence ---
             before = pg.eval_on_selector(":root", "e => e.getAttribute('data-theme')")
+            pg.click("#topbarMore > summary")
             pg.click("#themeBtn"); pg.wait_for_timeout(150)
+            pg.click("#topbarMore > summary")
             after = pg.eval_on_selector(":root", "e => e.getAttribute('data-theme')")
             check("theme toggles", before != after, "%s->%s" % (before, after))
             pg.reload(wait_until="load"); pg.wait_for_timeout(300)
@@ -177,6 +347,18 @@ def main():
             pg.wait_for_selector(".set-row", timeout=15000)   # rows render async after /api/settings resolves
             nrows = len(pg.query_selector_all(".set-row"))
             check("settings modal opens w/ rows", nrows >= 6, "rows=%d" % nrows)
+            check("My Collie keeps a permanent rename control",
+                  pg.is_visible("#set_COMPANION_NAME") and pg.input_value("#set_COMPANION_NAME") == "Mochi")
+            old_avatar = pg.get_attribute("[data-collie-avatar]", "src") or ""
+            pg.fill("#set_COMPANION_NAME", "Nori")
+            pg.press("#set_COMPANION_NAME", "Tab")
+            for _ in range(60):
+                if pg.text_content("[data-collie-name]") == "Nori": break
+                pg.wait_for_timeout(250)
+            check("Settings rename propagates without a reload",
+                  pg.text_content("[data-collie-name]") == "Nori")
+            check("Settings rename busts the previous avatar URL",
+                  (pg.get_attribute("[data-collie-avatar]", "src") or "") != old_avatar)
             # The modal grew a rail of categories, one visible .set-pane at a time — so a field is in
             # the DOM long before it is reachable, and Playwright's fill() waited 30s for an <input>
             # it could see in the tree and never in the viewport. Click the owning category first.
@@ -215,7 +397,7 @@ def main():
                 if saved.get("MAX_TURNS") == "9":
                     break
                 pg.wait_for_timeout(250)
-            check("settings persisted to disk", saved.get("MODEL") == "claude-sonnet-5" and saved.get("MAX_TURNS") == "9",
+            check("settings persisted to disk", saved.get("MODEL") == "claude-sonnet-5" and saved.get("MAX_TURNS") == "9" and saved.get("COMPANION_NAME") == "Nori",
                   "file=%r" % saved)
             # re-GET reflects the saved values
             got_model = pg.evaluate("async () => (await (await fetch('/api/settings')).json()).values.MODEL")
@@ -237,7 +419,8 @@ def main():
                   "mcpBox=%r" % (pg.eval_on_selector("#mcpBox", "e => e.textContent.slice(0, 120)")
                                  if pg.query_selector("#mcpBox") else "(no #mcpBox)"))
             if drew:
-                check("and names it", pg.eval_on_selector(".mcp-item .mcp-name", "e => e.textContent") == "probe")
+                names = pg.eval_on_selector_all(".mcp-item .mcp-name", "els => els.map(e => e.textContent)")
+                check("and names it", "probe" in names, repr(names))
                 chips = pg.eval_on_selector_all(".mcp-chip", "els => els.map(e => e.dataset.name)")
                 check("with the one-press catalog beside it", len(chips) >= 5, str(chips[:4]))
 
@@ -247,11 +430,119 @@ def main():
             code403 = pg.evaluate("async () => (await fetch('/api/settings', {method:'POST', body:'{}'})).status")
             check("settings CSRF: unauth POST -> 403", code403 == 403, "got %s" % code403)
 
-            # --- mobile: no horizontal BODY overflow at 390px ---
+            # --- responsive desktop: popup and toolbar stay within 390/320 CSS px ---
             pg.set_viewport_size({"width": 390, "height": 780})
             pg.wait_for_timeout(400)
             overflow = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
             check("mobile: no horizontal overflow", overflow <= 2, "overflow=%spx" % overflow)
+            pg.click("#modeTrigger")
+            pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            menu_box = pg.eval_on_selector("#modeMenu", "e => {const r=e.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}")
+            check("390px: run setup popup stays inside viewport",
+                  menu_box["left"] >= -0.5 and menu_box["right"] <= 390.5, str(menu_box))
+            pg.keyboard.press("Escape")
+
+            pg.set_viewport_size({"width": 320, "height": 700})
+            pg.wait_for_timeout(300)
+            overflow320 = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            topbar_box = pg.eval_on_selector(".topbar", "e => {const r=e.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}")
+            check("320px: topbar and document do not overflow",
+                  overflow320 <= 2 and topbar_box["left"] >= -0.5 and topbar_box["right"] <= 320.5,
+                  "overflow=%spx topbar=%r" % (overflow320, topbar_box))
+            pg.click("#modeTrigger")
+            pg.wait_for_selector("#modeMenu", state="visible", timeout=15000)
+            menu320 = pg.eval_on_selector("#modeMenu", "e => {const r=e.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}")
+            check("320px: run setup popup stays inside viewport",
+                  menu320["left"] >= -0.5 and menu320["right"] <= 320.5, str(menu320))
+
+            # --- dedicated phone client exposes the same orthogonal contract ---
+            pg.set_viewport_size({"width": 390, "height": 844})
+            pg.goto("http://collie.localhost:%d/m" % PORT, wait_until="load")
+            pg.wait_for_timeout(300)
+            drawer_closed = pg.evaluate("""() => ({
+              inert: drawer.hasAttribute('inert'), hidden: drawer.getAttribute('aria-hidden'),
+              role: drawer.getAttribute('role'), modal: drawer.getAttribute('aria-modal')
+            })""")
+            check("phone closed drawer is inert and declared modal",
+                  drawer_closed == {"inert": True, "hidden": "true", "role": "dialog", "modal": "true"},
+                  str(drawer_closed))
+            pg.click("#menuBtn")
+            pg.keyboard.press("Shift+Tab")
+            check("phone drawer traps keyboard focus",
+                  pg.evaluate("() => !drawer.hasAttribute('inert') && drawer.contains(document.activeElement)"))
+            pg.keyboard.press("Escape")
+            check("phone drawer closes inert and returns focus",
+                  pg.evaluate("() => drawer.hasAttribute('inert') && document.activeElement === menuBtn"))
+            pg.click("#runSetup summary")
+            phone_overflow = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            visible_axes = pg.eval_on_selector_all(
+                "#mIntent,#mQuality,#mVerification,#mWorkspace,#mStrategy",
+                "els => els.filter(e => {const r=e.getBoundingClientRect(); return r.width>0 && r.height>0}).length")
+            check("phone run setup shows all five axes without overflow",
+                  phone_overflow <= 2 and visible_axes == 5,
+                  "overflow=%spx visible=%s" % (phone_overflow, visible_axes))
+            pg.select_option("#mIntent", "plan")
+            plan_contract = pg.evaluate("""() => ({
+              verification: mVerification.value, workspace: mWorkspace.value, strategy: mStrategy.value,
+              verificationDisabled: mVerification.disabled, workspaceDisabled: mWorkspace.disabled,
+              strategyDisabled: mStrategy.disabled
+            })""")
+            check("phone Plan resets and locks incompatible execution choices",
+                  plan_contract == {"verification": "auto", "workspace": "current", "strategy": "single",
+                                    "verificationDisabled": True, "workspaceDisabled": True,
+                                    "strategyDisabled": True}, str(plan_contract))
+            pg.select_option("#mIntent", "build")
+            pg.select_option("#mQuality", "thorough")
+            pg.select_option("#mVerification", "required")
+            pg.select_option("#mWorkspace", "isolated")
+            pg.select_option("#mStrategy", "pack")
+            check("phone Pack owns isolation and requires a check",
+                  pg.eval_on_selector("#mWorkspace", "e => e.value === 'current' && e.disabled") and
+                  pg.eval_on_selector("#mPackCheck", "e => e.required && !e.closest('#mPackOpts').hidden") and
+                  pg.eval_on_selector(
+                      '#mWorkspace option[value="current"]',
+                      "e => /candidates isolated|候选隔离运行|候選隔離執行/.test(e.textContent)"))
+            pg.fill("#mPackCheck", "pytest -q")
+            pg.evaluate("document.getElementById('mVerifyCommand').value = ''")
+            check("phone Pack uses its own check without a duplicate required field",
+                  pg.locator("#mVerifyWrap").is_hidden() and
+                  pg.eval_on_selector("#mVerifyCommand", "e => !e.required"))
+            pg.check("#mPackApply")
+            pg.evaluate("""() => {
+              window.__lastRunUrl = null;
+              window.EventSource = function(url) {
+                window.__lastRunUrl = url;
+                this.addEventListener = function() {};
+                this.close = function() {};
+              };
+            }""")
+            pg.fill("#mPackN", "7")
+            pg.fill("#input", "invalid phone pack")
+            pg.click("#send")
+            invalid_phone_pack = pg.evaluate("""() => ({
+              stream: window.__lastRunUrl, focused: document.activeElement && document.activeElement.id,
+              value: document.getElementById('input').value
+            })""")
+            check("phone rejects out-of-range Pack attempts before launch",
+                  invalid_phone_pack["stream"] is None and invalid_phone_pack["focused"] == "mPackN" and
+                  "invalid phone" in invalid_phone_pack["value"], str(invalid_phone_pack))
+            pg.fill("#mPackN", "4")
+            pg.fill("#input", "exercise mobile options")
+            pg.click("#send")
+            sent = pg.evaluate("""() => {
+              const u = new URL(window.__lastRunUrl, location.href);
+              return Object.fromEntries(u.searchParams.entries());
+            }""")
+            check("phone sends every selected axis and Pack check",
+                  all(sent.get(k) == v for k, v in {
+                      "intent": "build", "quality": "thorough", "verification": "required",
+                      "workspace": "current", "strategy": "pack", "n": "4", "check": "pytest -q",
+                      "apply": "1"}.items()), str(sent))
+            pg.set_viewport_size({"width": 320, "height": 700})
+            pg.wait_for_timeout(250)
+            phone_overflow320 = pg.evaluate("() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            check("320px phone controls stay in viewport", phone_overflow320 <= 2,
+                  "overflow=%spx" % phone_overflow320)
 
             check("no uncaught page errors", not perrs, str(perrs[:3]))
             b.close()

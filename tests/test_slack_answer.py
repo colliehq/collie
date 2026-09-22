@@ -21,6 +21,34 @@ import subprocess as _real_subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+
+def _utf8_report():
+    """Give this file's report a stream that can carry the names of its own checks.
+
+    These checks are named in the characters they are about — "stop covers the durable claim→spawn
+    preflight window", "the two coexist — neither overwrites the other" — and one of them asserts on
+    the ⚠️ a failed run posts to Slack. Redirected stdout on Windows is the ANSI code page (cp1252 on
+    the CI runners), where `print` of U+2192 raises UnicodeEncodeError: the file exited 1 in the
+    middle of a passing run and CI reported "slack answer FAIL" for a worker that was behaving. The
+    assertions are str comparisons in memory and were never in question, so widen the report rather
+    than rename what it checks.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if (getattr(stream, "encoding", "") or "").lower().replace("-", "") in ("utf8", "cp65001"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            try:
+                # A stream that cannot become UTF-8 (a test double, an unusual wrapper) must still
+                # not turn a label into a crash: escape what it cannot carry, never drop it.
+                stream.reconfigure(errors="backslashreplace")
+            except Exception:
+                pass
+
+
+_utf8_report()
+
 fails = []
 
 

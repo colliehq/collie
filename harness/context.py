@@ -24,6 +24,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from .compaction import project_messages
 from .providers import content_text, est_tokens
 
 
@@ -106,7 +107,13 @@ def _grounding_line() -> str:
         "determine — the user's accounts, billing, credentials, or a judgement that is theirs to "
         "make — and only after finishing everything that does not depend on the answer. Never open "
         "with a questionnaire. Do not present a menu of what you COULD do; do it, then report what "
-        "you found. State a caveat once — do not repeat the same limitation or the same offer in a "
+        "you found. Choose reasonable defaults for reversible details. When an OPTIONAL step "
+        "needs unavailable access, a new permission, or a missing tool, skip it and continue "
+        "the main task; briefly state what was omitted and why. Do not keep requesting an "
+        "optional step the user already declined. An essential unmet requirement still means "
+        "the task is incomplete: preserve the work and ask one concrete question only when "
+        "no safe independent path remains. Never infer authorization from silence or repeat "
+        "an outcome-uncertain side effect. State a caveat once — do not repeat the same limitation or the same offer in a "
         "later turn of the same conversation." % roots)
 
 
@@ -119,6 +126,13 @@ class ComposeMeta:
     elide_from: int = 0      # message index below which old tool outputs were stubbed this build;
                              # the loop compares it turn-to-turn to attribute cache misses to 'elide'
                              # (composer stays stateless — it only reports, never remembers)
+    # What the compaction projection did this build: {"active", "cutoff", "compacted", "kept",
+    # "generation"}. Content-free — the summary text itself never rides in meta.
+    compaction: dict = field(default_factory=dict)
+    # The pre-elision message list `elide_from` indexes into. It is the PROJECTION, not
+    # session["messages"], once compaction is active; the loop's cache-miss attribution needs
+    # the same list the indices came from or it reads the wrong window.
+    pre_elision: list = field(default_factory=list)
 
 
 class TokenBudgeter:
@@ -140,23 +154,44 @@ class ContextComposer:
             "answering. Be concise and correct.")
         self.auto_prefetch = auto_prefetch
         self.prefetch_k = prefetch_k
+        # Benchmark runners can disable ambient, repository-controlled prompt inputs.  A cloned
+        # repo is untrusted: treating its AGENTS.md or local SKILL.md as system context creates a
+        # prompt-injection asymmetry against native CLIs running with their safe/ignore-rules
+        # switches.  Defaults preserve normal Collie product behaviour.
+        self.include_project_rules = True
+        self.include_skills = True
         self._prefetch_cache: dict = {}   # (project,user_msg) -> hits; embed once/msg
-        self._skill_cache: dict = {}      # cwd -> skill index string (byte-stable per cwd; point 10)
+        self._skill_cache: dict = {}      # cwd -> (Library generation, skill index)
 
     def _skill_index(self, cwd: str) -> str:
-        """Byte-stable-per-cwd skill index string (point 10). Cached: discovery walks the filesystem
-        once per cwd; the result never changes mid-session, so the cached prefix stays intact."""
-        if cwd not in self._skill_cache:
+        """Cache ordinary discovery, but invalidate when the Library lifecycle changes.
+
+        Enable, disable, revocation, rollback, and integrity state must be visible to a 24x7 process;
+        otherwise an already-created composer can keep advertising a capability that the user has
+        explicitly withdrawn.
+        """
+        if not self.include_skills:
+            return ""
+        try:
+            from .extensions import registry_generation
+            generation = registry_generation()
+        except Exception:
+            generation = "unavailable"
+        cached = self._skill_cache.get(cwd)
+        if not cached or cached[0] != generation:
             try:
                 from . import settings, skills
                 extra = settings.get("SKILL_DIRS", "") or ""
                 dirs = [d for d in extra.split(os.pathsep) if d.strip()] if extra else []
-                self._skill_cache[cwd] = skills.format_skill_index(skills.discover_skills(cwd, dirs))
+                value = skills.format_skill_index(skills.discover_skills(cwd, dirs))
             except Exception:
-                self._skill_cache[cwd] = ""
-        return self._skill_cache[cwd]
+                value = ""
+            self._skill_cache[cwd] = (generation, value)
+        return self._skill_cache[cwd][1]
 
     def _project_rules(self, cwd: str, cap: int = 4000) -> str:
+        if not self.include_project_rules:
+            return ""
         parts = []                       # merge ALL rule files, not just the first found
         for fn in ("CLAUDE.md", "AGENTS.md", ".collie.md", ".mh.md"):  # .mh.md kept for back-compat
             p = os.path.join(cwd, fn)
@@ -180,11 +215,50 @@ class ContextComposer:
         meta = ComposeMeta()
 
         # ---- STABLE -------------------------------------------------------
+        # The verify contract stays mandatory; what satisfies it is the project's business.
+        # The old wording said "run the tests (python -m pytest -q)" unconditionally, which on a
+        # data/config/prose deliverable asks for a suite that does not exist — so the check is
+        # uninformed, costs a turn, and can leave runner artifacts in a workspace that never
+        # authorized them. This line is deliberately free of workspace state: it sits in the
+        # STABLE cached prefix, so it must stay byte-identical for the whole session. The
+        # workspace-specific command is named later, by loop.verify_nudge_for, in an appended
+        # reminder that does not disturb the prefix.
+        # The "make it, don't describe it" duty lives HERE, not in the transport protocol
+        # (providers.ClaudeCliProvider._prompt): only the composer knows the caller's mode, so
+        # only it can demand an edit without also demanding one from Review/Test/Plan. It is
+        # conditional on the request, because Act also serves questions that are answered
+        # truthfully with no edit at all.
         act_role = ("MODE: Act — use tools to gather facts and make changes. "
-                    "Prefer edit_file for small changes. After editing code, run "
-                    "the tests (python -m pytest -q) to verify before you answer.")
+                    "When the request calls for a change, make it with edit_file (preferred for "
+                    "small changes) or write_file before answering, rather than describing the "
+                    "change you would make. After editing, verify with a check "
+                    "this project actually supports: run its existing test suite (e.g. "
+                    "python -m pytest -q) when it has one; when it has none, validate the "
+                    "artifact you produced rather than installing or inventing a test project. "
+                    "Report what your check did and did not establish. When the request only "
+                    "asks a question, answer it from what you inspected; no edit is required.")
         # unknown/typo'd mode -> ACT (never silently drop the tool-usage + verify contract).
-        mode_role = {"act": act_role, "plan": "MODE: Plan — outline steps, do not edit."}.get(mode, act_role)
+        mode_role = {
+            "act": act_role,
+            # Each non-Act mode says what finishing looks like, because the deliverable is the
+            # report/plan itself: without that, a model carrying a generic "act first" habit
+            # keeps hunting for an edit it is forbidden to make.
+            "plan": ("MODE: Plan — inspect the project and produce an editable plan artifact with "
+                     "scope, files, risks, and proposed checks. Do not edit project files or run "
+                     "commands. The plan is the deliverable: finish once it is written."),
+            "review": ("MODE: Review — inspect only. Report prioritized findings with concrete "
+                       "file paths and line numbers. Do not edit files or run commands. The "
+                       "findings are the deliverable: finish with them, with no edit."),
+            # Task-neutral on the outcome: the older wording ("return the failing check")
+            # named only one of the two results this mode can observe, so a command that
+            # actually passed had no described deliverable and the reply drifted toward
+            # hunting for a failure to report.
+            "test": ("MODE: Test — inspect files and run only the proposed verification command. "
+                     "Do not edit anything. Report that command's actual outcome, pass or fail, "
+                     "with the evidence: the command, and the part of its output that shows the "
+                     "result. A failure is evidence for a separate Build run; a pass is a "
+                     "result in its own right. Reporting the outcome completes this task."),
+        }.get(mode, act_role)
         tool_names = "TOOLS (always-on): " + ", ".join(
             t.name for t in self.registry.always_on())
         deferred = self.registry.deferred_names()
@@ -198,7 +272,7 @@ class ContextComposer:
         # observed on pylint-4551: ~15 turns lost to `cd /repo`, `cd /workspace`, `cd ~`,
         # and absolute /home/user/... paths that don't exist.
         # The "don't cd elsewhere" clause is about not GUESSING prefixes for files in THIS repo. It
-        # was being over-applied as "nothing outside cwd exists" (the VocalCode miss — see
+        # was being over-applied as "nothing outside cwd exists" (the external local-data miss — see
         # _grounding_line), so the last sentence carves out the case where the user's actual target
         # legitimately lives elsewhere on the machine.
         workdir = ("WORKING DIRECTORY: %s\nAll tools run from this directory. Pass paths "
@@ -209,13 +283,19 @@ class ContextComposer:
                    "lives elsewhere on this machine, go find it and use its absolute path — never "
                    "conclude it does not exist merely because it is not in this directory." % cwd)
         # SKILLS index (point 10): lazy name+description+path lines, ~20 tok/skill, read on demand.
-        # Cached per cwd so it's byte-stable within a session (a skill installed mid-session won't
-        # show until the next process — documented trade-off, keeps the cached prefix intact).
+        # Ordinary sources remain cached per cwd; a Library lifecycle/integrity generation change
+        # deliberately invalidates the prefix so enable/disable/revoke is truthful in 24x7 runs.
         skill_index = self._skill_index(cwd)
         # RESPONSE LANGUAGE + GROUNDING sit right after identity so they survive identity overrides
         # (the desktop persona in webapp.py replaces self.identity wholesale but never touches these
         # lines). Both are byte-stable, so they stay inside the cached prefix.
         stable_parts = [self.identity, _response_language_line(), _grounding_line(),
+                        "DELIVERY: Keep the user's requested language, length, and format through "
+                        "tool use, delegation, and internal verification reminders. Tool reports "
+                        "are evidence to synthesize, not a template for your final response. "
+                        "Lead with the result, include only checks and limitations relevant to "
+                        "that request, and do not repeat the investigation transcript. When the "
+                        "user asks for one sentence or paragraph, honor that format.",
                         mode_role, tool_names]
         if skill_index:
             stable_parts.append(skill_index)         # after tools, before workdir (STABLE slot)
@@ -271,6 +351,15 @@ class ContextComposer:
                 meta.prefetched_ids = incl_ids
                 if lines:
                     vol_parts.append("RELEVANT MEMORY (auto-recalled):\n" + "\n".join(lines))
+        # Live state is volatile: Collie may receive speech and environment events while a task is
+        # running. The session boundary and strict character budget keep inactive/private state out.
+        try:
+            from .live_copilot import model_context as _live_context
+            live_context = _live_context()
+            if live_context:
+                vol_parts.append(live_context)
+        except Exception:
+            pass
         # date-only, NOT %H:%M — this string is inside the single cached system block, so a
         # per-minute timestamp busted the ENTIRE cached prefix (identity + tool names + rules)
         # on every minute boundary of a multi-minute run, forcing a full re-write and killing the
@@ -307,9 +396,16 @@ class ContextComposer:
         window = 4 if shrink else 14
         stub = 120 if shrink else 240
         recent_cap = 4000 if shrink else None
-        msgs = session.get("messages", [])
+        # SEMANTIC COMPACTION (compaction.py) runs FIRST and on a different axis: elision shrinks
+        # old tool OUTPUT, compaction replaces an old SPAN of the conversation with a model-written
+        # handoff summary. It is a projection — session["messages"] is not touched here or anywhere
+        # else, so history, resume, fork and the permission audit keep the real transcript. With no
+        # valid checkpoint this is the identity projection and the build is byte-identical to before.
+        msgs, meta.compaction = project_messages(session.get("messages", []),
+                                                 session.get("_compaction"))
         keep_from = len(msgs) - window
         meta.elide_from = keep_from
+        meta.pre_elision = msgs
         provider_messages = []
         for i, m in enumerate(msgs):
             if m.get("role") == "tool":

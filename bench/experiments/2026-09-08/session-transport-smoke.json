@@ -1,0 +1,97 @@
+{
+  "cache_read_on_followups": [
+    738,
+    835
+  ],
+  "claim": "Transport smoke only: one persistent native SDK session serving Collie's response contract. No host tool ran, no repository was read, and this says nothing about coding task success.",
+  "effort": "high",
+  "model": "claude-opus-5",
+  "one_reservation_per_request": true,
+  "ownership": {
+    "active_registrations": 0,
+    "close_reported": true,
+    "session_retired": true,
+    "unresolved_workers": 0
+  },
+  "passed": true,
+  "requested_turns": 3,
+  "reservations": [
+    {
+      "outcome": "completed",
+      "purpose": "claude_agent_sdk"
+    },
+    {
+      "outcome": "completed",
+      "purpose": "claude_agent_sdk"
+    },
+    {
+      "outcome": "completed",
+      "purpose": "claude_agent_sdk"
+    }
+  ],
+  "schema_version": 1,
+  "session_evidence": {
+    "cleanup_retries_confirmed": 0,
+    "fallbacks": {},
+    "longest_session_turns": 3,
+    "resets": {
+      "smoke_finished": 1
+    },
+    "session_turns": 3,
+    "sessions_opened": 1,
+    "stateless_turns": 0,
+    "unresolved_cleanups": 0
+  },
+  "single_session": true,
+  "structured_output": false,
+  "turns": [
+    {
+      "answer_chars": 0,
+      "error_detail": "",
+      "request_count": 1,
+      "seconds": 2.557,
+      "sessions_opened": 1,
+      "stop_reason": "tool_use",
+      "tool": "read_file",
+      "turn": 0,
+      "usage": {
+        "cache_creation": 738,
+        "cache_read": 0,
+        "input_tokens": 2,
+        "output_tokens": 31
+      }
+    },
+    {
+      "answer_chars": 0,
+      "error_detail": "",
+      "request_count": 1,
+      "seconds": 6.047,
+      "sessions_opened": 1,
+      "stop_reason": "tool_use",
+      "tool": "edit_file",
+      "turn": 1,
+      "usage": {
+        "cache_creation": 97,
+        "cache_read": 738,
+        "input_tokens": 2,
+        "output_tokens": 391
+      }
+    },
+    {
+      "answer_chars": 298,
+      "error_detail": "",
+      "request_count": 1,
+      "seconds": 3.04,
+      "sessions_opened": 1,
+      "stop_reason": "end_turn",
+      "tool": null,
+      "turn": 2,
+      "usage": {
+        "cache_creation": 436,
+        "cache_read": 835,
+        "input_tokens": 2,
+        "output_tokens": 105
+      }
+    }
+  ]
+}

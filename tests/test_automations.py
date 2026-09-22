@@ -1,0 +1,474 @@
+import io
+import json
+import os
+import shutil
+import subprocess
+import time
+
+import pytest
+
+from harness.automations import (AutomationDaemon, AutomationExecutor, AutomationSpec, AutomationStore,
+                                 BudgetExceeded, DefaultCollieRunner,
+                                 FilePredicateTrigger, NEEDS_YOU, PENDING,
+                                 PagePredicateTrigger, PermissionDenied,
+                                 PermissionPolicy, SUCCEEDED, TriggerEngine,
+                                 TriggerRegistry, WorkspaceAllocator, _LimitedTool,
+                                 _unscopable_unattended_tool)
+from harness.ops import OpsStore
+
+
+def test_status_cli_lists_disabled_specs_without_crashing(tmp_path, capsys):
+    from harness import automations
+
+    state = tmp_path / "state"
+    db = state / "automations.db"
+    state.mkdir()
+    with AutomationStore(str(db)) as store:
+        value = _spec("disabled", {
+            "provider": "timer", "every_s": 10,
+        }, tmp_path)
+        value["enabled"] = False
+        store.upsert(value)
+
+    assert automations.main([
+        "status", "disabled", "--state-dir", str(state),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["configured"] == ["disabled"]
+
+
+def _spec(aid, trigger, root, **extra):
+    value = {
+        "id": aid, "task": "inspect and report", "trigger": trigger,
+        "workspace": {"mode": "isolated"},
+        "permissions": {"read_roots": [str(root)]},
+    }
+    value.update(extra)
+    return value
+
+
+def test_policy_validation_requires_explicit_continuation_and_current_workspace(tmp_path):
+    with pytest.raises(ValueError, match="session_id"):
+        AutomationSpec.from_dict(_spec(
+            "bad", {"provider": "timer", "every_s": 10}, tmp_path,
+            context={"policy": "continued"}))
+    with pytest.raises(ValueError, match="current_workspace"):
+        AutomationSpec.from_dict(_spec(
+            "bad2", {"provider": "timer", "every_s": 10}, tmp_path,
+            workspace={"mode": "current"}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), True])
+def test_automation_budget_rejects_nonfinite_and_boolean_limits(tmp_path, value):
+    with pytest.raises(ValueError, match="budget.max_cost_usd"):
+        AutomationSpec.from_dict(_spec(
+            "bad-budget", {"provider": "timer", "every_s": 10}, tmp_path,
+            budget={"max_cost_usd": value}))
+
+
+@pytest.mark.parametrize("field", ["external_writes", "current_workspace", "webhook_ingest"])
+def test_permission_flags_do_not_treat_truthy_strings_as_authority(field):
+    with pytest.raises(ValueError, match=field):
+        PermissionPolicy.from_dict({field: "false"})
+
+
+def test_automation_boolean_and_collection_fields_are_exact(tmp_path):
+    value = _spec("typed", {"provider": "timer", "every_s": 10}, tmp_path)
+    value["enabled"] = "false"
+    with pytest.raises(ValueError, match="enabled"):
+        AutomationSpec.from_dict(value)
+    with pytest.raises(ValueError, match="permissions.tools"):
+        PermissionPolicy.from_dict({"tools": "read_file"})
+    value = _spec("bad-shape", {"provider": "timer", "every_s": 10}, tmp_path)
+    value["budget"] = [["max_cost_usd", 1]]
+    with pytest.raises(ValueError, match="budget must be an object"):
+        AutomationSpec.from_dict(value)
+
+
+def test_unattended_desktop_authority_is_exactly_target_scoped(tmp_path):
+    policy = PermissionPolicy.from_dict({
+        "tools": ["desktop_script"], "desktop_targets": ["WeChat"],
+        "external_writes": True,
+    })
+    assert policy.desktop_targets == ("wechat",)
+    assert not _unscopable_unattended_tool("desktop_script", policy)
+    assert _unscopable_unattended_tool("desktop_apps", policy)
+    assert _unscopable_unattended_tool("desktop_script")
+
+    class DummyDesktopScript:
+        name, description, tier = "desktop_script", "test", "always"
+        schema = {"type": "object", "properties": {}}
+        def provider_schema(self): return {"name": self.name}
+        def run(self, args, ctx): return "ran"
+
+    counter = {"actions": 0, "cancelled": False}
+    tool = _LimitedTool(DummyDesktopScript(), time.monotonic() + 10, counter, 3,
+                        policy, str(tmp_path))
+    assert tool.run({"match": "WeChat", "steps": [{"action": "wait"}]}, None) == "ran"
+    denied = tool.run({"match": "Notepad", "steps": [{"action": "wait"}]}, None)
+    assert "desktop target notepad is not permitted" in denied
+
+
+def test_unattended_desktop_mutation_still_requires_external_writes(tmp_path):
+    policy = PermissionPolicy.from_dict({
+        "tools": ["desktop_key"], "desktop_targets": ["wechat"],
+    })
+
+    class DummyKey:
+        name, description, tier = "desktop_key", "test", "always"
+        schema = {"type": "object", "properties": {}}
+        def provider_schema(self): return {"name": self.name}
+        def run(self, args, ctx): return "must not run"
+
+    tool = _LimitedTool(DummyKey(), time.monotonic() + 10,
+                        {"actions": 0, "cancelled": False}, 3, policy, str(tmp_path))
+    assert "external writes are not permitted" in tool.run(
+        {"match": "wechat", "key": "Enter"}, None)
+
+
+def test_timer_is_durable_idempotent_and_context_policy_is_snapshotted(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        store.upsert(_spec("clock", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, context={"policy": "continued", "session_id": "daily-thread"}), now=100)
+        engine = TriggerEngine(store)
+        first = engine.tick(100)
+        assert len(first) == 1 and engine.tick(101) == []
+        request = json.loads(store.executions()[0]["request_json"])
+        assert request["context"] == {"policy": "continued", "session_id": "daily-thread"}
+        assert engine.tick(135) and len(store.executions()) == 2  # one catch-up, not four runs
+        audit = store.audit_log("clock")
+        assert any(row["event"] == "configuration" for row in audit)
+
+
+def test_file_trigger_is_edge_based_and_permission_bounded(tmp_path):
+    watched = tmp_path / "ready.txt"
+    registry = TriggerRegistry()
+    provider = registry.get("file")
+    spec = AutomationSpec.from_dict(_spec("file-watch", {
+        "provider": "file", "path": str(watched),
+        "predicate": {"type": "contains", "value": "READY"},
+    }, tmp_path))
+    cursor = provider.evaluate(spec, {}, 1).cursor
+    watched.write_text("not yet", encoding="utf-8")
+    check = provider.evaluate(spec, cursor, 2)
+    assert not check.fired
+    watched.write_text("READY", encoding="utf-8")
+    fired = provider.evaluate(spec, check.cursor, 3)
+    assert fired.fired and "READY" not in json.dumps(fired.event)
+    assert not provider.evaluate(spec, fired.cursor, 4).fired
+
+    denied = AutomationSpec.from_dict(_spec("denied", {
+        "provider": "file", "path": str(tmp_path.parent / "outside.txt")}, tmp_path))
+    with pytest.raises(PermissionDenied):
+        provider.evaluate(denied, {}, 1)
+
+
+def test_page_predicate_requires_host_allowlist_and_never_persists_body(tmp_path):
+    class Response(io.BytesIO):
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): self.close()
+
+    provider = PagePredicateTrigger(opener=lambda request, timeout: Response(b"release READY"))
+    value = _spec("page", {
+        "provider": "page", "url": "https://example.com/status",
+        "predicate": {"type": "contains", "value": "READY"},
+        "fire_on_initial": True,
+    }, tmp_path)
+    value["permissions"]["network_hosts"] = ["example.com"]
+    spec = AutomationSpec.from_dict(value)
+    result = provider.evaluate(spec, {}, 1)
+    assert result.fired and "release READY" not in json.dumps(result.event)
+
+    value["permissions"]["network_hosts"] = []
+    with pytest.raises(PermissionDenied):
+        provider.evaluate(AutomationSpec.from_dict(value), {}, 1)
+
+
+def test_webhook_requires_authenticated_permission_and_persists_allowlisted_fields(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        value = _spec("hook", {
+            "provider": "webhook", "predicate": {"field": "event", "equals": "deploy"},
+            "persist_fields": ["event", "project"],
+        }, tmp_path)
+        value["permissions"]["webhook_ingest"] = True
+        store.upsert(value, now=1)
+        engine = TriggerEngine(store)
+        with pytest.raises(PermissionDenied):
+            engine.ingest_webhook("hook", {"event": "deploy"}, authenticated=False, now=2)
+        assert engine.ingest_webhook(
+            "hook", {"event": "other", "secret": "never"}, authenticated=True, now=3) is None
+        eid = engine.ingest_webhook(
+            "hook", {"event": "deploy", "project": "collie", "secret": "never"},
+            authenticated=True, delivery_id="delivery-1", now=4)
+        assert eid
+        persisted = store.executions()[0]["request_json"]
+        assert "collie" in persisted and "never" not in persisted
+        assert engine.ingest_webhook(
+            "hook", {"event": "deploy"}, authenticated=True,
+            delivery_id="delivery-1", now=5) is None
+
+
+def test_executor_isolated_workspace_budget_permission_audit_and_notifications(tmp_path):
+    automation_db = tmp_path / "automations.db"
+    ops_db = tmp_path / "ops.db"
+    with AutomationStore(str(automation_db)) as store, OpsStore(str(ops_db)) as notifications:
+        value = _spec("run", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, notifications=["start", "success"],
+            budget={"max_model_tokens": 10, "max_actions": 2, "max_wall_s": 60,
+                    "max_cost_usd": 1, "max_runs_per_day": 5, "max_retries": 0})
+        value["permissions"].update({"tools": ["read_file"],
+                                     "write_roots": [str(tmp_path)]})
+        store.upsert(value, now=10)
+        TriggerEngine(store).tick(10)
+
+        def runner(request, guard):
+            assert os.path.isdir(request["resolved_workspace"])
+            assert guard.authority.tool("read_file") == "read_file"
+            with pytest.raises(PermissionDenied):
+                guard.authority.tool("shell")
+            guard.consume(model_tokens=5, actions=1)
+            return {"status": "succeeded", "summary": "done"}
+
+        executor = AutomationExecutor(
+            store, runner, workspace_allocator=WorkspaceAllocator(str(tmp_path / "workspaces")),
+            notification_store=notifications)
+        assert executor.step(now=11) == SUCCEEDED
+        assert store.executions()[0]["state"] == SUCCEEDED
+        decisions = [row["decision"] for row in store.audit_log("run")
+                     if row["event"] == "permission"]
+        assert {"allowed", "denied"} <= set(decisions)
+        assert notifications.notification_stats()["pending"] == 2
+
+
+def test_budget_exhaustion_and_crash_recovery_park_external_writes(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        value = _spec("external", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_model_tokens": 1, "max_actions": 1, "max_wall_s": 60,
+                            "max_cost_usd": 1, "max_runs_per_day": 5, "max_retries": 2})
+        value["permissions"]["external_writes"] = True
+        store.upsert(value, now=1)
+        TriggerEngine(store).tick(1)
+        claimed = store.claim(now=2, lease_s=1)
+        assert claimed
+        assert store.recover_expired(now=4) == 1
+        assert store.executions()[0]["state"] == NEEDS_YOU
+
+    guard_store = AutomationStore(str(tmp_path / "budget.db"))
+    try:
+        guard_store.upsert(_spec("budget", {
+            "provider": "timer", "every_s": 1, "fire_immediately": True,
+        }, tmp_path, budget={"max_model_tokens": 1}), now=1)
+        TriggerEngine(guard_store).tick(1)
+        request = json.loads(guard_store.executions()[0]["request_json"])
+        from harness.automations import BudgetGuard
+        guard = BudgetGuard(guard_store, request["execution_id"], request["budget"],
+                            request=request)
+        with pytest.raises(BudgetExceeded):
+            guard.consume(model_tokens=2)
+    finally:
+        guard_store.close()
+
+
+def test_runtime_usage_and_corrupt_durable_request_fail_closed(tmp_path):
+    from harness.automations import BudgetGuard
+
+    with AutomationStore(str(tmp_path / "strict.db")) as store:
+        spec = store.upsert(_spec("strict", {
+            "provider": "timer", "every_s": 1, "fire_immediately": True,
+        }, tmp_path), now=1)
+        execution_id = store.enqueue(spec, "manual:strict", {"kind": "test"}, now=1)
+        request = json.loads(store.executions()[0]["request_json"])
+        guard = BudgetGuard(store, execution_id, request["budget"], request=request)
+        with pytest.raises(ValueError, match="finite non-negative"):
+            guard.consume(cost_usd=float("nan"))
+        assert store.usage(execution_id)["cost_usd"] == 0
+
+        store.db.execute("UPDATE executions SET request_json=? WHERE execution_id=?",
+                         ('{"budget":{"max_cost_usd":NaN}}', execution_id))
+        store.db.commit()
+        assert store.claim(now=2) is None
+        row = store.executions()[0]
+        assert row["state"] == NEEDS_YOU
+        assert "invalid durable request JSON" in row["last_error"]
+
+
+def test_expired_attempt_is_token_fenced_and_filesystem_writes_are_not_replayed(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        store.upsert(_spec("read-only", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2}), now=1)
+        TriggerEngine(store).tick(1)
+        first = store.claim(now=2, lease_s=1)
+        assert first and first["lease_token"]
+        assert store.recover_expired(now=4) == 1
+        assert store.executions()[0]["state"] == PENDING
+        second = store.claim(now=5, lease_s=30)
+        assert second["lease_token"] != first["lease_token"]
+
+        # A late result from the expired worker cannot overwrite the fresh attempt.
+        assert not store.finish(
+            first["execution_id"], SUCCEEDED, {"summary": "stale"},
+            lease_token=first["lease_token"], now=6)
+        assert store.executions()[0]["state"] == "running"
+        assert store.finish(
+            second["execution_id"], SUCCEEDED, {"summary": "fresh"},
+            lease_token=second["lease_token"], now=7)
+
+        writable = _spec("writable", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2})
+        writable["permissions"].update({
+            "write_roots": [str(tmp_path)], "tools": ["write_file"],
+        })
+        store.upsert(writable, now=10)
+        TriggerEngine(store).tick(10)
+        claimed = next(row for row in (store.claim(now=11, lease_s=1),)
+                       if row and row["automation_id"] == "writable")
+        assert claimed
+        assert store.recover_expired(now=13) == 1
+        assert next(row for row in store.executions("writable"))["state"] == NEEDS_YOU
+
+        uncertain = _spec("uncertain-write", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2})
+        uncertain["permissions"].update({
+            "write_roots": [str(tmp_path)], "tools": ["write_file"],
+        })
+        uncertain_spec = store.upsert(uncertain, now=20)
+        store.enqueue(uncertain_spec, "manual:uncertain-write", {"kind": "test"}, now=20)
+
+        def mutate_then_fail(_request, _guard):
+            (tmp_path / "side-effect.txt").write_text("may have happened", encoding="utf-8")
+            raise RuntimeError("receipt channel failed after mutation")
+
+        executor = AutomationExecutor(
+            store, mutate_then_fail,
+            workspace_allocator=WorkspaceAllocator(str(tmp_path / "workspaces")))
+        assert executor.step(now=21) == NEEDS_YOU
+        assert store.executions("uncertain-write")[0]["state"] == NEEDS_YOU
+
+
+def test_daemon_recovers_a_lone_expired_running_execution_after_restart(tmp_path):
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        value = _spec("stale", {
+            "provider": "timer", "every_s": 10, "fire_immediately": True,
+        }, tmp_path, budget={"max_retries": 2})
+        value["permissions"].update({
+            "write_roots": [str(tmp_path)], "tools": ["write_file"],
+        })
+        store.upsert(value, now=1)
+        engine = TriggerEngine(store)
+        engine.tick(1)
+        assert store.claim(now=2, lease_s=1)
+
+        ran = []
+        executor = AutomationExecutor(store, lambda *_: ran.append(True) or {})
+        daemon = AutomationDaemon(engine, executor, interval_s=1)
+        detail = daemon.step(now=4)
+
+        assert detail["recovered"] == 1 and detail["pending"] == 0
+        assert store.executions("stale")[0]["state"] == NEEDS_YOU
+        assert ran == [], "an uncertain write is parked, not replayed during recovery"
+
+
+def test_default_tool_wrapper_denies_out_of_root_and_unsafe_ambient_tools(tmp_path):
+    class Tool:
+        name = "read_file"
+        description = "read"
+        tier = "safe"
+        schema = {"type": "object", "properties": {"path": {"type": "string"}}}
+        called = 0
+
+        def provider_schema(self):
+            return self.schema
+
+        def run(self, args, ctx):
+            self.called += 1
+            return "secret"
+
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.txt"
+    workspace.mkdir()
+    outside.write_text("secret", encoding="utf-8")
+    tool = Tool()
+    with AutomationStore(str(tmp_path / "authority.db")) as store:
+        wrapped = _LimitedTool(
+            tool, float("inf"), {"actions": 0, "cancelled": False}, 3,
+            PermissionPolicy.from_dict({"read_roots": [str(workspace)]}),
+            str(workspace), store, "safe", "exec-1")
+        result = wrapped.run({"path": str(outside)}, None)
+        assert "permission denied" in result.lower()
+        assert tool.called == 0
+        denied = [row for row in store.audit_log("safe")
+                  if row["event"] == "permission" and row["decision"] == "denied"]
+        assert denied
+
+    assert _unscopable_unattended_tool("bash")
+    assert _unscopable_unattended_tool("browser_click")
+    assert _unscopable_unattended_tool("mcp__github__write")
+    assert not _unscopable_unattended_tool("read_file")
+
+
+def test_default_runner_hard_wall_kills_child_and_preserves_budget_type(tmp_path, monkeypatch):
+    class HungProcess:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("automation", timeout)
+
+    killed = []
+    monkeypatch.setattr("harness.automations.subprocess.Popen", lambda *a, **k: HungProcess())
+    monkeypatch.setattr("harness.plat.kill_tree", lambda proc: killed.append(proc))
+    with AutomationStore(str(tmp_path / "automations.db")) as store:
+        store.upsert(_spec("wall", {
+            "provider": "timer", "every_s": 1, "fire_immediately": True,
+        }, tmp_path, execution={"provider": "mock", "allow_mock": True},
+            budget={"max_wall_s": .2}), now=1)
+        TriggerEngine(store).tick(1)
+        request = json.loads(store.executions()[0]["request_json"])
+        request["resolved_workspace"] = str(tmp_path)
+        from harness.automations import BudgetGuard
+        guard = BudgetGuard(store, request["execution_id"], request["budget"], request=request)
+        with pytest.raises(BudgetExceeded, match="hard wall-time"):
+            DefaultCollieRunner()(request, guard)
+        assert killed
+
+
+def test_isolated_source_workspace_is_a_real_git_worktree(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git is unavailable")
+    source = tmp_path / "source"
+    source.mkdir()
+    for args in (("init",), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "Collie Test")):
+        subprocess.run(["git", *args], cwd=source, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=source, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    request = {
+        "execution_id": "exec-worktree", "automation_id": "isolated",
+        "workspace": {"mode": "isolated", "source": str(source)},
+        "permissions": {"read_roots": [str(source)], "write_roots": [str(source)]},
+    }
+    prepared = WorkspaceAllocator(str(tmp_path / "empty-workspaces")).prepare(request)
+    try:
+        assert os.path.isdir(os.path.join(prepared, ".git")) or os.path.isfile(
+            os.path.join(prepared, ".git"))
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"], cwd=prepared, check=True,
+            capture_output=True, text=True).stdout.strip()
+        assert branch.startswith("collie/") and request["workspace_branch"] == branch
+        assert os.path.realpath(prepared) != os.path.realpath(source)
+    finally:
+        from harness import worktree
+        worktree.release(prepared, force=True)

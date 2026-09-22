@@ -1,0 +1,380 @@
+diff --git a/cursorcodec.py b/cursorcodec.py
+index d1efdea..7bd60fe 100644
+--- a/cursorcodec.py
++++ b/cursorcodec.py
+@@ -1,6 +1,16 @@
+-"""Opaque cursor tokens (work in progress)."""
++"""Opaque, signed cursor tokens.
++
++Token layout::
++
++    payload = {"k": key, "r": rank, "v": version}
++    raw     = json.dumps(payload, sort_keys=True, separators=(",", ":"))
++    body    = urlsafe_b64encode(raw) with trailing "=" stripped
++    sig     = sha256("v1." + body).hexdigest()[:8]
++    token   = "v1." + body + "." + sig
++"""
+ 
+ import base64
++import hashlib
+ import json
+ 
+ from pageerrors import InvalidCursorError
+@@ -9,30 +19,75 @@ __all__ = ["encode_cursor", "decode_cursor"]
+ 
+ PREFIX = "v1"
+ 
+-# TODO: the token still has no integrity segment, so a hand-edited body is
+-# happily accepted, and nothing rejects bools or checks the payload shape.
++_B64_ALPHABET = frozenset(
++    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
++    "abcdefghijklmnopqrstuvwxyz"
++    "0123456789-_"
++)
++
++
++def _is_int(value):
++    """True for real ints only; bools are explicitly rejected."""
++    return isinstance(value, int) and not isinstance(value, bool)
++
++
++def _sign(body):
++    return hashlib.sha256((PREFIX + "." + body).encode("ascii")).hexdigest()[:8]
+ 
+ 
+ def encode_cursor(version, rank, key):
+     """Return an opaque token for the position (rank, key) in a snapshot."""
+-    if not isinstance(version, int):
++    if not _is_int(version):
+         raise TypeError("version must be int")
+-    if not isinstance(rank, int):
++    if version < 0:
++        raise ValueError("version must be >= 0")
++    if not _is_int(rank):
+         raise TypeError("rank must be int")
+     if not isinstance(key, str):
+         raise TypeError("key must be str")
+-    raw = json.dumps({"v": version, "r": rank, "k": key}).encode("utf-8")
+-    body = base64.urlsafe_b64encode(raw).decode("ascii")
+-    return PREFIX + "." + body
++    if key == "":
++        raise ValueError("key must be non-empty")
++
++    payload = {"k": key, "r": rank, "v": version}
++    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
++    body = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
++    return PREFIX + "." + body + "." + _sign(body)
+ 
+ 
+ def decode_cursor(token):
+     """Return (version, rank, key) for a token produced by encode_cursor."""
++    if not isinstance(token, str):
++        raise TypeError("token must be str")
++
+     parts = token.split(".")
+-    if len(parts) != 2 or parts[0] != PREFIX:
++    if len(parts) != 3:
+         raise InvalidCursorError("malformed cursor")
++    prefix, body, sig = parts
++    if prefix != PREFIX:
++        raise InvalidCursorError("unknown cursor version")
++    if not body or any(ch not in _B64_ALPHABET for ch in body):
++        raise InvalidCursorError("malformed cursor body")
++    if sig != _sign(body):
++        raise InvalidCursorError("bad cursor signature")
++
+     try:
+-        payload = json.loads(base64.urlsafe_b64decode(parts[1].encode("ascii")))
+-    except Exception as exc:
++        padded = body + "=" * (-len(body) % 4)
++        text = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
++        payload = json.loads(text)
++    except Exception as exc:  # decoding / utf-8 / json failure
+         raise InvalidCursorError("undecodable cursor") from exc
+-    return (payload["v"], payload["r"], payload["k"])
++
++    if not isinstance(payload, dict) or set(payload.keys()) != {"k", "r", "v"}:
++        raise InvalidCursorError("bad cursor payload")
++
++    version = payload["v"]
++    if not _is_int(version) or version < 0:
++        raise InvalidCursorError("bad cursor version")
++    rank = payload["r"]
++    if not _is_int(rank):
++        raise InvalidCursorError("bad cursor rank")
++    key = payload["k"]
++    if not isinstance(key, str) or key == "":
++        raise InvalidCursorError("bad cursor key")
++
++    return (version, rank, key)
+diff --git a/pageerrors.py b/pageerrors.py
+index df6999b..43fb3fe 100644
+--- a/pageerrors.py
++++ b/pageerrors.py
+@@ -1,4 +1,4 @@
+-"""Error types for the pagination library (work in progress)."""
++"""Error types for the pagination library."""
+ 
+ __all__ = ["PaginationError", "InvalidCursorError", "StaleCursorError"]
+ 
+@@ -7,9 +7,9 @@ class PaginationError(Exception):
+     """Base class for pagination failures."""
+ 
+ 
+-class InvalidCursorError(Exception):
++class InvalidCursorError(PaginationError):
+     """The cursor token could not be understood."""
+ 
+ 
+-class StaleCursorError(Exception):
++class StaleCursorError(PaginationError):
+     """The cursor does not belong to this snapshot."""
+diff --git a/pagination.py b/pagination.py
+index 63d6ee6..e0d5b90 100644
+--- a/pagination.py
++++ b/pagination.py
+@@ -1,4 +1,4 @@
+-"""Cursor pagination over snapshots (work in progress)."""
++"""Stable cursor pagination over snapshots."""
+ 
+ from dataclasses import dataclass
+ 
+@@ -9,11 +9,16 @@ from recordstore import Snapshot
+ __all__ = ["Page", "paginate"]
+ 
+ 
+-@dataclass
++def _is_int(value):
++    """True for real ints only; bools are explicitly rejected."""
++    return isinstance(value, int) and not isinstance(value, bool)
++
++
++@dataclass(frozen=True)
+ class Page:
+     """One slice of a snapshot plus the cursors framing it."""
+ 
+-    items: list
++    items: tuple
+     total: int
+     has_prev: bool
+     has_next: bool
+@@ -23,53 +28,76 @@ class Page:
+ 
+ def paginate(snapshot, *, limit, after=None, before=None, tag=None,
+              min_rank=None, max_rank=None):
+-    """Return one page of `snapshot`.
+-
+-    Known problems: argument validation is thin and in the wrong order, the
+-    backward direction returns the wrong end of the collection, and the
+-    cursors are emitted even when there is no neighbouring page.
+-    """
++    """Return one page of `snapshot` without ever mutating it."""
++    if not isinstance(snapshot, Snapshot):
++        raise TypeError("snapshot must be a Snapshot")
++    if not _is_int(limit):
++        raise TypeError("limit must be int")
++    if limit < 1 or limit > 100:
++        raise ValueError("limit must be between 1 and 100")
++    if after is not None and not isinstance(after, str):
++        raise TypeError("after must be str or None")
++    if before is not None and not isinstance(before, str):
++        raise TypeError("before must be str or None")
+     if after is not None and before is not None:
+         raise ValueError("after and before are mutually exclusive")
+-    if not isinstance(limit, int):
+-        raise TypeError("limit must be int")
+-    if limit < 1:
+-        raise ValueError("limit must be positive")
++    if tag is not None and not isinstance(tag, str):
++        raise TypeError("tag must be str or None")
++    if tag == "":
++        raise ValueError("tag must be non-empty")
++    if min_rank is not None and not _is_int(min_rank):
++        raise TypeError("min_rank must be int or None")
++    if max_rank is not None and not _is_int(max_rank):
++        raise TypeError("max_rank must be int or None")
++    if min_rank is not None and max_rank is not None and min_rank > max_rank:
++        raise ValueError("min_rank must not exceed max_rank")
++
++    position = None
++    token = after if after is not None else before
++    if token is not None:
++        version, rank, key = decode_cursor(token)
++        if version != snapshot.version:
++            raise StaleCursorError("cursor was minted for another snapshot")
++        position = (rank, key)
+ 
+     matched = []
+     for record in snapshot.records:
+-        if tag is not None and not any(t.startswith(tag) for t in record.tags):
++        if tag is not None and tag not in record.tags:
+             continue
+-        if min_rank is not None and record.rank <= min_rank:
++        if min_rank is not None and record.rank < min_rank:
+             continue
+         if max_rank is not None and record.rank > max_rank:
+             continue
+         matched.append(record)
++    matched.sort(key=lambda r: (r.rank, r.key))
+     total = len(matched)
+ 
+-    low = 0
+-    high = min(limit, total)
+     if after is not None:
+-        version, rank, key = decode_cursor(after)
+-        if version != snapshot.version:
+-            raise StaleCursorError("stale cursor")
+-        low = sum(1 for r in matched if r.rank <= rank)
++        low = sum(1 for r in matched if (r.rank, r.key) <= position)
+         high = min(low + limit, total)
+     elif before is not None:
+-        version, rank, key = decode_cursor(before)
+-        if version != snapshot.version:
+-            raise StaleCursorError("stale cursor")
+-        high = sum(1 for r in matched if r.rank < rank)
++        high = sum(1 for r in matched if (r.rank, r.key) < position)
++        low = max(0, high - limit)
++    else:
+         low = 0
++        high = min(limit, total)
+ 
+-    items = matched[low:high]
++    items = tuple(matched[low:high])
++    has_prev = low > 0
++    has_next = high < total
++    next_cursor = (
++        encode_cursor(snapshot.version, items[-1].rank, items[-1].key)
++        if items and has_next else None
++    )
++    prev_cursor = (
++        encode_cursor(snapshot.version, items[0].rank, items[0].key)
++        if items and has_prev else None
++    )
+     return Page(
+         items=items,
+         total=total,
+-        has_prev=low > 0,
+-        has_next=high < total,
+-        prev_cursor=(encode_cursor(snapshot.version, items[0].rank, items[0].key)
+-                     if items else None),
+-        next_cursor=(encode_cursor(snapshot.version, items[-1].rank, items[-1].key)
+-                     if items else None),
++        has_prev=has_prev,
++        has_next=has_next,
++        prev_cursor=prev_cursor,
++        next_cursor=next_cursor,
+     )
+diff --git a/recordstore.py b/recordstore.py
+index 42bf25b..fd4c42e 100644
+--- a/recordstore.py
++++ b/recordstore.py
+@@ -1,13 +1,18 @@
+-"""Versioned in-memory records (work in progress)."""
++"""Versioned in-memory records."""
+ 
+ from dataclasses import dataclass
+ 
+ __all__ = ["Record", "Snapshot", "RecordStore"]
+ 
+ 
+-@dataclass
++def _is_int(value):
++    """True for real ints only; bools are explicitly rejected."""
++    return isinstance(value, int) and not isinstance(value, bool)
++
++
++@dataclass(frozen=True)
+ class Record:
+-    """One stored row. Should be a value object, but is not frozen yet."""
++    """One stored row; an immutable value object."""
+ 
+     key: str
+     rank: int
+@@ -15,19 +20,20 @@ class Record:
+     updated_at: int
+ 
+ 
+-@dataclass
++@dataclass(frozen=True)
+ class Snapshot:
+-    """A point-in-time view of the store. Still leaks a live list."""
++    """An immutable point-in-time view of the store."""
+ 
+     version: int
+-    records: list
++    records: tuple
+ 
+ 
+ class RecordStore:
+     """Holds records keyed by a unique string key."""
+ 
+     def __init__(self, clock):
+-        # TODO: validate the injected clock and what it returns.
++        if not callable(clock):
++            raise TypeError("clock must be callable")
+         self._clock = clock
+         self._records = {}
+         self._version = 0
+@@ -36,22 +42,57 @@ class RecordStore:
+     def version(self):
+         return self._version
+ 
+-    def put(self, key, rank, tags=()):
++    @staticmethod
++    def _check_key(key):
+         if not isinstance(key, str):
+             raise TypeError("key must be str")
+-        if not isinstance(rank, int):
++        if key == "":
++            raise ValueError("key must be non-empty")
++
++    def put(self, key, rank, tags=()):
++        self._check_key(key)
++        if not _is_int(rank):
+             raise TypeError("rank must be int")
+-        record = Record(key=key, rank=rank, tags=tags, updated_at=self._clock())
++        if isinstance(tags, (str, bytes, bytearray)):
++            raise TypeError("tags must be an iterable of str")
++        try:
++            tag_list = list(tags)
++        except TypeError as exc:
++            raise TypeError("tags must be iterable") from exc
++        for tag in tag_list:
++            if not isinstance(tag, str):
++                raise TypeError("tags must contain only str")
++        for tag in tag_list:
++            if tag == "":
++                raise ValueError("tags must not contain empty strings")
++        stamp = self._clock()
++        if not _is_int(stamp):
++            raise TypeError("clock must return int")
++
++        record = Record(
++            key=key,
++            rank=rank,
++            tags=tuple(sorted(set(tag_list))),
++            updated_at=stamp,
++        )
+         self._records[key] = record
+         self._version += 1
+         return record
+ 
+     def remove(self, key):
+-        return self._records.pop(key)
++        self._check_key(key)
++        if key not in self._records:
++            raise KeyError(key)
++        record = self._records.pop(key)
++        self._version += 1
++        return record
+ 
+     def get(self, key):
++        self._check_key(key)
+         return self._records.get(key)
+ 
+     def snapshot(self):
+-        ordered = sorted(self._records.values(), key=lambda r: r.rank)
++        ordered = tuple(
++            sorted(self._records.values(), key=lambda r: (r.rank, r.key))
++        )
+         return Snapshot(version=self._version, records=ordered)

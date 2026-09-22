@@ -1,14 +1,15 @@
-"""Vendor the Inno Setup translations the installer offers, and prove each one compiles.
+"""Vendor unofficial Inno Setup translation sources and prove each can compile warning-clean.
 
 Inno ships ~30 translations in its own Languages folder; another ~45 live in the upstream repo as
 "unofficial" (Vietnamese, Indonesian, Greek, Hindi, Farsi, Romanian, Croatian... — none of them
-available to a plain `iscc` install). We vendor those into installer/lang/ so a clone builds the
-same 70+ language installer with no manual file copying, and so the build doesn't depend on what
-happens to be sitting in someone's Inno folder.
+available to a plain `iscc` install). We vendor those into installer/lang/ so a clone has stable
+upstream sources without manual file copying.
 
-Unofficial translations lag the Inno release, and a translation missing a required message is a
-hard compile error — so every file is test-compiled on its own here and the broken ones are
-dropped, rather than discovering it in the middle of the 3-minute real build.
+Unofficial translations can lag the installed Inno release. ``gen_langs.py`` normalizes each source
+against that compiler's current ``Default.isl``: valid translations survive, obsolete keys are
+removed, and missing messages receive the official English default. This tool test-compiles those
+normalized files and treats warnings as failures, rather than accepting Inno's successful exit code
+while overlooking schema drift.
 
     python installer/fetch_languages.py          # download + verify + print the [Languages] block
     python installer/fetch_languages.py --check  # verify what's already vendored, download nothing
@@ -20,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+
+from gen_langs import normalize_vendor_language
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LANG = os.path.join(HERE, "lang")
@@ -82,16 +85,29 @@ def language_name(path):
 
 
 def compiles(compiler, msgfile):
-    """Test-compile a one-language stub. Catches translations too old for this Inno."""
+    """Normalize and test-compile one language; success means zero compiler warnings."""
     with tempfile.TemporaryDirectory() as td:
+        compatible = os.path.join(td, "compatible.islu")
+        try:
+            normalize_vendor_language(
+                msgfile,
+                os.path.join(os.path.dirname(compiler), "Default.isl"),
+                compatible,
+                bundled_dir=os.path.join(os.path.dirname(compiler), "Languages"),
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            return False, ["normalization failed: %s" % str(exc)]
         iss = os.path.join(td, "t.iss")
         with open(iss, "wb") as f:
             f.write(("[Setup]\nAppName=T\nAppVersion=1\nDefaultDirName={tmp}\\t\nOutputDir=%s\n"
                      "PrivilegesRequired=lowest\nUninstallable=no\nCreateAppDir=no\n\n"
                      "[Languages]\nName: \"x\"; MessagesFile: \"%s\"\n"
-                     % (td, msgfile.replace("\\", "\\\\"))).encode("utf-8"))
-        r = subprocess.run([compiler, "/Q", iss], capture_output=True, text=True)
-        return r.returncode == 0, (r.stdout + r.stderr).strip().splitlines()[-1:] or [""]
+                     % (td, compatible.replace("\\", "\\\\"))).encode("utf-8"))
+        r = subprocess.run([compiler, iss], capture_output=True, text=True)
+        output = (r.stdout + r.stderr).strip().splitlines()
+        warnings = [line for line in output if re.match(r"^\s*Warning:", line, re.I)]
+        good = r.returncode == 0 and not warnings
+        return good, (warnings or output[-1:] or [""])
 
 
 def main():

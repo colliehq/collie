@@ -7,9 +7,9 @@ when a task matches. Interoperates with the agentskills.io / Claude Code SKILL.m
 existing ~/.claude/skills library works for free.
 
 Discovery order (first-wins so a project skill shadows a global one): cwd/.collie/skills,
-cwd/.agents/skills, ~/.collie/skills, ~/.claude/skills, then any dirs in COLLIE_SKILL_DIRS
-(colon-separated) / settings skill_dirs. Only SKILL.md files with a non-empty description and without
-`disable-model-invocation: true` are indexed. stdlib-only.
+cwd/.agents/skills, ~/.collie/skills, ~/.claude/skills, enabled Library extensions, then any dirs in
+COLLIE_SKILL_DIRS (colon-separated) / settings skill_dirs. Only SKILL.md files with a non-empty
+description and without `disable-model-invocation: true` are indexed. stdlib-only.
 
 Trust note: a SKILL.md discovered UNDER the working directory (cwd/.collie/skills, cwd/.agents/skills)
 is repo-sourced — cloning an unaudited repo can plant one whose prose tries to steer the model. Those
@@ -60,6 +60,14 @@ def _skill_dirs(cwd: str, extra_dirs=None) -> list:
             os.path.join(cwd, ".agents", "skills"),
             os.path.expanduser("~/.collie/skills"),
             os.path.expanduser("~/.claude/skills")]
+    # Library packages remain inert until their exact digest/scopes have been approved.  The
+    # helper also rechecks integrity and revocation on every discovery, failing closed if the
+    # registry is damaged.  Import lazily to keep this module usable as a tiny standalone index.
+    try:
+        from .extensions import enabled_component_paths
+        dirs.extend(enabled_component_paths("skills"))
+    except Exception:
+        pass
     for d in (extra_dirs or []):
         if d and d.strip():
             dirs.append(os.path.expanduser(d.strip()))
@@ -85,13 +93,22 @@ def discover_skills(cwd: str, extra_dirs=None) -> list:
         except Exception:
             trust_repo = False          # anything unreadable means untrusted, never trusted
     cwd_abs = os.path.abspath(cwd)
+    try:
+        from .extensions import enabled_component_paths
+        extension_dirs = {os.path.normcase(os.path.abspath(path))
+                          for path in enabled_component_paths("skills")}
+    except Exception:
+        extension_dirs = set()
     seen, out, walked = set(), [], set()
     for base in _skill_dirs(cwd, extra_dirs):
         if not os.path.isdir(base):
             continue
         base_abs = os.path.abspath(base)
         repo_sourced = base_abs == cwd_abs or base_abs.startswith(cwd_abs + os.sep)
-        trusted = trust_repo or not repo_sourced
+        # Library approval pins both bytes and authority, so an enabled extension Skill remains
+        # trusted even in the unusual case that the caller's cwd contains COLLIE_STATE_DIR.
+        trusted = (os.path.normcase(base_abs) in extension_dirs
+                   or trust_repo or not repo_sourced)
         # followlinks=True so skills symlinked into ~/.claude/skills are found (os.walk skips
         # symlinked dirs by default). realpath guard prunes symlink cycles so we can't loop forever.
         for root, dirs, files in os.walk(base, followlinks=True):

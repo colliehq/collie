@@ -15,7 +15,8 @@ tools it would like; only the person decides how far to believe it. If this stor
 becomes writable by something collie loaded, every other guarantee in the gate is
 decorative — the thing being gated could simply reclassify itself as harmless.
 
-That is why there is no tool for this, and why the CLI is the only writer.
+That is why there is no model tool for this. Only the CLI and authenticated user-operated Web
+control center write it.
 """
 
 from __future__ import annotations

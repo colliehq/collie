@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from .httpserver import ThreadingHTTPServer
 
 from . import capabilities as _caps
 from .actions import ActionStore, RefusedError
@@ -139,6 +140,9 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
     apath = os.path.join(state_dir, "actions.db")
     jpath = os.path.join(state_dir, "jobs.db")
 
+    def reject_json_constant(value):
+        raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -171,7 +175,8 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
             self.wfile.write(data)
 
         def _json(self, code, obj):
-            self._send(code, json.dumps(obj, ensure_ascii=False, default=str))
+            self._send(code, json.dumps(obj, ensure_ascii=False, default=str,
+                                        allow_nan=False))
 
         def do_GET(self):
             if self._bad_host():
@@ -185,10 +190,14 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
         def do_POST(self):
             if self._post_blocked():
                 self._json(403, {"error": "blocked (loopback + same-origin only)"}); return
-            n = int(self.headers.get("Content-Length") or 0)
             try:
-                body = json.loads(self.rfile.read(n) or b"{}")
-            except Exception:
+                n = int(self.headers.get("Content-Length") or 0)
+                if n <= 0 or n > 1_048_576:
+                    raise ValueError("bad body size")
+                body = json.loads(self.rfile.read(n), parse_constant=reject_json_constant)
+                if not isinstance(body, dict):
+                    raise ValueError("body must be a JSON object")
+            except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._json(400, {"error": "bad json"}); return
             if self.path.startswith("/api/ask"):
                 self._json(200, self._ask(body)); return
@@ -215,6 +224,8 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
 
         def _confirm(self, body):
             nonce = (body or {}).get("nonce", "")
+            if not isinstance(nonce, str) or not nonce:
+                return {"error": "nonce must be a non-empty string"}
             acts, jobs = self._stores()
             try:
                 rec = acts.get(nonce)
@@ -258,7 +269,10 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
             interpretation so the user can see (and, being a job, undo) it."""
             import secrets
             from . import mandate
-            text = (body or {}).get("text", "").strip()
+            raw_text = (body or {}).get("text", "")
+            if not isinstance(raw_text, str):
+                return {"interpreted": {}, "message": "text must be a string"}
+            text = raw_text.strip()
             if not text:
                 return {"interpreted": {}, "message": "say something"}
             plan = mandate.compile(text, _provider())
@@ -268,8 +282,13 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
             acts, jobs = self._stores()
             try:
                 jid = "job-" + secrets.token_hex(4)
-                jobs.create(jid, plan.get("goal") or text, leash=plan.get("leash") or {})
-                nonce = acts.propose(plan["capability"], plan.get("args") or {}, job_id=jid)
+                try:
+                    jobs.create(jid, plan.get("goal") or text,
+                                leash=plan.get("leash") or {})
+                    nonce = acts.propose(
+                        plan["capability"], plan.get("args") or {}, job_id=jid)
+                except (TypeError, ValueError) as exc:
+                    return {"interpreted": plan, "error": "invalid plan: %s" % exc}
                 try:
                     v = Executor(acts, jobs).drive(nonce)
                     return {"interpreted": plan, "status": v.status, "reason": v.reason,
@@ -281,17 +300,33 @@ def _make_handler(state_dir: str, enforce_host: bool = True):
 
         def _run(self, body):
             import secrets
-            cap = (body or {}).get("capability", "").strip()
+            raw_cap = (body or {}).get("capability", "")
+            if not isinstance(raw_cap, str):
+                return {"error": "capability must be a string"}
+            cap = raw_cap.strip()
             if not cap:
                 return {"error": "capability required"}
-            args = (body or {}).get("args") or {}
-            leash = (body or {}).get("leash") or {}
-            goal = (body or {}).get("goal") or cap
+            args = (body or {}).get("args", {})
+            leash = (body or {}).get("leash", {})
+            goal = (body or {}).get("goal", cap)
+            if args is None:
+                args = {}
+            if leash is None:
+                leash = {}
+            if not isinstance(args, dict):
+                return {"error": "args must be a JSON object"}
+            if not isinstance(leash, dict):
+                return {"error": "leash must be a JSON object"}
+            if not isinstance(goal, str):
+                return {"error": "goal must be a string"}
             acts, jobs = self._stores()
             try:
                 jid = "job-" + secrets.token_hex(4)
-                jobs.create(jid, goal, leash=leash)
-                nonce = acts.propose(cap, args, job_id=jid)
+                try:
+                    jobs.create(jid, goal, leash=leash)
+                    nonce = acts.propose(cap, args, job_id=jid)
+                except (TypeError, ValueError) as exc:
+                    return {"error": "invalid job request: %s" % exc}
                 try:
                     v = Executor(acts, jobs).drive(nonce)
                     return {"status": v.status, "reason": v.reason, "job_id": jid}

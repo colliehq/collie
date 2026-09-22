@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -79,7 +80,10 @@ def _load_or_create_key(keyfile: str) -> bytes:
             except FileNotFoundError:
                 pass
             time.sleep(0.01)
-        return k                            # last resort (never observed in practice)
+        # A private in-memory key that differs from the durable winner would
+        # let this process mint actions no later process can verify.  Refuse the
+        # store instead of creating unrecoverable authority.
+        raise RuntimeError("action integrity key exists but is incomplete")
     try:
         os.write(fd, k)
     finally:
@@ -97,7 +101,20 @@ EXPIRED = "expired"      # TTL elapsed before confirm
 
 
 def _j(o) -> str:
-    return json.dumps(o or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    value = {} if o is None else o
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False)
+
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON number is forbidden: %s" % value)
+
+
+def _jo(value) -> dict:
+    parsed = json.loads(value or "{}", parse_constant=_reject_json_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("durable action JSON must be an object")
+    return parsed
 
 
 def _mac(key: bytes, capability: str, args: dict, leash_id: str = "", job_id: str = "",
@@ -158,7 +175,10 @@ class ActionStore:
         self._key = _load_or_create_key(path + ".key")
         self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self._lock = threading.Lock()
+        # Mission workers may execute independent campaigns concurrently through
+        # one ActionStore.  RLock also lets execute() call get() while holding the
+        # transaction guard without deadlocking.
+        self._lock = threading.RLock()
         try:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA busy_timeout=30000")
@@ -194,6 +214,23 @@ class ActionStore:
         # note.append): it is executed by colliejobd at fire time, never by a human,
         # so it MUST stay out of the confirm inbox — otherwise a person could click
         # it and fire the reminder early.
+        if not isinstance(auto, bool):
+            raise ValueError("action auto flag must be boolean")
+        if isinstance(ttl_s, bool):
+            raise ValueError("action TTL must be a finite positive number")
+        try:
+            ttl = float(ttl_s)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("action TTL must be a finite positive number")
+        if not math.isfinite(ttl) or ttl < 1:
+            raise ValueError("action TTL must be a finite number of at least one second")
+        args = {} if args is None else args
+        snapshot = {} if snapshot is None else snapshot
+        if not isinstance(args, dict) or not isinstance(snapshot, dict):
+            raise ValueError("action args and snapshot must be JSON objects")
+        # Serialize before minting/persisting authority.  This rejects NaN,
+        # Infinity and unserializable values without leaving a partial action.
+        args_json, snapshot_json = _j(args), _j(snapshot)
         nonce = secrets.token_hex(16)
         now = int(time.time())
         with self._lock:
@@ -202,10 +239,10 @@ class ActionStore:
                      risk,leash_id,snapshot_json,state,created_at,expires_at,
                      decided_at,executed_at,attempted_at,auto,refuse_reason)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,0,0,0,?,'')""",
-                (nonce, job_id, capability, json.dumps(args or {}, ensure_ascii=False),
+                (nonce, job_id, capability, args_json,
                  _mac(self._key, capability, args, leash_id, job_id, risk, snapshot), risk, leash_id,
-                 json.dumps(snapshot or {}, ensure_ascii=False), PENDING,
-                 now, now + int(ttl_s), int(auto)))
+                 snapshot_json, PENDING,
+                 now, now + int(ttl), int(auto)))
             self.db.commit()
         return nonce
 
@@ -214,14 +251,15 @@ class ActionStore:
         return cur.fetchone()
 
     def get(self, nonce) -> ActionRecord:
-        r = self._row(nonce)
+        with self._lock:
+            r = self._row(nonce)
         if not r:
             return None
         return ActionRecord(
             nonce=r["nonce"], capability=r["capability"],
-            args=json.loads(r["args_json"] or "{}"), digest=r["digest"],
+            args=_jo(r["args_json"]), digest=r["digest"],
             risk=r["risk"], state=r["state"], job_id=r["job_id"],
-            leash_id=r["leash_id"], snapshot=json.loads(r["snapshot_json"] or "{}"),
+            leash_id=r["leash_id"], snapshot=_jo(r["snapshot_json"]),
             created_at=r["created_at"], expires_at=r["expires_at"])
 
     # ── confirm: a human approves the concrete record (single transition) ──
@@ -238,6 +276,16 @@ class ActionStore:
                                 (EXPIRED, now, nonce, PENDING))
                 self.db.commit()
                 raise RefusedError("expired before confirm")
+            try:
+                args, snapshot = _jo(r["args_json"]), _jo(r["snapshot_json"])
+                intact = hmac.compare_digest(
+                    _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
+                         r["risk"], snapshot), r["digest"] or "")
+            except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                intact = False
+            if not intact:
+                self._refuse(nonce, "invalid or tampered action payload", now)
+                raise RefusedError("invalid or tampered action payload")
             # ATOMIC CAS: only PENDING -> APPROVED. Without `AND state=PENDING` a
             # stale WAL-snapshot read (two concurrent tickers) could blindly revive
             # an already-EXECUTED nonce back to APPROVED and re-fire it — the
@@ -279,6 +327,53 @@ class ActionStore:
             self.db.commit()
         return cur.rowcount
 
+    def retire_stale_reversible(self, nonce, *, min_age_s=600,
+                                reason="stale reversible execution retired") -> bool:
+        """Close an abandoned reversible EXECUTING latch with an honest receipt.
+
+        This is intentionally incapable of touching publish/send/commerce/destructive actions.
+        It exists for a process that died or timed out after claiming a read/compose/browse/code
+        action, leaving an ordinary failed Mission impossible to retry forever.  The caller must
+        separately prove the Mission has no live run/resource owner; age and capability checks here
+        are defense in depth.  We record ``fired=True`` because the runner did start, but the result
+        remains INCONCLUSIVE rather than inventing success or pretending it never ran.
+        """
+        safe = {"research", "compose", "browse", "observe", "code"}
+        now = int(time.time())
+        with self._lock:
+            row = self._row(nonce)
+            if not row or row["state"] != EXECUTING or row["capability"] not in safe:
+                return False
+            if str(row["risk"] or "").lower() in {
+                    "publish", "send", "commerce", "destructive", "irreversible"}:
+                return False
+            started = int(row["attempted_at"] or row["created_at"] or now)
+            if now - started < max(60, int(min_age_s)):
+                return False
+            record = ActionRecord(
+                nonce=row["nonce"], capability=row["capability"],
+                args=_jo(row["args_json"]), digest=row["digest"],
+                risk=row["risk"], state=row["state"], job_id=row["job_id"],
+                leash_id=row["leash_id"], snapshot=_jo(row["snapshot_json"]),
+                created_at=row["created_at"], expires_at=row["expires_at"])
+            verdict = Verdict(INCONCLUSIVE, str(reason or "stale reversible execution retired")[:200])
+            _rc, params = self._mk_receipt(
+                record, approved=True, fired=True, verdict=verdict)
+            self.db.execute("BEGIN IMMEDIATE")
+            cur = self.db.execute(
+                "UPDATE pending_actions SET state=?,executed_at=? "
+                "WHERE nonce=? AND state=?",
+                (EXECUTED, now, nonce, EXECUTING))
+            if cur.rowcount != 1:
+                self.db.rollback()
+                return False
+            self.db.execute(
+                """INSERT INTO receipts(nonce,job_id,capability,args_redacted,leash_id,
+                     approved,fired,verdict,verdict_reason,evidence,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""", params)
+            self.db.commit()
+        return True
+
     # ── execute: the deterministic, model-free executor ──
     def execute(self, nonce, side_effect_fn, donecheck_fn=None,
                 unchanged_fn=None, redact_fn=None) -> Receipt:
@@ -299,9 +394,13 @@ class ActionStore:
             if r["state"] != APPROVED:
                 raise RefusedError(f"not approved for execution (state={r['state']})")
             # payload binding: capability/args AND authority fields must be intact
-            args = json.loads(r["args_json"] or "{}")
-            expect = _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
-                          r["risk"], json.loads(r["snapshot_json"] or "{}"))
+            try:
+                args, snapshot = _jo(r["args_json"]), _jo(r["snapshot_json"])
+                expect = _mac(self._key, r["capability"], args, r["leash_id"], r["job_id"],
+                              r["risk"], snapshot)
+            except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                self._refuse(nonce, "invalid durable action JSON", now)
+                raise RefusedError("invalid durable action JSON")
             if not hmac.compare_digest(expect, r["digest"] or ""):
                 self._refuse(nonce, "payload MAC mismatch (tampered)", now)
                 raise RefusedError("payload MAC mismatch (tampered)")
@@ -377,7 +476,7 @@ class ActionStore:
         — it does not catch non-pattern PII (e.g. a raw card number), so callers
         handling such data should pass a stricter redact_fn."""
         ev = "; ".join(getattr(o, "detail", str(o)) for o in (verdict.evidence or ()))
-        raw = json.dumps(record.args, ensure_ascii=False)
+        raw = json.dumps(record.args, ensure_ascii=False, allow_nan=False)
         args_redacted = redact_fn(raw) if redact_fn else _redact.redact(raw, {})
         rc = Receipt(nonce=record.nonce, capability=record.capability, approved=approved,
                      verdict=verdict.status, verdict_reason=verdict.reason, evidence=ev,
@@ -405,20 +504,27 @@ class ActionStore:
         if nonce:
             q += " WHERE nonce=?"
             args = (nonce,)
-        return [dict(r) for r in self.db.execute(q + " ORDER BY receipt_id", args)]
+        with self._lock:
+            rows = self.db.execute(q + " ORDER BY receipt_id", args).fetchall()
+        return [dict(r) for r in rows]
 
     def pending(self):
         """Actions awaiting a HUMAN confirm — the inbox. Excludes auto (daemon-
         driven) actions like a scheduled reminder, which must never be human-fired."""
-        return [dict(r) for r in self.db.execute(
-            "SELECT * FROM pending_actions WHERE state=? AND COALESCE(auto,0)=0 "
-            "ORDER BY created_at", (PENDING,))]
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM pending_actions WHERE state=? AND COALESCE(auto,0)=0 "
+                "ORDER BY created_at", (PENDING,)).fetchall()
+        return [dict(r) for r in rows]
 
     def list(self, state=None):
         q, a = "SELECT * FROM pending_actions", ()
         if state:
             q, a = q + " WHERE state=?", (state,)
-        return [dict(r) for r in self.db.execute(q + " ORDER BY created_at", a)]
+        with self._lock:
+            rows = self.db.execute(q + " ORDER BY created_at", a).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
-        self.db.close()
+        with self._lock:
+            self.db.close()

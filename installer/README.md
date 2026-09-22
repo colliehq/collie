@@ -2,14 +2,17 @@
 
 `collie.iss` builds **`Collie-Setup.exe`**: a single file a non-technical user double-clicks to get
 Collie — a real desktop app with a Start-menu/desktop icon, no Python, no terminal, no `pip`, no PATH
-surgery. Everything ships inside: an embeddable CPython with `collie-harness[local]` (semantic memory
-included), the WebView2-based desktop window and live-wallpaper engine, the browser extension, and
-the WebView2 bootstrapper.
+surgery. Everything ships inside: an embeddable CPython with
+`collie-harness[local,remote,online,claude]` (semantic memory, Remote, optional Connected Mode, and
+the Claude runner included), the WebView2-based desktop window and live-wallpaper engine, the
+browser extension, and the WebView2 bootstrapper. The hosted Online control plane remains a
+separate reviewed deployment artifact; no cloud credentials or production configuration are
+placed in an end-user installer.
 
 | Audience | Path |
 |---|---|
 | **Everyone** | `Collie-Setup.exe` — bundles Python + collie + WebView2. From the [releases page](https://github.com/colliehq/collie/releases). |
-| **Developers** | `pip install collie-harness[local]` → `collie setup`. No installer. |
+| **Developers** | Clone the repo and run `pip install -e ".[local]"`, or install the wheel from a release; then `collie setup`. |
 
 ## What's in this directory
 
@@ -18,14 +21,15 @@ the WebView2 bootstrapper.
 | `collie.iss` | The Inno Setup script: branded wizard, a custom card-style language page (33 languages, Simplified Chinese up front), tasks, uninstall. |
 | `build.ps1` | **The one command to build the exe.** Reads the version, generates art + language data, stages the payload, compiles. |
 | `build_payload.ps1` | Recreates `payload/` — the embeddable-Python runtime with collie installed. Called by `build.ps1`; idempotent. |
+| `build_local_bundle.ps1` | Builds an unpublished research bundle: wheel/sdist, VSIX, browser bridge, and the complete Online deployment reference; optionally the Windows installer. |
 | `make_art.py` | Generates the wizard's star-map branding BMPs from the logo (reproducible). |
-| `gen_langs.py` | Emits `languages.iss` + `langdata.iss` (the `[Languages]` section and the chip/dropdown data) from the `.isl` files present. Edit the `CHIPS`/`MORE` lists here to change which languages are offered. |
+| `gen_langs.py` | Emits `languages.iss` + `langdata.iss` and normalizes vendored translations into warning-clean `lang_compat/` files for the installed Inno version. Edit the `CHIPS`/`MORE` lists here to change which languages are offered. |
 | `gen_zhtw.py` | Regenerates the webui's Traditional-Chinese dict from the Simplified one via OpenCC (maintainer tool). |
 | `fetch_languages.py` | Downloads Inno's unofficial upstream translations into `lang/` and test-compiles each. Run once when adding new languages. |
-| `lang/` | Vendored `.isl` translations not bundled with Inno (committed so builds are hermetic). |
+| `lang/` | Upstream `.isl` translation sources not bundled with Inno (committed; never hand-patched merely to silence a newer compiler). |
 
-Generated/large paths (`payload/`, `Output/`, `art/`, `languages.iss`, `langdata.iss`) are
-`.gitignore`d — `build.ps1` recreates them.
+Generated/large paths (`payload/`, `Output/`, `art/`, `languages.iss`, `langdata.iss`,
+`lang_compat/`) are `.gitignore`d — `build.ps1` recreates them.
 
 ## Build
 
@@ -37,23 +41,50 @@ Generated/large paths (`payload/`, `Output/`, `art/`, `languages.iss`, `langdata
 
 powershell -File installer\build.ps1                 # -> installer\Output\Collie-Setup.exe
 powershell -File installer\build.ps1 -CleanPayload   # also rebuild the bundled runtime
+
+# local review bundle; does not deploy or publish anything
+powershell -File installer\build_local_bundle.ps1
+powershell -File installer\build_local_bundle.ps1 -IncludeInstaller
 ```
 
 The version comes from `harness/__init__.py` (single source of truth) and is passed to `iscc` as
 `/DAppVer`. CI does the same in `.github/workflows/release.yml`, triggered by pushing a `v*` tag.
+The payload build verifies the reviewed SHA-256 of the embeddable-Python archive and pinned
+`get-pip.py`, plus the Authenticode publishers of `python.exe` and the Evergreen WebView2
+bootstrapper, before executing or packaging them. A new Python version therefore requires an
+explicit reviewed `-PyEmbedSha256` value rather than silently trusting a changed download.
+Transitive wheels resolved from the optional `local,remote` extras are not yet protected by a
+hash-locked requirements file, so the build is fail-closed at its executable bootstrap boundary but
+is not bit-for-bit reproducible across dates. Release CI builds on a fresh hosted runner; adding a
+reviewed Windows wheel lock remains the boundary for fully hermetic dependency resolution.
+The local Collie wheel is built with `--no-build-isolation`, so pip does not create a second hidden
+environment and download an additional unreviewed build backend during that step.
+
+Vendored installer translations can lag Inno Setup itself. At build time, `gen_langs.py` treats the
+installed compiler's `Default.isl` as the message schema: it retains compatible translated values,
+drops obsolete keys, and fills newly introduced keys with Inno's exact English defaults. This
+preserves every offered language without guessing at translations and produces the same English
+fallback users already received from Inno. `build.ps1` fails the release if `iscc` emits any warning,
+so a future compiler/schema change cannot silently reintroduce translation drift.
 
 ## What the installer does
 
 - Lays down `{localappdata}\Programs\Collie\python` (the bundled runtime, per-user, no admin).
+- On upgrade, atomically renames the previous runtime to an installer-owned backup and restores it
+  if extraction/copy is cancelled or fails; it deletes the backup only at Setup's successful
+  `ssDone` boundary. User state under `~/.collie` is never part of this rollback.
 - Silently ensures the WebView2 runtime (needed by the desktop window).
 - Applies the language you picked to Collie itself (`collie config LANG <code>`), so the first launch
   is already in your language.
-- Optional tasks: the live star-map wallpaper and the real-browser bridge, each auto-starting at
-  logon.
+- Registers a per-user supervisor at logon. It crash-restarts the Web app, job daemon, automation
+  daemon, optional browser bridge, and discovered Slack launchers.
+- Optional tasks: the live star-map wallpaper and the real-browser bridge. The bridge is enabled or
+  disabled in the supervisor config; the wallpaper retains its own logon entry.
 - Start-menu + desktop shortcuts to `collie app` (the native window), plus a *Collie Settings*
   shortcut.
 
-On uninstall it stops the wallpaper, removes both logon autostarts, and deletes `{app}`.
+On uninstall it requests a graceful supervisor stop, ends/removes its Scheduled Task (or Startup
+fallback), stops the wallpaper, removes its logon entry, and deletes `{app}`.
 
 ## macOS — `build_mac.sh`
 
@@ -66,7 +97,7 @@ bash installer/build_mac.sh --sign --dmg --notarize <profile>
 # standalone — bundles a private CPython, so it runs on a Mac with no Python at all
 bash installer/build_mac.sh --bundle-python --sign --dmg
 #   --arch arm64|x86_64      (defaults to this machine; see below)
-#   --extras local,tui,desktop
+#   --extras local,tui,desktop,remote,claude
 ```
 
 `--bundle-python` calls `build_mac_payload.sh`, the counterpart of `build_payload.ps1`: it stages a
@@ -84,7 +115,7 @@ Intel half can't be smoke-tested on an Apple Silicon machine). Against that: mac
 last release that runs on Intel Macs, and Apple stopped selling them in 2023. `--arch` remains, so
 someone on an Intel Mac can still build for their own machine; it refuses to cross-build.
 
-**Why a bundle when `pip install collie-harness` already works: identity.** macOS attaches TCC
+**Why a bundle when a source/wheel install already works: identity.** macOS attaches TCC
 permissions to the *application*, so a pip install makes `collie record` ask for Screen Recording on
 behalf of your **terminal** — which then holds blanket screen access forever, and System Settings
 lists "Terminal" rather than Collie. The PyObjC desktop wallpaper has the same problem in reverse:
@@ -124,16 +155,18 @@ bash installer/brew_release.sh              # dry run: build the sdist, rewrite 
 bash installer/brew_release.sh --publish    # …and tag, release, upload and push the tap
 ```
 
-The tarball is published as a **release asset on the tap**, not fetched from the source repo, because
-`wudaming00/collie` is private and `brew install` cannot authenticate to it. If that repo is ever
-made public, point `url` at its tag tarball and drop the indirection.
+The tarball is published as a **release asset on the tap**. Keeping that reviewed artifact URL makes
+the formula independent of GitHub source-archive layout and gives the tap an explicit checksum.
 
 ## Notes
 
-- **Per-user, no admin.** `PrivilegesRequired=lowest`; autostarts are per-user Startup entries.
+- **Per-user, no admin.** `PrivilegesRequired=lowest`; the supervisor uses a least-privilege
+  Task Scheduler logon trigger and degrades to a per-user Startup entry if registration is refused.
 - **The desktop engine `.exe`** is compiled once on first run from the shipped C# source via the
   in-box .NET Framework `csc` (no .NET SDK needed).
-- **Code signing** is out of scope of the `.iss`. For distribution outside your own machines, sign
-  the setup `.exe` to avoid SmartScreen warnings.
-- **Windows only.** On macOS/Linux, `pip install collie-harness` + `collie` is the path; the desktop
-  window degrades to the browser GUI and the wallpaper to a borderless window.
+- **Code signing** is out of scope of the `.iss`. The release workflow signs the setup with Azure
+  Artifact Signing and then runs `signtool verify /pa`; an unsigned/invalid installer is not
+  published by that workflow.
+- **The Inno `.iss` is Windows-only.** macOS uses `build_mac.sh`; Linux and source users install an
+  editable checkout or a release wheel. Outside the packaged apps, the desktop window degrades to
+  the browser GUI and the wallpaper to a borderless window.

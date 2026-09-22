@@ -68,6 +68,10 @@ class BridgeActuator:
         self._cmd({"action": "type", "selector": selector, "text": text or "", "submit": submit})
         return True
 
+    def type_ref(self, ref: str, text: str, submit: bool = False) -> bool:
+        self._cmd({"action": "type", "ref": ref, "text": text or "", "submit": submit})
+        return True
+
     def click(self, selector: str) -> str:
         # the bridge click matches by visible text OR css selector; it returns the
         # resulting page text, not a URL, so callers verify by re-observing.
@@ -81,19 +85,39 @@ class BridgeActuator:
         return getattr(self, "_url", "")
 
     def click_ref(self, ref: str) -> str:
-        # Synthetic element.click targets the exact snapshotted live node.  The
-        # bridge's optional trusted path converts a ref to screen coordinates and
-        # can hit a different element if layout shifts during its cursor delay —
-        # unacceptable for the final irreversible Mission boundary.
+        # Synthetic exact-ref click remains useful for sites that accept DOM events.
         self._cmd({"action": "click", "ref": ref, "trusted": False})
+        return getattr(self, "_url", "")
+
+    def trusted_click_ref(self, ref: str) -> str:
+        # Final writes frequently reject isTrusted=false. The extension re-resolves this exact ref
+        # after its cursor delay and refuses the click if the node moved, disappeared, or became
+        # covered, preserving the Gate's identity binding while delivering a genuine CDP event.
+        self._cmd({"action": "click", "ref": ref, "trusted": True})
         return getattr(self, "_url", "")
 
     def snapshot(self):
         r = self._cmd({"action": "snapshot", "max": 400, "text": False})
         return r if isinstance(r, dict) else {}
 
+    def show(self):
+        # Consent pages such as GitHub intentionally keep their final control
+        # disabled while the tab is in the background.  Focusing the already
+        # bound Mission tab is reversible and lets the final-action snapshot
+        # observe the same actionable state the user would see.
+        self._cmd({"action": "show"})
+        return True
+
+    def wait(self, seconds):
+        self._cmd({"action": "wait", "ms": max(0, min(30000, int(float(seconds) * 1000)))})
+        return True
+
     def eval(self, expr):
         return self._cmd({"action": "eval", "expr": expr})
+
+    def form_snapshot(self):
+        r = self._cmd({"action": "form_snapshot"})
+        return r if isinstance(r, dict) else {"fields": [], "actions": []}
 
     def read(self, max_chars: int = 2000) -> str:
         r = self._cmd({"action": "read"})
@@ -167,6 +191,18 @@ class FakeActuator:
             else '[e1] button "Publish"'
         return {"url": self.current_url(), "snapshot": body,
                 "count": 1}
+
+    def show(self):
+        self.calls.append(("show",))
+        return True
+
+    def type_ref(self, ref, text, submit=False):
+        self.calls.append(("type_ref", ref, "[sensitive]", submit))
+        return True
+
+    def wait(self, seconds):
+        self.calls.append(("wait", seconds))
+        return True
 
     def eval(self, expr):
         self.calls.append(("eval",))

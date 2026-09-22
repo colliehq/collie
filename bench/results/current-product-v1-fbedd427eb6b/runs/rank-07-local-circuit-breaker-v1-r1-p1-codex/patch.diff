@@ -1,0 +1,49 @@
+diff --git a/breaker.py b/breaker.py
+index e38d4ed..8f22870 100644
+--- a/breaker.py
++++ b/breaker.py
+@@ -2,6 +2,11 @@ class CircuitBreaker:
+     """A deterministic circuit breaker; callers supply timestamps."""
+ 
+     def __init__(self, failure_threshold: int, cooldown: float):
++        if failure_threshold < 1:
++            raise ValueError("failure_threshold must be at least 1")
++        if cooldown < 0:
++            raise ValueError("cooldown must be non-negative")
++
+         self.failure_threshold = failure_threshold
+         self.cooldown = cooldown
+         self.state = "closed"
+@@ -9,16 +14,29 @@ class CircuitBreaker:
+         self.opened_at = None
+ 
+     def allow(self, now: float) -> bool:
+-        if self.state == "open" and now > self.opened_at + self.cooldown:
++        if self.state == "closed":
++            return True
++        if self.state == "open" and now >= self.opened_at + self.cooldown:
+             self.state = "half_open"
+             return True
+-        return self.state != "open"
++        return False
+ 
+     def record_success(self) -> None:
+         self.state = "closed"
++        self.failures = 0
++        self.opened_at = None
+ 
+     def record_failure(self, now: float) -> None:
++        if self.state == "open":
++            return
++
++        if self.state == "half_open":
++            self.state = "open"
++            self.failures = self.failure_threshold
++            self.opened_at = now
++            return
++
+         self.failures += 1
+-        if self.failures > self.failure_threshold:
++        if self.failures >= self.failure_threshold:
+             self.state = "open"
+             self.opened_at = now

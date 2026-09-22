@@ -1,0 +1,1666 @@
+{
+  "model_calls": 0,
+  "candidates": 166,
+  "rows": [
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger--claude-code--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "39d3dec4c78dd1277c72321d1f434617a4ea2917dcbb3f3885270645547be1c7",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger--claude-code--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "a4f9ff2f6fc763d2f26aaf603637ac36889f41d3665ad799474a9184de2742cd",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger--claude-code--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "7e44b215c0f259f1b7e2fbc48172ea898c2b1b1be73d3e12bd2019afcf5316d8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger--collie--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "3d36c80a848bd268e2022b0c95f8192ad322d0cb29fda1a2c0ea689c7a5ae270",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger--collie--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "92a3caff3dfa17f479140b05cb14fb0b023b540ba6dadd9485d921e1742f94d1",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger--collie--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "f4c91f3bffe6f64b9cba3ac9f720f0093f50873550e2553082a426397a1c3469",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger-coverage-review--claude-code--00",
+      "task": "versioned-event-projection-ledger-coverage-review",
+      "patch_sha256": "1d9b0a265e94c99882b63f1eda0e3bed76654fb2e3329b428265e1814db5a40d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger-coverage-review--claude-code--01",
+      "task": "versioned-event-projection-ledger-coverage-review",
+      "patch_sha256": "c3e2b301f2784e0e68e0208c98e3913cff314124302c86af6d73d1b8d9030be9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger-coverage-review--claude-code--02",
+      "task": "versioned-event-projection-ledger-coverage-review",
+      "patch_sha256": "aba43b5a8db02158be0d5452b6d096bcde5e134e3a11b11c5ec83c7b1a9a783b",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger-coverage-review--collie--00",
+      "task": "versioned-event-projection-ledger-coverage-review",
+      "patch_sha256": "d0efacfebd39b69d92141b9435cc6970230318724fe3361d6dd5f502cc7db893",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger-coverage-review--collie--01",
+      "task": "versioned-event-projection-ledger-coverage-review",
+      "patch_sha256": "8f91fd1806d9abd7cee59679e3e1566ed44979ff00466dfe7c18b8b18a050c44",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-eventview",
+      "job": "versioned-event-projection-ledger-coverage-review--collie--02",
+      "task": "versioned-event-projection-ledger-coverage-review",
+      "patch_sha256": "23036030c049b99121cdadc01b6a76500b98ac48038d4265e3a78366c05b89a8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-event-projection-ledger--claude-code--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "45bcedd9aff4bad89cb858bda13df1f337b1632e511c44a145b81fe5482ece59",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-event-projection-ledger--claude-code--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "bf704c94d3e98ead08d79aa15c4475fd32cb3f27f64f9ae4a400b6d07bba2271",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-event-projection-ledger--claude-code--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "f0cdf887c0d5615f91c68655fd724699c63bc24505b2c0499a44921c2729efe5",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-event-projection-ledger--collie--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "d09c8d19462a6870f7220310457a07df29a56fa526d0464cea59b1d819bec668",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-event-projection-ledger--collie--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "2081b245ba285072d8cbb5b0d79776502cf4544e74e730727c3b77a0ad41e8ca",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-event-projection-ledger--collie--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "7d6c4ef200bb78bd860327cfbd36a7cf551bf7010d5085242ff5c3972b177950",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-snapshot-cursor-pager--claude-code--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "c6db06f16c978253eb664fa87219ddae6ebbf6c6e68b185c10bb2dd15d08d80a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-snapshot-cursor-pager--claude-code--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "4f01563dc537ff06fc325cd95921cffd533f9ca5103c109c95dc993050fd3054",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-snapshot-cursor-pager--claude-code--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "6c8634ece56861dc8886a2244a2414b1f31092ebc4427bcc7367f72f555ec204",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-snapshot-cursor-pager--collie--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "ae80214bd809327ee825cf092185e27c3cca505e815dca27861a784299ec42aa",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-snapshot-cursor-pager--collie--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "89681bbd8ab26776cf94689e86deec1285f847dc5681f342a7e0ed58f09e319b",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-full-context",
+      "job": "versioned-snapshot-cursor-pager--collie--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "efbfcf5e2dcc66b8b91e643b97fe0c6c819fda777caa163d3d1156fcd9d79fc3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager--claude-code--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "2a5e13c8c46ba63eb4b6c6bcd0f99440e4c327af8880a9ca7ff4253469ce8da0",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager--claude-code--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "bff3a4b8922264c066225349a834ad507c90222ed8099b812da7f70540cfc90f",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager--claude-code--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "0f175098863d7e2657098539683cafeb29f9a444d6409c6ee8ef4825e5f94275",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager--collie--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "6deaf9ca5a203ebc0a77799928e3af574f1111dab0545ea9b93b951242beb98a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager--collie--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "78dc8ad9201b0f69954746dbb9404ab2c27f073ed61467c1fa39309887355f52",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager--collie--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "e3774fc36216705d9175f8aae6c5f7f746e162e0948a5a352e686a9cd11c8544",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager-coverage-review--claude-code--00",
+      "task": "versioned-snapshot-cursor-pager-coverage-review",
+      "patch_sha256": "8c952004d788c31af5fc103f9973c0fc59b8c55c9c9369b1a2bed3b781c059c9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager-coverage-review--claude-code--01",
+      "task": "versioned-snapshot-cursor-pager-coverage-review",
+      "patch_sha256": "d5eb227064fafac382bfdd11fafa087c077f8ed5b0b0ea34384b0b627df226fe",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager-coverage-review--claude-code--02",
+      "task": "versioned-snapshot-cursor-pager-coverage-review",
+      "patch_sha256": "86d6043bf265531e4a12ac02b2f1434ee9c653b31a800d6f02c8dcb041954ee9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager-coverage-review--collie--00",
+      "task": "versioned-snapshot-cursor-pager-coverage-review",
+      "patch_sha256": "2100c80de093e4dbf51e7e0cf73e398331b674b3d8bee408612eedfea23fc1ab",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager-coverage-review--collie--01",
+      "task": "versioned-snapshot-cursor-pager-coverage-review",
+      "patch_sha256": "4c31798f62964534c37cd24c09ff166520975879e203923a0ae85696d1fbcc05",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-pagination",
+      "job": "versioned-snapshot-cursor-pager-coverage-review--collie--02",
+      "task": "versioned-snapshot-cursor-pager-coverage-review",
+      "patch_sha256": "b6dc9f6fbe2b23fe91bc2fac0f67acd7c473750553c0922778e38ca75250b189",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-plain-control",
+      "job": "versioned-event-projection-ledger--collie--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "8d95512284b6a8ed90e30a419c665b1a0bc342176922e6936000164223f31c8b",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-plain-control",
+      "job": "versioned-event-projection-ledger--collie--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "2547097fd994b13c28e8b00428429c035a0375f45538d823895703b2518b26d4",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-plain-control",
+      "job": "versioned-snapshot-cursor-pager--collie--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "8705d237b4ca4eea6872a2664d86e5a747a7c2190672bf44ac25151b05645593",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-plain-control",
+      "job": "versioned-snapshot-cursor-pager--collie--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "0211a936a99a4a8117be69272c18919f57ac4cbada2ee342bd4e18f9da787c6d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-schema-repair",
+      "job": "versioned-event-projection-ledger--collie--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "7630d4ce4c7007cdbfa681a71a8003f8a20e20c6aaf246e7c8fcffe17bf4e9e3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-schema-repair",
+      "job": "versioned-event-projection-ledger--collie--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "e7bda9128bd32abf909ad047ced0bec6762444685c513e7fb595e04dd4c9c2f4",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-schema-repair",
+      "job": "versioned-snapshot-cursor-pager--collie--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "f4b0dbdea81f8f4318315657e6532b76389bb9f03691e5044e2bf2258a33636d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-schema-repair",
+      "job": "versioned-snapshot-cursor-pager--collie--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "c293625d48439d38afddeada9c5625390f0a9d93dd889399172ddb763bea7790",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "capacity-ledger-reservation-audit--claude-code--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "7b42507440a1a7a18520c026369951cf3dd042a4a7b83a5efc80d0dd300c08d9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "capacity-ledger-reservation-audit--claude-code--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "af3b6e8ad27e578ab4e0a1cf5717f358c187c99bbcd663dbbb0585accf736245",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "capacity-ledger-reservation-audit--claude-code--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "edc444ead5b1f265ee5f6f1cc1b10561262f7a5ed06a737da9eaaefaa15a2bb9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "2c1e89d3dde7b83427a5311e2cd86bd0f2820bce31eb917ac167e2e7c8d48353",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "d9796c5e762314c51c28f7ca630c3501a7af727818676bcea768e04b7a7e900c",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "d13f76b90fb4d8cd3f0148198c4b66a521cc4202a3e6211859bcb67d604652cc",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "ordered-pathrule-priority-engine--claude-code--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "177be0761c0a67a3f9595d72938c7d17a2495e05c0877739c9aecc76cf2b9a3d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "ordered-pathrule-priority-engine--claude-code--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "3b798addb7851a1fd8b280375bd703d64785905b6d65bc4cceb02dbbf9d1e530",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "ordered-pathrule-priority-engine--claude-code--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "20e0a1e12b6129f3f11dab4971e16abfc4b28d3ea3689c74d128495b64e81554",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "63f4704dac17636fc7a3e8e7e462d3aae7d6923a155023280f2037727beb2c35",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "90f0e50270a1e087d9550383da680ff438e1b7c4ca5ba4fa8a8debf0cb97285e",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-product",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "f106f9e9c0d613d482940f1a5debafdffcbe49f3d0a18a93dfb9880e0a1195dd",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "ae77615b59ae0cb9a28c844992258a502c9dae2dc2d04144eb3917155756792a",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "42cc2d6b3a2c38ee719df074a45f522313e562fe63e9432517e47ad99490e7b1",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "2838ccc48d02db61531a9f293000a152e7f0f82c7a0d9121d45cdc86c5e93116",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "acb1e24e0a6f99f28913f46857b83956c7607e16932a56c47d8fb5e0ca64c7f7",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "2838ccc48d02db61531a9f293000a152e7f0f82c7a0d9121d45cdc86c5e93116",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "cea2f466f6cca33ad6f2bc2de12573d569e72ba80c0f24c18d6b2d662fc56ef0",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "325a86f45ac0ea5cc2b69af2526e3e50d70a22630efb0b534099faa92855e8b2",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "9cb2f90f5329887d0e8a3ac2fcb5bfbbafa8e0a80524791e836b779ce2e7aab4",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "53d33e6c439872f7f3678a8243970f8497fe2734192aeb9f19c5abcc786b49c5",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "0f2fd0a6d635e5d100619b9742c0aa69a68e3370fb482ebc6a0408cd99b75326",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "fee5778fefbe3a0e77113b26f4b7f19e7c883de327b86fd5a64ec1ac6bfc4449",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "87d5bab3b87493a52e4b808730afe76495c65a0322d62474bbbfc3e7359f4f02",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "4d280068a4077280f359aa96ad6e5f074c641d7504f0b41c65bfc8fa4d4178e8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "b56e8a14a70d18a8b858d795f075dcb5e0730b7650ee1dfdd8791d3ae559e3f0",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "ee84ac6b78a74e10950e5a93df3ed2c63ce1ea8e1cf5878dc9bacc034101bbf2",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "2117247827b806fe7d1d5ea31ef257c220b53993a461a57d6e693f1e00b2e923",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "7568fc3be9416a7b7d7d01cc9c0163cae4f2ce56e1dc3a50a15553bd0c58ca2e",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "a77abd7d9fafc8febe95cbb8bbbf5afb1a28d62688bfa81a9dc220b83c21323b",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "65bc90231fe3e4ec32ced2aadb32ef9ab20fbb6f7dcb50f1d75d230fd4fb71c3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "2c6d4157d0e95ca64ff16b796caed4e87bcf685d5c9cb122a9f5f2ae72389829",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "9c87d3e2f5103882efe14f6d5d81d6ca2aa5360833c1e7f46c24fa89dd39eb7a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "8699eda823d6b076af65cad5b16ab3d8c63eba1ad522950ef2eeacb479bd33ef",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "d083462699d7f70867500f929ad775c7695e9baf1ed9363a81a1f8164196189d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "cdc9970f37fcab2210be6da1cc30a8b343c3e40541243d847697f6f4b3eb6725",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "6a1acfb0bcbaa7d43c4130f17883ea559dec7477656ef0c3c2a4ad4c72f2ee0c",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "76141efb0ddaf2e1e67c96585c901aa09582ffbb0f36377f61ef13c3e8985e18",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "d09d717c52c56c598026168aa40d98ba3c7e2513456a3c6bec20a552726fcb74",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "4019b0953c9f1af3686fc6949740d562724488b39a9228ac1462452175c618c5",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "77d733ccbef8970deda448d83a833a5d927a85bc433cf5f312e378fb0a1f073f",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-default",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "c62e56f541ed217e30eb4b6d377e359a840964fdafe82d67ae080f1ef25445f1",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-default",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "6d41c3925f94cb39d22bbee836087e2a15387c460635d5ce5363859eb7d5bed3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-default",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "d890c6cc0757f535a18fb76f0c6a5e4764c4b95b4e6424423e101a9eedfc2797",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-default",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "7ac1d40408fd6a2f498eedd6557d60867567e4b07a92a94795320efb0a59d8c9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-default",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "7ab62af8a024401fbfd3b83480bcd4f0a2376a5e229ddfc4b8c9bbf430af8730",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-default",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "2838ccc48d02db61531a9f293000a152e7f0f82c7a0d9121d45cdc86c5e93116",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "3faff143958a79cdd7345a2e2e6262ce419e060370b13709d3a228bb8f66fbd4",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "10b6120c4c7106345a9eed5f62e37648b26edf813bf3be6425ca3db1efcb1e53",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "74bc3a52f1469b0432c079f6ad1badf153365b3c7e75da54f402a5376354ff08",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "500fdb30b656bdfcbeb15238a9b59e665cafc2d72fee88bbe1c22db33e8bc5d8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "fb26d07c5651877d7e64696c1fd4832c29a3d78c649f85001636630717c433be",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "b7b27db7957c19942a2a91c8087f65b55963829584f760235b3de724f34a60df",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "51d076346252ac12099d288300d8fd1befff47f8b13b2481cd1ca0ab08ad37ed",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "ded4cbd4877e20c16d5818a982f82a72f2d26ebd041fbb700a08669fd50500df",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "8b94c97559e85d0ca968132bf6d7eb87af74839117af0c14e73076dc3ef533f8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "668201d1b4de38a22b1a955a63f70a6dd0124bd6115cb662835f589fdaeb43fb",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "72eddd4be6aac1892caa5267e058f11d63f13b15c918c48397897510a29662a8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "087792f40b0367c0797e3e56d9a61328eb53fef98863416f727a0603886568b0",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "job": "capacity-ledger-reservation-audit--collie--00",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "ffa0dad1703b2908ec23046e41e31dd74e917b6bf3d33a862dbf56f20bc32ea3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "job": "capacity-ledger-reservation-audit--collie--01",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "cd80c235aae82aa8a3c0b09057d6c040f2cc9f6680d45a8a664cf3a352d4983a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "job": "capacity-ledger-reservation-audit--collie--02",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "4442a8ae48d7cc7888eeb2b425f9d50b7358212aecfb056c5123718756511a04",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "job": "ordered-pathrule-priority-engine--collie--00",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "ebb06dfc564c0454be24ca47a9a7ca71c30755e080bb96abc1b66619f79e88f9",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "job": "ordered-pathrule-priority-engine--collie--01",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "75864e6099cf012ed1dcbefac732cc3c2525f060390608f70b4c4b8450659199",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "job": "ordered-pathrule-priority-engine--collie--02",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "debba4bb33e4f3305e0abe031dbdcacc10c7f2abf75773f542b14c514b42fbe8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-event-projection-ledger--claude-code--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "848d6a4d839e9307e500a54cf5d384c22cb184a0c31f8e7176056add9f68b684",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-event-projection-ledger--claude-code--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "9f0de9c396c38857cf0d4b6353a7e681000827f5a7302d6ff65964b2f3fb050a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-event-projection-ledger--claude-code--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "c8eb85d30774dce91eeb9b63c24bb2657e00d263be64d2f68b9bee05849251de",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-event-projection-ledger--collie--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-event-projection-ledger--collie--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-event-projection-ledger--collie--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-snapshot-cursor-pager--claude-code--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "2bdd71ecadbf1035b8291dfbc021e5fd354dffe6e961ed403116c263f12781de",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-snapshot-cursor-pager--claude-code--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "3b6fd9590754434d5d4962ca5aa6a661205c680bb9e63232a18c8bfb3b21a4f2",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-snapshot-cursor-pager--claude-code--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "36be504fd2f88026c299ff3deeefcbf35fd8a96f4b9a53a1a5fd5210dc33d03d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-snapshot-cursor-pager--collie--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-snapshot-cursor-pager--collie--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured",
+      "job": "versioned-snapshot-cursor-pager--collie--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact_correct": false,
+      "original_grader_correct": false,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-event-projection-ledger--claude-code--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "ce29a225f870a32770fc7f750d74f8aa0b92e46a9e5abc44b318a1c17f833f1a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-event-projection-ledger--claude-code--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "7ed47926c2e0dc797d7ceba599840dc0940bb2947429c77d9605e1476d36a4fb",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-event-projection-ledger--claude-code--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "99c5c861420d5710e1852290a9ff428d3e65a9aa24c1794ebc19157b9b2ad2b3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-event-projection-ledger--collie--00",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "3c0a052e18515427f3900590dbb6f78d118b4c0f210a8fd85ffea8593f4bad98",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-event-projection-ledger--collie--01",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "9eb52b9e48d4bc0e93d8e2e5be33d747291b8992e17c8f080beab0b608a709ae",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-event-projection-ledger--collie--02",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "300cb901d5dc5b5e523e8371dd991446f8d153166f94fdf2d2c7873c5b9222ef",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-snapshot-cursor-pager--claude-code--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "eb1b448b530da62fd634db534147ddeda7dc56f72ca7f01a68de79b0b6027f2d",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-snapshot-cursor-pager--claude-code--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "767f86445169608e9976632faa429fd4b1a309b3790c8fc2c5652d0d55b0a86f",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-snapshot-cursor-pager--claude-code--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "924f2c7a715e0aa5cf7ba15a431ae2ff7e57835581141483d4c731e38a5f252e",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-snapshot-cursor-pager--collie--00",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "442ecb89b2ddccfc55b756c60e17595b31ef2574ef94bdb1229dbe3edc673e63",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-snapshot-cursor-pager--collie--01",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "bb2d3b6433b869b64bd1f5d3e86353465ffc567bf9256c5549a5b14bc5c437f1",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "native-structured-v2",
+      "job": "versioned-snapshot-cursor-pager--collie--02",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "98ad9c09a5bdb36490a49ae1a2775fed780b11c52f3c11d18594b3e50f8bb79f",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0001-versioned-snapshot-cursor-pager-r1-p1-prime",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "004568cf1aa1ac67948fc618cb85259cd6981a79e078a73ae8f9c68443324729",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0002-versioned-snapshot-cursor-pager-r1-p2-pi",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "6d27d6f8e1895e88ffb264e6e577ccb18a56ce39c039e09de1ccb70fd7d2a289",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0003-versioned-snapshot-cursor-pager-r1-p3-hermes",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "f1f2a0818a72bb0f888ae601b220d3c890c3acac06b425099ea19ca719d31b46",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0004-versioned-snapshot-cursor-pager-r1-p4-collie",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "ddeffd90a66bce0fcce44ecfd2e6588c95c818e424266f79b4a8d11af177e4bf",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0005-versioned-snapshot-cursor-pager-r2-p1-pi",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "5274a0869cae088ae87434cf9b8649676abd5ff90533664c80a66f4242493ee4",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0006-versioned-snapshot-cursor-pager-r2-p2-hermes",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "31290bdc46507928eea6ce5d4cd9b5c83b6ddb62b1e7f1bd0c6291aa76c3fe4c",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0007-versioned-snapshot-cursor-pager-r2-p3-collie",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "93f8a5dfa8fa8f16e9e4fd02f053495b104efa11c5611672c26202cfeef183a4",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0008-versioned-snapshot-cursor-pager-r2-p4-prime",
+      "task": "versioned-snapshot-cursor-pager",
+      "patch_sha256": "6209781504828e5311cd2c0b70ac6b8f1e3600b2665d2ec5a8303ee003cf94fc",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0009-versioned-event-projection-ledger-r1-p1-collie",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "e8b957374d1d4ed62464b049b9b88397d780aad0b665395345f98a5c02e7bfa3",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0010-versioned-event-projection-ledger-r1-p2-prime",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "42a1c1c7af5bc97b5616d4be24c8aaf8e1b41317ce5f7fb94cc03670bf24674e",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0011-versioned-event-projection-ledger-r1-p3-pi",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "8a7304d8dd61bf8c99df48b66925917479369977c225e06e8b4718403de301c8",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0012-versioned-event-projection-ledger-r1-p4-hermes",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "f532a336ddebaffb93585954c5aaf93fe4ee13af16757f081d033e092a4ecb07",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0013-versioned-event-projection-ledger-r2-p1-hermes",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "13c404f9c953ac2e55bf56e6c1db4ba5d6a622962756a4a395f21779d0793668",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0014-versioned-event-projection-ledger-r2-p2-collie",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "0ef7267390a976000c9f2b6d702aad9e47ef57b7d751efebbba4e997380aa170",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0015-versioned-event-projection-ledger-r2-p3-prime",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "3efa498567e55468ade7fdf47947934f2b5b12a7742b05137af617f9edb35caa",
+      "artifact_correct": true,
+      "original_grader_correct": null,
+      "original_status": "invalid_infrastructure",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-fresh",
+      "job": "batch-0016-versioned-event-projection-ledger-r2-p4-pi",
+      "task": "versioned-event-projection-ledger",
+      "patch_sha256": "246ab472f0328d03403c1fbfe6251c7e88eabd77387e7e1f43796e20ab113bf1",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0001-ordered-pathrule-priority-engine-r1-p1-prime",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "936568710e9573b08bce6e5c7508275723b579b57cd5ee3b7917d7ba4fa0d982",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0002-ordered-pathrule-priority-engine-r1-p2-pi",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "7a46d1e4669cd258923795c77923f416fea4e71af4af95a363ac1473f9f92904",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0003-ordered-pathrule-priority-engine-r1-p3-hermes",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "1953c6217832ae6bc021f710252767b249397afe4666783fad83fa79b4f196e6",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0004-ordered-pathrule-priority-engine-r1-p4-collie",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "cb7eb2fee44b8ff6624051b2d399f52da550eb116b4c7d12c9cbc1d395ef9860",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0005-ordered-pathrule-priority-engine-r2-p1-pi",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "e38abcc9fc7b67032235b0656c57d8fc234cde8001a53e41938b768cdb4cdcab",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0006-ordered-pathrule-priority-engine-r2-p2-hermes",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "71cf8ed4d533f1d382c1c3376211403a3fa0b78b6c2499e946dba9e197ef09eb",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0007-ordered-pathrule-priority-engine-r2-p3-collie",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "9469a9b1b9360b66f3efb818ce0d5406adf7fb31d1f38b4eea443f06999d5a9b",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0008-ordered-pathrule-priority-engine-r2-p4-prime",
+      "task": "ordered-pathrule-priority-engine",
+      "patch_sha256": "823fb5e4b3a075a535539e909df11b464c3da5bd943bb0cbb629c9e1b4d4ef59",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0009-capacity-ledger-reservation-audit-r1-p1-collie",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "402e480ca723b5ce4ab069a544628f2b566aa5390798392f3de4477000fff42f",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0010-capacity-ledger-reservation-audit-r1-p2-prime",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "de3e34f752c5135a3af92de555c3f8dc993301abe9b127e0cf6e7fbeab223a45",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0011-capacity-ledger-reservation-audit-r1-p3-pi",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "baf7dbebd5a24c2f364919ad04ecfef4d98c7e08d036902a599f62aaf62b9284",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0012-capacity-ledger-reservation-audit-r1-p4-hermes",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "b6266457bd4b262c25e546888cba4d3ed7ec870df806ad9b8b2513ca80b21dbb",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0013-capacity-ledger-reservation-audit-r2-p1-hermes",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "bcc02c9212c76a46fee05b1e281addc2d385ce57dcef39332c2e2b9fb6782d59",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0014-capacity-ledger-reservation-audit-r2-p2-collie",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "a9094ee3ac635fb027ea570f4d555913c5a2c0fc1224e983d9f7035e6a304101",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0015-capacity-ledger-reservation-audit-r2-p3-prime",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "162e9ab768ec4c2bddab20175447cd222d97afa09e98b4bb84660b7b82bce1ba",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    },
+    {
+      "suite": "normalized-session2",
+      "job": "batch-0016-capacity-ledger-reservation-audit-r2-p4-pi",
+      "task": "capacity-ledger-reservation-audit",
+      "patch_sha256": "75af755a48319a750add8f7ab92a0b6634c63000469480790761ed7edacbf38a",
+      "artifact_correct": true,
+      "original_grader_correct": true,
+      "original_status": "valid_resolved",
+      "claim": "Offline artifact check; does not change experiment eligibility."
+    }
+  ]
+}

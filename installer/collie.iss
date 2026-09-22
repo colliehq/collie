@@ -10,7 +10,7 @@
 ; the in-box csc, so no .NET SDK is needed), the browser extension, and the WebView2 bootstrapper.
 ;
 ; The wizard opens on a branded star-map welcome page, then a custom card-style language picker
-; (77 languages, Simplified Chinese up front — see gen_langs.py for why a custom page replaced
+; (33 languages, Simplified Chinese up front — see gen_langs.py for why a custom page replaced
 ; Inno's alphabetical native dialog). Whatever you pick becomes Collie's own UI language on the very
 ; first launch, so nothing needs configuring afterward.
 ;
@@ -26,7 +26,7 @@
   #define AppVer   "0.0.0-dev"
 #endif
 #define Publisher  "Collie"
-#define AppUrl     "https://github.com/wudaming/collie"
+#define AppUrl     "https://github.com/colliehq/collie"
 #define PyW        "{app}\python\pythonw.exe"
 #define IcoFile    "{app}\python\Lib\site-packages\harness\wallpaper\collie.ico"
 
@@ -38,7 +38,7 @@ AppPublisher={#Publisher}
 AppPublisherURL={#AppUrl}
 AppSupportURL={#AppUrl}
 AppUpdatesURL={#AppUrl}
-AppComments=A memory-first coding agent that verifies its own work.
+AppComments=A personal AI operations system for your devices.
 ; per-user install: no admin prompt, and it matches the per-user logon autostart collie registers
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\Collie
@@ -84,6 +84,7 @@ StatusWebView2=Installing the WebView2 runtime...
 StatusLang=Applying your language...
 StatusWallpaper=Setting up the desktop wallpaper...
 StatusBridge=Setting up the browser bridge...
+StatusSupervisor=Setting up 24/7 recovery...
 TaskWallpaper=Live star-map wallpaper on my desktop
 TaskBridge=Let collie use my real browser (already logged in)
 RunApp=Start Collie now
@@ -135,11 +136,11 @@ de.RunApp=Collie jetzt starten
 SetupWindowTitle=%1
 ; The stock welcome/finish text says nothing about what you just downloaded. Overridden for the
 ; two primary audiences; every other language keeps Inno's translated default.
-en.WelcomeLabel2=Collie is a coding agent that remembers your project and verifies its own work before it calls anything done.%n%nEverything it needs ships inside this installer — no Python, no terminal, no configuration. Just click Next.
+en.WelcomeLabel2=Collie is your personal AI operations system. Give it an outcome; it coordinates models, tools, skills, and devices, asks before sensitive actions, and returns scoped evidence.%n%nEverything it needs ships inside this installer — no Python or terminal required. Just click Next.
 en.FinishedLabel=Collie is installed. Open it from the Start menu (or the desktop icon) and pick a brain on first launch — an existing Claude, Codex, or Grok subscription connects in one click.
-zh.WelcomeLabel2=Collie 是一个会记住你项目的编程 agent——它会先自己跑起来验证,通过了才说「做完了」。%n%n运行所需的一切都已经打包在这个安装程序里:不需要 Python、不需要命令行、不需要任何配置,点「下一步」就行。
+zh.WelcomeLabel2=Collie 是你的个人 AI 执行系统。告诉它你想要的结果;它会协调模型、工具、技能和设备,在敏感操作前询问你,并交回有明确范围的证据。%n%n运行所需的一切都已经打包在这个安装程序里:不需要 Python 或命令行,点「下一步」就行。
 zh.FinishedLabel=Collie 已安装完成。从开始菜单(或桌面图标)打开它,首次启动时选一个「大脑」——已有的 Claude、Codex 或 Grok 订阅可以一键接入。
-zhtw.WelcomeLabel2=Collie 是一個會記住你專案的編程 agent——它會先自己跑起來驗證,通過了才說「做完了」。%n%n執行所需的一切都已經打包在這個安裝程式裡:不需要 Python、不需要命令列、不需要任何設定,按「下一步」就行。
+zhtw.WelcomeLabel2=Collie 是你的個人 AI 執行系統。告訴它你想要的結果;它會協調模型、工具、技能和裝置,在敏感操作前詢問你,並交回有明確範圍的證據。%n%n執行所需的一切都已經打包在這個安裝程式裡:不需要 Python 或命令列,按「下一步」就行。
 zhtw.FinishedLabel=Collie 已安裝完成。從開始功能表(或桌面圖示)開啟它,首次啟動時選一個「大腦」——已有的 Claude、Codex 或 Grok 訂閱可以一鍵接入。
 
 [Tasks]
@@ -155,6 +156,17 @@ Source: "payload\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: delet
 ; the full-bleed welcome splash — extracted to {tmp} and painted over the whole welcome page ([Code])
 Source: "art\welcome-hero-900x570.bmp"; Flags: dontcopy
 
+[InstallDelete]
+; Inno overlays directory trees; it does not remove files that disappeared from a newer payload.
+; Repeated upgrades therefore accumulated several collie_harness/pip metadata directories and, in
+; one real install, mixed two pip versions until `python -m pip` no longer imported. Normalise only
+; the two staged packages that this installer owns before [Files] copies their clean replacements.
+; ~/.collie is outside {app} and is deliberately untouched (settings, OAuth, memory and missions).
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\harness"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\collie_harness-*.dist-info"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\pip"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\pip-*.dist-info"
+
 [Icons]
 Name: "{group}\{#AppName}";        Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; IconFilename: "{#IcoFile}"
 Name: "{autodesktop}\{#AppName}";  Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; IconFilename: "{#IcoFile}"; Tasks: desktopicon
@@ -166,31 +178,39 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; \
   StatusMsg: "{cm:StatusWebView2}"; Flags: waituntilterminated
 
-; 2) carry the chosen language into the app, so the first launch is already localized.
-;    {code:AppLangParam} expands to `config LANG <code>` (or a harmless no-op when it's "auto").
+; 2) carry the chosen language into a FIRST install, so its first launch is localized. An upgrade
+;    must not write settings.json at all: the existing language and every provider/model choice are
+;    user state, and a silent upgrade has no language-page decision to apply.
 Filename: "{#PyW}"; Parameters: "{code:AppLangParam}"; WorkingDir: "{app}\python"; \
-  StatusMsg: "{cm:StatusLang}"; Flags: runhidden waituntilterminated
+  StatusMsg: "{cm:StatusLang}"; Flags: runhidden waituntilterminated; Check: ShouldApplyAppLanguage
 
-; 3) optional: the live-wallpaper desktop, and the real-browser bridge, at logon
+; 3) optional wallpaper. Browser bridge logon/recovery is owned by the supervisor below.
 Filename: "{#PyW}"; Parameters: "-m harness.cli wallpaper --install"; WorkingDir: "{app}\python"; \
   StatusMsg: "{cm:StatusWallpaper}"; Flags: runhidden waituntilterminated; Tasks: wallpaper
-Filename: "{#PyW}"; Parameters: "-m harness.cli browser-bridge --install"; WorkingDir: "{app}\python"; \
-  StatusMsg: "{cm:StatusBridge}"; Flags: runhidden waituntilterminated; Tasks: bridge
 
-; 4) launch it
-;    A previous release's updater does not know Slack listeners exist. The NEW
-;    installer therefore owns this migration: after replacing the runtime,
-;    restart every per-dog launcher the user opted into. A duplicate loses the
-;    per-dog OS lock and exits harmlessly.
-Filename: "{#PyW}"; \
-  Parameters: "-c ""import glob,os,subprocess,sys; [subprocess.Popen([sys.executable,p], creationflags=0x08000000) for p in glob.glob(os.path.expanduser('~/.collie/slack-*.pyw'))]"""; \
-  StatusMsg: "Restarting Slack agents..."; Flags: runhidden waituntilterminated
+; Per-user Scheduled Task, no elevation. The optional bridge choice is persisted in the generated
+; desired-state file on first install; updates preserve the user's existing supervisor config.
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor install --no-boot"; WorkingDir: "{app}\python"; \
+  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: bridge; \
+  BeforeInstall: RestoreUpgradeSettingsBeforeSupervisor
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor install --no-boot --disable-worker bridge"; WorkingDir: "{app}\python"; \
+  StatusMsg: "{cm:StatusSupervisor}"; Flags: runhidden waituntilterminated; Tasks: not bridge; \
+  BeforeInstall: RestoreUpgradeSettingsBeforeSupervisor
+; Start recovery in this login now; Task Scheduler owns subsequent logons. InstanceLock makes a
+; duplicate updater launch harmless.
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor run"; WorkingDir: "{app}\python"; \
+  Flags: runhidden nowait
 
-; 5) launch the app
+; 4) launch the app. Slack listeners are discovered and adopted by the supervisor above; starting
+; their legacy launchers here as well races the per-dog lock and creates a false circuit-open alarm.
 Filename: "{#PyW}"; Parameters: "-m harness.cli app"; WorkingDir: "{app}\python"; \
   Description: "{cm:RunApp}"; Flags: runhidden postinstall nowait skipifsilent
 
 [UninstallRun]
+; Cooperatively stop supervised children, then remove the per-user Scheduled Task/Startup fallback
+; while the bundled interpreter still exists. The force-stop below remains a bounded last resort.
+Filename: "{#PyW}"; Parameters: "-m harness.supervisor uninstall"; WorkingDir: "{app}\python"; \
+  RunOnceId: "UninstallSupervisor"; Flags: runhidden waituntilterminated
 ; Stop what's running from the install dir BEFORE the files disappear — FAST (taskkill + one short
 ; powershell), NOT by cold-starting the embeddable python three times to run harness commands: each
 ; of those loads collie's heavy deps (onnx/providers), so the old approach made uninstall look hung
@@ -204,6 +224,9 @@ Filename: "{cmd}"; \
 [UninstallDelete]
 ; the logon autostart launchers (Startup folder) — removed directly so we don't need to run python
 Type: files; Name: "{userstartup}\collie-wallpaper.vbs"
+; the "user turned the wallpaper autostart off" marker `collie wallpaper --uninstall` leaves for
+; install() to honour — a FULL app uninstall clears it so a later fresh install starts unencumbered
+Type: files; Name: "{userstartup}\collie-wallpaper.vbs.disabled"
 Type: files; Name: "{userstartup}\collie-bridge.vbs"
 ; Inno only removes what it INSTALLED. The app generates files afterward that it can't track — the
 ; engine .exe compiled on first run from the shipped C# source, __pycache__ (.pyc), and any runtime
@@ -287,6 +310,12 @@ var
   OrigFormColor: TColor; HaveOrigColor: Boolean;   { restore the light form bg off the welcome page }
   TimerCb: LongWord;     { WinAPI-timer callback that re-hides Inno's buttons after it re-shows them }
   CurPage: Integer;      { the page currently shown (the timer callback reads it) }
+  UpgradeBackupDir: String;
+  UpgradeBackupActive: Boolean;
+  UpgradeSettingsPath: String;
+  UpgradeSettingsBackup: String;
+  UpgradeSettingsBackupActive: Boolean;
+  InstallCommitted: Boolean;
 
 procedure Repaint;
 var i: Integer;
@@ -368,7 +397,7 @@ end;
   /SUPPRESSMSGBOXES turns into exit code 5. We kill only processes whose path is under the install
   dir, so an unrelated Python elsewhere is never touched. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var rc: Integer; app: String;
+var rc: Integer; app, pythonDir, ps: String;
 begin
   Result := '';
   app := ExpandConstant('{app}');
@@ -386,12 +415,133 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, rc);
     Sleep(700);
   end;
+
+  { [InstallDelete] deliberately removes stale owned packages before [Files] overlays the payload.
+    Inno can undo newly installed files when Setup aborts, but it cannot reconstruct those deleted
+    old files. Rename the complete runtime first so a cancelled/failed upgrade remains bootable. }
+  pythonDir := app + '\python';
+  UpgradeBackupDir := app + '\.collie-upgrade-backup-python';
+  { User state is outside the install directory, but no process may rewrite it during an upgrade. Keep an exact
+    copy anyway: this catches a stale desktop/settings request or a future post-install helper that
+    accidentally replaces the merge-safe file. The backup is deliberately beside settings.json so
+    a failed final restore remains recoverable after Setup's temporary directory disappears. }
+  UpgradeSettingsPath := ExpandConstant('{%USERPROFILE}\.collie\settings.json');
+  UpgradeSettingsBackup := UpgradeSettingsPath + '.collie-upgrade-backup';
+  if (DirExists(pythonDir) or DirExists(UpgradeBackupDir)) and
+     FileExists(UpgradeSettingsPath) then begin
+    if not CopyFile(UpgradeSettingsPath, UpgradeSettingsBackup, False) then begin
+      Result := 'Cannot preserve Collie settings for this upgrade.';
+      Exit;
+    end;
+    UpgradeSettingsBackupActive := True;
+  end;
+  if FileExists(UpgradeBackupDir) then begin
+    Result := 'Cannot prepare a safe Collie upgrade: the rollback path is a file.';
+    Exit;
+  end;
+  if DirExists(UpgradeBackupDir) then begin
+    { A hard-killed prior Setup can leave both its old backup and a partial new runtime. The old
+      backup is the only known-good side, so retain it and remove only the installer-owned partial. }
+    UpgradeBackupActive := True;
+    if DirExists(pythonDir) and (not DelTree(pythonDir, True, True, True)) then begin
+      Result := 'Cannot remove the incomplete Collie runtime to restore the previous version.';
+      Exit;
+    end;
+  end else if DirExists(pythonDir) then begin
+    if not RenameFile(pythonDir, UpgradeBackupDir) then begin
+      { Windows can retain a non-delete-sharing directory handle briefly even after every Collie
+        process has exited.  The files remain readable/writable, so keep the same rollback guarantee
+        with a complete copy instead of turning an otherwise safe silent upgrade into exit code 7.
+        The source stays in place for [InstallDelete]/[Files] to overlay; on any later failure,
+        RestoreUpgradeBackup deletes that partial tree and restores this known-good copy. }
+      Log('Atomic runtime backup rename was unavailable; trying a complete copy fallback.');
+      ps := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+      if not Exec(ps,
+          '-NoProfile -NonInteractive -Command "$ErrorActionPreference=''Stop''; ' +
+          'Copy-Item -LiteralPath ''' + pythonDir + ''' -Destination ''' +
+          UpgradeBackupDir + ''' -Recurse -Force"',
+          '', SW_HIDE, ewWaitUntilTerminated, rc) then begin
+        Result := 'Cannot start the Collie upgrade rollback backup copy.';
+        Exit;
+      end;
+      if (rc <> 0) or (not DirExists(UpgradeBackupDir)) then begin
+        Log('Runtime backup copy failed with exit code ' + IntToStr(rc) + '.');
+        Result := 'Cannot create the Collie upgrade rollback backup. Close Collie and try again.';
+        Exit;
+      end;
+    end;
+    UpgradeBackupActive := True;
+  end;
+end;
+
+procedure RestoreUpgradeSettings(KeepBackup: Boolean);
+begin
+  if not UpgradeSettingsBackupActive then Exit;
+  if CopyFile(UpgradeSettingsBackup, UpgradeSettingsPath, False) then begin
+    Log('Restored the exact pre-upgrade Collie settings file.');
+    if not KeepBackup then begin
+      DeleteFile(UpgradeSettingsBackup);
+      UpgradeSettingsBackupActive := False;
+    end;
+  end else
+    Log('Could not restore Collie settings; retained backup: ' + UpgradeSettingsBackup);
+end;
+
+procedure RestoreUpgradeSettingsBeforeSupervisor;
+begin
+  { Supervisor children must start from the preserved provider/model, not a transient rewrite. }
+  RestoreUpgradeSettings(True);
+end;
+
+procedure RestoreUpgradeBackup;
+var pythonDir: String; rc: Integer;
+begin
+  if (not UpgradeBackupActive) or InstallCommitted then Exit;
+  pythonDir := ExpandConstant('{app}\python');
+  if DirExists(pythonDir) and (not DelTree(pythonDir, True, True, True)) then begin
+    Log('Rollback could not remove the partial Collie runtime: ' + pythonDir);
+    Exit;
+  end;
+  if DirExists(UpgradeBackupDir) then begin
+    if RenameFile(UpgradeBackupDir, pythonDir) then begin
+      Log('Restored the previous Collie runtime after an incomplete upgrade.');
+      UpgradeBackupActive := False;
+      { PrepareToInstall stopped the old 24/7 owner. Put that known-good runtime back in service;
+        the registered logon task remains the owner of future restarts. }
+      try Exec(pythonDir + '\pythonw.exe', '-m harness.supervisor run', pythonDir,
+               SW_HIDE, ewNoWait, rc); except end;
+    end else
+      Log('Rollback could not restore the previous Collie runtime: ' + UpgradeBackupDir);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RestoreUpgradeSettings(True)
+  else if CurStep = ssDone then begin
+    { ssDone is emitted only for a successful install, after the non-postinstall [Run] entries. }
+    RestoreUpgradeSettings(False);
+    InstallCommitted := True;
+    if UpgradeBackupActive and DirExists(UpgradeBackupDir) then begin
+      if not DelTree(UpgradeBackupDir, True, True, True) then
+        Log('Could not remove completed-upgrade backup: ' + UpgradeBackupDir);
+    end;
+    UpgradeBackupActive := False;
+  end;
+end;
+
+procedure DeinitializeSetup;
+begin
+  { Also runs on Cancel and fatal extraction/copy errors. First installs have no active backup. }
+  RestoreUpgradeSettings(False);
+  RestoreUpgradeBackup;
 end;
 
 procedure InitializeWizard;
 var y: Integer; lbl: TNewStaticText; divider: TPanel;
 begin
-  { In silent mode there is no wizard to build (the smart shell drives us with /VERYSILENT). All the
+  { In silent mode there is no wizard to build (updates may invoke us with /VERYSILENT). All the
     UI setup below touches WizardForm, which errors when there is no visible wizard — so skip it, or
     the whole silent install aborts with exit code 1. The language Run step derives the UI language
     from the active wizard language via CollieLang, so it needs nothing from here. }
@@ -596,7 +746,7 @@ end;
 
 { Expands the language Run line. Derive Collie's UI language from the ACTIVE wizard language (the
   language constant, which /LANG= sets) rather than the card page's AppLang var — so it works in
-  silent mode too (the smart-shell drives the backend with /VERYSILENT /LANG=xx, and the card page
+  silent mode too (automation may invoke Setup with /VERYSILENT /LANG=xx, and the card page
   never runs). "auto" => follow the browser, so run a harmless version query instead of writing. }
 function AppLangParam(Param: String): String;
 var c: String;
@@ -606,4 +756,11 @@ begin
     Result := '-m harness.cli config'
   else
     Result := '-m harness.cli config LANG ' + c;
+end;
+
+function ShouldApplyAppLanguage: Boolean;
+begin
+  { PrepareToInstall sets this before [Files] for every upgrade/recovery path and it stays set
+    through all non-postinstall [Run] entries. First installs have no runtime backup. }
+  Result := not UpgradeBackupActive;
 end;

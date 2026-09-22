@@ -1,0 +1,262 @@
+{
+  "source_commit": "1a0f548a775c9d4d146d3abac976751c4632deb7",
+  "checks": [
+    {
+      "name": "collie.localhost loads",
+      "passed": true
+    },
+    {
+      "name": "Today dashboard shown",
+      "passed": true
+    },
+    {
+      "name": "first run offers a companion name",
+      "passed": true
+    },
+    {
+      "name": "naming starts from a calm editable default",
+      "passed": true
+    },
+    {
+      "name": "onboarding appears when no provider is authed",
+      "passed": true
+    },
+    {
+      "name": "onboarding dismisses and stops blocking the page",
+      "passed": true
+    },
+    {
+      "name": "chosen name updates the task identity live",
+      "passed": true
+    },
+    {
+      "name": "renamed avatar uses a versioned transparent endpoint",
+      "passed": true
+    },
+    {
+      "name": "CSRF token injected",
+      "passed": true
+    },
+    {
+      "name": "slash opens a command palette",
+      "passed": true
+    },
+    {
+      "name": "slash palette keyboard selection fills without sending",
+      "passed": true
+    },
+    {
+      "name": "run setup has intent/effort/verify/workspace/strategy axes",
+      "passed": true
+    },
+    {
+      "name": "worker radio arrow selects and moves the roving tab stop",
+      "passed": true
+    },
+    {
+      "name": "radio arrow selects and moves the roving tab stop",
+      "passed": true
+    },
+    {
+      "name": "radio End key selects the last effort option",
+      "passed": true
+    },
+    {
+      "name": "failed image upload restores the draft and starts no text-only run",
+      "passed": true
+    },
+    {
+      "name": "single Required verification still needs a command",
+      "passed": true
+    },
+    {
+      "name": "desktop rejects out-of-range Pack attempts before launch",
+      "passed": true
+    },
+    {
+      "name": "desktop Pack uses its own check without a duplicate required field",
+      "passed": true
+    },
+    {
+      "name": "Pack still requires its own executed check",
+      "passed": true
+    },
+    {
+      "name": "status rail removed",
+      "passed": true
+    },
+    {
+      "name": "model trigger present in toolbar",
+      "passed": true
+    },
+    {
+      "name": "run details collapsed by default",
+      "passed": true
+    },
+    {
+      "name": "secondary toolbar actions open from More tools",
+      "passed": true
+    },
+    {
+      "name": "model picker opens with catalog",
+      "passed": true
+    },
+    {
+      "name": "model picker keyboard switch persists",
+      "passed": true
+    },
+    {
+      "name": "model picker shortcut opens and closes",
+      "passed": true
+    },
+    {
+      "name": "theme toggles",
+      "passed": true
+    },
+    {
+      "name": "theme persists across reload",
+      "passed": true
+    },
+    {
+      "name": "sidebar collapses",
+      "passed": true
+    },
+    {
+      "name": "collapsed sidebar has ~0 width",
+      "passed": true
+    },
+    {
+      "name": "sidebar state persists",
+      "passed": true
+    },
+    {
+      "name": "sidebar expands back",
+      "passed": true
+    },
+    {
+      "name": "session delete (token'd) works",
+      "passed": true
+    },
+    {
+      "name": "deleted session file gone",
+      "passed": true
+    },
+    {
+      "name": "CSRF: unauth delete -> 403",
+      "passed": true
+    },
+    {
+      "name": "settings modal opens w/ rows",
+      "passed": true
+    },
+    {
+      "name": "My Collie keeps a permanent rename control",
+      "passed": true
+    },
+    {
+      "name": "Settings rename propagates without a reload",
+      "passed": true
+    },
+    {
+      "name": "Settings rename busts the previous avatar URL",
+      "passed": true
+    },
+    {
+      "name": "save closes the settings panel",
+      "passed": true
+    },
+    {
+      "name": "settings persisted to disk",
+      "passed": true
+    },
+    {
+      "name": "settings GET reflects save",
+      "passed": true
+    },
+    {
+      "name": "MCP pane draws a configured server",
+      "passed": true
+    },
+    {
+      "name": "and names it",
+      "passed": true
+    },
+    {
+      "name": "with the one-press catalog beside it",
+      "passed": true
+    },
+    {
+      "name": "settings ESC closes",
+      "passed": true
+    },
+    {
+      "name": "settings CSRF: unauth POST -> 403",
+      "passed": true
+    },
+    {
+      "name": "mobile: no horizontal overflow",
+      "passed": true
+    },
+    {
+      "name": "390px: run setup popup stays inside viewport",
+      "passed": true
+    },
+    {
+      "name": "320px: topbar and document do not overflow",
+      "passed": true
+    },
+    {
+      "name": "320px: run setup popup stays inside viewport",
+      "passed": true
+    },
+    {
+      "name": "phone closed drawer is inert and declared modal",
+      "passed": true
+    },
+    {
+      "name": "phone drawer traps keyboard focus",
+      "passed": true
+    },
+    {
+      "name": "phone drawer closes inert and returns focus",
+      "passed": true
+    },
+    {
+      "name": "phone run setup shows all five axes without overflow",
+      "passed": true
+    },
+    {
+      "name": "phone Plan resets and locks incompatible execution choices",
+      "passed": true
+    },
+    {
+      "name": "phone Pack owns isolation and requires a check",
+      "passed": true
+    },
+    {
+      "name": "phone Pack uses its own check without a duplicate required field",
+      "passed": true
+    },
+    {
+      "name": "phone rejects out-of-range Pack attempts before launch",
+      "passed": true
+    },
+    {
+      "name": "phone sends every selected axis and Pack check",
+      "passed": true
+    },
+    {
+      "name": "320px phone controls stay in viewport",
+      "passed": true
+    },
+    {
+      "name": "no uncaught page errors",
+      "passed": true
+    }
+  ],
+  "exit": 0,
+  "seconds": 22.192,
+  "installed_wheel": true,
+  "model_calls": 0,
+  "method": "Product GUI checks; override only module ROOT to the supplied runtime and choose an unused port."
+}

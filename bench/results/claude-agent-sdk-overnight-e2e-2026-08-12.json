@@ -1,0 +1,88 @@
+{
+  "format": "collie-claude-agent-sdk-route-evidence-v1",
+  "captured_at": "2026-08-12T19:16:08Z",
+  "scope": "route_and_control_plane_e2e",
+  "claim": "plumbing_and_safety_only",
+  "publishable_capability_ranking": false,
+  "source_surface_sha256": {
+    "harness/claude_agent_sdk.py": "bf26cc92c4421468a0b3cb576237331bc9fe9474bc92febd43c91d87de6ac57b",
+    "harness/claude_agent_worker.py": "fed6a4fffe5bd200be849aa3123ff3f8f98b60f2c7a111c4d53dd834f4e54b26",
+    "harness/missionweb.py": "c53ee4b09aaed147d1fd31b3401c63999ff050de07be06dc51888b3813cbf77b",
+    "harness/subscription_guard.py": "db458f146cb6973b4abab7a9ebcf61d12a8b60baf45e93e3c30eeedf22b572f5",
+    "harness/primitives.py": "8a407d4c2175ea4154ea65bcde7bfbe5a973899733dc76b346282734c39a766f"
+  },
+  "mission": {
+    "mission_id": "msn_291f93fdd653",
+    "state": "done_verified",
+    "provider": "claude-agent-sdk",
+    "model": "claude-opus-4-8",
+    "billing_safety_version": 2,
+    "creation_guard": {
+      "verdict": "allow",
+      "auth_method": "claude.ai",
+      "api_provider": "firstParty",
+      "tested_plan": "max",
+      "runtime": "official_claude_agent_sdk",
+      "api_key_source": "none",
+      "system_prompt_mode": "literal_custom",
+      "setting_sources": "empty",
+      "foreign_surfaces": "disabled"
+    },
+    "runnable_guard": {
+      "verdict": "allow",
+      "api_key_source": "not_reobserved_at_runnable_boundary",
+      "creation_guard_preserved": true
+    },
+    "request_ledger": {
+      "reserved": 4,
+      "completed": 4,
+      "error": 0,
+      "unsettled": 0
+    },
+    "runtime": {
+      "active_wall_ms": 18245,
+      "model_calls": 4,
+      "turns": 4,
+      "uncached_input_tokens": 8,
+      "output_tokens": 430,
+      "cache_tokens": 18540,
+      "retries": 0,
+      "marginal_cost_usd_classification": 0.0,
+      "api_equivalent_cost_usd": 0.091601
+    },
+    "workspace": {
+      "baseline_commit": "b9f18386bc9ed2090d817c4433b0be6c7c665ed7",
+      "baseline_tree_digest": "55f5a561ba7dea3037c9ce1f87577aa774bf0e469c6e80422e0ce8c579d6d646",
+      "agent_post_tree_digest": "575211ffda3d20953fed519404f0bc5cdabe3cc1bb74d5c360a5e48e1014774b",
+      "change": "value.py: VALUE = 1 -> VALUE = 2",
+      "value_sha256_after": "603f07c14978e83fb4eaaa3fb4a68091e5bebed59d682ed2c11f72bc287806a4",
+      "verifier_sha256_before_after": "f005cb75b7f598ce8f482bcd65dd6e945307feaf194fcad8a955aa9fd307c235"
+    },
+    "verification": {
+      "command": "python -B verify.py",
+      "exit_code": 0,
+      "output": "FINAL3_E2E_VALUE_2_VERIFIED",
+      "fresh": true,
+      "agent_boundary_matches": true,
+      "agent_differs_from_baseline": true,
+      "patch_attributed": true,
+      "verifier_mutated": false
+    }
+  },
+  "live_cancellation": {
+    "scope": "msn_final3_live_cancel",
+    "ownership_published": true,
+    "cancel_confirmed": true,
+    "cancel_ms_local_observation": 5.923,
+    "calling_thread_exited": true,
+    "completion_stop_reason": "error",
+    "reservation_outcome": "error",
+    "active_runs_after": 0
+  },
+  "limitations": [
+    "This is one small route/control-plane E2E, not a model-quality benchmark.",
+    "No 8-12 hour soak, sleep/wake, quota reset, or cross-restart run was performed.",
+    "Zero marginal cost is Collie's fail-closed route classification, not a post-run provider invoice observation.",
+    "Claude plan allowance remains rate- and usage-limited and provider policy can change."
+  ]
+}

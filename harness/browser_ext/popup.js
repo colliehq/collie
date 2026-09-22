@@ -2,6 +2,7 @@
 // Answers, at a glance, the question that cost a long debugging session: "is this thing actually
 // connected, and is the collie I'm running the one it's talking to?"
 const BRIDGE = "http://127.0.0.1:8677";
+let WEB = "http://127.0.0.1:8787";
 const $ = (id) => document.getElementById(id);
 
 function setStatus(kind, title, sub) {
@@ -22,6 +23,7 @@ async function refresh() {
   const v = chrome.runtime.getManifest().version;
   $("ver").textContent = "v" + v;
   $("rTab").textContent = await currentTab();
+  await refreshPresence();
   $("hint").textContent = "";
   setStatus("", "Checking…", "contacting the local bridge");
   try {
@@ -61,7 +63,177 @@ async function refresh() {
   }
 }
 
+async function refreshPresence() {
+  try {
+    const reply = await chrome.runtime.sendMessage({ type: "collie:get-status" });
+    const state = reply && reply.state;
+    if (!state || !state.attached) {
+      $("rAgent").textContent = "Not attached";
+      $("takeover").textContent = "Pause tab";
+      $("takeover").disabled = true;
+      return;
+    }
+    $("rAgent").textContent = (state.state || "idle") + " · " + (state.space || "default");
+    const paused = state.state === "paused";
+    $("takeover").textContent = paused ? "Resume tab" : "Pause tab";
+    $("takeover").disabled = false;
+  } catch (e) { $("rAgent").textContent = "Unavailable"; }
+}
+
+async function getWebToken() {
+  const remembered = await chrome.storage.local.get("collieWebPort");
+  if (Number(remembered.collieWebPort)) WEB = "http://127.0.0.1:" + Number(remembered.collieWebPort);
+  const reply = await chrome.runtime.sendMessage({ type: "collie:get-bridge-token" });
+  if (!reply || !reply.token) throw new Error("bridge token missing");
+  const requestAuth = () => fetch(WEB + "/api/browser/bridge-auth", {
+    headers: { Authorization: "Bearer " + reply.token }, cache: "no-store"
+  });
+  let response;
+  let needsStart = false;
+  try {
+    response = await requestAuth();
+    needsStart = !response.ok && response.status !== 403;
+  } catch (e) { needsStart = true; }
+  if (needsStart) {
+    for (let port = 8787; port < 8799 && needsStart; port++) {
+      if (WEB.endsWith(":" + port)) continue;
+      const candidate = "http://127.0.0.1:" + port;
+      try {
+        const found = await fetch(candidate + "/api/browser/bridge-auth", {
+          headers: { Authorization: "Bearer " + reply.token }, cache: "no-store"
+        });
+        if (found.ok) {
+          WEB = candidate; response = found; needsStart = false;
+          await chrome.storage.local.set({ collieWebPort: port });
+        }
+      } catch (e) {}
+    }
+  }
+  if (needsStart) {
+    const started = await fetch(BRIDGE + "/web/start", { method: "POST", headers: {
+      Authorization: "Bearer " + reply.token, "X-Collie-Bridge": "1", "content-type": "application/json"
+    }, body: "{}" });
+    const detail = await started.json().catch(() => ({}));
+    if (!started.ok || !detail.ok) throw new Error(detail.error || "could not start Collie web");
+    WEB = "http://127.0.0.1:" + Number(detail.port || 8787);
+    await chrome.storage.local.set({ collieWebPort: Number(detail.port || 8787) });
+    response = await requestAuth();
+  }
+  if (!response.ok) throw new Error("Collie web unavailable");
+  return await response.json();
+}
+
+async function refreshSiteAccess() {
+  try {
+    const auth = await getWebToken();
+    $("siteAccess").value = auth.site_access || "all_except_sensitive";
+    $("siteAccess").disabled = false;
+    $("policyNote").textContent = "Clicks, typing, sends, payments and deletes keep separate approval.";
+  } catch (e) {
+    $("siteAccess").disabled = true;
+    $("policyNote").textContent = "Start `collie web` to change the persistent policy.";
+  }
+}
+
+// --- one-time personal-intelligence consent ------------------------------------------------------
+async function personalPost(auth, path, body) {
+  const response = await fetch(WEB + path + "?token=" + encodeURIComponent(auth.token), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+  });
+  const value = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(value.error || "Collie rejected the personal-data setting");
+  return value;
+}
+
+async function refreshPersonal() {
+  let granted = false;
+  try { granted = await chrome.permissions.contains({ permissions: ["history"] }); } catch (e) {}
+  let enabled = !!(await chrome.storage.local.get("colliePersonalHistory")).colliePersonalHistory;
+  if (enabled && granted) {
+    try {
+      const auth = await getWebToken();
+      const response = await fetch(WEB + "/api/personal?token=" + encodeURIComponent(auth.token),
+                                   { cache: "no-store" });
+      const state = await response.json();
+      const source = (state.sources || []).find((item) => item.source_id === "browser_history");
+      enabled = !!(response.ok && state.observation &&
+        state.observation.observation_mode === "personal" && source && source.enabled);
+      if (!enabled) await chrome.storage.local.set({ colliePersonalHistory: false });
+    } catch (e) { enabled = false; }
+  }
+  $("historyState").textContent = granted && enabled ? "on" : "off";
+  $("historyToggle").textContent = granted && enabled ? "Disconnect and delete summaries" : "Enable once";
+  if (granted && enabled) {
+    $("historyNote").textContent = "Running quietly in the background. Only compressed origin/time/count summaries stay on this computer; raw history is never stored or uploaded.";
+  }
+}
+
+$("historyToggle").addEventListener("click", async () => {
+  $("historyToggle").disabled = true;
+  let newlyGranted = false;
+  try {
+    const already = await chrome.permissions.contains({ permissions: ["history"] });
+    const enabled = !!(await chrome.storage.local.get("colliePersonalHistory")).colliePersonalHistory;
+    if (already && enabled) {
+      // Withdrawal takes effect in the extension first, even if the local Web process is briefly
+      // unavailable. A durable pending bit makes the summary purge retry in the background.
+      await chrome.storage.local.set({ colliePersonalHistory: false,
+        colliePersonalPurgePending: true });
+      try { await chrome.permissions.remove({ permissions: ["history"] }); } catch (e) {}
+      const auth = await getWebToken();
+      await personalPost(auth, "/api/personal/source", { source_id: "browser_history",
+        enabled: false, permission_state: "revoked", purge: true });
+      await chrome.storage.local.set({ colliePersonalPurgePending: false });
+    } else {
+      const auth = await getWebToken();
+      // This click is the product's prominent, affirmative consent. Chrome immediately follows it
+      // with the native permission warning; neither prompt is repeated during background use.
+      const granted = await chrome.permissions.request({ permissions: ["history"] });
+      if (!granted) throw new Error("Chrome history permission was not granted");
+      newlyGranted = !already;
+      await personalPost(auth, "/api/procedures/privacy", {
+        observation_mode: "personal", consent: true
+      });
+      await personalPost(auth, "/api/personal/source", { source_id: "browser_history",
+        enabled: true, permission_state: "granted", scopes: ["origin", "time_bucket", "count"],
+        confirm: true });
+      await chrome.storage.local.set({ colliePersonalHistory: true,
+        colliePersonalPurgePending: false });
+      const synced = await chrome.runtime.sendMessage({ type: "collie:sync-personal-history" });
+      if (synced && synced.error) throw new Error(synced.error);
+    }
+  } catch (e) {
+    if (newlyGranted) {
+      try { await chrome.permissions.remove({ permissions: ["history"] }); } catch (ignored) {}
+      await chrome.storage.local.set({ colliePersonalHistory: false });
+    }
+    $("historyNote").textContent = "Could not change history learning: " + e.message;
+  } finally {
+    $("historyToggle").disabled = false;
+    await refreshPersonal();
+  }
+});
+
 // --- high-fidelity (chrome.debugger) input: global default + per-site override -------------------
+const HAS_DEBUGGER_PERMISSION = (chrome.runtime.getManifest().permissions || []).includes("debugger");
+const OPTIONAL_WEB_ORIGINS = ["http://*/*", "https://*/*"];
+
+async function refreshReach() {
+  let granted = false;
+  try { granted = await chrome.permissions.contains({ origins: OPTIONAL_WEB_ORIGINS }); } catch (e) {}
+  $("reachGrant").hidden = granted;
+  $("reachNote").textContent = granted
+    ? "Enabled. Collie-created tabs can continue across site navigations."
+    : "Optional. The current tab works after you invoke Collie; grant this only for autonomous multi-site runs.";
+}
+
+$("reachGrant").addEventListener("click", async () => {
+  let granted = false;
+  try { granted = await chrome.permissions.request({ origins: OPTIONAL_WEB_ORIGINS }); } catch (e) {}
+  $("reachNote").textContent = granted ? "Enabled for websites." : "Not enabled; current-tab mode remains available.";
+  await refreshReach();
+});
+
 async function activeOrigin() {
   try {
     const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -83,6 +255,13 @@ async function setSite(origin, scope) {
 }
 
 async function refreshMode() {
+  if (!HAS_DEBUGGER_PERMISSION) {
+    $("hiFi").checked = false; $("hiFi").disabled = true;
+    $("hiFiTitle").textContent = "High-fidelity input · local Power build only";
+    $("hiFiNote").textContent = "The Web Store build uses normal browser scripting and does not request debugger access.";
+    document.querySelectorAll("#siteSeg button").forEach((b) => { b.disabled = true; });
+    return;
+  }
   const g = (await chrome.storage.local.get("trustedInput")).trustedInput;
   $("hiFi").checked = g !== false;                    // default ON
   const origin = await activeOrigin();
@@ -99,6 +278,7 @@ async function refreshMode() {
 }
 
 $("hiFi").addEventListener("change", async (e) => {
+  if (!HAS_DEBUGGER_PERMISSION) return;
   await chrome.storage.local.set({ trustedInput: e.target.checked });
 });
 [...document.querySelectorAll("#siteSeg button")].forEach((b) =>
@@ -127,9 +307,36 @@ $("tokSave").addEventListener("click", async () => {
 });
 
 $("recheck").addEventListener("click", refresh);
+$("takeover").addEventListener("click", async () => {
+  const paused = $("takeover").textContent.startsWith("Resume");
+  await chrome.runtime.sendMessage({ type: paused ? "collie:resume-active" : "collie:pause-active" });
+  await refreshPresence();
+});
+$("siteAccess").addEventListener("change", async () => {
+  try {
+    const auth = await getWebToken();
+    const response = await fetch(WEB + "/api/settings?token=" + encodeURIComponent(auth.token), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ BROWSER_SITE_ACCESS: $("siteAccess").value })
+    });
+    if (!response.ok) throw new Error("save failed");
+    $("policyNote").textContent = "Saved. It controls navigation only; high-impact actions still ask.";
+  } catch (e) {
+    $("policyNote").textContent = "Could not save: " + e.message;
+    refreshSiteAccess();
+  }
+});
+$("openSide").addEventListener("click", async () => {
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (tabs[0]) await chrome.sidePanel.open({ windowId: tabs[0].windowId });
+  window.close();
+});
 $("openCollie").addEventListener("click", () => {
-  chrome.tabs.create({ url: "http://127.0.0.1:8787/" });
+  chrome.tabs.create({ url: WEB + "/" });
 });
 refresh();
 refreshMode();
 refreshToken();
+refreshSiteAccess();
+refreshReach();
+refreshPersonal();

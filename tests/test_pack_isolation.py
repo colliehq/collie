@@ -13,7 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness import cli
 from harness.memory import SqliteMemory
+from harness.loop import Harness
 from harness.providers import Completion, ModelProvider, Usage
+from harness.recorder import RunResult
 from harness.scratch import ScratchMemory, isolate_harness
 
 
@@ -59,6 +61,55 @@ def test_scratch_reads_still_see_the_shared_baseline():
         mem.close()
 
 
+def test_scratch_claim_lifecycle_never_reaches_the_shared_store():
+    """New proposal/review APIs must not fall through __getattr__ to the base DB."""
+    with tempfile.TemporaryDirectory() as root:
+        base = SqliteMemory(os.path.join(root, "memory.db"))
+        before = base.count()
+        mem = ScratchMemory(base, read_project="repo")
+
+        rid = mem.propose("candidate-only deployment conclusion", project="agent-3",
+                          source="agent_tool")
+        assert mem.get_claim(rid)["status"] == "proposed"
+        assert mem.list_claims("proposed", "agent-3")[0]["id"] == rid
+        assert base.count() == before
+        assert not base.list_claims(status="proposed")
+
+        assert mem.promote(rid, status="verified", evidence="candidate-local check")
+        assert mem.recall("deployment conclusion", project="agent-3")
+        assert not base.recall("deployment conclusion", project="repo")
+        assert base.count() == before
+
+        rejected = mem.propose("another candidate-only assertion", project="agent-3")
+        assert mem.reject(rejected, evidence="losing candidate")
+        assert mem.get_claim(rejected)["status"] == "rejected"
+        assert not base.list_claims(status="rejected")
+        mem.close()
+
+
+def test_scratch_run_claims_settle_inside_the_logical_project_boundary():
+    with tempfile.TemporaryDirectory() as root:
+        base = SqliteMemory(os.path.join(root, "memory.db"))
+        mem = ScratchMemory(base, read_project="repo")
+        producer = {"run_id": 41, "task_id": "learn", "provider": "stub",
+                    "model": "stub-1"}
+        claim_id = mem.propose(
+            "candidate-local verified conclusion", project="agent-3",
+            source="run_consolidation", provenance=producer)
+        harness = object.__new__(Harness)
+        harness.memory = mem
+        harness.project = "agent-3"
+        result = RunResult(
+            run_id=41, task_id="learn", provider="stub", model="stub-1",
+            memory_claim_ids=[claim_id])
+
+        assert harness.settle_run_memory(result, True) == {
+            "promoted": 1, "rejected": 0}
+        assert mem.get_claim(claim_id)["status"] == "verified"
+        assert base.count() == 0
+        mem.close()
+
+
 def test_two_agents_on_one_task_do_not_see_each_other(monkeypatch):
     with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as cwd:
         monkeypatch.setattr(cli, "DATA", data)
@@ -77,7 +128,7 @@ def test_two_agents_on_one_task_do_not_see_each_other(monkeypatch):
             stub = StubProvider(answer)
             h.provider = stub
             stubs.append(stub)
-            h.run("pack%d" % i, "why does the widget crash")
+            h.run("pack%d" % i, "why does make all fail with a widget crash")
             h.memory.close()
             h.recorder.close()      # Windows will not delete a sqlite file that is still open
 

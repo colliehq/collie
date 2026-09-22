@@ -19,6 +19,7 @@ same live event stream) with a one-line hint to `pip install rich` for the full 
 Nothing here is required by the core; it's a pure UI layer over Harness.run + sessions.
 """
 from __future__ import annotations
+import contextlib
 import os
 import queue
 import sys
@@ -29,7 +30,17 @@ class _StdinFeed:
     """Single owner of stdin for the TUI's whole lifetime — kills the two-readers-race between the
     REPL prompt and mid-run steering (point 13). A daemon thread pumps lines into a queue;
     readline_blocking() serves the prompt, drain() serves mid-run steering. Only armed on a real
-    TTY: piped stdin (scripts, tests) must NOT be slurped as mid-run hints."""
+    TTY: piped stdin (scripts, tests) must NOT be slurped as mid-run hints.
+
+    While a run owns the terminal (``accepting``), an ordinary line is handed to
+    the acceptor the moment it is read, and the acceptor writes it to durable
+    storage before anything on screen calls it accepted. That is the difference
+    the person feels: a line typed into a run that then crashes is still there
+    afterwards, instead of having lived only in this queue. Two lines are never
+    treated that way — a slash command (a REPL instruction, honored after the run)
+    and anything typed while a prompt is explicitly waiting for an answer, which
+    is how an approval question keeps getting its reply.
+    """
 
     def __init__(self, stream=None):
         self._stream = stream if stream is not None else sys.stdin
@@ -38,16 +49,48 @@ class _StdinFeed:
         except Exception:
             self.tty = False
         self._q = queue.Queue()
+        self._state = threading.Lock()
+        self._accept = None               # set only while a run is in flight
+        self._waiting = 0                 # readers blocked on a prompt right now
         self._t = threading.Thread(target=self._pump, daemon=True)
         self._t.start()
 
     def _pump(self):
         try:
             for line in self._stream:
-                self._q.put(line.rstrip("\n"))
+                line = line.rstrip("\n")
+                if not self._offer(line):
+                    self._q.put(line)
         except Exception:
             pass
         self._q.put(None)                 # EOF sentinel
+
+    def _offer(self, line):
+        """Give a line typed during a run to the durable acceptor. True when it took it."""
+        text = line.strip()
+        if not text or text.startswith("/"):
+            return False                  # a REPL command is not an instruction to the model
+        with self._state:
+            accept = self._accept if not self._waiting else None
+        if accept is None:
+            return False
+        try:
+            return bool(accept(text))
+        except Exception:
+            # The acceptor reports its own failures; a broken one must not cost
+            # the user the line, so fall through and queue it like any other.
+            return False
+
+    @contextlib.contextmanager
+    def accepting(self, acceptor):
+        """Route run-time input to ``acceptor`` for the length of the block."""
+        with self._state:
+            previous, self._accept = self._accept, acceptor
+        try:
+            yield self
+        finally:
+            with self._state:
+                self._accept = previous
 
     def readline_blocking(self, prompt=""):
         """Blocking prompt read (Ctrl-C stays responsive via the 0.2s poll). None on EOF."""
@@ -56,15 +99,21 @@ class _StdinFeed:
                 sys.stdout.write(prompt); sys.stdout.flush()
             except Exception:
                 pass
-        while True:
-            try:
-                item = self._q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if item is None:
-                self._q.put(None)         # EOF is sticky
-                return None
-            return item
+        with self._state:
+            self._waiting += 1
+        try:
+            while True:
+                try:
+                    item = self._q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    self._q.put(None)         # EOF is sticky
+                    return None
+                return item
+        finally:
+            with self._state:
+                self._waiting -= 1
 
     def drain(self):
         """Non-blocking: queued NON-slash lines become steering; slash lines are re-queued for the
@@ -198,6 +247,9 @@ class RichTUI:
             ("/model [name]", "list models / switch (e.g. /model terra)"),
             ("/resume <id>", "load a previous session by id"),
             ("/sessions", "list recent sessions"),
+            ("/queue", "list waiting requests; /queue show <id> shows the full text"),
+            ("/queue remove <id>", "remove an unstarted request"),
+            ("/next", "send the earliest pending request"),
             ("/help", "show this"),
         ]:
             t.add_row(cmd, desc)
@@ -251,12 +303,25 @@ class RichTUI:
                         "[red]▸ repro failed%s[/red] [dim]%s[/dim]" % (asserted, cmd)))
             elif kind == "steer":                          # mid-run user steering (point 13)
                 rows.append(Text.from_markup("[yellow]↳ you:[/yellow] %s" % _esc(str(d.get("text", "")))))
+            elif kind == "inbox" and d.get("ok") is False:
+                # A request this run could not deliver is the person's business,
+                # not a log line: they were told it had been accepted.
+                rows.append(Text.from_markup(
+                    "[red]⚠ queued input (%s): %s[/red]" % (
+                        _esc(str(d.get("action", ""))), _esc(str(d.get("error", ""))))))
             elif kind == "retry":                          # bounded transient-error retry (point 5)
                 rows.append(Text.from_markup(
                     "[dim]↻ retry %s/%s in %ss — %s[/dim]" % (d.get("attempt"), d.get("max"),
                     d.get("delay_s"), _esc(str(d.get("error", ""))[:60]))))
             elif kind == "overflow_recovery":              # context-overflow shrink+retry (point 9)
                 rows.append(Text.from_markup("[dim]⤵ context overflow — shrinking history, retrying[/dim]"))
+            elif kind == "decision":
+                rows.append(Text.from_markup(
+                    "[cyan]◇ %s[/cyan] [dim]· %s · %s/%s/%s[/dim]" % (
+                        _esc(str(d.get("model", ""))), _esc(str(d.get("effort", "default"))),
+                        _esc(str(d.get("intent", "build"))),
+                        _esc(str(d.get("quality", "balanced"))),
+                        _esc(str(d.get("verification", "auto"))))))
         if running:
             st.spinner_i = (st.spinner_i + 1) % len(_SPIN)
             rows.append(Text.from_markup(
@@ -300,9 +365,11 @@ class RichTUI:
         return Panel(body, title=title, title_align="left",
                      border_style="cyan" if running else "green", padding=(1, 2))
 
-    def run_turn(self, h, task_id, line, history):
+    def run_turn(self, h, task_id, line, history, *, authority_msg=None):
         """Run one agent turn with a Live panel wired to h.emit. Returns RunResult."""
         st = _RunState()
+        if isinstance(getattr(h, "run_decision", None), dict):
+            st.on_event("decision", h.run_decision)
         prev_emit = h.emit
         h.emit = st.on_event
         result = {}
@@ -317,7 +384,8 @@ class RichTUI:
                     except Exception:
                         pass
                 h.emit = emit
-                res = h.run(task_id, line, consolidate=True, history=history)
+                kwargs = {"authority_msg": authority_msg} if authority_msg is not None else {}
+                res = h.run(task_id, line, consolidate=True, history=history, **kwargs)
                 result["res"] = res
                 live.update(self._panel(st, False))
         finally:
@@ -389,7 +457,7 @@ class PlainTUI:
         self._p("/exit quit · /new fresh thread · /resume <id> · /sessions · /help")
 
     def help(self):
-        self._p("commands: /exit /quit  /new  /model [name]  /resume <id>  /sessions  /help")
+        self._p("commands: /exit /quit  /new  /model [name]  /resume <id>  /sessions  /queue  /next  /help")
 
     def sessions(self, rows):
         if not rows:
@@ -398,11 +466,16 @@ class PlainTUI:
         for r in rows:
             self._p("  %s  turns=%d  %s" % (r["id"], r["turns"], r.get("last", "")))
 
-    def run_turn(self, h, task_id, line, history):
+    def run_turn(self, h, task_id, line, history, *, authority_msg=None):
         prev_emit = h.emit
 
         def emit(kind, d):
-            if kind == "tool":
+            if kind == "decision":
+                self._p("  ◇ %s · %s · %s/%s/%s" % (
+                    d.get("model", ""), d.get("effort", "default"),
+                    d.get("intent", "build"), d.get("quality", "balanced"),
+                    d.get("verification", "auto")))
+            elif kind == "tool":
                 self._p("  · %s %s%s" % (d.get("name"), "" if d.get("ok", True) else "[ERR] ",
                                          _short_args(d.get("args"))))
             elif kind == "edit":
@@ -411,6 +484,11 @@ class PlainTUI:
                 self._p("  %s repro%s %s" % ("✓" if d.get("passed") else "✗",
                                              " (assert)" if d.get("asserted") else "",
                                              d.get("cmd", "")))
+            elif kind == "inbox" and d.get("ok") is False:
+                self._p("  ⚠ queued input (%s): %s" % (d.get("action", ""),
+                                                       d.get("error", "")))
+            elif kind == "steer":
+                self._p("  ↳ you: %s" % d.get("text", ""))
             elif kind == "receipt":
                 v = d.get("verified")
                 self._p("  %s · %s tok · %s · %d turns · %d tools · %.1fs" % (
@@ -419,7 +497,10 @@ class PlainTUI:
                     d.get("tool_calls") or 0, (d.get("wall_ms") or 0) / 1000.0))
         h.emit = emit
         try:
-            res = h.run(task_id, line, consolidate=True, history=history)
+            if isinstance(getattr(h, "run_decision", None), dict):
+                emit("decision", h.run_decision)
+            kwargs = {"authority_msg": authority_msg} if authority_msg is not None else {}
+            res = h.run(task_id, line, consolidate=True, history=history, **kwargs)
         finally:
             h.emit = prev_emit
         self._p("\n" + (res.answer or res.error or "(no output)"))
@@ -429,6 +510,31 @@ class PlainTUI:
 # --------------------------------------------------------------------------- #
 # The REPL driver — shared control flow over whichever UI backend is active
 # --------------------------------------------------------------------------- #
+def _steer_acceptor(session, note):
+    """Accept a line typed during a run by writing it down first.
+
+    Ordering is the entire feature: ``enqueue`` returns only once the text is on
+    disk, so the "queued" line below is a report of something that already
+    happened rather than a promise about a queue that dies with the process. A
+    refusal (the inbox is full, the text is impossible to store) is shown with the
+    text still visible, because the one thing that must never happen is telling
+    someone their instruction was accepted when it was not.
+    """
+    from . import task_inbox
+
+    def accept(text):
+        entry_id = "tui-%s" % os.urandom(8).hex()
+        try:
+            task_inbox.enqueue(session, entry_id, text, mode="steer", client="tui")
+        except Exception as exc:
+            note("✗ not accepted — %s\n  your line: %s" % (exc, text), "red")
+            return True                # consumed: it is NOT waiting anywhere
+        note("↳ queued for this run: %s" % (text if len(text) <= 72 else text[:69] + "…"),
+             "yellow")
+        return True
+    return accept
+
+
 def _read_line(console, have_rich):
     if have_rich:
         try:
@@ -441,9 +547,14 @@ def _read_line(console, have_rich):
         return None
 
 
-def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None):
+def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None,
+            cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
-    from .cli import make_harness
+    from .cli import (apply_accepted_capabilities, apply_accepted_limits,
+                      apply_turn_decision, make_harness, owned_turn_state,
+                      recovery_fence_lifted, recovery_notice, resolve_turn_decision,
+                      turn_decision_receipt, turn_receipt_fence)
+    from . import run_ownership, terminal_queue
     from . import sessions as sess
     from .memory import project_scope
 
@@ -453,19 +564,55 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
     console = Console() if have_rich else None
     ui = RichTUI(console) if have_rich else PlainTUI()
 
+    def checked_resume(rid):
+        if not rid:
+            return None, "no session selected"
+        recovery = sess.recovery_state(rid)
+        checked = sess.load_checked(rid)
+        if (recovery and recovery.get("recovery_required")) or \
+                checked.get("status") == "invalid":
+            return None, ((recovery or {}).get("reason") or
+                          checked.get("reason") or
+                          "session journal requires inspection")
+        if checked.get("status") != "ok":
+            return None, "no such session: %s" % rid
+        return checked.get("session"), ""
+
+    resume_id = resume or (sess.latest() if cont else None)
+    sid = resume_id or sess.new_id()
+    loaded, resume_error = checked_resume(sid) if resume_id else (None, "")
+    if not resume_error:
+        try:
+            cwd = sess.resolve_cwd(loaded, requested=cwd if cwd_explicit else None,
+                                   fallback=cwd)
+            if loaded and cwd_explicit:
+                # Where a conversation executes is durable state about it: take
+                # its lease to move it, so the relocation cannot land under a run
+                # that is already using the old workspace.
+                with run_ownership.hold(sid, label="tui-relocate"):
+                    sess.relocate(sid, cwd)
+        except ValueError as exc:
+            resume_error = str(exc)
+        except run_ownership.OwnershipRefused as exc:
+            resume_error = "its workspace cannot be moved right now: %s" % exc
+    if resume_error:
+        message = "collie refused to resume %s: %s" % (sid, resume_error)
+        console.print("[red]%s[/red]" % message) if have_rich else print(message)
+        return 2
+
     from .cli import default_gate
     _gate = default_gate(cwd)
     h = make_harness(cwd, provider=provider, model=model, project=project,
                      code_search=True, web_search=True, exec_code=True, delegate=True,
                      gate=_gate)
 
-    sid = resume or (sess.latest() if cont else None) or sess.new_id()
-    loaded = sess.load(sid) if (resume or cont) else None
+    h.checkpoint_scope = "session:" + sid
     history = (loaded or {}).get("messages") or []
+    receipts = list((loaded or {}).get("run_receipts") or [])
     if goal:
         h.memory.set_block("project:" + project, "goal", goal[:390], char_limit=400)
 
-    prior = sum(1 for m in history if m.get("role") == "user")
+    prior = sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness")
     ui.banner(sid, provider, model, prior, cwd)
 
     # ONE stdin owner for the whole session (only on a real TTY — piped input stays on _read_line so
@@ -475,6 +622,15 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
         console.print("[dim]tip: type while the agent works to steer it; Ctrl-C aborts the turn[/dim]")
 
     saved = bool(history)          # a resumed session already has a file; a fresh one has nothing yet
+    fenced = ""                    # set while an uninspected effect blocks the next turn
+    # The session whose RECOVERY boundary raised that fence, so the prompt can ask
+    # whether it is still open. Empty means no `collie recovery reconcile` can close
+    # it (a journal refusing writes), and it stays until /new or /resume.
+    fence_session = ""
+
+    def say(text, style="dim"):
+        console.print(text, style=style, markup=False) if have_rich else print(text)
+
     try:
         while True:
             if feed is not None:
@@ -493,7 +649,10 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
             if line == "/sessions":
                 ui.sessions(sess.recent(10)); continue
             if line == "/new":
-                history, sid = [], sess.new_id()
+                history, receipts, sid, fenced = [], [], sess.new_id(), ""
+                fence_session = ""
+                saved = False
+                h.checkpoint_scope = "session:" + sid
                 if have_rich:
                     console.print("[dim]new session[/dim] [yellow]%s[/yellow]" % sid)
                 else:
@@ -502,13 +661,30 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
             if line.startswith("/resume"):
                 parts = line.split(None, 1)
                 rid = parts[1].strip() if len(parts) > 1 else sess.latest()
-                s = sess.load(rid) if rid else None
+                s, resume_error = checked_resume(rid)
                 if s:
-                    history, sid = s.get("messages") or [], rid
-                    msg = "resumed %s (%d prior turns)" % (
-                        sid, sum(1 for m in history if m.get("role") == "user"))
+                    try:
+                        resumed_cwd = sess.resolve_cwd(s, fallback=cwd)
+                        if os.path.normcase(resumed_cwd) != os.path.normcase(cwd):
+                            next_gate = default_gate(resumed_cwd)
+                            next_h = make_harness(
+                                resumed_cwd, provider=provider, model=model, project=project,
+                                code_search=True, web_search=True, exec_code=True, delegate=True,
+                                gate=next_gate)
+                            h.memory.close(); h.recorder.close()
+                            h, _gate, cwd = next_h, next_gate, resumed_cwd
+                    except Exception as exc:
+                        resume_error = "could not open session workspace: %s" % exc
+                        s = None
+                if s:
+                    history, receipts, sid = (s.get("messages") or [],
+                                              list(s.get("run_receipts") or []), rid)
+                    h.checkpoint_scope = "session:" + sid
+                    saved, fenced, fence_session = True, "", ""
+                    msg = "resumed %s (%d prior turns) · %s" % (
+                        sid, sum(1 for m in history if m.get("role") == "user" and m.get("source") != "harness"), cwd)
                 else:
-                    msg = "no such session: %s" % rid
+                    msg = resume_error or "no such session: %s" % rid
                 if have_rich:
                     console.print("[dim]%s[/dim]" % msg)
                 else:
@@ -524,7 +700,10 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
                 ents = catalog.list_entries(discover_live=False)
                 cur = "%s:%s" % (h.provider.name, h.provider.model)
                 if not arg:
-                    rows = ["current: %s" % cur]
+                    rows = ["current: %s%s" % (
+                        "Auto inside %s (resolved " % provider if model is None else "",
+                        cur + ")" if model is None else cur)]
+                    rows.append("    %-32s %s" % (provider + ":", "Auto by task"))
                     for e in ents:
                         mark = "*" if e["id"] == cur else " "
                         badge = e["via"] if e["auth"] == "ok" else ("[%s]" % e["auth"])
@@ -533,7 +712,9 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
                     console.print("[dim]%s[/dim]" % body) if have_rich else print(body)
                     continue
                 match = None
-                if ":" in arg:
+                if arg.lower() == "auto":
+                    match = {"id": provider + ":", "provider": provider, "model": None}
+                elif ":" in arg:
                     p, m = catalog.resolve(arg)
                     match = {"id": arg, "provider": p, "model": m}
                 else:
@@ -547,49 +728,199 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
                     continue
                 try:
                     h.provider = make_provider(match["provider"], match.get("model"))
-                    provider, model = h.provider.name, h.provider.model
+                    provider, model = h.provider.name, match.get("model") or None
+                    if hasattr(h, "_turn_provider_signature"):
+                        delattr(h, "_turn_provider_signature")
                     _st.update({"PROVIDER": match["provider"], "MODEL": match.get("model") or ""})
-                    msg = "switched to %s · %s" % (provider, model)
+                    msg = ("switched to Auto inside %s" % provider if model is None else
+                           "switched to %s · %s" % (provider, model))
                     console.print("[green]%s[/green]" % msg) if have_rich else print(msg)
                 except Exception as ex:
                     msg = "cannot switch to %s: %s" % (match["id"], ex)
                     console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
                 continue
 
-            try:
-                if feed is not None and feed.tty:
-                    h.steering = feed.drain     # let mid-run keystrokes steer the agent
-                    # The approval prompt reads through the SAME pump, or it would fight the
-                    # steering thread for stdin and neither would get a whole line.
-                    from .approve import tty_approver
-                    _w = (lambda s: console.print("[yellow]%s[/yellow]" % s)) if have_rich else print
-                    h.approve = tty_approver(
-                        read_line=lambda: feed.readline_blocking(
-                            "  allow? [y]es / [a]lways / [N]o: "),
-                        write=_w, gate=_gate)
-                res = ui.run_turn(h, "tui", line, history)
-            except KeyboardInterrupt:
-                # Ctrl-C DURING a turn aborts just this turn, not the whole session — h.run only
-                # catches Exception, and an uncaught KeyboardInterrupt (a BaseException) would
-                # otherwise print a traceback and tear down the interactive loop.
-                msg = "⏹ turn interrupted — back to the prompt (Ctrl-C again at an empty prompt to exit)"
-                console.print("\n[dim]%s[/dim]" % msg) if have_rich else print("\n" + msg)
+            if terminal_queue.handle_command(line, sid, say):
                 continue
-            finally:
-                h.steering = None               # steering only during a run
-                h.approve = None                # and nobody is at the prompt between turns
-            history = res.messages
-            sess.save(sid, history, project=project, cwd=cwd, answer=res.answer or "")
-            saved = True
+            if fence_session and recovery_fence_lifted(fence_session):
+                # Reconciled from another terminal, exactly as the notice asked.
+                # The boundary is closed, so run the line instead of repeating it.
+                say("recovery closed for %s — continuing this thread" % fence_session,
+                    "green")
+                fenced, fence_session = "", ""
+            if fenced:
+                # An uninspected effect is not something the next prompt can route
+                # around: refuse the turn and say exactly how to close the boundary.
+                say(fenced, "yellow")
+                continue
+            # The lease covers reading the durable thread, the run, the transcript
+            # save and the receipt — and nothing else. Between turns this terminal
+            # is a person thinking, and holding a session's execution lease through
+            # that would lock the conversation out of every other surface for as
+            # long as the window is open. Ownership is per turn; durable input is
+            # what waits.
+            try:
+                with run_ownership.hold(sid, label="tui") as lease, terminal_queue.claimed_next(
+                        sid, lease, requested=line == "/next") as queued:
+                    # The thread may have grown, been fenced or moved while this
+                    # prompt was waiting — possibly because another surface ran
+                    # this very session. Execution authority derives from what is
+                    # durable now, not from the copy on screen.
+                    state, refusal = owned_turn_state(sid, lease, cwd)
+                    if refusal:
+                        if state["recovery"]:
+                            fenced, fence_session = refusal, sid
+                        say(refusal, "yellow")
+                        continue
+                    history = state["messages"] or history
+                    if state["receipts"]:
+                        receipts = state["receipts"]
+                    try:
+                        if queued:
+                            line = queued["text"]
+                            decision = terminal_queue.decision(queued, provider, model, history, receipts)
+                        else:
+                            decision = resolve_turn_decision(
+                                line, provider, configured_model=model,
+                                history=history, receipts=receipts)
+                        apply_turn_decision(h, decision, _gate)
+                        # The accepted budget belongs to the accepted request; a line
+                        # typed here is measured against the settings as they are now.
+                        apply_accepted_limits(
+                            h, terminal_queue.accepted_limits(queued) if queued else None)
+                        # And the accepted capability grants, which bind this request
+                        # only; live revocation still applies on top of them.
+                        apply_accepted_capabilities(
+                            h, terminal_queue.accepted_capabilities(queued) if queued else None)
+                    except Exception as ex:
+                        msg = ("collie could not route this turn: %s: %s"
+                               % (type(ex).__name__, ex))
+                        console.print("[red]%s[/red]" % msg) if have_rich else print(msg)
+                        continue
+                    h.run_owner = lease
+                    h.input_entry = queued
+                    try:
+                        if feed is not None and feed.tty:
+                            # The approval prompt reads through the SAME pump, or it would
+                            # fight for stdin and neither reader would get a whole line.
+                            from .approve import tty_approver
+                            _w = ((lambda s: console.print("[yellow]%s[/yellow]" % s))
+                                  if have_rich else print)
+                            h.approve = tty_approver(
+                                read_line=lambda: feed.readline_blocking(
+                                    "  allow? [y]es / [a]lways / [N]o: "),
+                                write=_w, gate=_gate)
+                            # Typed text is persisted at ACCEPTANCE, not when the loop
+                            # gets around to draining it; the loop then claims it from
+                            # durable storage. Only one of the two may insert it, so the
+                            # old volatile callback stays off.
+                            steer_ctx = feed.accepting(_steer_acceptor(sid, say))
+                        else:
+                            steer_ctx = contextlib.nullcontext()
+                        with steer_ctx:
+                            if queued:
+                                content = run_ownership.entry_content(sid, queued)
+                                res = ui.run_turn(h, "tui", content, history, authority_msg=line)
+                            else:
+                                res = ui.run_turn(h, "tui", line, history)
+                    except KeyboardInterrupt:
+                        # Ctrl-C DURING a turn aborts just this turn, not the whole
+                        # session. run() converts an interrupt it sees into a canceled
+                        # result, so arriving here means the interrupt landed outside it.
+                        # Continuing from the pre-turn history would delete whatever the
+                        # turn did from the conversation while its effects remain on disk
+                        # — so take the durable journal, and stop if it is fenced on an
+                        # unknown effect.
+                        recovered = sess.resume_after_interrupt(sid, fallback=history)
+                        history = recovered["messages"]
+                        saved = saved or bool(recovered["recovery"])
+                        say("\n⏹ turn interrupted — kept the %d messages already recorded "
+                            "(Ctrl-C again at an empty prompt to exit)" % len(history))
+                        fenced = (recovery_notice(sid, recovered["recovery"])
+                                  if recovered["blocked"] else "")
+                        fence_session = sid if fenced else ""
+                        if fenced:
+                            say(fenced, "yellow")
+                        continue
+                    finally:
+                        h.run_owner = None
+                        h.input_entry = None
+                        h.steering = None       # steering only during a run
+                        h.approve = None        # and nobody is at the prompt between turns
+                    history = res.messages
+                    # run() returned with this thread's journal already settled, so the
+                    # fence is readable NOW -- and this receipt is saved durably below,
+                    # where a quota error left over an open effect must not reopen in
+                    # another surface as an ordinary "waiting for quota".
+                    receipt = turn_decision_receipt(
+                        decision, res, getattr(h, "provider", None),
+                        recovery_required=turn_receipt_fence(h, sess, sid))
+                    try:
+                        saved_sid = sess.save(
+                            sid, history, project=project, cwd=cwd,
+                            answer=res.answer or "")
+                    except Exception as exc:
+                        # This turn happened and is now unrecorded. Say so and stop,
+                        # rather than stacking more unrecorded turns on a journal that
+                        # refuses writes.
+                        from .runner_specs import redact_text
+                        fenced = ("session transcript could not be persisted: %s\n"
+                                  "  this thread is no longer being recorded — inspect %s, "
+                                  "then /new for a fresh thread" % (
+                                      redact_text("%s: %s" % (type(exc).__name__, exc), 500),
+                                      sid))
+                        # Not a recovery boundary: nothing for `collie recovery
+                        # reconcile` to close, so this fence stays until /new.
+                        fence_session = ""
+                        say(fenced, "red")
+                        continue
+                    if saved_sid:
+                        try:
+                            sess.append_run_receipt(sid, receipt)
+                        except Exception:
+                            pass
+                    receipts.append(receipt)
+                    saved = True
+                    # The transcript save keeps an uncertain fence on purpose; re-read it
+                    # so the next turn cannot continue over an effect nobody inspected.
+                    waiting = terminal_queue.notice(sid)
+                    if waiting:
+                        say(waiting)
+                    after = sess.recovery_state(sid)
+                    if after and after.get("recovery_required"):
+                        fenced, fence_session = recovery_notice(sid, after), sid
+                        say(fenced, "yellow")
+            except terminal_queue.QueueError as exc:
+                say(str(exc), "yellow")
+            except run_ownership.OwnershipRefused as exc:
+                # Somebody else is executing this conversation right now. Typing at
+                # it is still useful — the text goes to the durable inbox that run
+                # drains — but starting a second executor is the one thing that must
+                # not happen here.
+                say(("this conversation is being executed elsewhere: %s\n"
+                     "  wait for it, or /new for a fresh thread" % exc) if exc.busy
+                    else "collie cannot take ownership of %s: %s" % (sid, exc),
+                    "yellow")
     finally:
         try:
             h.memory.close(); h.recorder.close()
         except Exception:
             pass
         # only advertise --resume if a turn actually completed + saved; a fresh open->/exit leaves no
-        # file, so the resume hint would load None and start empty.
+        # file, so the resume hint would load None and start empty. A fenced thread would refuse
+        # that resume anyway, so it gets the reason and the way out instead of a broken invitation.
+        # A boundary closed since the fence was raised is no longer a reason to refuse it.
+        # Lifting it also settles `saved`: the fence is only lifted against an existing,
+        # readable journal, which is the very file `--resume` would open. A window that
+        # was fenced before its first save carries saved=False, and printing "nothing
+        # saved" over a checkpointed thread is the same stale-copy lie in the other
+        # direction. This claims no file that is not already there.
+        if fence_session and recovery_fence_lifted(fence_session):
+            fenced, saved = "", True
         tail = ("session saved: %s   ·   resume: collie tui --resume %s" % (sid, sid)
                 if saved else "(no turns — nothing saved)")
+        if fenced:
+            tail = "session %s cannot be resumed yet — %s" % (sid, fenced)
         if have_rich:
             console.print("\n[dim]%s[/dim]" % tail)
         else:
@@ -611,9 +942,15 @@ def main(argv=None):
                    help="continue the latest session's thread")
     p.add_argument("--resume", default=None, metavar="ID", help="resume a session by id")
     args = p.parse_args(list(sys.argv[1:] if argv is None else argv))
+    from . import settings
+    settings.apply()
+    from .cli import configured_model_for
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
-    return run_tui(args.cwd or os.getcwd(), provider, args.model, project=args.project,
-                   resume=args.resume, cont=args.cont, goal=args.goal)
+    model = configured_model_for(
+        provider, args.model, provider_was_explicit=bool(args.provider))
+    return run_tui(args.cwd, provider, model, project=args.project,
+                   resume=args.resume, cont=args.cont, goal=args.goal,
+                   cwd_explicit=bool(args.cwd))
 
 
 if __name__ == "__main__":

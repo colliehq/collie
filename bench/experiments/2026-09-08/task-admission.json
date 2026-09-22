@@ -1,0 +1,34 @@
+[
+  {
+    "author": "author-eventview",
+    "task": "versioned-event-projection-ledger",
+    "sha256": "916dcb586038ef026cbeb0b7891356d3e5eb5b6f00fa643aa4b6fe81270f3467",
+    "baseline_exit": 1,
+    "gold_exit": 0,
+    "valid": true
+  },
+  {
+    "author": "author-pagination",
+    "task": "versioned-snapshot-cursor-pager",
+    "sha256": "41872482ec97e22a556d54076db9be04d2fc8eec5c9adb55c0ecd83ea8feebbb",
+    "baseline_exit": 1,
+    "gold_exit": 0,
+    "valid": true
+  },
+  {
+    "author": "author-pathrules",
+    "task": "ordered-pathrule-priority-engine",
+    "sha256": "c6a829dacd2cca391cedbbd536ebb58752b78c36ecf6ae370fb0ac9d3a9047ee",
+    "baseline_exit": 1,
+    "gold_exit": 0,
+    "valid": true
+  },
+  {
+    "author": "author-reservations",
+    "task": "capacity-ledger-reservation-audit",
+    "sha256": "1d14b64a725e5421fe714a7bf969053a021a740a11061e0f253ccd87ce80f795",
+    "baseline_exit": 1,
+    "gold_exit": 0,
+    "valid": true
+  }
+]

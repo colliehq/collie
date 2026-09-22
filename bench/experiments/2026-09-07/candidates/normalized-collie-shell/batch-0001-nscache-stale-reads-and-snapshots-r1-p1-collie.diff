@@ -1,0 +1,481 @@
+diff --git a/nscache/__init__.py b/nscache/__init__.py
+index d32fd18..b5389fc 100644
+--- a/nscache/__init__.py
++++ b/nscache/__init__.py
+@@ -1,15 +1,22 @@
+-"""nscache - a tiny namespaced LRU cache with TTL support."""
++"""nscache - a namespaced bounded LRU cache with TTL, stale reads and snapshots."""
+ 
+ from .clock import ManualClock, SystemClock
+-from .core import NamespacedCache
+-from .keys import canonical_key
++from .core import FRESH, STALE, CacheEntry, NamespacedCache
++from .keys import MAX_KEY_DEPTH, canonical_key, encode_key
++from .snapshot import SNAPSHOT_VERSION
+ 
+-__version__ = "1.0.0"
++__version__ = "2.0.0"
+ 
+ __all__ = [
+     "NamespacedCache",
++    "CacheEntry",
+     "ManualClock",
+     "SystemClock",
+     "canonical_key",
++    "encode_key",
++    "MAX_KEY_DEPTH",
++    "SNAPSHOT_VERSION",
++    "FRESH",
++    "STALE",
+     "__version__",
+ ]
+diff --git a/nscache/clock.py b/nscache/clock.py
+index 9f691da..4c8de79 100644
+--- a/nscache/clock.py
++++ b/nscache/clock.py
+@@ -3,6 +3,21 @@
+ import time
+ 
+ 
++def check_real(value, name="value"):
++    """Validate that *value* is a real number and return it as a float."""
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise TypeError("%s must be a real number" % (name,))
++    return float(value)
++
++
++def check_clock(clock):
++    """Validate that *clock* exposes a callable ``now`` and return it."""
++    now = getattr(clock, "now", None)
++    if now is None or not callable(now):
++        raise TypeError("clock must have a callable now()")
++    return clock
++
++
+ class SystemClock:
+     """Monotonic clock used when no clock is injected."""
+ 
+@@ -14,11 +29,21 @@ class ManualClock:
+     """Deterministic clock driven by the caller."""
+ 
+     def __init__(self, start=0.0):
+-        self._now = float(start)
++        self._now = check_real(start, "start")
+ 
+     def now(self):
+         return self._now
+ 
+     def advance(self, delta=1.0):
+-        self._now += float(delta)
++        delta = check_real(delta, "delta")
++        if delta < 0:
++            raise ValueError("delta must be >= 0")
++        self._now += delta
++        return self._now
++
++    def set_time(self, value):
++        value = check_real(value, "value")
++        if value < self._now:
++            raise ValueError("time must not go backwards")
++        self._now = value
+         return self._now
+diff --git a/nscache/core.py b/nscache/core.py
+index 21aa426..ef3b2e2 100644
+--- a/nscache/core.py
++++ b/nscache/core.py
+@@ -1,9 +1,26 @@
+-"""Namespaced bounded LRU cache with TTL."""
++"""Namespaced bounded LRU cache with TTL and stale reads."""
+ 
+ from collections import OrderedDict
++from typing import Any, NamedTuple
+ 
+-from .clock import SystemClock
++from .clock import SystemClock, check_clock, check_real
+ from .keys import canonical_key, check_namespace
++from .snapshot import build_snapshot, parse_snapshot
++
++FRESH = "fresh"
++STALE = "stale"
++_DEAD = "dead"
++
++
++class CacheEntry(NamedTuple):
++    """A single cache record exposed to callers."""
++
++    namespace: str
++    canonical: str
++    value: Any
++    stored_at: float
++    expires_at: float
++    state: str
+ 
+ 
+ class _Record:
+@@ -19,29 +36,63 @@ class _Record:
+ class NamespacedCache:
+     """Bounded LRU cache shared by several namespaces."""
+ 
+-    def __init__(self, capacity, ttl, clock=None):
++    def __init__(self, capacity, ttl, clock=None, *, stale_ttl=0.0):
+         if isinstance(capacity, bool) or not isinstance(capacity, int):
+             raise TypeError("capacity must be an int")
+         if capacity < 1:
+             raise ValueError("capacity must be >= 1")
+-        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+-            raise TypeError("ttl must be a real number")
++        ttl = check_real(ttl, "ttl")
+         if ttl <= 0:
+             raise ValueError("ttl must be > 0")
++        stale_ttl = check_real(stale_ttl, "stale_ttl")
++        if stale_ttl < 0:
++            raise ValueError("stale_ttl must be >= 0")
+         self.capacity = capacity
+-        self.ttl = float(ttl)
+-        self._clock = SystemClock() if clock is None else clock
++        self.ttl = ttl
++        self.stale_ttl = stale_ttl
++        self._clock = SystemClock() if clock is None else check_clock(clock)
+         self._store = OrderedDict()
+         self._counters = {
+             "hits": 0,
+             "misses": 0,
++            "stale_hits": 0,
+             "evictions": 0,
+             "expirations": 0,
+             "puts": 0,
+         }
+ 
+-    def _expired(self, record, now):
+-        return now > record.expires_at
++    # -- internal helpers -------------------------------------------------
++
++    def _state(self, record, now):
++        if now < record.expires_at:
++            return FRESH
++        if now < record.expires_at + self.stale_ttl:
++            return STALE
++        return _DEAD
++
++    def _is_dead(self, record, now):
++        return now >= record.expires_at + self.stale_ttl
++
++    def _make_room(self):
++        if len(self._store) < self.capacity:
++            return
++        now = self._clock.now()
++        dead = [ck for ck, rec in self._store.items() if self._is_dead(rec, now)]
++        for canonical in dead:
++            del self._store[canonical]
++            self._counters["expirations"] += 1
++        while len(self._store) >= self.capacity:
++            victim = None
++            for canonical, record in self._store.items():
++                if self._state(record, now) == STALE:
++                    victim = canonical
++                    break
++            if victim is None:
++                victim = next(iter(self._store))
++            del self._store[victim]
++            self._counters["evictions"] += 1
++
++    # -- public API -------------------------------------------------------
+ 
+     def put(self, namespace, key, value):
+         canonical = canonical_key(namespace, key)
+@@ -53,9 +104,7 @@ class NamespacedCache:
+             record.expires_at = now + self.ttl
+             self._store.move_to_end(canonical)
+         else:
+-            if len(self._store) > self.capacity:
+-                self._store.popitem(last=False)
+-                self._counters["evictions"] += 1
++            self._make_room()
+             self._store[canonical] = _Record(namespace, value, now, now + self.ttl)
+         self._counters["puts"] += 1
+         return canonical
+@@ -65,13 +114,48 @@ class NamespacedCache:
+         now = self._clock.now()
+         record = self._store.get(canonical)
+         if record is not None:
+-            if not self._expired(record, now):
++            state = self._state(record, now)
++            if state == FRESH:
++                self._store.move_to_end(canonical)
+                 self._counters["hits"] += 1
+                 return record.value
++            if state == _DEAD:
++                del self._store[canonical]
++                self._counters["expirations"] += 1
++        self._counters["misses"] += 1
++        return default
++
++    def get_entry(self, namespace, key):
++        canonical = canonical_key(namespace, key)
++        now = self._clock.now()
++        record = self._store.get(canonical)
++        if record is not None:
++            state = self._state(record, now)
++            if state == FRESH:
++                self._store.move_to_end(canonical)
++                self._counters["hits"] += 1
++                return CacheEntry(
++                    record.namespace,
++                    canonical,
++                    record.value,
++                    record.stored_at,
++                    record.expires_at,
++                    FRESH,
++                )
++            if state == STALE:
++                self._counters["stale_hits"] += 1
++                return CacheEntry(
++                    record.namespace,
++                    canonical,
++                    record.value,
++                    record.stored_at,
++                    record.expires_at,
++                    STALE,
++                )
+             del self._store[canonical]
+             self._counters["expirations"] += 1
+         self._counters["misses"] += 1
+-        return default
++        return None
+ 
+     def delete(self, namespace, key):
+         canonical = canonical_key(namespace, key)
+@@ -93,17 +177,19 @@ class NamespacedCache:
+ 
+     def purge_expired(self):
+         now = self._clock.now()
+-        victims = [ck for ck, rec in self._store.items() if self._expired(rec, now)]
++        victims = [ck for ck, rec in self._store.items() if self._is_dead(rec, now)]
+         for canonical in victims:
+             del self._store[canonical]
+         self._counters["expirations"] += len(victims)
+         return len(victims)
+ 
+     def keys(self, namespace=None):
++        if namespace is not None:
++            check_namespace(namespace)
+         now = self._clock.now()
+         result = []
+-        for canonical, record in reversed(self._store.items()):
+-            if self._expired(record, now):
++        for canonical, record in self._store.items():
++            if self._is_dead(record, now):
+                 continue
+             if namespace is not None and record.namespace != namespace:
+                 continue
+@@ -113,14 +199,55 @@ class NamespacedCache:
+     def namespaces(self):
+         now = self._clock.now()
+         return sorted({rec.namespace for rec in self._store.values()
+-                       if not self._expired(rec, now)})
++                       if not self._is_dead(rec, now)})
+ 
+     def __len__(self):
+         now = self._clock.now()
+-        return sum(1 for rec in self._store.values() if not self._expired(rec, now))
++        return sum(1 for rec in self._store.values() if not self._is_dead(rec, now))
+ 
+     def stats(self):
+-        data = self._counters
++        data = dict(self._counters)
+         data["size"] = len(self)
+         data["capacity"] = self.capacity
+         return data
++
++    # -- snapshot / restore ----------------------------------------------
++
++    def snapshot(self):
++        self.purge_expired()
++        now = self._clock.now()
++        entries = [
++            {
++                "canonical": canonical,
++                "namespace": record.namespace,
++                "value": record.value,
++                "stored_at": record.stored_at,
++                "expires_at": record.expires_at,
++            }
++            for canonical, record in self._store.items()
++        ]
++        return build_snapshot(now, self.capacity, self.ttl, self.stale_ttl, entries)
++
++    def restore(self, snapshot):
++        created_at, records = parse_snapshot(snapshot)
++        now = self._clock.now()
++        delta = now - created_at
++        ordered = OrderedDict()
++        for record in records:
++            stored_at = record["stored_at"] + delta
++            expires_at = record["expires_at"] + delta
++            canonical = record["canonical"]
++            if canonical in ordered:
++                del ordered[canonical]
++            ordered[canonical] = _Record(
++                record["namespace"], record["value"], stored_at, expires_at
++            )
++        alive = [
++            (canonical, record)
++            for canonical, record in ordered.items()
++            if not self._is_dead(record, now)
++        ]
++        if len(alive) > self.capacity:
++            alive = alive[len(alive) - self.capacity:]
++        self._store = OrderedDict(alive)
++        return len(self._store)
+diff --git a/nscache/keys.py b/nscache/keys.py
+index ac2d2a7..957d10c 100644
+--- a/nscache/keys.py
++++ b/nscache/keys.py
+@@ -1,12 +1,15 @@
+ """Canonical key encoding for the nscache package."""
+ 
++import math
+ import re
+ 
+-_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
++MAX_KEY_DEPTH = 6
++
++_NAMESPACE_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
+ 
+ 
+ def _escape(text):
+-    return text.replace("\\", "\\\\").replace("|", "\\p")
++    return text.replace("\\", "\\\\").replace("|", "\\p").replace("=", "\\e")
+ 
+ 
+ def check_namespace(namespace):
+@@ -18,30 +21,45 @@ def check_namespace(namespace):
+     return namespace
+ 
+ 
+-def encode_key(key):
+-    """Encode *key* into its canonical textual form."""
++def _encode(key, depth):
++    if depth > MAX_KEY_DEPTH:
++        raise ValueError("key nesting deeper than %d" % (MAX_KEY_DEPTH,))
+     if key is None:
+         return "n:"
++    if isinstance(key, bool):
++        return "b:true" if key else "b:false"
+     if isinstance(key, int):
+         return "i:%d" % key
+     if isinstance(key, float):
++        if not math.isfinite(key):
++            raise ValueError("non-finite float keys are not supported")
++        if key == 0.0:
++            key = 0.0
+         return "f:" + repr(key)
+     if isinstance(key, str):
+         return "s:" + _escape(key)
+     if isinstance(key, bytes):
+         return "x:" + key.hex()
+     if isinstance(key, (list, tuple)):
+-        return "l:[" + "|".join(encode_key(item) for item in key) + "]"
++        return "l:[" + "|".join(_encode(item, depth + 1) for item in key) + "]"
+     if isinstance(key, dict):
+-        parts = []
+-        for name, value in key.items():
++        for name in key:
+             if not isinstance(name, str):
+                 raise TypeError("dict keys must be str")
+-            parts.append(encode_key(name) + "=" + encode_key(value))
++        parts = []
++        for name in sorted(key):
++            parts.append(
++                _encode(name, depth + 1) + "=" + _encode(key[name], depth + 1)
++            )
+         return "d:{" + "|".join(parts) + "}"
+     raise TypeError("unsupported key type: %s" % type(key).__name__)
+ 
+ 
++def encode_key(key):
++    """Encode *key* into its canonical textual form."""
++    return _encode(key, 1)
++
++
+ def canonical_key(namespace, key):
+     """Return the canonical cache key for *namespace* and *key*."""
+     return check_namespace(namespace) + "/" + encode_key(key)
+diff --git a/nscache/snapshot.py b/nscache/snapshot.py
+new file mode 100644
+index 0000000..81b4308
+--- /dev/null
++++ b/nscache/snapshot.py
+@@ -0,0 +1,72 @@
++"""Snapshot construction and validation for nscache."""
++
++from .clock import check_real
++
++SNAPSHOT_VERSION = 2
++
++_SNAPSHOT_FIELDS = (
++    "version",
++    "created_at",
++    "capacity",
++    "ttl",
++    "stale_ttl",
++    "entries",
++)
++
++_ENTRY_FIELDS = (
++    "canonical",
++    "namespace",
++    "value",
++    "stored_at",
++    "expires_at",
++)
++
++
++def build_snapshot(created_at, capacity, ttl, stale_ttl, entries):
++    """Build a detached snapshot mapping."""
++    return {
++        "version": SNAPSHOT_VERSION,
++        "created_at": check_real(created_at, "created_at"),
++        "capacity": capacity,
++        "ttl": ttl,
++        "stale_ttl": stale_ttl,
++        "entries": [dict(entry) for entry in entries],
++    }
++
++
++def parse_snapshot(data):
++    """Validate *data* and return a ``(created_at, records)`` pair."""
++    if not isinstance(data, dict):
++        raise TypeError("snapshot must be a dict")
++    for field in _SNAPSHOT_FIELDS:
++        if field not in data:
++            raise ValueError("snapshot is missing %r" % (field,))
++    version = data["version"]
++    if isinstance(version, bool) or not isinstance(version, int) \
++            or version != SNAPSHOT_VERSION:
++        raise ValueError("unsupported snapshot version: %r" % (version,))
++    created_at = check_real(data["created_at"], "created_at")
++    entries = data["entries"]
++    if not isinstance(entries, list):
++        raise TypeError("entries must be a list")
++    records = []
++    for entry in entries:
++        if not isinstance(entry, dict):
++            raise TypeError("each snapshot entry must be a dict")
++        for field in _ENTRY_FIELDS:
++            if field not in entry:
++                raise ValueError("snapshot entry is missing %r" % (field,))
++        canonical = entry["canonical"]
++        namespace = entry["namespace"]
++        if not isinstance(canonical, str):
++            raise TypeError("entry canonical must be a str")
++        if not isinstance(namespace, str):
++            raise TypeError("entry namespace must be a str")
++        records.append({
++            "canonical": canonical,
++            "namespace": namespace,
++            "value": entry["value"],
++            "stored_at": check_real(entry["stored_at"], "stored_at"),
++            "expires_at": check_real(entry["expires_at"], "expires_at"),
++        })
++    return created_at, records

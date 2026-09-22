@@ -1,0 +1,9 @@
+{
+  "reason": "The prompt specifies paths in applied order but no list/tuple return type. Compare the ordered contents.",
+  "old_grader_sha256": "a0c4e2365b64ae8fca25936ce08d2df981ae4e663f0042a1d54b3c130d460600",
+  "new_grader_sha256": "115bf93836895c27de81f6754d6e2feb494467e88a095cc5821a7cbe3f8d1df8",
+  "prompt_changed": false,
+  "fixture_changed": false,
+  "candidate_changed": false,
+  "model_rerun": false
+}

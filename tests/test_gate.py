@@ -10,6 +10,7 @@ import pytest
 
 from harness.gate import Gate, Mode, Outcome
 from harness.risk import RiskClass
+from harness.authority import AuthorityEngine, AuthorityStore
 
 
 def G(tmp_path, **kw):
@@ -54,6 +55,26 @@ def test_project_mode_asks_on_external(tmp_path):
     d = G(tmp_path).evaluate("browser_click", {"ref": "e1"})
     assert not d.allowed and d.needs_user
     assert d.risk == RiskClass.EXTERNAL.value
+
+
+def test_explicit_user_send_is_authority_and_project_grant_survives_gate(tmp_path):
+    store = AuthorityStore(str(tmp_path / "authority.db"))
+    g = G(tmp_path, authority_engine=AuthorityEngine(store))
+    g.begin_request("Send this update to alice@example.com", project="collie", mission_id="m1")
+    direct = g.evaluate("browser_click", {"text": "Send"})
+    assert direct.allowed and direct.action == "send"
+    # A draft-only turn asks at Send, then the user may bind that exact action/target
+    # to the project instead of answering every future Mission.
+    g.begin_request("Draft an update for alice@example.com", project="collie", mission_id="m2")
+    asked = g.evaluate("browser_click", {"text": "Send"})
+    assert not asked.allowed and "project" in asked.grant_options
+    g.apply_outcome(Outcome.ALLOW_PROJECT, "browser_click", asked.target, decision=asked)
+
+    fresh = G(tmp_path, authority_engine=AuthorityEngine(store))
+    fresh.begin_request("Send the routine update to alice@example.com", project="collie", mission_id="m3")
+    allowed = fresh.evaluate("browser_click", {"text": "Send"})
+    assert allowed.allowed and allowed.authorization_basis == "stored grant"
+    store.close()
 
 
 def test_extra_roots_are_writable(tmp_path, tmp_path_factory):
@@ -164,6 +185,33 @@ def test_browser_open_pins_to_its_destination(tmp_path):
     assert d.target == "https://evil.example"
 
 
+def test_persistent_site_access_allows_navigation_but_not_actions(tmp_path):
+    g = G(tmp_path, browser_site_access="all_except_sensitive",
+          origin_lookup=lambda: "https://docs.example/page")
+    opened = g.evaluate("browser_open", {"url": "https://docs.example/guide"})
+    assert opened.allowed and "site-access policy" in opened.reason
+    click = g.evaluate("browser_click", {"ref": "e1"})
+    assert not click.allowed and click.needs_user
+
+
+@pytest.mark.parametrize("url", [
+    "https://secure.bank.example/login",
+    "https://www.chase.com/",
+    "https://wallet.example/sign",
+    "https://custom.finance.test/account",
+])
+def test_sensitive_sites_still_ask_under_recommended_policy(tmp_path, url):
+    g = G(tmp_path, browser_site_access="all_except_sensitive",
+          browser_sensitive_hosts=("custom.finance.test",))
+    d = g.evaluate("browser_open", {"url": url})
+    assert not d.allowed and d.needs_user
+
+
+def test_all_sites_policy_is_explicitly_available(tmp_path):
+    g = G(tmp_path, browser_site_access="all_sites")
+    assert g.evaluate("browser_open", {"url": "https://bank.example/"}).allowed
+
+
 def test_reject_always_stops_the_asking(tmp_path):
     g = G(tmp_path, origin_lookup=lambda: "http://x.test")
     g.apply_outcome(Outcome.REJECT_ALWAYS, "browser_click", "http://x.test")
@@ -176,6 +224,16 @@ def test_unknown_tool_asks(tmp_path):
     """Fail closed: a tool nobody classified is treated as reaching off-machine."""
     d = G(tmp_path).evaluate("mcp__stripe__create_charge", {"amount": 9999})
     assert not d.allowed and d.needs_user
+
+
+def test_unknown_plugin_cannot_invent_a_trusted_standing_rule_target(tmp_path):
+    class Sneaky:
+        def _trusted_target(self):
+            return "safe-looking-target"
+
+    d = G(tmp_path).evaluate("some_plugin_charge", {"amount": 9999}, Sneaky())
+    assert not d.allowed and d.needs_user
+    assert d.target is None and d.rule_offer == ""
 
 
 def test_mode_from_env(monkeypatch):

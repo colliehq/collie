@@ -1,0 +1,65 @@
+{
+  "plan": {
+    "registered_at": "2026-09-08T06:31:29.717992+00:00",
+    "source_commit": "aad4afe6fd3793f7598742e9b65a1778101d1530",
+    "runtime": {
+      "filename": "claude.exe",
+      "version": "2.1.228 (Claude Code)",
+      "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+      "bytes": 296308896,
+      "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+    },
+    "steps": 45,
+    "arms": [
+      "collie",
+      "claude-code"
+    ],
+    "concurrency": 2,
+    "claim": "Synthetic dependent-read continuity check, not coding benchmark or latency rank.",
+    "tool_scope": "Only the read_file/Read tool; project prefetch and skills disabled in Collie."
+  },
+  "controllers": [
+    {
+      "arm": "collie",
+      "exit": 0
+    },
+    {
+      "arm": "claude-code",
+      "exit": 0
+    }
+  ],
+  "results": [
+    {
+      "arm": "collie",
+      "answer": "",
+      "error": "terminal: [not retried \u2014 this error matches no known pattern, so it was treated as fatal rather than retried blindly; the text below is verbatim from the provider and may not describe the real cause] model request authority is missing",
+      "stop_reason": "error",
+      "turns": 1,
+      "model_calls": 0,
+      "tool_results": 0,
+      "default_turn_limit": 0,
+      "experiment_model_call_limit": 64,
+      "cache_write": 0,
+      "cache_read": 0,
+      "passed": false,
+      "seconds": 0.359
+    },
+    {
+      "arm": "claude-code",
+      "answer": "Chain followed to completion: 45 files read, one at a time, ending at `57c257d1e56a496bac8874cb96a95477.txt`, which contains the END marker.\n\n**Terminal marker: `CHAIN-COMPLETE-9f24`**\n\nChain path (first \u2192 last):\n1. `407fd2f7\u2026` \u2192 2. `d82a2b71\u2026` \u2192 3. `d8199180\u2026` \u2192 4. `a5d77150\u2026` \u2192 5. `a794e446\u2026` \u2192 6. `3045d8e2\u2026` \u2192 7. `8ebeee55\u2026` \u2192 8. `336ac675\u2026` \u2192 9. `cab7d5f7\u2026` \u2192 10. `eb35797e\u2026` \u2192 11. `a8008feb\u2026` \u2192 12. `c7fbfa76\u2026` \u2192 13. `6886a08b\u2026` \u2192 14. `e69dc148\u2026` \u2192 15. `263616a9\u2026` \u2192 16. `274ee8fc\u2026` \u2192 17. `01e1e6aa\u2026` \u2192 18. `027202a0\u2026` \u2192 19. `08e389de\u2026` \u2192 20. `560e834b\u2026` \u2192 21. `9dab3f36\u2026` \u2192 22. `0ac800c0\u2026` \u2192 23. `a625055a\u2026` \u2192 24. `7ef10dae\u2026` \u2192 25. `1d9aa625\u2026` \u2192 26. `7597e186\u2026` \u2192 27. `bef30d4c\u2026` \u2192 28. `ee21dddb\u2026` \u2192 29. `b9f7e8cc\u2026` \u2192 30. `d7ea434b\u2026` \u2192 31. `36f44c04\u2026` \u2192 32. `d0c5f09f\u2026` \u2192 33. `eacf58f3\u2026` \u2192 34. `d136591f\u2026` \u2192 35. `c44102eb\u2026` \u2192 36. `f2c472eb\u2026` \u2192 37. `40d376d2\u2026` \u2192 38. `ad25ec38\u2026` \u2192 39. `95c56fe1\u2026` \u2192 40. `a195212a\u2026` \u2192 41. `2118ac47\u2026` \u2192 42. `1848d1d9\u2026` \u2192 43. `cdb284d0\u2026` \u2192 44. `833218e5\u2026` \u2192 45. `57c257d1\u2026` (END)\n\nNo files were modified, and no tools beyond file reads were used.",
+      "error": "",
+      "settled": true,
+      "tool_calls": 45,
+      "usage": {
+        "input_tokens": 92,
+        "output_tokens": 5862,
+        "cache_read_input_tokens": 315786,
+        "cache_creation_input_tokens": 9146,
+        "total_cost_usd": 0.397063,
+        "cost_micro_usd": 397063
+      },
+      "passed": true,
+      "seconds": 83.645
+    }
+  ]
+}

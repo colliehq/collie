@@ -324,6 +324,11 @@ def _spawn_investigative_critic(provider, model):
     misses a diff-only glance cannot, while staying independent of the author's (possibly wrong) read."""
     def critic(issue, diff, cwd):
         try:
+            # Import at the call boundary to avoid the cli -> swe circular import.  The similarly
+            # named local import in predict_collie() is not visible inside this closure; without
+            # this import every critic launch raised NameError and the fail-open handler below
+            # silently treated the review as successful.
+            from .cli import make_harness
             ch = make_harness(cwd, provider=provider, model=model, project="critic", code_search=True)
             ch.max_turns = int(os.environ.get("COLLIE_CRITIC_TURNS", "14"))
             ch.self_verify = False
@@ -352,22 +357,32 @@ def _spawn_investigative_critic(provider, model):
 
 
 def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
-                   model=None, max_turns=50):   # 50 (was 35): the verify loop (reproduce ->
+                   model=None, max_turns=50, benchmark_safe=False,
+                   request_gate=None, request_complete=None, request_scope="",
+                   complete_prompt=None, benchmark_effort="default"):
+                   # 50 (was 35): the verify loop (reproduce ->
                    # edit -> re-check) needs headroom; Hermes runs to 90. Still well under.
     from .cli import make_harness
     # The verify gate is only as good as the toolchain it names, so decide the language BEFORE
     # building any nudge. COLLIE_SWE_LANG overrides it for repos the markers get wrong.
-    _lang = os.environ.get("COLLIE_SWE_LANG") or detect_language(workdir)
+    _lang = (detect_language(workdir) if benchmark_safe else
+             (os.environ.get("COLLIE_SWE_LANG") or detect_language(workdir)))
     # Env override to swap the backend model without touching call sites — e.g. to break the
     # DeepSeek resolve ceiling with the latest Opus via the subscription/CLI path:
     #   COLLIE_PROVIDER=claude-cli COLLIE_MODEL=opus  (auth via CLAUDE_CODE_OAUTH_TOKEN or
     #   ANTHROPIC_API_KEY — see ClaudeCliProvider). Legitimate first-party CLI, no proxy.
-    provider = os.environ.get("COLLIE_PROVIDER", provider)
-    model = os.environ.get("COLLIE_MODEL", model)
+    if benchmark_safe:
+        if provider not in ("claude-cli", "claude-agent-sdk"):
+            raise ValueError(
+                "benchmark_safe Collie requires an approved official Claude provider")
+    else:
+        provider = os.environ.get("COLLIE_PROVIDER", provider)
+        model = os.environ.get("COLLIE_MODEL", model)
     # COLLIE_CODE_SEARCH=0 drops the semantic index entirely (agent navigates with grep/read only)
     # — the Report-B lever to measure whether embedding navigation actually changes task resolve,
     # and the lightweight config for weak machines (no ONNX embedding at all).
-    _cs = os.environ.get("COLLIE_CODE_SEARCH", "1") not in ("0", "false", "off")
+    _cs = (not benchmark_safe and
+           os.environ.get("COLLIE_CODE_SEARCH", "1") not in ("0", "false", "off"))
     # LEAN-PROMPT (opt-in, COLLIE_LEAN_PROMPT=1): principled-lean isolation. Removes the
     # PROCEDURAL commands ("keep focused / do not expand to unrelated files", the "focused"
     # scope-shrink adjective) that over-corrected v2's scope-creep into v3's scope-SHRINK
@@ -375,18 +390,52 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # made the model skip it). Keeps every INFORMATIONAL rule (env facts, exact-API contract,
     # verify-assert). Thesis: for a capable model, SUPPLY missing context + let it JUDGE scope;
     # multi-file coverage comes from related_locations SURFACING siblings (info), not a command.
-    _lean = os.environ.get("COLLIE_LEAN_PROMPT") in ("1", "true", "on")
+    _lean = (not benchmark_safe and
+             os.environ.get("COLLIE_LEAN_PROMPT") in ("1", "true", "on"))
+    if benchmark_safe and benchmark_effort not in ("default", "high"):
+        raise ValueError("benchmark_effort must be default or high")
     h = make_harness(workdir, provider=provider, model=model, project="swe",
+                     effort=benchmark_effort if benchmark_safe else None,
                      code_search=_cs,           # semantic repo navigation (bge-small); env-gated
                      embed="hash")              # one-shot fix: skip loading jina-v3 for
                                                 # memory (unused here) -> ~2GB less peak
-    h.max_turns = int(os.environ.get("COLLIE_MAX_TURNS", str(max_turns)))   # pi-like: raise the cap
+    # Keep the advertised workflow and the retained tools derived from the same switches.  The
+    # trusted-fixture benchmark profile deliberately has no shell/network authority and ignores
+    # ambient repo rules/skills, matching the native arms' safe/ignore-rules profiles.  General SWE
+    # runs retain their existing shell plus optional local search / container verifier.
+    allowed = ["read_file", "write_file", "edit_file", "grep", "glob"]
+    if not benchmark_safe:
+        allowed.append("bash")
+        if _cs:
+            allowed.append("code_search")
+        if os.environ.get("COLLIE_E2E_IMAGE"):
+            allowed.append("run_in_env")
+    h.registry.retain(allowed)
+    if benchmark_safe:
+        h.provider.subscription_only = True
+        h.composer.auto_prefetch = False
+        h.composer.include_project_rules = False
+        h.composer.include_skills = False
+        h.composer.identity = "You are Collie, a coding agent in a frozen evaluation."
+        # Freeze every loop-level behavior that normal product settings or environment variables
+        # can customize.  The ranking runner owns one total attempt budget; an ambient retry,
+        # hook, overflow retry, or forced-answer threshold would make the two product arms spend
+        # different numbers of model calls on the same cell.
+        h.max_retries = 0
+        h.retry_base = 0.0
+        h.overflow_recovery = False
+        h.hooks = None
+        h.force_ratio = 0.55
+        h.hard_ratio = 0.76
+    h.max_turns = (int(max_turns) if benchmark_safe else
+                   int(os.environ.get("COLLIE_MAX_TURNS", str(max_turns))))
     # VERIFY step ported from Hermes' loop (trace diff: Hermes edits once after thorough
     # exploration, then runs `python -c` to TEST the fix and iterates — collie edited then
     # finished blind, causing the 3/9 "right file, wrong edit" failures). We enable a BOUNDED
     # verify: a quick python -c reproduction, NOT pytest/the suite (env isn't set up; grader
     # runs tests separately). Opt-out with COLLIE_SWE_VERIFY=0.
-    if os.environ.get("COLLIE_SWE_VERIFY", "1") not in ("0", "false", "off"):
+    if (not benchmark_safe and
+            os.environ.get("COLLIE_SWE_VERIFY", "1") not in ("0", "false", "off")):
         h.self_verify = True
         h.verify_nudge = _swe_verify_nudge(_lang)
         # Evidence-gate (default on): gate finish on an actually-run post-edit reproduction
@@ -424,7 +473,8 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # Adversarial critic gate (COLLIE_CRITIC=1): before finishing, an INDEPENDENT fresh read of the
     # issue attacks the diff. Ranked #1 comprehension lever (workflow) — catches under-coverage and
     # misreads that a self-nudge cannot, because a separate read does not share the model's blind spot.
-    if os.environ.get("COLLIE_CRITIC") in ("1", "true", "on"):
+    if (not benchmark_safe and
+            os.environ.get("COLLIE_CRITIC") in ("1", "true", "on")):
         h.critic = True
         h.critic_issue = problem_statement
         h.critic_max = int(os.environ.get("COLLIE_CRITIC_ROUNDS", "2"))
@@ -450,7 +500,8 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # DeepSeek-V3 CEILING: it will not do coordinated multi-file edits regardless of harness
     # strategy. Kept OFF-by-default and gated (like the distiller) so a stronger agentic model
     # can flip it on; it does nothing for DeepSeek. See docs/SWE_AUDIT.md.
-    if os.environ.get("COLLIE_PLAN_FIRST") in ("1", "true", "on"):
+    if (not benchmark_safe and
+            os.environ.get("COLLIE_PLAN_FIRST") in ("1", "true", "on")):
         workflow = (
             "Workflow: (1) use `code_search` (repeatedly, different queries) to find ALL code "
             "involved. (2) BEFORE editing anything, decide the COMPLETE set of files a correct "
@@ -476,7 +527,7 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # Real-env verification (COLLIE_E2E_IMAGE set): the local checkout has NO installed deps, so a
     # `python3 -c "import <pkg>"` check fails silently and the fix ships UNVERIFIED. run_in_env runs
     # against the real installed environment — the fix for collie's "verify is theater on SWE".
-    if os.environ.get("COLLIE_E2E_IMAGE"):
+    if os.environ.get("COLLIE_E2E_IMAGE") and not benchmark_safe:
         workflow += (
             "CRITICAL — VERIFY IN THE REAL ENVIRONMENT: your local working dir has NO installed "
             "dependencies (so `import <thepackage>` fails locally and you CANNOT trust a local "
@@ -526,6 +577,10 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
     # gate-hardening revert). LEAN drops it: it over-corrected into multi-file under-coverage
     # (the model was SHOWN the sibling via related_locations but the command made it skip).
     _verify = (
+        "Before finishing, re-read the edited source and check the requested cases carefully. "
+        "This restricted benchmark profile has no command tool; an external hidden grader will "
+        "execute the contract.\n"
+        if benchmark_safe else
         "Before finishing, VERIFY the fix with a `python3 -c` assertion (call your code by the "
         "names the ISSUE uses); iterate the SOURCE until it passes. Don't run the suite.\n"
         if _lean else
@@ -547,11 +602,13 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         "just the first you find. Put the fix in the subsystem the reported symptom actually "
         "originates from — don't just patch the loudest frame in a traceback. Still do NOT expand "
         "beyond the reported behavior's own path (no unrelated files or cases).\n"
-        if os.environ.get("COLLIE_TRACE_PATH") in ("1", "true", "on") else "")
+        if (not benchmark_safe and
+            os.environ.get("COLLIE_TRACE_PATH") in ("1", "true", "on")) else "")
     # COLLIE_V1_PROMPT=1: exact original v1 prompt (HEAD, pre-regression-saga) — base + workflow +
     # no-pip guard with "reproduce encouraged", NO exact-API / env-guard / anti-scope-creep. Used to
     # test extended thinking on the PROVEN-GOOD baseline (v1 ~= hermes) without the v2/v3 confound.
-    if os.environ.get("COLLIE_V1_PROMPT") in ("1", "true", "on"):
+    if (not benchmark_safe and
+            os.environ.get("COLLIE_V1_PROMPT") in ("1", "true", "on")):
         prompt = (
             "Fix this GitHub issue by editing the repository's SOURCE code (never tests).\n"
             + workflow +
@@ -560,10 +617,15 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
             "the tests. Do not create a venv/ or download packages. A few quick "
             "`python3 -c \"...\"` checks to REPRODUCE the issue and verify your fix are "
             "encouraged; just don't run the suite.\n\nISSUE:\n" + problem_statement)
-        res = h.run("swe", prompt, consolidate=False)
+        if callable(request_gate):
+            with h.provider.request_authority(
+                    request_gate, request_complete, request_scope=request_scope):
+                res = h.run("swe", prompt, consolidate=False)
+        else:
+            res = h.run("swe", prompt, consolidate=False)
         h.memory.close(); h.recorder.close()
         return res
-    prompt = (
+    prompt = complete_prompt if complete_prompt is not None else (
         "Fix this GitHub issue by editing the repository's SOURCE code (never tests).\n"
         + workflow +
         "NEVER run `pip install`, `python -m venv`, `pip`, or the test suite (`pytest`) — "
@@ -589,7 +651,12 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
         "THIS COMMIT'S TIME (mirror the era and conventions of the codebase, not today's best "
         "practice), and add it to the packaging metadata like a maintainer would.\n\nISSUE:\n"
         + problem_statement)
-    res = h.run("swe", prompt, consolidate=False)
+    if callable(request_gate):
+        with h.provider.request_authority(
+                request_gate, request_complete, request_scope=request_scope):
+            res = h.run("swe", prompt, consolidate=False)
+    else:
+        res = h.run("swe", prompt, consolidate=False)
     h.memory.close(); h.recorder.close()
     return res
 
@@ -598,7 +665,9 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
 # is the harness, not the wording. Same "no pip/venv/test-suite" guard collie gets.
 CLI_SWE_PROMPT = (
     "Resolve this GitHub issue by editing the repository's SOURCE code in the current "
-    "directory. NEVER edit test files. Make a focused, COMPLETE fix — handle the edge "
+    "directory. Do not stop at a plan or merely describe changes: continue using the editing "
+    "tools until the source files have actually been changed. NEVER edit test files. Make a "
+    "focused, COMPLETE fix — handle the edge "
     "cases the issue implies. Do NOT run `pip install`, create a virtualenv, or run the "
     "test suite: a separate grader runs the tests. Your local Python is NOT the grading "
     "environment — never justify a dependency by testing it locally. Strongly prefer stdlib "
@@ -647,23 +716,49 @@ def _run_cli(cmd, workdir, extra_env=None, timeout=1800, stdin_text=None):
 
 # Third-party provider keys the `claude` CLI never needs — dropped from the child env so that a
 # prompt-injection in the (untrusted) issue text / repo can't exfiltrate them (see SECURITY note).
-_NON_CLAUDE_KEYS = ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                    "GROQ_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY")
+_NON_CLAUDE_KEYS = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_VERTEX",
+    "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+    "GROQ_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY",
+)
+
+# A product-comparison Codex arm must use the ChatGPT login already held by the first-party CLI.
+# Drop every common API-key/custom-endpoint escape hatch from the child even after the benchmark's
+# launch guard checked the parent environment.  The duplicate defence matters because a caller can
+# invoke this predictor directly, and a shadowing OPENAI_API_KEY would silently turn a subscription
+# comparison into a metered API run.
+_NON_CODEX_KEYS = (
+    "OPENAI_API_KEY", "OPENAI_AUTH_TOKEN", "OPENAI_ACCESS_TOKEN", "OPENAI_BASE_URL",
+    "OPENAI_API_BASE", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "OPENAI_PROJECT",
+    "OPENAI_PROJECT_ID", "CODEX_API_KEY", "CODEX_AUTH_TOKEN", "CODEX_BASE_URL",
+    "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_AD_TOKEN", "AZURE_OPENAI_ENDPOINT",
+    # These identify the *parent* Codex session.  Inheriting them made a nested standalone CLI
+    # silently reuse the parent's read-only tool profile even with `--sandbox workspace-write`.
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_PERMISSION_PROFILE", "CODEX_THREAD_ID",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY",
+    "XAI_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY",
+)
 
 
-def predict_claude_code(workdir: str, problem_statement: str, model="", timeout=1800):
-    # SECURITY: this drives the first-party Claude Code CLI with `--permission-mode
-    # bypassPermissions` inside a freshly-cloned, UNTRUSTED repo, using verbatim GitHub-issue text
-    # as the prompt. That intentionally disables tool-approval so the eval can run unattended — it
-    # is a benchmark harness and MUST only be run in a disposable sandbox/VM/container, never on a
-    # machine holding real credentials or data. We at least strip non-Claude provider keys from the
-    # child env to bound what an injected command could steal.
+def predict_claude_code(workdir: str, problem_statement: str, model="", timeout=1800,
+                        max_turns=24):
+    # SECURITY: benchmark repositories and issue text are untrusted.  Safe mode disables project
+    # hooks/instructions/plugins, no-session-persistence avoids leaving benchmark conversations in
+    # the user's history, and the explicit tool set omits Bash and all network tools.  acceptEdits
+    # keeps headless source changes working without granting arbitrary command execution.  This is
+    # intentionally a tool-restricted product run, and the report labels it that way.
     # --output-format json so the run reports its own usage and cost. Plain text mode returns only
     # the answer, which left the Claude arm with NO token or cost data at all while Collie's was
     # measured — a comparison can't discuss efficiency when one side is unmeasured. The JSON also
     # separates cache reads from fresh input, which is the difference between a real cost figure
     # and one several times too high. Editing behaviour is unaffected; only stdout changes.
-    cmd = ["claude", "-p", "--output-format", "json", "--permission-mode", "bypassPermissions"]
+    safe_tools = "Read,Edit,Write,Grep,Glob"
+    cmd = ["claude", "-p", "--output-format", "json", "--permission-mode", "acceptEdits",
+           "--safe-mode", "--no-session-persistence", "--tools", safe_tools,
+           "--allowedTools", safe_tools, "--max-turns", str(max_turns)]
     if model:
         cmd += ["--model", model]
     # RETURN the CompletedProcess. Discarding it made a non-zero exit / a refusal on stdout
@@ -671,6 +766,51 @@ def predict_claude_code(workdir: str, problem_statement: str, model="", timeout=
     # scores as a loss. Callers must look at returncode and stderr before recording an empty patch.
     return _run_cli(cmd, workdir, extra_env={k: None for k in _NON_CLAUDE_KEYS}, timeout=timeout,
                     stdin_text=CLI_SWE_PROMPT + problem_statement)
+
+
+def predict_codex(workdir: str, problem_statement: str, model="", timeout=1800,
+                  complete_prompt=None):
+    """Drive the first-party Codex CLI through its existing ChatGPT subscription login.
+
+    This is a *native product* arm, not a same-model harness arm.  It deliberately ignores user
+    config and repository rules so a custom provider or project instruction cannot change the
+    billed route or the task prompt.  The CLI still reads its normal auth store.  Workspace-write
+    contains generated commands to the disposable checkout; callers must still use an isolated
+    benchmark directory because the evaluated repository is untrusted.
+    """
+    disabled_features = (
+        "apps", "auth_elicitation", "browser_use", "browser_use_external",
+        "browser_use_full_cdp_access", "computer_use",
+        "fast_mode", "goals", "hooks", "image_generation", "in_app_browser",
+        "memories", "multi_agent", "plugin_sharing", "plugins", "remote_compaction_v2",
+        "remote_plugin", "skill_mcp_dependency_install", "skill_search",
+        "tool_call_mcp_elicitation", "tool_suggest", "workspace_dependencies",
+    )
+    # These are Codex's native local-repository execution surfaces, not foreign
+    # tools.  Keep them on so the product arm remains capable of inspecting and
+    # editing its isolated checkout.
+    local_features = ("code_mode_host", "shell_snapshot", "shell_tool", "unified_exec")
+    cmd = ["codex", "--sandbox", "workspace-write", "--ask-for-approval", "never"]
+    for feature in disabled_features:
+        cmd += ["--disable", feature]
+    for feature in local_features:
+        cmd += ["--enable", feature]
+    for override in ('web_search="disabled"', "tools.web_search=false",
+                     'cli_auth_credentials_store="file"',
+                     'model_reasoning_effort="high"'):
+        cmd += ["-c", override]
+    if model:
+        cmd += ["--model", model]
+    cmd += ["exec", "--json", "--ephemeral", "--ignore-user-config",
+           "--ignore-rules", "--strict-config", "--color", "never",
+           "--cd", workdir]
+    # `-` is Codex's documented stdin sentinel.  Besides preserving multiline issue bodies on
+    # Windows, stdin keeps untrusted issue text out of process listings and shell diagnostics.
+    cmd.append("-")
+    prompt = (CLI_SWE_PROMPT + problem_statement
+              if complete_prompt is None else complete_prompt)
+    return _run_cli(cmd, workdir, extra_env={k: None for k in _NON_CODEX_KEYS}, timeout=timeout,
+                    stdin_text=prompt)
 
 
 def predict_hermes(workdir: str, problem_statement: str, model="", timeout=1800):
@@ -740,28 +880,24 @@ def predict_pi(workdir: str, problem_statement: str, model="", timeout=1800):
     # (no tool-approval prompt); `-a` trusts project-local files. Install: npm i -g
     # @earendil-works/pi-coding-agent.
     #   DeepSeek (default):   reads DEEPSEEK_API_KEY from env.
-    #   SUBSCRIPTION mode:    run `pi` then `/login` -> Anthropic Claude Pro/Max ONCE (pi keeps its
-    #     OWN OAuth token store), then set SWE_PI_PROVIDER=anthropic SWE_PI_MODEL=claude-sonnet-5.
-    #     NB pi sends the IDENTICAL Claude Code identity headers collie does (anthropic-messages.ts:
-    #     54-74: claude-code beta + user-agent claude-cli + x-app cli + tool-name normalization) —
-    #     same impersonation, same flat-vs-metered fingerprint mechanism; the only difference from
-    #     collie is pi has its own /login whereas collie reuses ~/.claude's token. Its lean ~570-tok
-    #     prompt should draw the FLAT free pool like collie — verify on first run.
+    #   Other providers: run Pi's documented `/login`, then set
+    #     SWE_PI_PROVIDER/SWE_PI_MODEL. Pi remains the owner of its credentials.
     # NB pi -p (print) mode runs built-in tools without an approval prompt, so no --approve flag is
     # needed (and pi 0.74.2 rejects the old `-a`). IMPORTANT: on the Claude subscription pi draws the
     # METERED extra-usage pool, NOT the flat free plan (empirically verified: 400 "out of extra
-    # usage") — because it doesn't do collie's full flat-pool impersonation (CC system prefix + lean
-    # prompt). Fund extra-usage at claude.ai/settings/usage for a subscription pi run, or use
-    # DEEPSEEK_API_KEY (default) / an ANTHROPIC_API_KEY.
-    prov = os.environ.get("SWE_PI_PROVIDER", "deepseek")
+    # usage"). Fund extra-usage at claude.ai/settings/usage for a subscription Pi run, or use
+    # a documented provider with an approved budget.
+    prov = os.environ.get("SWE_PI_PROVIDER", "deepseek").strip()
+    if prov.lower() == "claudesub":
+        raise ValueError(
+            "SWE_PI_PROVIDER=claudesub was removed; use a documented Pi provider/login")
     mdl = model or os.environ.get("SWE_PI_MODEL", "deepseek-chat")
+    normalized_model = mdl.strip().lower()
+    if normalized_model == "claudesub" or normalized_model.startswith(
+            ("claudesub/", "claudesub:")):
+        raise ValueError(
+            "SWE_PI_MODEL cannot select removed provider 'claudesub'; use a documented Pi provider")
     cmd = ["pi", "-p", CLI_SWE_PROMPT + problem_statement, "--provider", prov, "--model", mdl]
-    if prov == "claudesub":     # flat Claude sub ($0, e.g. Opus) via collie's oauth-proxy — the proxy
-        # MUST be running (OAUTH_PROXY_PORT=8788 python -m harness.oauth_proxy) + ANTHROPIC_API_KEY set
-        # to any non-empty value. The extension registers a "claudesub" provider pointing at the proxy,
-        # which injects the CC identity + flat-pool impersonation so pi draws the free plan, not metered.
-        cmd += ["--extension", os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                            "oauth_ext", "pi-oauth-proxy.js")]
     p = _run_cli(cmd, workdir, timeout=timeout)
     return _parse_cli_usage(((p.stdout or "") + "\n" + (p.stderr or "")) if p else "")
 

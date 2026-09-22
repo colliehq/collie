@@ -30,6 +30,9 @@ round — it is `failed` plus optional compensation. `repairable()` encodes that
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import os
+import time
 from typing import Iterable, Sequence
 
 
@@ -171,6 +174,195 @@ class Verifier:
         irreversible action has not fired yet.
         """
         return Verdict(VERIFIED, "no precondition declared")
+
+
+class GoalVerifier:
+    """Independent end-to-end Mission outcome verifier.
+
+    Action verifiers answer "did this one primitive do what it claimed?".  A
+    goal verifier answers the wider question "is the user's whole goal now
+    satisfied?".  The base implementation deliberately refuses to infer that
+    from a model's ``done`` token; deployments inject a domain verifier that
+    re-observes the world and returns a :class:`Verdict`.
+    """
+
+    def verify(self, goal: str, case: dict, events=(), steps=()) -> Verdict:
+        return Verdict(INCONCLUSIVE,
+                       "no independent mission-level goal verifier configured")
+
+
+class CallableGoalVerifier(GoalVerifier):
+    """Small adapter for services/tests that already expose a verification callable."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def verify(self, goal: str, case: dict, events=(), steps=()) -> Verdict:
+        result = self.fn(goal, case, events, steps)
+        return result if isinstance(result, Verdict) else Verdict(
+            INCONCLUSIVE, "goal verifier returned no typed evidence verdict")
+
+
+class CampaignReceiptGoalVerifier(GoalVerifier):
+    """Verify an exhausted campaign from its coverage contract and action receipts.
+
+    The coverage table proves that every required branch was addressed; inherited
+    semantic action keys connect a recovery successor to the predecessor's exact
+    receipts.  A completed coverage table alone is still only campaign state, so
+    at least one fired, independently verified receipt is required.
+    """
+
+    terminal = {"completed", "exhausted", "deferred", "skipped"}
+
+    def __init__(self, mission_store, action_store):
+        self.missions = mission_store
+        self.actions = action_store
+
+    def verify_mission(self, mission, events=(), steps=()) -> Verdict:
+        case = dict(getattr(mission, "case", {}) or {})
+        coverage = [dict(x) for x in (case.get("_campaign_coverage") or [])
+                    if isinstance(x, dict) and x.get("branch")]
+        required = [x for x in coverage if x.get("required", True)]
+        if not required:
+            return Verdict(INCONCLUSIVE,
+                           "no required campaign coverage contract is available")
+        open_rows = [x for x in required
+                     if str(x.get("status") or "pending").lower() not in self.terminal]
+        if open_rows:
+            return Verdict(
+                INCONCLUSIVE,
+                "%d required campaign branch(es) remain open" % len(open_rows))
+
+        observations = []
+        seen = set()
+        for nonce in self.missions.completed_action_nonces(mission.mission_id, 200):
+            nonce = str(nonce or "")
+            if not nonce or nonce in seen:
+                continue
+            seen.add(nonce)
+            for receipt in self.actions.receipts(nonce):
+                if not receipt.get("fired") or receipt.get("verdict") != VERIFIED:
+                    continue
+                capability = str(receipt.get("capability") or "world-action")[:80]
+                observations.append(Observation(
+                    "action-receipt:%s" % capability,
+                    float(receipt.get("created_at") or 0), True, asserted=True,
+                    detail=str(receipt.get("verdict_reason") or
+                               "external action independently verified")[:500]))
+        if not observations:
+            return Verdict(
+                INCONCLUSIVE,
+                "campaign coverage is closed but no fired verified action receipt is linked")
+
+        counts = {status: 0 for status in self.terminal}
+        for item in required:
+            status = str(item.get("status") or "").lower()
+            if status in counts:
+                counts[status] += 1
+        reason = (
+            "campaign coverage closed with %d completed, %d exhausted, %d deferred, "
+            "and %d skipped branch(es); %d fired action receipt(s) independently verified" %
+            (counts["completed"], counts["exhausted"], counts["deferred"],
+             counts["skipped"], len(observations)))
+        return Verdict(VERIFIED, reason, tuple(observations[:20]))
+
+
+class CodeWorkspaceGoalVerifier(GoalVerifier):
+    """Close a code Mission only from a fresh host-side verification receipt."""
+
+    @staticmethod
+    def _epoch(value) -> float:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return time.time()
+
+    def verify_mission(self, mission, events=(), steps=()) -> Verdict:
+        case = dict(getattr(mission, "case", {}) or {})
+        if not isinstance(case.get("code_profile"), dict):
+            return Verdict(INCONCLUSIVE, "Mission is not configured as durable code")
+        verification = case.get("code_verification")
+        if not case.get("code_verified") or not isinstance(verification, dict):
+            return Verdict(INCONCLUSIVE,
+                           "durable code has no successful host verification receipt")
+        evidence = verification.get("evidence")
+        if not isinstance(evidence, dict):
+            return Verdict(INCONCLUSIVE,
+                           "durable code verification has no independent command evidence")
+        workspace = str(case.get("_isolated_workspace") or "")
+        if not workspace or not os.path.isdir(workspace):
+            return Verdict(INCONCLUSIVE, "durable code workspace is unavailable")
+        from .verification import workspace_snapshot
+        current = workspace_snapshot(workspace)
+        current_digest = str(current.get("tree_digest") or "")
+        receipt_digest = str(evidence.get("post_tree_digest") or "")
+        baseline_digest = str(case.get("code_baseline_tree_digest") or "")
+        complete = bool(current.get("snapshot_complete") and
+                        evidence.get("post_snapshot_complete"))
+        fresh = bool(current_digest and receipt_digest and
+                     current_digest == receipt_digest and complete)
+        changed = bool(baseline_digest and receipt_digest and
+                       baseline_digest != receipt_digest)
+        # Bytes differing from the baseline is not the same claim as "this
+        # Mission's agent wrote a patch": a verifier's own build output also
+        # changes the tree.  Completion needs the agent-side provenance the code
+        # slice recorded, so a green command on somebody else's bytes — or on a
+        # read-only survey followed by a passing pre-existing suite — cannot
+        # close the goal.
+        attributed = evidence.get("patch_attributed") is True
+        executed = evidence.get("executed") is not False
+        stopped = bool(evidence.get("cancelled"))
+        passed = bool(evidence.get("passed") and
+                      evidence.get("command_passed") and
+                      evidence.get("ran_after_last_edit"))
+        configured_command = str(
+            (case.get("code_profile") or {}).get("verify_command") or "").strip()
+        receipt_command = str(evidence.get("command") or "").strip()
+        command_bound = bool(configured_command and receipt_command == configured_command and
+                             evidence.get("source") == "mission_code_profile")
+        # Exit zero answers "do the tests pass", never "is the user's task done".
+        # A run that ended in an error, a cancellation, or an unfinished slice has
+        # not delivered the task, whatever the suite says.
+        delivery = case.get("code_delivery") if isinstance(
+            case.get("code_delivery"), dict) else {}
+        settled = not (delivery.get("cancelled") or delivery.get("error") or
+                       delivery.get("continue_needed") or
+                       delivery.get("turns_exhausted") or
+                       str(delivery.get("stop_reason") or "") in
+                       ("error", "canceled", "turn_limit"))
+        ok = bool(passed and fresh and changed and command_bound and
+                  attributed and executed and settled and not stopped)
+        observation = Observation(
+            "host-verification-command", self._epoch(evidence.get("timestamp")),
+            ok, asserted=True,
+            detail=("configured host check passed against the current Mission patch" if ok else
+                    "the host check passed, but the coding run was cut off before it "
+                    "finished and reported its own work" if not settled else
+                    "the host check produced no Mission-attributed patch" if
+                    passed and fresh and command_bound and not attributed else
+                    "verification receipt is failed, stale, incomplete, cancelled, or not "
+                    "bound to the exact configured command and Mission patch"))
+        if observation.ok:
+            return Verdict(VERIFIED, observation.detail, (observation,))
+        return Verdict(INCONCLUSIVE, observation.detail, (observation,))
+
+
+class MissionGoalVerifier(GoalVerifier):
+    """Route goal verification by the durable Mission's declared profile."""
+
+    def __init__(self, mission_store, action_store):
+        self.code = CodeWorkspaceGoalVerifier()
+        self.campaign = CampaignReceiptGoalVerifier(mission_store, action_store)
+
+    def verify_mission(self, mission, events=(), steps=()) -> Verdict:
+        case = dict(getattr(mission, "case", {}) or {})
+        verifier = self.code if isinstance(case.get("code_profile"), dict) else self.campaign
+        return verifier.verify_mission(mission, events, steps)
 
 
 # ── the code gate, re-expressed (proves the abstraction is faithful) ────────

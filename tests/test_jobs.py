@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness.actions import ActionStore, RefusedError  # noqa: E402
 from harness.jobs import (  # noqa: E402
     Capability, Executor, JobStore, register, clear_registry, get_capability,
-    QUEUED, NEEDS_YOU, DONE_VERIFIED, DONE_ACCEPTED, FAILED_S,
+    QUEUED, NEEDS_YOU, RECOVERY_REQUIRED, DONE_VERIFIED, DONE_ACCEPTED, FAILED_S,
 )
 from harness.observe import donecheck_listing  # noqa: E402
 from harness.verifier import VERIFIED, FAILED, INCONCLUSIVE, NOT_ARMED, Verdict  # noqa: E402
@@ -107,6 +107,9 @@ def test_full_lifecycle_verified():
     check(jobs.get("job-1").state == DONE_VERIFIED, "verified outcome -> done_verified")
     check(len(acts.receipts(n)) == 1 and acts.receipts(n)[0]["fired"] == 1,
           "a fired receipt must exist")
+    replay = ex.run_confirmed(n, job_id="job-1")
+    check(replay.status == VERIFIED and len(acts.receipts(n)) == 1,
+          "terminal replay of the same executed nonce returns its receipt without re-firing")
     srv.shutdown()
     acts.close()
     jobs.close()
@@ -223,6 +226,61 @@ def test_unknown_capability_refused_before_firing():
     check(jobs.get("job-4").state != DONE_VERIFIED, "job must not reach a done state")
     acts.close()
     jobs.close()
+
+
+def test_invalid_or_corrupt_job_leash_never_becomes_unlimited_authority():
+    print("test_invalid_or_corrupt_job_leash_never_becomes_unlimited_authority")
+    clear_registry()
+    fired = {"count": 0}
+    register(Capability(
+        "do.it", execute=lambda _r: fired.__setitem__("count", fired["count"] + 1),
+        verify=lambda _r, _result: Verdict(VERIFIED, "done"), reversible=True))
+    acts, jobs = _stores()
+    try:
+        jobs.create("bad-create", "bad", {"may": ["do.it"],
+                                            "spend_max_usd": float("nan")})
+        check(False, "a non-finite spend cap must be rejected at creation")
+    except ValueError:
+        pass
+
+    jobs.create("corrupt", "durably corrupt", {"may": ["do.it"]})
+    jobs.db.execute("UPDATE jobs SET leash_json=? WHERE job_id=?",
+                    ('{"may":["do.it"],"spend_max_usd":NaN}', "corrupt"))
+    jobs.db.commit()
+    n = acts.propose("do.it", {}, job_id="corrupt")
+    acts.confirm(n)
+    try:
+        Executor(acts, jobs).run_confirmed(n)
+        check(False, "corrupt durable authority must refuse execution")
+    except RefusedError as exc:
+        check("recovery_required" in str(exc),
+              f"corruption should surface as recovery_required: {exc}")
+    recovered = jobs.get("corrupt")
+    check(recovered.state == RECOVERY_REQUIRED and recovered.leash == {"may": []},
+          "corrupt authority must persist an explicit locked-down recovery state")
+    check(fired["count"] == 0, "corrupt authority must not fire the side effect")
+    acts.close(); jobs.close()
+
+
+def test_terminal_job_cannot_fire_a_late_confirmed_action():
+    print("test_terminal_job_cannot_fire_a_late_confirmed_action")
+    clear_registry()
+    fired = {"value": False}
+    register(Capability(
+        "do.it", execute=lambda _r: fired.__setitem__("value", True),
+        verify=lambda _r, _result: Verdict(VERIFIED, "done"), reversible=True))
+    acts, jobs = _stores()
+    jobs.create("finished", "already finished", {"may": ["do.it"]})
+    n = acts.propose("do.it", {}, job_id="finished")
+    acts.confirm(n)
+    jobs.set_state("finished", DONE_VERIFIED, "completed elsewhere")
+    try:
+        Executor(acts, jobs).run_confirmed(n)
+        check(False, "a terminal job must refuse late action execution")
+    except RefusedError:
+        pass
+    check(not fired["value"], "terminal-state refusal must occur before the side effect")
+    acts.close(); jobs.close()
 
 
 def main():

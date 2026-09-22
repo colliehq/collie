@@ -2,21 +2,33 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f1220">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f6f6f3">
 <title>Collie</title>
 <style>
   :root { --bg:#0f1220; --bar:#141827; --card:#1a1f33; --line:#272c44; --ink:#e7ecf7; --dim:#8791ad;
-          --brand:#6f7fd6; --brand2:#3D4E8F; --user:#2b3566; --good:#3fbf7f; --bad:#e0576b;
+          --brand:#6f7fd6; --brand2:#3D4E8F; --user:#2b3566; --good:#3fbf7f; --bad:#e0576b; --warn:#e0ad54;
           --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px); }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html, body { height:100%; margin:0; }
   body { background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
          display:flex; flex-direction:column; overflow:hidden; }
-  .top { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:calc(8px + var(--safe-t)) 10px 8px;
+  .top { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:calc(8px + var(--safe-t)) 10px 8px;
          background:var(--bar); border-bottom:1px solid var(--line); }
-  .top .title { flex:1; text-align:center; font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; justify-content:center; gap:7px; }
+  .identity { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; }
+  .top .title { min-width:0; text-align:left; font-size:14.5px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; justify-content:flex-start; gap:7px; }
   .top .title img { width:18px; height:18px; }
+  .device { margin:1px 0 0 25px; color:var(--dim); font-size:10.5px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .topstate { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid var(--line); border-radius:999px; color:var(--dim); background:rgba(255,255,255,.025); font:inherit; font-size:11px; font-weight:650; white-space:nowrap; cursor:pointer; }
+  .topstate i { width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 0 3px rgba(63,191,127,.12); }
+  .topstate[data-state="running"] { color:var(--brand); }
+  .topstate[data-state="running"] i { background:var(--brand); box-shadow:0 0 0 3px rgba(111,127,214,.14); animation:statepulse 1.4s ease-in-out infinite; }
+  .topstate[data-state="needs"] { color:var(--warn); border-color:rgba(224,173,84,.38); background:rgba(224,173,84,.08); }
+  .topstate[data-state="needs"] i { background:var(--warn); box-shadow:0 0 0 3px rgba(224,173,84,.14); }
+  .topstate[data-state="connecting"] i { background:var(--dim); box-shadow:none; animation:statepulse 1.4s ease-in-out infinite; }
+  .topstate[data-state="offline"] { color:var(--bad); border-color:rgba(224,87,107,.4); background:rgba(224,87,107,.08); }
+  .topstate[data-state="offline"] i { background:var(--bad); box-shadow:0 0 0 3px rgba(224,87,107,.13); }
+  @keyframes statepulse { 50% { opacity:.35; } }
   .iconbtn { width:40px; height:40px; border:none; background:transparent; color:var(--ink); font-size:20px; border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .iconbtn:active { background:var(--card); }
   .log { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:14px 12px 8px; -webkit-overflow-scrolling:touch; }
@@ -30,18 +42,77 @@
   .step { font-size:12.5px; color:var(--dim); display:flex; gap:7px; align-items:baseline; }
   .step .v { color:var(--brand); font-weight:600; }
   .step.bad .v { color:var(--bad); }
+  /* A check that was stopped, timed out, never ran, or exited 0 without being bindable to the
+     files on disk is not a failure and must not be painted as one; it is also not a pass. */
+  .step.warn .v { color:var(--warn); }
   .md p { margin:0 0 8px; } .md p:last-child { margin-bottom:0; }
   .md pre { background:#0b0e1a; border:1px solid var(--line); border-radius:9px; padding:10px; overflow-x:auto; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; margin:8px 0; }
   .md code { background:#0b0e1a; border-radius:5px; padding:1px 5px; font:13px ui-monospace,monospace; }
   .md pre code { background:none; padding:0; }
   .cursor { display:inline-block; width:7px; height:16px; background:var(--brand); border-radius:1px; vertical-align:-2px; animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
-  .empty { color:var(--dim); text-align:center; margin-top:22vh; font-size:15px; }
+  .empty { color:var(--dim); text-align:center; max-width:320px; margin:20vh auto 0; font-size:14px; }
   .empty img { width:52px; height:52px; opacity:.95; display:block; margin:0 auto 12px; }
+  .empty .lead { color:var(--ink); font-size:18px; line-height:1.3; font-weight:680; letter-spacing:-.01em; }
+  .empty .sub { margin-top:7px; line-height:1.55; }
   .banner { margin:0 auto 12px; max-width:86%; background:rgba(111,127,214,.14); color:var(--brand); border:1px solid var(--line); border-radius:12px; padding:8px 12px; font-size:13px; text-align:center; }
+  .permission-turn { margin:0 0 16px; }
+  .permission-card { border:1px solid rgba(224,173,84,.46); border-radius:15px; background:linear-gradient(145deg,rgba(224,173,84,.12),rgba(26,31,51,.96)); padding:13px; box-shadow:0 12px 28px rgba(0,0,0,.16); }
+  .permission-eyebrow { display:flex; align-items:center; gap:7px; color:var(--warn); font-size:11px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+  .permission-eyebrow::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--warn); box-shadow:0 0 0 3px rgba(224,173,84,.14); }
+  .permission-title { margin-top:8px; color:var(--ink); font-size:15px; font-weight:680; line-height:1.35; }
+  .permission-body { margin-top:4px; color:var(--dim); font-size:12.5px; overflow-wrap:anywhere; }
+  .permission-target { margin-top:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:rgba(11,14,26,.52); color:var(--ink); font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+  .permission-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; margin-top:12px; }
+  .permission-actions.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .permission-actions button { min-height:39px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.035); color:var(--ink); font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+  .permission-actions button.allow { background:var(--brand2); border-color:var(--brand2); color:#fff; }
+  .permission-actions button.always { color:var(--brand); border-color:rgba(111,127,214,.5); }
+  .permission-actions button.deny { color:#f28b98; }
+  .permission-actions button:disabled { opacity:.5; cursor:default; }
+  .permission-status { margin-top:11px; color:var(--dim); font-size:12px; }
+  .permission-status.ok { color:var(--good); }
+  .permission-status.bad { color:var(--bad); }
   .composer { flex:0 0 auto; padding:8px 10px calc(8px + var(--safe-b)); background:var(--bar); border-top:1px solid var(--line); }
+  .runsetup { margin:0 0 7px; border:1px solid var(--line); border-radius:13px; background:var(--card); overflow:hidden; }
+  .runsetup summary { min-height:40px; padding:8px 12px; display:flex; align-items:center; gap:8px; cursor:pointer;
+                      list-style:none; font-size:13px; color:var(--dim); }
+  .runsetup summary::-webkit-details-marker { display:none; }
+  .runsetup summary::before { content:"›"; color:var(--brand); font-size:18px; line-height:1; transform:rotate(0); transition:transform .15s; }
+  .runsetup[open] summary::before { transform:rotate(90deg); }
+  .runsetup summary .rsl { font-weight:650; color:var(--ink); }
+  .runsetup summary .rsv { margin-left:auto; max-width:65%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right; }
+  .runpanel { max-height:min(46vh,390px); overflow-y:auto; padding:3px 10px 11px; border-top:1px solid var(--line); }
+  .rungrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; padding-top:9px; }
+  .runfield { min-width:0; display:flex; flex-direction:column; gap:4px; color:var(--dim); font-size:11.5px; }
+  .runfield select, .runfield input[type="text"], .runfield input[type="number"] {
+    width:100%; min-width:0; min-height:38px; border:1px solid var(--line); border-radius:9px;
+    background:var(--bg); color:var(--ink); font:inherit; font-size:14px; line-height:1.2; padding:7px 8px;
+  }
+  .runfield select:disabled { opacity:.55; }
+  .runpack { grid-column:1/-1; display:grid; grid-template-columns:72px minmax(0,1fr); gap:8px; padding-top:2px; }
+  .runpack[hidden] { display:none; }
+  .runpack .check { grid-column:1/-1; }
+  .runcheck { grid-column:1/-1; }
+  .runcheck[hidden] { display:none; }
+  .runapply { align-self:end; min-height:38px; display:flex; align-items:center; gap:7px; color:var(--ink); font-size:13px; }
+  .runapply input { width:18px; height:18px; accent-color:var(--brand); }
+  .runhint { grid-column:1/-1; margin:0; color:var(--dim); font-size:11px; line-height:1.4; }
+  .mobile-pack { margin:0 0 10px; border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:8px; }
+  .mobile-pack .mph { color:var(--dim); font-size:11.5px; margin-bottom:5px; }
+  .mobile-pack .mpr { display:grid; grid-template-columns:28px 9px minmax(0,1fr) auto; align-items:center; gap:6px; padding:3px 2px; font-size:12px; }
+  .mobile-pack .mpr.winner { border-radius:7px; background:rgba(63,191,127,.13); }
+  .mobile-pack .mpdot { width:8px; height:8px; border-radius:50%; background:var(--dim); opacity:.55; }
+  .mobile-pack .mpdot.ok { background:var(--good); opacity:1; }
+  .mobile-pack .mpdot.fail { background:var(--bad); opacity:1; }
+  .mobile-pack .mpdot.ran { background:var(--brand); opacity:1; }
+  .mobile-pack .mpdot.stop { background:var(--warn); opacity:1; }
+  .mobile-pack .mpmeta { color:var(--dim); font-size:10.5px; }
+  .mobile-pack .mpsum { margin-top:7px; padding-top:7px; border-top:1px solid var(--line); font-size:12px; }
+  .mobile-pack .mpsum.fail { color:var(--bad); }
+  .mobile-pack .mpsum.warn { color:var(--warn); }
   .inrow { display:flex; align-items:flex-end; gap:8px; background:var(--card); border:1px solid var(--line); border-radius:22px; padding:6px 6px 6px 14px; }
-  textarea { flex:1; border:none; background:transparent; color:var(--ink); font:16px/1.4 inherit; resize:none; max-height:140px; outline:none; padding:7px 0; }
+  textarea { flex:1; border:none; background:transparent; color:var(--ink); font:inherit; font-size:16px; line-height:1.4; resize:none; max-height:140px; outline:none; padding:7px 0; }
   textarea::placeholder { color:var(--dim); }
   .send { flex:0 0 auto; width:38px; height:38px; border:none; border-radius:50%; background:var(--brand2); color:#fff; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .send:disabled { opacity:.4; }
@@ -54,58 +125,678 @@
   .drawer h3 { margin:0; padding:16px 16px 10px; font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
   .newbtn { margin:0 12px 8px; padding:11px; border:1px dashed var(--line); background:transparent; color:var(--ink); border-radius:11px; font-size:15px; font-weight:600; cursor:pointer; }
   .threads { flex:1; overflow-y:auto; padding:4px 8px calc(12px + var(--safe-b)); }
-  .thread { padding:11px 12px; border-radius:11px; cursor:pointer; }
+  .thread { width:100%; padding:11px 12px; border:0; border-radius:11px; cursor:pointer; background:transparent; color:inherit; text-align:left; font:inherit; }
   .thread.active { background:var(--card); }
   .thread .tt { font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .thread .tn { font-size:12px; color:var(--dim); margin-top:2px; }
+  .ops-sheet { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column; padding-top:var(--safe-t); background:var(--bg); }
+  .ops-sheet[hidden] { display:none; }
+  .ops-head { flex:0 0 auto; min-height:58px; display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bar); border-bottom:1px solid var(--line); }
+  .ops-head h2 { flex:1; margin:0; font-size:17px; letter-spacing:-.01em; }
+  .ops-head button { min-width:40px; min-height:40px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); font:inherit; font-size:13px; font-weight:650; }
+  .ops-body { flex:1; overflow:auto; padding:12px 12px calc(22px + var(--safe-b)); -webkit-overflow-scrolling:touch; }
+  .ops-notice { min-height:1.4em; margin:0 2px 10px; color:var(--dim); font-size:12px; }
+  .ops-notice.bad { color:var(--bad); }
+  .ops-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; margin-bottom:12px; }
+  .ops-stat { min-width:0; padding:9px 7px; border:1px solid var(--line); border-radius:11px; background:var(--card); text-align:center; }
+  .ops-stat b { display:block; font:700 17px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .ops-stat span { display:block; margin-top:2px; color:var(--dim); font-size:9.5px; overflow:hidden; text-overflow:ellipsis; }
+  .ops-section { margin:0 0 12px; border:1px solid var(--line); border-radius:13px; background:var(--card); overflow:hidden; }
+  .ops-section-head { padding:10px 11px 8px; border-bottom:1px solid var(--line); }
+  .ops-section h3 { margin:0; font-size:12px; letter-spacing:.045em; text-transform:uppercase; }
+  .ops-help { margin-top:3px; color:var(--dim); font-size:10.5px; line-height:1.4; }
+  .ops-rows { padding:3px 10px; }
+  .ops-empty { padding:11px 1px; color:var(--dim); font-size:12px; }
+  .ops-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px; padding:9px 1px; border-bottom:1px solid var(--line); }
+  .ops-row:last-child { border-bottom:0; }
+  .ops-row-main { min-width:0; }
+  .ops-row-title { font-size:12.5px; font-weight:650; overflow-wrap:anywhere; }
+  .ops-row-meta { margin-top:2px; color:var(--dim); font-size:10.5px; overflow-wrap:anywhere; }
+  .ops-row-state { align-self:start; color:var(--good); font:10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .ops-row-state.warn { color:var(--warn); }
+  .ops-row-state.bad { color:var(--bad); }
+  .ops-row-state.mute { color:var(--dim); }
+  .ops-actions { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; }
+  .ops-actions button { min-height:34px; padding:6px 9px; border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.035); color:var(--ink); font:inherit; font-size:11px; font-weight:650; }
+  .ops-actions button.primary { border-color:rgba(111,127,214,.65); color:#c7d0ff; }
+  .ops-actions button.danger { color:#f28b98; }
+  .ops-actions button:disabled { opacity:.45; }
+  .ops-tree-row { position:relative; margin-left:var(--tree-indent,0px); }
+  .ops-tree-row::before { content:""; position:absolute; left:-8px; top:0; bottom:0; width:1px; background:var(--line); opacity:.7; }
+  .ops-tree-row.is-root::before { display:none; }
+  .ops-lane-label { padding:8px 1px 3px; color:var(--dim); font-size:10px; font-weight:750; letter-spacing:.05em; text-transform:uppercase; }
+  .ops-lane-note { padding:0 1px 5px; color:var(--dim); font-size:11px; line-height:1.45; }
+  :where(button,textarea,select,input,summary,[tabindex]):focus-visible { outline:3px solid #aab6ff; outline-offset:2px; }
+  @media (max-width:350px) { .rungrid { grid-template-columns:1fr; } .runpack { grid-column:auto; grid-template-columns:64px minmax(0,1fr); } .runpack .check,.runhint { grid-column:1/-1; } .topstate { width:30px; padding:0; justify-content:center; } .topstate span { display:none; } .device { margin-left:0; } .ops-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+  /* Quiet mobile shell: the same neutral system as the desktop workspace. */
+  :root { color-scheme:light; --bg:#F6F6F3; --bar:#FBFBF9; --card:#FFFFFF; --line:#E3E3DD;
+    --ink:#1D1D1B; --dim:#777771; --brand:#35594A; --brand2:#35594A; --user:#E7F0EA;
+    --good:#357A5D; --bad:#C4493D; --warn:#A66A15; }
+  @media (prefers-color-scheme:dark) { :root { color-scheme:dark; --bg:#111310; --bar:#171916;
+    --card:#1D201C; --line:#2C302B; --ink:#ECEDE9; --dim:#92978F; --brand:#8FB9A6;
+    --brand2:#8FB9A6; --user:#23392E; --good:#72BD98; --bad:#F07B70; --warn:#D8A14C; } }
+  .top { min-height:52px; padding:calc(6px + var(--safe-t)) 8px 6px; background:var(--bar); }
+  .topstate { min-height:32px; padding:4px 7px; border-color:transparent; background:transparent; }
+  .topstate[data-state="needs"],.topstate[data-state="offline"] { background:transparent; }
+  .iconbtn { width:36px; height:36px; border-radius:8px; }
+  .log { padding:16px 12px 8px; }
+  .turn { margin-bottom:14px; }
+  .bubble { border-radius:13px; }
+  .user .bubble { color:var(--ink); border-bottom-right-radius:4px; }
+  .asst .bubble { background:transparent; border:0; padding:6px 2px; }
+  .empty { margin-top:17vh; }
+  .empty img { width:40px; height:40px; }
+  .permission-card { border-radius:12px; box-shadow:none; background:var(--card); }
+  .permission-target,.md pre,.md code { background:var(--bg); }
+  .composer { padding:7px 9px calc(7px + var(--safe-b)); background:var(--bar); }
+  .runsetup { margin-bottom:6px; border-radius:10px; background:transparent; }
+  .runpanel { background:var(--bar); }
+  .runfield select,.runfield input[type="text"],.runfield input[type="number"] { background:var(--card); }
+  .inrow { border-radius:14px; background:var(--card); padding-left:12px; }
+  .send { border-radius:10px; color:var(--bg); }
+  .drawer { background:var(--bar); }
+  .thread { padding:9px 10px; border-radius:8px; }
+  .ops-sheet { background:var(--bg); }
+  .ops-stat,.ops-section { border-radius:10px; box-shadow:none; }
+  .ops-section-head { background:transparent; }
 </style>
 </head>
 <body>
   <div class="top">
-    <button class="iconbtn" id="menuBtn" aria-label="menu">☰</button>
-    <div class="title" id="title"><img src="logo.svg" alt="">Collie</div>
-    <button class="iconbtn" id="newBtn" aria-label="new">✎</button>
+      <button class="iconbtn" id="menuBtn" type="button" aria-label="Open chats" data-t-aria-label="Open chats">☰</button>
+    <div class="identity">
+      <div class="title" id="title"><img id="identityAvatar" src="logo.svg" alt=""><span id="titleText">Collie</span></div>
+        <div class="device" id="deviceLabel" data-t="Personal AI operations system">Personal AI operations system</div>
+    </div>
+    <button class="topstate" id="topState" type="button" data-state="connecting" aria-label="Open Activity" data-t-aria-label="Open Activity"><i></i><span id="topStateText" data-t="Connecting…" role="status" aria-live="polite">Connecting…</span></button>
+      <button class="iconbtn" id="newBtn" type="button" aria-label="New chat" data-t-aria-label="New chat">✎</button>
   </div>
   <div class="log" id="log"></div>
   <div class="composer">
+    <details class="runsetup" id="runSetup">
+      <summary><span class="rsl" data-t="Advanced">Advanced</span><span class="rsv" id="runSummary">Auto</span></summary>
+      <div class="runpanel">
+        <div class="rungrid">
+          <label class="runfield"><span data-t="Worker">Worker</span><select id="mRunner">
+            <option value="" data-t="Saved default">Saved default</option><option value="auto" data-t="Auto worker pool">Auto worker pool</option>
+            <option value="collie">Collie</option><option value="codex-exec">Codex CLI</option><option value="claude-code">Claude Code</option>
+          </select></label>
+          <label class="runfield"><span data-t="Intent">Intent</span><select id="mIntent">
+            <option value="build" data-t="Build">Build</option><option value="plan" data-t="Plan · read-only">Plan · read-only</option>
+            <option value="test" data-t="Test · read-only">Test · read-only</option><option value="review" data-t="Review · read-only">Review · read-only</option>
+          </select></label>
+          <label class="runfield"><span data-t="Run depth">Run depth</span><select id="mQuality">
+            <option value="quick" data-t="Quick">Quick</option><option value="balanced" data-t="Balanced" selected>Balanced</option><option value="thorough" data-t="Thorough">Thorough</option>
+          </select></label>
+          <label class="runfield"><span data-t="Reasoning effort">Reasoning effort</span><select id="mEffort">
+            <option value="auto" data-t="Auto by task">Auto by task</option><option value="low" data-t="Low">Low</option><option value="medium" data-t="Medium">Medium</option><option value="high" data-t="High">High</option>
+          </select></label>
+          <label class="runfield"><span data-t="Generation speed">Generation speed</span><select id="mSpeed">
+            <option value="standard" data-t="Standard">Standard</option><option value="fast" id="mFastOption" data-t="Fast" hidden>Fast</option>
+          </select></label>
+          <label class="runfield"><span data-t="Verification">Verification</span><select id="mVerification">
+            <option value="auto" data-t="Auto">Auto</option><option value="required" data-t="Required">Required</option>
+          </select></label>
+          <label class="runfield"><span data-t="Workspace">Workspace</span><select id="mWorkspace">
+            <option value="current" data-t="Current files">Current files</option><option value="isolated" data-t="Isolated worktree">Isolated worktree</option>
+          </select></label>
+          <label class="runfield"><span data-t="Strategy">Strategy</span><select id="mStrategy">
+            <option value="single" data-t="Single run">Single run</option><option value="pack" data-t="Pack · best-of-N">Pack · best-of-N</option>
+          </select></label>
+          <label class="runfield runcheck" id="mVerifyWrap" hidden><span data-t="Proposed check">Proposed check</span><input id="mVerifyCommand" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" data-t-placeholder="detecting a repository check…" placeholder="detecting a repository check…"></label>
+          <div class="runpack" id="mPackOpts" hidden>
+            <label class="runfield"><span data-t="Attempts">Attempts</span><input id="mPackN" type="number" min="2" max="6" step="1" value="3" required inputmode="numeric"></label>
+            <label class="runapply"><input id="mPackApply" type="checkbox"><span data-t="Apply winner">Apply winner</span></label>
+            <label class="runfield check"><span data-t="Required check command">Required check command</span><input id="mPackCheck" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" data-t-placeholder="e.g. pytest -q" placeholder="e.g. pytest -q"></label>
+            <p class="runhint" data-t="Pack runs isolated candidates and keeps only one that passes this command.">Pack runs isolated candidates and keeps only one that passes this command.</p>
+          </div>
+        </div>
+      </div>
+    </details>
     <div class="inrow">
-      <textarea id="input" rows="1" autocomplete="off"></textarea>
-      <button class="send" id="send" aria-label="send">↑</button>
+      <textarea id="input" rows="1" autocomplete="off" aria-label="Message Collie" data-t-aria-label="Message Collie…"></textarea>
+      <button class="send" id="send" type="button" aria-label="Send" data-t-aria-label="Send">↑</button>
     </div>
   </div>
-  <div class="scrim" id="scrim"></div>
-  <nav class="drawer" id="drawer">
-    <h3 id="drawerTitle">Chats</h3>
-    <button class="newbtn" id="newBtn2">＋ New chat</button>
+  <div class="scrim" id="scrim" aria-hidden="true"></div>
+  <nav class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" inert>
+    <h3 id="drawerTitle" data-t="Chats">Chats</h3>
+    <button class="newbtn" id="newBtn2" type="button" data-t="＋ New chat">＋ New chat</button>
     <div class="threads" id="threads"></div>
   </nav>
+  <section class="ops-sheet" id="mobileActivity" role="dialog" aria-modal="true" aria-labelledby="mobileActivityTitle" hidden inert>
+    <header class="ops-head">
+      <h2 id="mobileActivityTitle" data-t="Activity & recovery">Activity &amp; recovery</h2>
+      <button type="button" id="mobileActivityRefresh" data-t="Refresh">Refresh</button>
+      <button type="button" id="mobileActivityClose" aria-label="Close Activity" data-t-aria-label="Close Activity">×</button>
+    </header>
+    <div class="ops-body">
+      <p class="ops-notice" id="mobileActivityNotice" role="status" aria-live="polite"></p>
+      <div class="ops-summary">
+        <div class="ops-stat"><b id="mobileMissionCount">—</b><span data-t="Missions">Missions</span></div>
+        <div class="ops-stat"><b id="mobileSpecialistCount">—</b><span data-t="Specialists">Specialists</span></div>
+        <div class="ops-stat"><b id="mobileRecoveryCount">—</b><span data-t="Recovery">Recovery</span></div>
+        <div class="ops-stat"><b id="mobileWorkerCount">—</b><span data-t="Workers">Workers</span></div>
+      </div>
+      <section class="ops-section">
+        <div class="ops-section-head"><h3 data-t="Session recovery">Session recovery</h3><p class="ops-help" data-t="Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.">Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.</p></div>
+        <div class="ops-rows" id="mobileRecoveryRows"><div class="ops-empty" data-t="Loading…">Loading…</div></div>
+      </section>
+      <section class="ops-section">
+        <div class="ops-section-head"><h3 data-t="Specialist run tree">Specialist run tree</h3><p class="ops-help" data-t="Only lifecycle metadata is shown; task content and tool arguments stay private.">Only lifecycle metadata is shown; task content and tool arguments stay private.</p></div>
+        <div class="ops-rows" id="mobileRunTree"><div class="ops-empty" data-t="Loading…">Loading…</div></div>
+      </section>
+      <section class="ops-section">
+        <div class="ops-section-head"><h3 data-t="Other activity">Other activity</h3></div>
+        <div class="ops-rows" id="mobileOtherActivity"><div class="ops-empty" data-t="Loading…">Loading…</div></div>
+      </section>
+    </div>
+  </section>
 
 <script>
 var CT = (document.querySelector('meta[name="collie-token"]') || {}).content || "";
 var LOGO = "logo.svg";
 function api(p){ return p + (p.indexOf('?')<0?'?':'&') + 'token=' + encodeURIComponent(CT); }
 function $(id){ return document.getElementById(id); }
-function esc(s){ return (s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return String(s==null?"":s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 // ---- i18n: English source, translated to the DESKTOP's UI language (settings LANG) ----
-var UI_LANG="en", SUPPORTED=["en","zh-tw","zh","ja","ko","es","fr","de","pt","ru"];
+var UI_LANG="en", SUPPORTED=["en","zh-tw","zh"];
 function resolveLang(v){ if(v&&v!=="auto"&&SUPPORTED.indexOf(v)>=0) return v;
   var b=(navigator.language||"").toLowerCase(); for(var i=1;i<SUPPORTED.length;i++) if(b.indexOf(SUPPORTED[i])===0) return SUPPORTED[i]; return "en"; }
 var ZH={ "Message Collie…":"给 Collie 发消息…","Chats":"对话","＋ New chat":"＋ 新对话",
+  "Open chats":"打开对话列表","New chat":"新对话",
   "Ask Collie to fix code, run commands, or investigate":"让 Collie 帮你改代码、跑命令、查问题",
-  "No chats yet":"还没有对话","turn":"轮","turns":"轮","Desktop is running…":"桌面正在运行…",
-  "Edit":"编辑","Read":"读取","Run":"运行","Search":"搜索","Steer":"插话","Error":"错误","[image]":"[图片]" };
-function t(en){ return UI_LANG.indexOf("zh")===0 ? (ZH[en]||en) : en; }
+  "Personal AI operations system":"个人 AI 运营系统","Your personal AI operations system":"你的个人 AI 运营系统",
+  "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨文件、浏览器、桌面和长期任务持续工作。",
+  "Ready":"就绪","Running":"运行中","Needs you":"等你决定","Connecting…":"连接中…","Loading…":"加载中…","Unavailable":"无法连接","Advanced":"高级设置",
+  "Approval required":"需要你的批准","Allow once":"仅允许一次","Always":"本次运行内允许","Deny":"拒绝",
+  "This Mission":"本 Mission 内允许","This workflow":"此工作流内允许","This project":"此项目内允许","This connection":"此连接内允许",
+  "Sending…":"正在发送…","Allowed":"已允许","Denied":"已拒绝","Already answered elsewhere":"已在其他设备处理",
+  "Could not send":"发送失败，请重试","Continued elsewhere":"任务已从其他设备继续","Run ended":"任务已结束",
+  "No chats yet":"还没有对话","Could not load chats":"无法加载对话","Could not open this chat":"无法打开此对话","Live run status unavailable":"实时运行状态不可用","From chat":"来自对话","turn":"轮","turns":"轮","Desktop is running…":"桌面正在运行…",
+  "Edit":"编辑","Read":"读取","Run":"运行","Search":"搜索","Steer":"插话","Error":"错误","[image]":"[图片]",
+  "Send":"发送","Stop run":"停止任务","Steer while Collie works…":"Collie 工作时可继续补充要求…",
+  "Waiting for worker capabilities…":"正在等待工作进程能力信息…","This worker cannot be steered — stop it or wait":"此工作进程不支持运行中追加指令——请停止或等待",
+  "Run plan":"运行方案","worker event":"工作进程事件","worker settled":"工作进程已结束","worker failed":"工作进程失败","More worker events omitted":"已省略更多工作进程事件",
+  "worker cannot accept steering during this run":"此工作进程在本次运行中不支持插话","worker cannot pause for Collie approval round-trips":"此工作进程无法暂停并等待 Collie 审批","worker has no supported cancellation channel":"此工作进程没有受支持的取消通道","worker default":"工作进程默认模型",
+  "Connection interrupted — retrying…":"连接中断，正在重试…","The run is still starting; try again in a moment.":"任务仍在启动，请稍后再试。",
+  "The run is still starting; wait for its session id before stopping.":"任务仍在启动，请拿到会话编号后再停止。",
+  "Steer not delivered":"补充要求未送达","Steer unconfirmed — it may have arrived; your words are kept":"补充要求未确认——可能已送达；文字已为你保留",
+  "Earlier steer not delivered":"较早的那条补充要求未送达","Earlier steer unconfirmed — it may have arrived":"较早的那条补充要求未确认——可能已送达",
+  "Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任务已停止。",
+  "Could not stop the run":"无法停止任务","Open chat":"打开对话",
+  "Stopped at the turn limit":"在轮次上限处停下",
+  "The work above may be partway through — send “continue” to carry on.":"上面的内容可能只完成了一部分——发送“继续”即可接着做。",
+  "Stopped at the budget limit":"在预算上限处停下",
+  "Collie stopped rather than spending more; changing that limit is your decision.":"Collie 选择停下而不是继续花费；是否调整上限由你决定。",
+  "Stopped at the output limit":"在输出长度上限处停下",
+  "The reply reached its maximum length and was cut off.":"回答达到了最大长度，已被截断。",
+  "Run setup":"运行设置","Intent":"任务意图","Build":"构建","Plan · read-only":"计划 · 只读",
+  "Saved default":"已保存的默认值","Auto worker pool":"自动工作进程池","Use the worker selected in Settings":"使用设置中选择的工作进程",
+  "Native tools, approvals, streaming, and steering":"原生工具、审批、流式输出与运行中追加指令","Codex CLI":"Codex CLI","Claude Code":"Claude Code",
+  "Checking installation and login…":"正在检查安装与登录状态…","runnable-verified":"可运行 · 已验证兼容性","runnable-unverified":"可运行 · 兼容性未验证",
+  "not-installed":"未安装","needs-login":"需要登录","not-runnable":"不可运行","declared-not-runnable":"已声明 · 尚不可运行","quota used":"额度已用","quota resets":"额度重置","Capabilities unavailable":"无法读取运行能力",
+  "Test · read-only":"测试 · 只读","Review · read-only":"审查 · 只读","Run depth":"运行深度","Quick":"快速",
+  "Reasoning effort":"推理强度","Auto by task":"按任务自动","Low":"低","Medium":"中","High":"高",
+  "Generation speed":"生成速度","Standard":"标准","Fast":"快速","Proposed check":"建议检查",
+  "detecting a repository check…":"正在检测仓库检查命令…",
+  "Review":"审查","Test":"测试",
+  "Effort":"执行深度","Balanced":"均衡","Thorough":"深入","Verification":"验证","Auto":"自动","Required":"必须",
+  "Workspace":"工作区","Current files":"当前文件","Pack base · candidates isolated":"Pack 基准 · 候选隔离运行","Isolated worktree":"隔离 worktree","Strategy":"执行策略",
+  "Single run":"单次运行","Pack · best-of-N":"Pack · N 选一","Attempts":"尝试次数","Apply winner":"应用胜出结果",
+  "Required check command":"必填检查命令","e.g. pytest -q":"例如 pytest -q",
+  "Pack runs isolated candidates and keeps only one that passes this command.":"Pack 会运行多个隔离候选，并只保留通过这条命令的结果。",
+  "Plan":"计划","Verify":"验证","Isolated":"隔离","Pack":"Pack",
+  "Pack needs an executed check command to select a winner.":"Pack 需要一条实际执行的检查命令来选出胜出结果。",
+  "Test or Required verification needs a proposed check command.":"测试或必须验证需要一条建议的检查命令。",
+  "Attempts must be a whole number from 2 to 6.":"尝试次数必须是 2 到 6 之间的整数。",
+  "working…":"运行中…","stopping…":"正在停止…",
+  "Attempt":"尝试","queued":"等待中","error":"错误","check failed":"检查失败","verified":"已验证",
+  "check passed":"检查通过","ran":"已运行","winner":"胜出","No winner":"没有胜出结果","Pack stopped":"Pack 已停止",
+  "check stopped":"检查已停止","check ran out of time":"检查超时中止","check did not run":"未运行检查",
+  "check did not certify this result":"检查尚未确认当前结果","exit {n}":"退出码 {n}",
+  "stopped after {n}s without finishing":"运行 {n} 秒未完成，已中止","stopped before it finished":"还没跑完就被中止",
+  "exit 0 does not certify this result: {why}":"命令已正常结束，但结果仍待确认：{why}",
+  "the workspace changed while it was running":"它运行期间工作区发生了变化",
+  "something it started may still be writing files":"它启动的进程可能还在写文件",
+  "it was already recorded as stale before it started":"它开始之前就已被记为过期",
+  "the workspace could not be fingerprinted completely":"工作区的状态没能完整记录下来",
+  "its result could not be bound to the files that exist now":"它的结果对应不上现在的文件",
+  "applied to files":"已应用到文件","apply failed — winner was not written":"应用失败——胜出结果未写入",
+  "not applied (preview only)":"未应用（仅预览）","stopped":"已停止",
+  "Open Activity":"打开活动与恢复","Activity & recovery":"活动与恢复","Refresh":"刷新","Close Activity":"关闭活动与恢复",
+  "Missions":"任务","Specialists":"专员","Recovery":"恢复","Workers":"工作进程","Worker":"工作进程","Session recovery":"会话恢复",
+  "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先检查外部系统，再处理不确定操作。Collie 不会自动重放该操作。",
+  "Specialist run tree":"专员运行树","Only lifecycle metadata is shown; task content and tool arguments stay private.":"这里只显示生命周期元数据；任务内容和工具参数保持私密。",
+  "Other activity":"其他活动","Refreshing activity…":"正在刷新活动…","Activity is unavailable":"活动暂不可用",
+  "Some operational lanes are unavailable":"部分运行通道暂不可用","No recovery decisions.":"没有待处理的恢复决定。","No specialist runs.":"没有专员运行。","No other activity.":"没有其他活动。",
+  "Completed":"已完成","Not fired":"未发生","Cancel run":"取消运行","Cancel":"取消","Action failed":"操作失败",
+  "Confirm only after inspecting the external system: the action completed.":"请仅在检查外部系统并确认操作已完成后继续。",
+  "Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"请仅在检查外部系统并确认操作未发生后继续。Collie 之后可以安全重试。",
+  "Cancel this recovery without replaying the uncertain action?":"要取消此次恢复且不重放不确定操作吗？",
+  "Steer this specialist at its next safe boundary:":"在下一个安全边界向该专员补充要求：","Request specialist cancellation?":"要请求取消该专员吗？",
+  "Resolution recorded.":"已记录恢复决定。","Steer queued.":"补充要求已排队。","Cancellation requested.":"已请求取消。",
+  "Services":"服务","Automations":"自动化","Interactive":"对话","Mission":"任务","Automation":"自动化","Service":"服务","Background":"后台运行",
+  "Queued":"排队中","Blocked":"已阻塞","Waiting":"等待中","Needs You":"需要你","Paused":"已暂停","Failed":"失败","Cancel requested":"取消请求中","Cancelled":"已取消","Recovery required":"需要恢复","Workspace required":"需要工作区","Verified against contract":"已按约定验证","Completed without independent verification":"已完成但未独立验证","Review required":"需要审查","Draft":"草稿","Unavailable lane":"通道不可用",
+  "Background service status updates automatically.":"后台服务状态会自动更新。",
+  "Starting":"启动中","Restarting":"重启中","Not healthy":"状态异常","Restarts paused":"已暂停重启",
+  "Disabled":"已停用","Stopped":"已停止","No heartbeat":"没有心跳","Heartbeat stale":"心跳已过期",
+  "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"没有任何心跳记录",
+  "last known state: {s}":"最后已知状态：{s}","unrecognised worker state":"无法识别的工作进程状态" };
+var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ New chat":"＋ 新對話",
+  "Open chats":"開啟對話列表","New chat":"新對話",
+  "Ask Collie to fix code, run commands, or investigate":"讓 Collie 幫你修改程式碼、執行命令或調查問題",
+  "Personal AI operations system":"個人 AI 營運系統","Your personal AI operations system":"你的個人 AI 營運系統",
+  "Ask once. Collie can work across your files, browser, desktop, and long-running missions.":"只需交代一次，Collie 就能跨檔案、瀏覽器、桌面和長期任務持續工作。",
+  "Ready":"就緒","Running":"執行中","Needs you":"等你決定","Connecting…":"連線中…","Loading…":"載入中…","Unavailable":"無法連線","Advanced":"進階設定",
+  "Approval required":"需要你的核准","Allow once":"僅允許一次","Always":"本次執行內允許","Deny":"拒絕",
+  "This Mission":"本 Mission 內允許","This workflow":"此工作流程內允許","This project":"此專案內允許","This connection":"此連線內允許",
+  "Sending…":"正在傳送…","Allowed":"已允許","Denied":"已拒絕","Already answered elsewhere":"已在其他裝置處理",
+  "Could not send":"傳送失敗，請重試","Continued elsewhere":"任務已從其他裝置繼續","Run ended":"任務已結束",
+  "No chats yet":"尚無對話","Could not load chats":"無法載入對話","Could not open this chat":"無法開啟此對話","Live run status unavailable":"即時執行狀態不可用","From chat":"來自對話","turn":"輪","turns":"輪","Desktop is running…":"桌面正在執行…",
+  "Edit":"編輯","Read":"讀取","Run":"執行","Search":"搜尋","Steer":"補充要求","Error":"錯誤","[image]":"[圖片]",
+  "Send":"傳送","Stop run":"停止任務","Steer while Collie works…":"Collie 執行時可繼續補充要求…",
+  "Waiting for worker capabilities…":"正在等待工作程序能力資訊…","This worker cannot be steered — stop it or wait":"此工作程序不支援執行中追加指令——請停止或等待",
+  "Run plan":"執行方案","worker event":"工作程序事件","worker settled":"工作程序已結束","worker failed":"工作程序失敗","More worker events omitted":"已省略更多工作程序事件",
+  "worker cannot accept steering during this run":"此工作程序在本次執行中不支援補充要求","worker cannot pause for Collie approval round-trips":"此工作程序無法暫停並等待 Collie 核准","worker has no supported cancellation channel":"此工作程序沒有受支援的取消通道","worker default":"工作程序預設模型",
+  "Connection interrupted — retrying…":"連線中斷，正在重試…","The run is still starting; try again in a moment.":"任務仍在啟動，請稍後再試。",
+  "The run is still starting; wait for its session id before stopping.":"任務仍在啟動，請取得工作階段編號後再停止。",
+  "Steer not delivered":"補充要求未送達","Steer unconfirmed — it may have arrived; your words are kept":"補充要求未確認——可能已送達；文字已為你保留",
+  "Earlier steer not delivered":"較早的那條補充要求未送達","Earlier steer unconfirmed — it may have arrived":"較早的那條補充要求未確認——可能已送達",
+  "Stopping on the desktop…":"正在桌面端停止…","Run stopped.":"任務已停止。",
+  "Could not stop the run":"無法停止任務","Open chat":"開啟對話",
+  "Stopped at the turn limit":"在輪次上限處停下",
+  "The work above may be partway through — send “continue” to carry on.":"上面的內容可能只完成了一部分——傳送「繼續」即可接著做。",
+  "Stopped at the budget limit":"在預算上限處停下",
+  "Collie stopped rather than spending more; changing that limit is your decision.":"Collie 選擇停下而不是繼續花費；是否調整上限由你決定。",
+  "Stopped at the output limit":"在輸出長度上限處停下",
+  "The reply reached its maximum length and was cut off.":"回答達到了最大長度，已被截斷。",
+  "Run setup":"執行設定","Intent":"任務意圖","Build":"構建","Plan · read-only":"計畫 · 唯讀",
+  "Saved default":"已儲存的預設值","Auto worker pool":"自動工作程序池","Use the worker selected in Settings":"使用設定中選擇的工作程序",
+  "Native tools, approvals, streaming, and steering":"原生工具、核准、串流輸出與執行中追加指令","Codex CLI":"Codex CLI","Claude Code":"Claude Code",
+  "Checking installation and login…":"正在檢查安裝與登入狀態…","runnable-verified":"可執行 · 已驗證相容性","runnable-unverified":"可執行 · 相容性未驗證",
+  "not-installed":"未安裝","needs-login":"需要登入","not-runnable":"無法執行","declared-not-runnable":"已聲明 · 尚無法執行","quota used":"額度已用","quota resets":"額度重置","Capabilities unavailable":"無法讀取執行能力",
+  "Test · read-only":"測試 · 唯讀","Review · read-only":"審查 · 唯讀","Run depth":"執行深度","Quick":"快速",
+  "Reasoning effort":"推理強度","Auto by task":"按任務自動","Low":"低","Medium":"中","High":"高",
+  "Generation speed":"產生速度","Standard":"標準","Fast":"快速","Proposed check":"建議檢查",
+  "detecting a repository check…":"正在偵測儲存庫檢查命令…",
+  "Review":"審查","Test":"測試",
+  "Effort":"執行深度","Balanced":"均衡","Thorough":"深入","Verification":"驗證","Auto":"自動","Required":"必須",
+  "Workspace":"工作區","Current files":"目前檔案","Pack base · candidates isolated":"Pack 基準 · 候選隔離執行","Isolated worktree":"隔離 worktree","Strategy":"執行策略",
+  "Single run":"單次執行","Pack · best-of-N":"Pack · N 選一","Attempts":"嘗試次數","Apply winner":"套用勝出結果",
+  "Required check command":"必填檢查命令","e.g. pytest -q":"例如 pytest -q",
+  "Pack runs isolated candidates and keeps only one that passes this command.":"Pack 會執行多個隔離候選，並只保留通過這條命令的結果。",
+  "Plan":"計畫","Verify":"驗證","Isolated":"隔離","Pack":"Pack",
+  "Pack needs an executed check command to select a winner.":"Pack 需要一條實際執行的檢查命令來選出勝出結果。",
+  "Test or Required verification needs a proposed check command.":"測試或必要驗證需要一條建議的檢查命令。",
+  "Attempts must be a whole number from 2 to 6.":"嘗試次數必須是 2 到 6 之間的整數。",
+  "working…":"執行中…","stopping…":"正在停止…",
+  "Attempt":"嘗試","queued":"等待中","error":"錯誤","check failed":"檢查失敗","verified":"已驗證",
+  "check passed":"檢查通過","ran":"已執行","winner":"勝出","No winner":"沒有勝出結果","Pack stopped":"Pack 已停止",
+  "check stopped":"檢查已停止","check ran out of time":"檢查逾時中止","check did not run":"未執行檢查",
+  "check did not certify this result":"檢查尚未確認目前結果","exit {n}":"結束碼 {n}",
+  "stopped after {n}s without finishing":"執行 {n} 秒未完成，已中止","stopped before it finished":"還沒跑完就被中止",
+  "exit 0 does not certify this result: {why}":"指令已正常結束，但結果仍待確認：{why}",
+  "the workspace changed while it was running":"它執行期間工作區發生了變化",
+  "something it started may still be writing files":"它啟動的程序可能還在寫檔案",
+  "it was already recorded as stale before it started":"它開始之前就已被記為過期",
+  "the workspace could not be fingerprinted completely":"工作區的狀態沒能完整記錄下來",
+  "its result could not be bound to the files that exist now":"它的結果對應不上現在的檔案",
+  "applied to files":"已套用到檔案","apply failed — winner was not written":"套用失敗——勝出結果未寫入",
+  "not applied (preview only)":"未套用（僅預覽）","stopped":"已停止",
+  "Open Activity":"開啟活動與復原","Activity & recovery":"活動與復原","Refresh":"重新整理","Close Activity":"關閉活動與復原",
+  "Missions":"任務","Specialists":"專員","Recovery":"復原","Workers":"工作程序","Worker":"工作程序","Session recovery":"工作階段復原",
+  "Inspect the external system before resolving an uncertain action. Collie will not replay it automatically.":"先檢查外部系統，再處理不確定操作。Collie 不會自動重播該操作。",
+  "Specialist run tree":"專員執行樹","Only lifecycle metadata is shown; task content and tool arguments stay private.":"這裡只顯示生命週期中繼資料；任務內容和工具參數維持私密。",
+  "Other activity":"其他活動","Refreshing activity…":"正在重新整理活動…","Activity is unavailable":"活動暫時無法使用",
+  "Some operational lanes are unavailable":"部分執行通道暫時無法使用","No recovery decisions.":"沒有待處理的復原決定。","No specialist runs.":"沒有專員執行。","No other activity.":"沒有其他活動。",
+  "Completed":"已完成","Not fired":"未發生","Cancel run":"取消執行","Cancel":"取消","Action failed":"操作失敗",
+  "Confirm only after inspecting the external system: the action completed.":"請只在檢查外部系統並確認操作已完成後繼續。",
+  "Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.":"請只在檢查外部系統並確認操作未發生後繼續。Collie 之後可以安全重試。",
+  "Cancel this recovery without replaying the uncertain action?":"要取消此次復原且不重播不確定操作嗎？",
+  "Steer this specialist at its next safe boundary:":"在下一個安全邊界向該專員補充要求：","Request specialist cancellation?":"要請求取消該專員嗎？",
+  "Resolution recorded.":"已記錄復原決定。","Steer queued.":"補充要求已排入佇列。","Cancellation requested.":"已請求取消。",
+  "Services":"服務","Automations":"自動化","Interactive":"對話","Mission":"任務","Automation":"自動化","Service":"服務","Background":"背景執行",
+  "Queued":"排隊中","Blocked":"已封鎖","Waiting":"等待中","Needs You":"需要你","Paused":"已暫停","Failed":"失敗","Cancel requested":"取消請求中","Cancelled":"已取消","Recovery required":"需要復原","Workspace required":"需要工作區","Verified against contract":"已依約定驗證","Completed without independent verification":"已完成但未獨立驗證","Review required":"需要審查","Draft":"草稿","Unavailable lane":"通道無法使用",
+  "Background service status updates automatically.":"背景服務狀態會自動更新。",
+  "Starting":"啟動中","Restarting":"重新啟動中","Not healthy":"狀態異常","Restarts paused":"已暫停重新啟動",
+  "Disabled":"已停用","Stopped":"已停止","No heartbeat":"沒有心跳","Heartbeat stale":"心跳已過期",
+  "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"沒有任何心跳記錄",
+  "last known state: {s}":"最後已知狀態：{s}","unrecognised worker state":"無法辨識的工作程序狀態" };
+function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(d[en]||en):en; }
 
-var currentSession=null, running=false, externalRunning=false;
-var runES=null, mirrorES=null, curTurn=null, curText="";
+// ---- authenticated Activity + recovery (allowlisted lifecycle metadata only) ----
+var mobileActivityOpen=false,mobileActivityRequest=0;
+function mobileTerminal(state){return ["completed","succeeded","failed","cancelled","dead"].indexOf(String(state||""))>=0;}
+function mobileMissionActive(state){return ["done_verified","done_accepted","failed","cancelled"].indexOf(String(state||""))<0;}
+function mobileStateLabel(state){
+  var labels={queued:"Queued",running:"Running",blocked:"Blocked",waiting:"Waiting",needs_you:"Needs You",
+    paused:"Paused",completed:"Completed",succeeded:"Completed",failed:"Failed",dead:"Failed",
+    cancel_requested:"Cancel requested",cancelled:"Cancelled",recovery_required:"Recovery required",
+    workspace_required:"Workspace required",done_verified:"Verified against contract",
+    done_accepted:"Completed without independent verification",review_required:"Review required",draft:"Draft"};
+  return t(labels[state]||String(state||"unknown").replace(/_/g," "));
+}
+function mobileStateTone(state){state=String(state||"");if(/failed|dead|cancelled/.test(state))return"bad";
+  if(/needs_you|blocked|waiting|paused|cancel_requested|recovery|required/.test(state))return"warn";return"";}
+// A phone page outlives the desktop process it was loaded against: it sits open in a background tab
+// while the server restarts and rotates its token, and every Activity read is then refused until
+// someone notices and reloads by hand. A READ changes nothing, so it may ask once more with a fresh
+// token; concurrent reads share the one refresh, and a refusal that survives it is still reported.
+// Writes below deliberately never take this path — a decision is a person's, made once.
+var mobileTokenRefresh=null;
+function refreshMobileToken(){
+  if(mobileTokenRefresh)return mobileTokenRefresh;
+  mobileTokenRefresh=fetch("/api/session-token",{cache:"no-store",credentials:"same-origin"})
+    .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
+    .then(function(d){if(!d||!d.token)throw new Error("process token unavailable");CT=d.token;return CT;})
+    .finally(function(){mobileTokenRefresh=null;});
+  return mobileTokenRefresh;
+}
+function mobileOpsRead(path){
+  var used=CT;
+  return fetch(api(path)).then(function(r){
+    if(r.status!==403)return r;
+    // Another read may have finished refreshing before this old refusal arrived.
+    if(CT && CT!==used)return fetch(api(path));
+    // One refresh, then at most one retry, and only with a token that is actually different: a
+    // relayed phone (whose token is injected server-side, and which is refused /api/session-token)
+    // reports the refusal instead of looping on something it cannot fix.
+    return refreshMobileToken().then(function(token){return token&&token!==used?fetch(api(path)):r;},
+                                     function(){return r;});
+  });
+}
+function mobileOpsRequest(path,body){
+  var sent=body==null?mobileOpsRead(path)
+    :fetch(api(path),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  return sent.then(function(r){return r.json().catch(function(){return{};}).then(function(d){if(!r.ok)throw new Error(d.error||d.message||("HTTP "+r.status));return d;});});}
+function mobileOpsNotice(message,bad){var node=$("mobileActivityNotice");node.textContent=message||"";node.classList.toggle("bad",!!bad);}
+function mobileOpsEmpty(parent,message){var empty=document.createElement("div");empty.className="ops-empty";empty.textContent=t(message);parent.appendChild(empty);}
+function mobileOpsLane(parent,label){var head=document.createElement("div");head.className="ops-lane-label";head.textContent=t(label);parent.appendChild(head);}
+function mobileOpsLaneNote(parent,text){var note=document.createElement("div");note.className="ops-lane-note";note.textContent=t(text);parent.appendChild(note);}
+function mobileOpsRow(parent,title,meta,state,depth){
+  var row=document.createElement("div");row.className="ops-row"+(depth!=null?" ops-tree-row":"");
+  if(depth!=null){var treeDepth=Math.min(Math.max(Number(depth)||0,0),6);row.style.setProperty("--tree-indent",treeDepth*12+"px");row.classList.toggle("is-root",treeDepth===0);}
+  var main=document.createElement("div");main.className="ops-row-main";
+  var name=document.createElement("div");name.className="ops-row-title";name.textContent=title||"—";main.appendChild(name);
+  if(meta){var detail=document.createElement("div");detail.className="ops-row-meta";detail.textContent=meta;main.appendChild(detail);}
+  // `state` is a lifecycle state string, or an already-resolved {label,tone} badge for a lane
+  // (worker heartbeats) whose vocabulary is deliberately not the session one.
+  var badge=state&&typeof state==="object"?{label:t(state.label),tone:state.tone||""}
+                                          :{label:mobileStateLabel(state),tone:mobileStateTone(state)};
+  var status=document.createElement("div");status.className="ops-row-state "+badge.tone;status.textContent=badge.label;
+  row.appendChild(main);row.appendChild(status);parent.appendChild(row);return row;
+}
+function mobileOpsButton(row,label,className,run){
+  var actions=row.querySelector(".ops-actions");if(!actions){actions=document.createElement("div");actions.className="ops-actions";row.appendChild(actions);}
+  var button=document.createElement("button");button.type="button";button.textContent=t(label);if(className)button.className=className;
+  button.onclick=function(){var result;try{result=run();}catch(error){mobileOpsNotice(t("Action failed")+": "+(error.message||error),true);return;}
+    if(result===false||result==null)return;button.disabled=true;mobileOpsNotice("");Promise.resolve(result).then(function(message){
+      mobileOpsNotice(t(message||"Resolution recorded."),false);return refreshMobileActivity();
+    }).catch(function(error){mobileOpsNotice(t("Action failed")+": "+(error.message||error),true);}).finally(function(){button.disabled=false;});};
+  actions.appendChild(button);return button;
+}
+function mobileTreeRows(rows){
+  rows=(rows||[]).filter(function(row){return row&&row.run_id;});var all={},keep={};
+  rows.forEach(function(row){all[row.run_id]=row;if(!mobileTerminal(row.status))keep[row.run_id]=true;});
+  rows.slice(-24).forEach(function(row){keep[row.run_id]=true;});
+  var changed=true;while(changed){changed=false;Object.keys(keep).forEach(function(id){var row=all[id],parent=row&&row.parent_run_id;if(parent&&all[parent]&&!keep[parent]){keep[parent]=true;changed=true;}});}
+  return rows.filter(function(row){return keep[row.run_id];});
+}
+function mobileWalkTree(rows,visit){
+  var byId={},children={},roots=[],seen={};rows.forEach(function(row){byId[row.run_id]=row;children[row.run_id]=[];});
+  rows.forEach(function(row){var parent=row.parent_run_id;if(parent&&parent!==row.run_id&&byId[parent])children[parent].push(row);else roots.push(row);});
+  function walk(row,depth){if(seen[row.run_id])return;seen[row.run_id]=true;visit(row,depth);(children[row.run_id]||[]).forEach(function(child){walk(child,depth+1);});}
+  roots.forEach(function(row){walk(row,0);});rows.forEach(function(row){walk(row,0);});
+}
+function renderMobileRecovery(activity){
+  var box=$("mobileRecoveryRows");box.textContent="";var rows=(activity.sessions||[]).filter(function(row){return row.recovery_required;});
+  if(!rows.length){mobileOpsEmpty(box,"No recovery decisions.");return;}
+  rows.forEach(function(data){var row=mobileOpsRow(box,data.session_id,data.reason||"",data.state);
+    mobileOpsButton(row,"Completed","primary",function(){if(!confirm(t("Confirm only after inspecting the external system: the action completed.")))return false;
+      return mobileOpsRequest("/api/recovery/reconcile",{session:data.session_id,resolution:"completed",confirmed:true}).then(function(){return"Resolution recorded.";});});
+    mobileOpsButton(row,"Not fired","",function(){if(!confirm(t("Confirm only after inspecting the external system: the action did not fire. Collie may retry safely.")))return false;
+      return mobileOpsRequest("/api/recovery/reconcile",{session:data.session_id,resolution:"not_fired",confirmed:true}).then(function(){return"Resolution recorded.";});});
+    mobileOpsButton(row,"Cancel run","danger",function(){if(!confirm(t("Cancel this recovery without replaying the uncertain action?")))return false;
+      return mobileOpsRequest("/api/recovery/reconcile",{session:data.session_id,resolution:"cancel",confirmed:true}).then(function(){return"Resolution recorded.";});});
+  });
+}
+function renderMobileRunTree(activity){
+  var box=$("mobileRunTree"),rows=mobileTreeRows(activity.task_runs||[]);box.textContent="";
+  if(!rows.length){mobileOpsEmpty(box,"No specialist runs.");return;}
+  mobileWalkTree(rows,function(data,depth){var meta=[];if(data.mission_id)meta.push(t("Mission")+" · "+data.mission_id);
+  if(data.background)meta.push(t("Background"));var row=mobileOpsRow(box,(data.role||"specialist")+" · "+data.run_id,meta.join(" · "),data.status,depth);
+    if(!mobileTerminal(data.status)){
+      mobileOpsButton(row,"Steer","primary",function(){var text=prompt(t("Steer this specialist at its next safe boundary:"),"");if(text==null||!text.trim())return false;
+        return mobileOpsRequest("/api/mission/specialist/steer",{run_id:data.run_id,text:text.trim()}).then(function(){return"Steer queued.";});});
+      mobileOpsButton(row,"Cancel","danger",function(){if(!confirm(t("Request specialist cancellation?")))return false;
+        return mobileOpsRequest("/api/mission/specialist/cancel",{run_id:data.run_id}).then(function(){return"Cancellation requested.";});});
+    }
+  });
+}
+// ---- worker heartbeats, which are not session-recovery decisions ----
+// `aggregate_health` serialises one row per *desired* worker: `state` is the last thing the
+// supervisor wrote for it — "running", "starting", "backoff", "unhealthy", "circuit_open",
+// "failed", "dead", "disabled", "external", "stopped" — and defaults to "missing" when there is no
+// heartbeat row at all; `fresh` only says whether that row is still inside its TTL. Rendering this
+// as `fresh ? Running : Recovery required` borrowed the *session* vocabulary and said two untrue
+// things with it: a worker that never reported became an uncertain external action to inspect
+// (nothing was sent, and a heartbeat is not something a person can reconcile), and a worker that
+// had just reported its own failure became Running. Freshness is not health, and silence is not
+// proof of anything — each is now said in its own words.
+var MOBILE_WORKER_STATES={
+  running:{label:"Running",tone:""},external:{label:"Running",tone:""},ok:{label:"Running",tone:""},
+  starting:{label:"Starting",tone:"mute"},disabled:{label:"Disabled",tone:"mute"},
+  backoff:{label:"Restarting",tone:"warn"},unhealthy:{label:"Not healthy",tone:"warn"},
+  stopped:{label:"Stopped",tone:"warn"},
+  failed:{label:"Failed",tone:"bad"},dead:{label:"Failed",tone:"bad"},
+  circuit_open:{label:"Restarts paused",tone:"bad"}};
+function mobileWorkerStatus(worker){
+  var state=String((worker&&worker.state)||"missing"),known=Object.prototype.hasOwnProperty.call(MOBILE_WORKER_STATES,state)?MOBILE_WORKER_STATES[state]:null;
+  // A reported failure stays a failure: a stale one was not withdrawn, a fresh one is not health.
+  if(known&&known.tone==="bad")return{label:known.label,tone:"bad",note:""};
+  if(state==="missing")return{label:"No heartbeat",tone:"warn",note:""};
+  // An unknown producer state is uncertainty, never an assumption of health: quote it as it came.
+  if(!known)return{label:state.replace(/_/g," "),tone:"warn",note:t("unrecognised worker state")};
+  if((worker&&worker.fresh)!==true)return{label:"Heartbeat stale",tone:"warn",
+    note:t("last known state: {s}").replace("{s}",t(known.label))};
+  return{label:known.label,tone:known.tone,note:""};
+}
+function mobileWorkerRow(parent,name,worker){
+  var status=mobileWorkerStatus(worker),age=worker&&worker.age_s,meta=[
+    age==null?t("no heartbeat recorded"):t("heartbeat {n}s ago").replace("{n}",Math.round(age))];
+  if(status.note)meta.push(status.note);
+  return mobileOpsRow(parent,name+" · "+t("Worker"),meta.join(" · "),status);
+}
+function mobileRecent(rows,active,max){var picked=(rows||[]).filter(active),seen={};picked.forEach(function(row){seen[row]=true;});
+  (rows||[]).slice(-max).forEach(function(row){if(picked.indexOf(row)<0)picked.push(row);});return picked.slice(-max);}
+function renderMobileOther(activity,health){
+  var box=$("mobileOtherActivity");box.textContent="";var count=0,workers=(health&&health.workers)||{},services=(health&&health.services)||{};
+  if(Object.keys(workers).length||Object.keys(services).length){mobileOpsLane(box,"Services");
+    if(Object.keys(workers).length)mobileOpsLaneNote(box,"Background service status updates automatically.");
+    Object.keys(workers).sort().forEach(function(name){mobileWorkerRow(box,name,workers[name]||{});count++;});
+    Object.keys(services).sort().forEach(function(name){mobileOpsRow(box,name+" · "+t("Service"),"",services[name].ok?"running":"failed");count++;});}
+  var missions=mobileRecent(activity.missions||[],function(row){return mobileMissionActive(row.state);},8);if(missions.length){mobileOpsLane(box,"Missions");missions.forEach(function(data){mobileOpsRow(box,data.mission_id,data.lane||t("Mission"),data.state);count++;});}
+  var automations=mobileRecent(activity.automations||[],function(row){return !mobileTerminal(row.state);},8);if(automations.length){mobileOpsLane(box,"Automations");automations.forEach(function(data){mobileOpsRow(box,(data.automation_id||t("Automation"))+" · "+(data.execution_id||"—"),t("Automation"),data.state);count++;});}
+  var sessions=(activity.sessions||[]).filter(function(row){return !row.recovery_required;}).slice(-6);if(sessions.length){mobileOpsLane(box,"Interactive");sessions.forEach(function(data){mobileOpsRow(box,data.session_id,t("Interactive"),data.state);count++;});}
+  Object.keys(activity.errors||{}).forEach(function(name){if(!count)mobileOpsLane(box,"Services");mobileOpsRow(box,name,t("Unavailable lane"),"failed");count++;});
+  if(!count)mobileOpsEmpty(box,"No other activity.");
+}
+function renderMobileActivity(activity,health,failures){
+  var work=(health&&health.work)||{};$("mobileMissionCount").textContent=health?Number(work.missions_active||0):(activity.missions||[]).filter(function(row){return mobileMissionActive(row.state);}).length;
+  $("mobileSpecialistCount").textContent=health?Number(work.task_runs_active||0):(activity.task_runs||[]).filter(function(row){return !mobileTerminal(row.status);}).length;
+  $("mobileRecoveryCount").textContent=health?Number((work.recovery_required||[]).length):(activity.sessions||[]).filter(function(row){return row.recovery_required;}).length;
+  $("mobileWorkerCount").textContent=health?Object.keys(health.workers||{}).length:"—";renderMobileRecovery(activity);renderMobileRunTree(activity);renderMobileOther(activity,health);
+  var lanes=Object.keys(activity.errors||{}).concat(Object.keys((health&&health.activity_errors)||{}));if(lanes.length)failures.push(t("Some operational lanes are unavailable")+": "+lanes.join(", "));
+  mobileOpsNotice(failures.join(" · "),failures.length>0);
+}
+function refreshMobileActivity(){if(!mobileActivityOpen)return Promise.resolve();var request=++mobileActivityRequest;mobileOpsNotice(t("Refreshing activity…"),false);
+  return Promise.all([["activity","/api/activity"],["health","/api/healthz"]].map(function(spec){return mobileOpsRequest(spec[1]).then(function(value){return{key:spec[0],value:value};}).catch(function(){return{key:spec[0],error:true};});})).then(function(results){
+    if(request!==mobileActivityRequest||!mobileActivityOpen)return;var parts={},failures=[];results.forEach(function(result){if(result.error)failures.push(result.key);else parts[result.key]=result.value;});
+    if(!parts.activity){mobileOpsNotice(t("Activity is unavailable")+(failures.length?": "+failures.join(", "):""),true);return;}renderMobileActivity(parts.activity,parts.health,failures);
+  });}
+function setMobileActivityOpen(open){mobileActivityOpen=!!open;var sheet=$("mobileActivity");if(open){if($("drawer").classList.contains("on"))closeDrawer(false);sheet.hidden=false;sheet.removeAttribute("inert");$("topState").setAttribute("aria-expanded","true");refreshMobileActivity();$("mobileActivityClose").focus();}
+  else{mobileActivityRequest++;sheet.hidden=true;sheet.setAttribute("inert","");$("topState").setAttribute("aria-expanded","false");$("topState").focus();}}
+
+// Independent run controls. They deliberately mirror the desktop query contract instead of
+// reviving the old mixed `mode=normal|herding|isolated|pack` switch.
+var setupLocked=false,runExplicitAxes={},runCapabilities=null;
+function runOptions(){ return {
+  runner:$("mRunner").value,
+  intent:$("mIntent").value, quality:$("mQuality").value,
+  verification:$("mVerification").value, workspace:$("mWorkspace").value,
+  strategy:$("mStrategy").value, effort:$("mEffort").value,
+  speed:$("mSpeed").value,
+  explicit_axes:Object.keys(runExplicitAxes).filter(function(k){return k!=="runner"&&runExplicitAxes[k];}).join(",")||"none",
+  verify_command:$("mVerifyCommand").value.trim(),
+  verify_source:$("mVerifyCommand").dataset.source||""
+}; }
+function paintRunSetup(){
+  var intent=$("mIntent").value, nonBuild=intent!=="build", test=intent==="test";
+  var effectiveWorker=$("mRunner").value||((runCapabilities||{}).worker_default)||"collie";
+  if(nonBuild&&effectiveWorker!=="collie"&&effectiveWorker!=="auto"){
+    $("mRunner").value="collie";runExplicitAxes.runner=true;
+  }
+  if(nonBuild){ $("mVerification").value="auto"; $("mWorkspace").value="current"; $("mStrategy").value="single";
+    delete runExplicitAxes.verification;delete runExplicitAxes.workspace;delete runExplicitAxes.strategy; }
+  var pack=!nonBuild&&$("mStrategy").value==="pack";
+  if(pack){ $("mWorkspace").value="current";delete runExplicitAxes.workspace; }
+  var currentWorkspaceOption=$("mWorkspace").querySelector('option[value="current"]');
+  if(currentWorkspaceOption)currentWorkspaceOption.textContent=t(
+    pack?"Pack base · candidates isolated":"Current files");
+  $("mRunner").disabled=setupLocked;$("mIntent").disabled=setupLocked; $("mQuality").disabled=setupLocked;
+  Array.prototype.forEach.call($("mRunner").options,function(o){
+    var external=o.value&&o.value!=="auto"&&o.value!=="collie";
+    o.disabled=setupLocked||external&&nonBuild||o.dataset.available==="false";
+  });
+  $("mEffort").disabled=setupLocked; $("mSpeed").disabled=setupLocked;
+  $("mVerification").disabled=setupLocked||nonBuild; $("mWorkspace").disabled=setupLocked||nonBuild||pack;
+  $("mStrategy").disabled=setupLocked||nonBuild;
+  ["mPackN","mPackCheck","mPackApply","mVerifyCommand"].forEach(function(id){$(id).disabled=setupLocked;});
+  $("mPackOpts").hidden=!pack; $("mPackCheck").required=pack;
+  $("mVerifyWrap").hidden=!(test||(!nonBuild&&!pack&&$("mVerification").value==="required"));
+  $("mVerifyCommand").required=test||(!nonBuild&&!pack&&$("mVerification").value==="required");
+  var depth=$("mQuality").value==="thorough"?t("Thorough"):($("mQuality").value==="quick"?t("Quick"):t("Balanced"));
+  var parts=[intent==="plan"?t("Plan"):intent==="review"?t("Review"):test?t("Test"):depth];
+  if(!nonBuild&&$("mVerification").value==="required")parts.push(t("Verify"));
+  if(!nonBuild&&$("mWorkspace").value==="isolated")parts.push(t("Isolated"));
+  if(pack)parts.push(t("Pack"));
+  if($("mSpeed").value==="fast")parts.push("Fast");
+  if($("mRunner").value)parts.push($("mRunner").value==="auto"?t("Auto worker pool"):$("mRunner").value);
+  if(!Object.keys(runExplicitAxes).some(function(k){return runExplicitAxes[k];}))parts=[t("Auto")];
+  $("runSummary").textContent=parts.join(" · ");
+}
+function setRunSetupDisabled(value){ setupLocked=!!value; paintRunSetup(); }
+function validateRunSetup(){
+  var count=$("mPackN"),check=$("mPackCheck"),verify=$("mVerifyCommand"),
+      pack=$("mStrategy").value==="pack", intent=$("mIntent").value;
+  count.setCustomValidity("");check.setCustomValidity("");verify.setCustomValidity("");
+  if((intent==="test"||(!pack&&$("mVerification").value==="required"))&&!verify.value.trim()){
+    verify.setCustomValidity(t("Test or Required verification needs a proposed check command."));
+    $("runSetup").open=true;verify.reportValidity();verify.focus();return false;
+  }
+  var n=Number(count.value);
+  if(pack&&(!Number.isInteger(n)||n<2||n>6)){
+    count.setCustomValidity(t("Attempts must be a whole number from 2 to 6."));
+    $("runSetup").open=true;count.reportValidity();count.focus();return false;
+  }
+  if(pack&&!check.value.trim()){
+    check.setCustomValidity(t("Pack needs an executed check command to select a winner."));
+    $("runSetup").open=true; check.reportValidity(); check.focus(); return false;
+  }
+  return true;
+}
+["mRunner","mIntent","mQuality","mVerification","mWorkspace","mStrategy","mEffort","mSpeed"].forEach(function(id){
+  $(id).addEventListener("change",function(){runExplicitAxes[id.replace(/^m/,"").toLowerCase()]=true;paintRunSetup();});
+});
+$("mPackCheck").addEventListener("input",function(){this.setCustomValidity("");});
+$("mPackN").addEventListener("input",function(){this.setCustomValidity("");});
+$("mVerifyCommand").addEventListener("input",function(){this.setCustomValidity("");this.dataset.source="user";});
+var runCapabilityEpoch=0;
+function refreshRunCapabilities(){var epoch=++runCapabilityEpoch;fetch(api('/api/run-capabilities')).then(function(r){return r.json();}).then(function(c){
+  if(epoch!==runCapabilityEpoch)return;
+  runCapabilities=c||{};var fast=(c.speed_tiers||[]).indexOf('fast')>=0,opt=$("mFastOption");opt.hidden=!fast;opt.disabled=!fast;
+  if(!fast&&$("mSpeed").value==='fast'){$("mSpeed").value='standard';delete runExplicitAxes.speed;}
+  Array.prototype.forEach.call($("mEffort").options,function(o){if(o.value==='auto')return;o.disabled=(c.reasoning_efforts||[]).indexOf(o.value)<0;});
+  var rows={};(c.workers||[]).forEach(function(row){rows[row.key]=row;});
+  Array.prototype.forEach.call($("mRunner").options,function(o){
+    var key=o.value,base=key===""?t("Saved default")+" · "+(c.worker_default||"collie"):
+      (key==="auto"?t("Auto worker pool"):(key==="collie"?"Collie":(key==="codex-exec"?t("Codex CLI"):t("Claude Code"))));
+    var row=rows[key],probe=row&&row.probe,signal=(c.worker_signals||{})[key]||{},quota=signal.quota||{},windows=[quota.primary,quota.secondary].filter(Boolean);
+    var explicitExternal=key==="codex-exec"||key==="claude-code",available=!explicitExternal||!!(probe&&probe.runnable);
+    var worst=windows.slice().sort(function(a,b){return Number(b.used_percent||0)-Number(a.used_percent||0);})[0]||null;
+    var used=worst?Number(worst.used_percent||0):null,resetAt=worst&&Number(worst.resets_at||0);
+    var resetNote=resetAt?t("quota resets")+" "+new Date(resetAt*1000).toLocaleString():"";
+    var status=key==="collie"?t("Native tools, approvals, streaming, and steering"):
+      (probe?t(probe.availability||(probe.runnable?"runnable-unverified":"not-runnable")):"");
+    o.textContent=base+(status?" · "+status:"")+(used===null?"":" · "+used+"% "+t("quota used"));
+    o.dataset.available=available?"true":"false";
+    o.title=[(probe&&probe.detail)||"",signal.error||"",resetNote].filter(Boolean).join(" · ");
+  });
+  paintRunSetup();
+}).catch(function(){
+  if(epoch!==runCapabilityEpoch)return;
+  runCapabilities={};var o=$("mFastOption");o.hidden=true;o.disabled=true;
+  Array.prototype.forEach.call($("mRunner").options,function(row){
+    if(row.value==="codex-exec"||row.value==="claude-code"){
+      row.dataset.available="false";row.disabled=true;row.title=t("Capabilities unavailable");
+      if(row.selected){$("mRunner").value="";delete runExplicitAxes.runner;}
+    }
+  });
+  paintRunSetup();
+});}
+// The desktop can save a different provider/model while this page stays open, so the run options
+// are re-read at the moment a person opens them rather than only once at boot. One gesture, one
+// read — not a poll — and a read overtaken by a later one is dropped by the epoch above.
+$("runSetup").addEventListener("toggle",function(){if(this.open)refreshRunCapabilities();});
+var verificationScope=null, verificationEpoch=0;
+function refreshVerification(){
+  var sid=currentSession||'',epoch=++verificationEpoch;
+  if(verificationScope!==sid){$("mVerifyCommand").value='';$("mPackCheck").value='';verificationScope=sid;}
+  fetch(api('/api/verification'+(sid?'?session='+encodeURIComponent(sid):''))).then(function(r){
+    if(!r.ok)throw new Error('HTTP '+r.status);return r.json();
+  }).then(function(d){
+    if(epoch!==verificationEpoch||(currentSession||'')!==sid)return;
+    var first=(d.candidates||[])[0];if(!first)return;
+    if(!$("mVerifyCommand").value){$("mVerifyCommand").value=first.command;$("mVerifyCommand").dataset.source=first.source||'detected';}
+    if(!$("mPackCheck").value)$("mPackCheck").value=first.command;
+  }).catch(function(){});
+}
+
+var IDENTITY={name:"Collie",machine:"",os:"",avatar:LOGO},currentHeaderTitle="",connectionState="connecting";
+var currentSession=null,currentRun=null,running=false,externalRunning=false;
+var runCanSteer=false,runCapabilitiesKnown=false;
+var runES=null,mirrorES=null,curTurn=null,curText="",cancelTimer=0,packRows=[],mobileRunnerEventCount=0;
+var lastTerminalRun=null,navigationToken=0,pendingPermissions={},globalApprovals={},approvalEpoch=0;
+function setHeaderTitle(value){currentHeaderTitle=value||"";$("titleText").textContent=currentHeaderTitle||IDENTITY.name||"Collie";}
+function markReachable(ok){connectionState=ok?"ready":"offline";paintOperationalState();}
+function refreshIdentity(){fetch(api('/api/whoami')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+  IDENTITY.name=String(d.name||"Collie");IDENTITY.machine=d.machine||"";IDENTITY.os=d.os||"";IDENTITY.avatar=d.avatar||LOGO;
+  if(!currentHeaderTitle)setHeaderTitle("");
+  var bits=[];if(IDENTITY.machine)bits.push(IDENTITY.machine);if(IDENTITY.os)bits.push(IDENTITY.os);
+  $("deviceLabel").textContent=bits.join(" · ")||t("Personal AI operations system");
+  var avatar=$("identityAvatar");avatar.src=IDENTITY.avatar===LOGO?LOGO:api(IDENTITY.avatar);avatar.onerror=function(){this.onerror=null;this.src=LOGO;};
+  markReachable(true);
+}).catch(function(){markReachable(false);});}
+function paintOperationalState(){
+  var needs=Object.keys(pendingPermissions).length>0,state=connectionState==="offline"?"offline":
+    (connectionState==="connecting"?"connecting":(needs?"needs":((running||externalRunning||cancelling)?"running":"ready")));
+  var label=state==="offline"?t("Unavailable"):(state==="connecting"?t("Connecting…"):
+    (state==="needs"?t("Needs you"):(state==="running"?t("Running"):t("Ready"))));
+  $("topState").setAttribute("data-state",state);$("topStateText").textContent=label;
+}
 function scrollDown(){ var l=$("log"); l.scrollTop=l.scrollHeight; }
 function addUser(text){ var d=document.createElement('div'); d.className='turn user'; d.innerHTML='<div class="bubble">'+esc(text)+'</div>'; $("log").appendChild(d); scrollDown(); }
 function addAsst(){ var d=document.createElement('div'); d.className='turn asst';
-  d.innerHTML='<div class="steps"></div><div class="who"><img src="'+LOGO+'" alt="">Collie</div><div class="bubble"><span class="md"></span><span class="cursor"></span></div>';
+  d.innerHTML='<div class="steps"></div><div class="who"><img alt="">'+esc(IDENTITY.name||'Collie')+'</div><div class="bubble"><span class="md"></span><span class="cursor"></span></div>';
+  var avatar=d.querySelector('.who img');avatar.src=IDENTITY.avatar===LOGO?LOGO:api(IDENTITY.avatar);avatar.onerror=function(){this.onerror=null;this.src=LOGO;};
   $("log").appendChild(d); scrollDown(); return d; }
 function setMd(turn,text){ turn.querySelector('.md').innerHTML=md(text); scrollDown(); }
-function addStep(turn,verb,target,bad){ var s=document.createElement('div'); s.className='step'+(bad?' bad':'');
+// `tone` stays a boolean for every caller that only had "did this go wrong": true is still the red
+// `bad` row. A string names its own tone instead ('warn'), for the endings that are neither.
+function addStep(turn,verb,target,tone){ var s=document.createElement('div'); s.className='step'+(tone?' '+(tone===true?'bad':tone):'');
   s.innerHTML='<span class="v">'+esc(verb)+'</span><span>'+esc(target||"")+'</span>'; turn.querySelector('.steps').appendChild(s); scrollDown(); }
 function endCursor(turn){ var c=turn&&turn.querySelector('.cursor'); if(c) c.remove(); }
 function md(t){ t=t||""; var out=[],parts=t.split(/```/);
@@ -118,63 +809,370 @@ function toolLine(turn,d){ var nm=String(d.name||'').toLowerCase(),a=d.args||{};
   var tgt=a.path||a.file_path||a.file||a.command||a.query||a.pattern||""; if(typeof tgt!=="string") tgt=JSON.stringify(tgt);
   addStep(turn,verb,String(tgt).slice(0,120),d.ok===false); }
 
-function onEvent(kind,data){
-  if(kind==="start"){ curTurn=addAsst(); curText=""; }
+function settlePermission(id,message,tone){
+  var p=pendingPermissions[id];if(!p)return;
+  if(p.actions)p.actions.remove();p.status.textContent=message;p.status.className='permission-status'+(tone?' '+tone:'');
+  p.card.setAttribute('data-state','settled');delete pendingPermissions[id];paintOperationalState();
+}
+function continuePermissions(sessionId,message){Object.keys(pendingPermissions).forEach(function(id){
+  var p=pendingPermissions[id];if(!sessionId||!p.session||p.session===sessionId)settlePermission(id,message||t('Continued elsewhere'));
+});}
+function answerPermission(id,answer){
+  var p=pendingPermissions[id];if(!p)return;
+  Array.prototype.forEach.call(p.actions.querySelectorAll('button'),function(b){b.disabled=true;});p.status.textContent=t('Sending…');p.status.className='permission-status';
+  fetch(api('/api/approve'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:p.session||currentSession,id:id,answer:answer})})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+    .then(function(x){if(!x.ok)throw new Error((x.d&&(x.d.error||x.d.message))||('HTTP request failed'));
+      approvalEpoch++;delete globalApprovals[id];
+      if(x.d&&x.d.resolved)settlePermission(id,answer==='deny'?t('Denied'):t('Allowed'),answer==='deny'?'bad':'ok');
+      else settlePermission(id,t('Already answered elsewhere'));
+    }).catch(function(){var live=pendingPermissions[id];if(!live)return;live.status.textContent=t('Could not send');live.status.className='permission-status bad';Array.prototype.forEach.call(live.actions.querySelectorAll('button'),function(b){b.disabled=false;});paintOperationalState();});
+}
+function addPermission(data,sessionId){
+  if(!data||!data.id||pendingPermissions[data.id])return;
+  var empty=$("log").querySelector('.empty');if(empty)empty.remove();if(curTurn)endCursor(curTurn);
+  var turn=document.createElement('div');turn.className='turn permission-turn';turn.setAttribute('role','region');turn.setAttribute('aria-label',t('Approval required'));
+  var card=document.createElement('div');card.className='permission-card';card.setAttribute('data-state','pending');
+  var eyebrow=document.createElement('div');eyebrow.className='permission-eyebrow';eyebrow.textContent=t('Approval required');
+  var title=document.createElement('div');title.className='permission-title';title.textContent=data.title||((data.tool||'Collie')+'?');
+  card.append(eyebrow,title);
+  var originSession=sessionId||data.session||'';
+  if(originSession&&originSession!==currentSession){var origin=document.createElement('div');origin.className='permission-body';origin.textContent=t('From chat')+' '+originSession.slice(0,8);card.appendChild(origin);}
+  if(data.body){var body=document.createElement('div');body.className='permission-body';body.textContent=data.body;card.appendChild(body);}
+  if(data.target){var target=document.createElement('div');target.className='permission-target';target.textContent=data.target;card.appendChild(target);}
+  var actions=document.createElement('div');actions.className='permission-actions';
+  var specs=[{answer:'allow',label:t('Allow once'),cls:'allow'},{answer:'always',label:t('Always'),cls:'always',optional:true}];
+  var labels={mission:'This Mission',workflow:'This workflow',project:'This project',connection:'This connection'};
+  (Array.isArray(data.grant_options)?data.grant_options:[]).forEach(function(scope){if(labels[scope])specs.push({answer:scope,label:t(labels[scope]),cls:'always'});});
+  specs.push({answer:'deny',label:t('Deny'),cls:'deny'});specs.forEach(function(spec){
+    if(spec.optional&&!data.rule_offer)return;var b=document.createElement('button');b.type='button';b.className=spec.cls;b.textContent=spec.label;
+    if(spec.answer==='always'&&data.rule_offer)b.title=String(data.rule_offer);b.onclick=function(){answerPermission(data.id,spec.answer);};actions.appendChild(b);
+  });
+  var status=document.createElement('div');status.className='permission-status';status.setAttribute('aria-live','polite');
+  card.append(actions,status);turn.appendChild(card);$("log").appendChild(turn);
+  pendingPermissions[data.id]={card:card,actions:actions,status:status,session:sessionId||currentSession||data.session||''};paintOperationalState();scrollDown();
+}
+
+function refreshPendingApprovals(){
+  var before=Object.keys(globalApprovals),requestEpoch=approvalEpoch;
+  return fetch(api('/api/approvals')).then(function(r){return r.json().catch(function(){return{};}).then(function(d){if(!r.ok)throw new Error(d.error||('HTTP '+r.status));return d;});})
+    .then(function(d){if(requestEpoch!==approvalEpoch){setTimeout(refreshPendingApprovals,0);return;}var live={};markReachable(true);(d.approvals||[]).forEach(function(item){if(!item||!item.id)return;live[item.id]=true;globalApprovals[item.id]=item;if(!pendingPermissions[item.id])addPermission(item,item.session||'');});
+      before.forEach(function(id){if(!live[id]&&globalApprovals[id]){delete globalApprovals[id];settlePermission(id,t('Already answered elsewhere'));}});paintOperationalState();})
+    .catch(function(){/* keep the last known decisions; loadSessions owns connectivity state */});
+}
+var approvalLive=null;
+function startApprovalLive(){try{
+  approvalLive=new EventSource(api('/api/live'));
+  approvalLive.addEventListener('live_hello',refreshPendingApprovals);
+  approvalLive.addEventListener('permission',function(e){try{var d=JSON.parse(e.data||'{}');if(!d.id)return;approvalEpoch++;globalApprovals[d.id]=d;addPermission(d,d.session||'');}catch(_){}});
+  approvalLive.addEventListener('permission_resolved',function(e){try{var d=JSON.parse(e.data||'{}');approvalEpoch++;if(d.id)delete globalApprovals[d.id];settlePermission(d.id,d.answer==='deny'?t('Denied'):t('Already answered elsewhere'),d.answer==='deny'?'bad':'ok');}catch(_){}});
+  approvalLive.addEventListener('done',function(e){try{var d=JSON.parse(e.data||'{}');approvalEpoch++;Object.keys(globalApprovals).forEach(function(id){if(!d.session||globalApprovals[id].session===d.session){delete globalApprovals[id];settlePermission(id,t('Run ended'));}});}catch(_){}});
+}catch(_){}}
+
+function packStart(data){
+  if(!curTurn)curTurn=addAsst(); packRows=[];
+  var old=curTurn.querySelector('.mobile-pack'); if(old)old.remove();
+  var n=Math.max(1,Math.min(8,Number(data.n)||1)),card=document.createElement('div');card.className='mobile-pack';
+  var head=document.createElement('div');head.className='mph';head.textContent=t('Pack')+' · '+n+' '+t('Attempts');card.appendChild(head);
+  for(var i=0;i<n;i++){
+    var row=document.createElement('div');row.className='mpr';
+    var num=document.createElement('span');num.textContent='#'+(i+1);
+    var dot=document.createElement('span');dot.className='mpdot';
+    var status=document.createElement('span');status.textContent=t('queued');
+    var meta=document.createElement('span');meta.className='mpmeta';
+    row.append(num,dot,status,meta);card.appendChild(row);packRows.push(row);
+  }
+  var bubble=curTurn.querySelector('.bubble'),mdEl=curTurn.querySelector('.md');bubble.insertBefore(card,mdEl);scrollDown();
+}
+function packAttempt(data){
+  var row=packRows[Number(data.idx)];if(!row)return;
+  var dot=row.querySelector('.mpdot'),status=row.children[2],meta=row.querySelector('.mpmeta'),word,cls;
+  if(data.error&&/cancel/i.test(data.error)){word=t('stopped');cls='stop';}
+  else if(data.error){word=t('error');cls='fail';}
+  else if(data.check_pass===false){word=t('check failed');cls='fail';}
+  else if(data.verified){word=t('verified')+(data.check_pass===true?' · '+t('check passed'):'');cls='ok';}
+  else if(data.check_pass===true){word=t('check passed');cls='ok';}
+  else{word=t('ran');cls='ran';}
+  dot.className='mpdot '+cls;status.textContent=word;
+  var turns=Number(data.turns)||0;
+  meta.textContent=turns+' '+t(turns===1?'turn':'turns')+(data.cost_usd?' · $'+Number(data.cost_usd).toFixed(4):'');
+}
+function packDone(data){
+  var attempts=Array.isArray(data.attempts)?data.attempts:[];
+  if(!packRows.length)packStart({n:data.n||attempts.length||1});
+  attempts.forEach(packAttempt);
+  if(data.winner!=null&&packRows[data.winner])packRows[data.winner].classList.add('winner');
+  if(data.canceled||data.error)packRows.forEach(function(row){
+    var dot=row.querySelector('.mpdot');if(!dot||/\b(ok|fail|ran)\b/.test(dot.className))return;
+    dot.className='mpdot '+(data.canceled?'stop':'fail');row.children[2].textContent=t('stopped');
+  });
+  var card=curTurn&&curTurn.querySelector('.mobile-pack');if(!card)return;
+  var sum=document.createElement('div');sum.className='mpsum';var applyFailed=!!(data.error&&/^apply failed\b/i.test(data.error));
+  var why=data.reason||(applyFailed?'':(data.error||''));
+  if(data.canceled){sum.classList.add('warn');sum.textContent=t('Pack stopped')+(why?' — '+why:'');}
+  else if(data.winner==null){sum.classList.add('fail');sum.textContent=t('No winner')+(why?' — '+why:'');}
+  else{
+    if(applyFailed)sum.classList.add('fail');
+    var delivery=data.applied?t('applied to files'):
+      (applyFailed?t('apply failed — winner was not written'):t('not applied (preview only)'));
+    sum.textContent=t('Attempt')+' #'+(Number(data.winner)+1)+' '+t('winner')+(why?' · '+why:'')+' · '+delivery;
+  }
+  card.appendChild(sum);scrollDown();
+}
+
+function mobileRunPlanSummary(plan){
+  var worker=plan.worker||{},brain=plan.brain||{},task=plan.task||{},verify=plan.verification||{};
+  var actualModel=worker.model||(worker.key==="collie"?(brain.model||brain.provider||"default"):t("worker default"));
+  var summary=[worker.key||"collie",actualModel,
+    (task.intent||"build")+"/"+(task.quality||"balanced"),verify.mode||"auto",
+    task.workspace||"current",task.strategy||"single"].join(" · ");
+  var limits=(plan.limitations||[]).map(t);
+  return summary+(limits.length?" — "+limits.join("; "):"");
+}
+
+// ---- what one check receipt actually established -------------------------
+// `passed` alone cannot carry this. The same `false` covers a check that failed, one the user
+// stopped, one killed at its deadline, one that never ran at all, and one that exited 0 whose
+// result could not be bound to the files that exist now. Only the first is a failure, and the
+// phone is often the only place the result is read — painting the other four red sends a person
+// hunting for a broken test nothing here has evidence of.
+//
+// The order is harness.verification.check_result_state's order, so this receipt cannot be read one
+// way on the phone and another way by the desktop, the CLI or the durable receipt it came from.
+// "Did not execute" outranks everything, and a stopped or timed-out check never certifies the
+// workspace even if a stale `passed:true` rode along with it.
+function mobileCheckState(ev){
+  ev=ev&&typeof ev==="object"?ev:{};
+  if(ev.executed===false)return "not_run";
+  if(ev.cancelled)return "cancelled";
+  if(ev.timed_out)return "timed_out";
+  if(ev.passed===true)return "passed";
+  if(ev.command_passed===true)return "inconclusive";
+  return "failed";               // including older evidence that carries nothing but `passed:false`
+}
+var MOBILE_CHECK_WHY={
+  changed_during_check:"the workspace changed while it was running",
+  process_tree_cleanup_failed:"something it started may still be writing files",
+  caller_marked_stale:"it was already recorded as stale before it started",
+  unknown:"the workspace could not be fingerprinted completely"};
+// The one row the step list shows: the verb, the command it is about, and the fact that explains
+// why the exit code does not settle anything. A deadline prints the seconds it hit; a missing exit
+// code prints nothing at all rather than "exit null".
+function mobileCheckRow(ev){
+  ev=ev&&typeof ev==="object"?ev:{};
+  var state=mobileCheckState(ev),cmd=String(ev.command||ev.cmd||""),detail=cmd;
+  function add(x){ detail=detail?detail+" · "+x:x; }
+  if(state==="failed"&&ev.exit_code!=null)add(t("exit {n}").replace("{n}",ev.exit_code));
+  else if(state==="timed_out")add(typeof ev.timeout_s==="number"&&ev.timeout_s>0?
+    t("stopped after {n}s without finishing").replace("{n}",ev.timeout_s):
+    t("stopped before it finished"));
+  else if(state==="cancelled")add(t("stopped before it finished"));
+  else if(state==="not_run"&&ev.skipped_reason)add(String(ev.skipped_reason));
+  else if(state==="inconclusive")add(t("exit 0 does not certify this result: {why}")
+    .replace("{why}",t(MOBILE_CHECK_WHY[String(ev.freshness||"")]||
+                       "its result could not be bound to the files that exist now")));
+  return {verb:t({passed:"check passed",failed:"check failed",cancelled:"check stopped",
+                  timed_out:"check ran out of time",not_run:"check did not run",
+                  inconclusive:"check did not certify this result"}[state]),
+          detail:detail,tone:state==="passed"?false:(state==="failed"?true:"warn"),state:state};
+}
+
+function onEvent(kind,data,sourceSession){
+  if(kind==="permission"){addPermission(data,sourceSession||currentSession);return;}
+  if(kind==="permission_resolved"){
+    settlePermission(data.id,data.answer==='deny'?t('Denied'):t('Already answered elsewhere'),data.answer==='deny'?'bad':'ok');return;
+  }
+  if(["start","token","tool","runner","receipt","pack_start","pack_attempt","verification_evidence","done"].indexOf(kind)>=0)continuePermissions(sourceSession||currentSession,kind==="done"?t('Run ended'):t('Continued elsewhere'));
+  if(kind==="start"){ curTurn=addAsst(); curText=""; var d=data.decision||data;
+    var chosen=d.runner&&d.runner.runner?d.runner.runner:"collie",caps=data.worker_capabilities||{};
+    var planWorker=(data.run_plan&&data.run_plan.worker)||{},shownModel=chosen==="collie"?
+      (d.model||data.provider):(planWorker.model||t("worker default"));
+    runCapabilitiesKnown=true;runCanSteer=caps.steer==null?chosen==="collie":!!caps.steer;setSendMode();
+    addStep(curTurn,"Decision",[chosen,shownModel,d.effort||"default",d.speed||"standard",
+      (d.intent||"build")+"/"+(d.quality||"balanced")].join(" · "));
+    if(data.run_plan&&data.run_plan.id)addStep(
+      curTurn,t("Run plan"),data.run_plan.id+" · "+mobileRunPlanSummary(data.run_plan)); }
   else if(kind==="token"){ if(!curTurn) curTurn=addAsst(); curText+=(data.t||""); setMd(curTurn,curText); }
   else if(kind==="tool"){ if(!curTurn) curTurn=addAsst(); toolLine(curTurn,data); }
+  else if(kind==="runner"){
+    if(!curTurn)curTurn=addAsst();
+    if(mobileRunnerEventCount<40)addStep(curTurn,t("worker event"),(data.runner||"")+" · "+(data.type||data.event||"event"));
+    else if(mobileRunnerEventCount===40)addStep(curTurn,t("worker event"),t("More worker events omitted"));
+    mobileRunnerEventCount++;
+  }
+  else if(kind==="receipt"){if(!curTurn)curTurn=addAsst();addStep(curTurn,data.settled?t("worker settled"):t("worker failed"),data.runner||"");}
   else if(kind==="steer"){ if(curTurn) addStep(curTurn,t('Steer'),(data.text||"").slice(0,80)); }
-  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.error) addStep(curTurn,t('Error'),data.error,true); endCursor(curTurn); curTurn=null; }
+  else if(kind==="pack_start")packStart(data);
+  else if(kind==="pack_attempt")packAttempt(data);
+  else if(kind==="verification_evidence"){ if(!curTurn)curTurn=addAsst();
+    var row=mobileCheckRow(data.evidence||data);
+    addStep(curTurn,row.verb,row.detail,row.tone); }
+  else if(kind==="done"){ if(!curTurn) curTurn=addAsst(); if(data.pack)packDone(data);if(data.answer){ curText=data.answer; setMd(curTurn,curText); } if(data.canceled)addStep(curTurn,t('Stop run'),t('Run stopped.'),false);else if(data.error)addStep(curTurn,t('Error'),data.error,true);else{var stopped=mobileStopNote(data);if(stopped)addStep(curTurn,t(stopped[0]),t(stopped[1]),false);}endCursor(curTurn);curTurn=null;packRows=[]; }
 }
-function runStream(q){ addUser(q); running=true; curTurn=null; setSendMode();
-  var url=api('/api/stream?q='+encodeURIComponent(q)+'&mode=normal'+(currentSession?'&session='+encodeURIComponent(currentSession):''));
+// A run halted by a turn, budget or output cap is terminal but NOT finished, and the phone is often
+// where the result is actually read. Keep the text it produced; say plainly why it stopped.
+var MOBILE_STOP={
+  turn_limit:["Stopped at the turn limit","The work above may be partway through — send “continue” to carry on."],
+  budget_limit:["Stopped at the budget limit","Collie stopped rather than spending more; changing that limit is your decision."],
+  output_limit:["Stopped at the output limit","The reply reached its maximum length and was cut off."]};
+function mobileStopNote(d){
+  d=d||{};var r=String(d.stop_reason||"");
+  if(!r&&d.turns_exhausted)r="turn_limit";
+  if(!r&&d.budget_exhausted)r="budget_limit";
+  if(!r&&d.max_turns&&d.turns!=null&&d.turns>=d.max_turns)r="turn_limit";
+  return MOBILE_STOP[r]||null;
+}
+function terminalWasHandled(data){
+  if(!data||!data.run)return false;
+  if(lastTerminalRun===data.run)return true;
+  lastTerminalRun=data.run;return false;
+}
+function runStream(q){ addUser(q); running=true;runCanSteer=false;runCapabilitiesKnown=false;mobileRunnerEventCount=0; curTurn=null; setSendMode();
+  var o=runOptions();
+  var url='/api/stream?q='+encodeURIComponent(q)+
+    '&intent='+encodeURIComponent(o.intent)+'&quality='+encodeURIComponent(o.quality)+
+    '&verification='+encodeURIComponent(o.verification)+'&workspace='+encodeURIComponent(o.workspace)+
+    '&strategy='+encodeURIComponent(o.strategy)+'&effort='+encodeURIComponent(o.effort)+
+    '&speed='+encodeURIComponent(o.speed)+'&explicit_axes='+encodeURIComponent(o.explicit_axes)+
+    (o.runner?'&runner='+encodeURIComponent(o.runner):'')+
+    (o.verify_command?'&verify_command='+encodeURIComponent(o.verify_command):'')+
+    (o.verify_source?'&verify_source='+encodeURIComponent(o.verify_source):'');
+  if(o.strategy==='pack'){
+    url+='&n='+encodeURIComponent($('mPackN').value)+'&check='+encodeURIComponent($('mPackCheck').value.trim());
+    if($('mPackApply').checked)url+='&apply=1';
+  }
+  url=api(url+(currentSession?'&session='+encodeURIComponent(currentSession):''));
   runES=new EventSource(url);
-  ["start","token","tool","steer","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session; loadSessions();} onEvent(ev,d); if(ev==="done") endRun(); }); });
-  runES.onerror=function(){ if(running) endCursor(curTurn); };
+  ["start","token","tool","steer","runner","receipt","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ runES.addEventListener(ev,function(e){ var d={}; try{d=JSON.parse(e.data);}catch(_){} if(ev==="start"&&d.session){currentSession=d.session;currentRun=d.run||null;loadSessions();}if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,currentSession||d.session);if(ev==="done")endRun(d);}); });
+  runES.onopen=function(){ if(running) hideBanner(); };
+  runES.onerror=function(){if(running){showBanner(t('Connection interrupted — retrying…'));if(cancelling){try{runES.close();}catch(_){}runES=null;watchCancel();}}};
 }
-function endRun(){ running=false; if(runES){runES.close(); runES=null;} setSendMode(); loadSessions(); }
+function endRun(data){if(data&&data.run)lastTerminalRun=data.run;clearTimeout(cancelTimer);cancelTimer=0;running=false;externalRunning=false;cancelling=false;currentRun=null;mobileRunnerEventCount=0;if(runES){runES.close();runES=null;}setSendMode();if(data&&data.canceled)showBanner(t('Run stopped.'));else hideBanner();loadSessions();}
 function subscribeMirror(sid){ if(mirrorES){ mirrorES.close(); mirrorES=null; } if(!sid) return;
   mirrorES=new EventSource(api('/api/mirror?session='+encodeURIComponent(sid)));
-  ["start","token","tool","steer","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
-    if(ev==="start"){ externalRunning=true; setSendMode(); showBanner(t('Desktop is running…')); }
-    onEvent(ev,d); if(ev==="done"){ externalRunning=false; setSendMode(); hideBanner(); loadSessions(); } }); });
+  ["start","token","tool","steer","runner","receipt","pack_start","pack_attempt","verification_evidence","permission","permission_resolved","done"].forEach(function(ev){ mirrorES.addEventListener(ev,function(e){ if(running) return; var d={}; try{d=JSON.parse(e.data);}catch(_){}
+    if(ev==="start"){externalRunning=true;currentRun=d.run||null;setSendMode();showBanner(t('Desktop is running…'));}
+    if(ev==="done"&&currentRun&&d.run&&d.run!==currentRun)return;if(ev==="done"&&terminalWasHandled(d))return;onEvent(ev,d,sid);if(ev==="done")endRun(d);}); });
+  mirrorES.onopen=function(){ if(!externalRunning) hideBanner(); };
+  mirrorES.onerror=function(){ if(externalRunning) showBanner(t('Connection interrupted — retrying…')); };
 }
 var bannerEl=null;
 function showBanner(x){ hideBanner(); bannerEl=document.createElement('div'); bannerEl.className='banner'; bannerEl.textContent=x; $("log").appendChild(bannerEl); scrollDown(); }
-function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} }
-function setSendMode(){ var b=$("send"); if(running){ b.classList.add('stop'); b.textContent='■'; b.disabled=false; }
-  else if(externalRunning){ b.classList.remove('stop'); b.textContent='↑'; b.disabled=true; } else { b.classList.remove('stop'); b.textContent='↑'; b.disabled=false; } }
-function doSend(){ var inp=$("input"); var qv=inp.value.trim(); if(!qv) return;
-  if(running){ fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,text:qv})}); if(curTurn) addStep(curTurn,t('Steer'),qv.slice(0,80)); }
-  else { runStream(qv); } inp.value=''; autosize(); }
-function stopRun(){ if(runES){runES.close(); runES=null;} running=false; endCursor(curTurn); setSendMode(); }
+function hideBanner(){ if(bannerEl){bannerEl.remove(); bannerEl=null;} steerBannerSeq=0; }
+function setSendMode(){ var b=$("send"), active=running||externalRunning;
+  b.classList.toggle('stop',active);b.textContent=cancelling?'…':(active?'■':'↑');b.disabled=!!cancelling;
+  b.setAttribute('aria-label',active?t('Stop run'):t('Send')); b.title=active?t('Stop run'):t('Send');
+  $("input").placeholder=active?(runCapabilitiesKnown?(runCanSteer?t('Steer while Collie works…'):t('This worker cannot be steered — stop it or wait')):t('Waiting for worker capabilities…')):t('Message Collie…'); setRunSetupDisabled(active);paintOperationalState(); }
+// Words typed into the composer belong to the person who typed them until the server says it took
+// them: a refusal, a dropped POST or an answer without a receipt must leave them editable here. The
+// draft is therefore remembered by its raw text (whitespace and newlines included) and by the screen
+// it was typed on, so the clear-on-receipt can never swallow newer typing and a late answer can
+// never write over a chat the user has already moved to. Nothing is ever re-POSTed on its own — an
+// interrupted request may already have been accepted upstream, so only the user resends.
+// Feedback is owned the same way. Answers arrive in whatever order the network gives them, so each
+// steer carries a number: a receipt only takes back the banner its own request (or an older one) put
+// there, and a failure that lost the race no longer speaks as if it were the latest attempt — it
+// names the sentence it belongs to instead. Three counters, no queue and no replay.
+var steerInFlight={}, steerSeq=0, steerAnswered=0, steerBannerSeq=0;
+function doSend(){ var inp=$("input"); var raw=inp.value, qv=raw.trim(); if(!qv) return;
+  if(running||externalRunning){
+    if(!currentSession){ showBanner(t('The run is still starting; try again in a moment.')); return; }
+    if(!runCapabilitiesKnown||!runCanSteer){showBanner(t(runCapabilitiesKnown?'This worker cannot be steered — stop it or wait':'Waiting for worker capabilities…'));return;}
+    var key=currentSession+'\n'+qv; if(steerInFlight[key]) return;   // a second Enter on the same words is a slip, not a second request
+    steerInFlight[key]=true; var token=navigationToken, turn=curTurn, refused=false, seq=++steerSeq;
+    fetch(api('/api/steer'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,q:qv})})
+      .then(function(r){refused=!r.ok;return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+      .then(function(x){ if(!x.ok||!x.d||!x.d.queued) throw new Error((x.d&&(x.d.error||x.d.message))||'not delivered');
+        if(token!==navigationToken) return;                        // this receipt answers a screen that is gone
+        if(inp.value===raw){ inp.value=''; autosize(); }            // clear only the very draft that was accepted
+        if(turn) addStep(turn,t('Steer'),qv.slice(0,80));
+        if(steerBannerSeq<=seq) hideBanner();                       // take back this steer's complaint, never a newer one's
+        steerAnswered=Math.max(steerAnswered,seq); })
+      .catch(function(e){ if(token!==navigationToken) return;
+        // A refusal is proof it did not arrive; a request that never came back is only unproven. A
+        // failure a newer steer already outran is still reported, but as that earlier sentence —
+        // its words are no longer the ones in the composer, so it must not claim they were kept.
+        var late=seq<steerAnswered, excerpt='“'+qv.slice(0,40)+'”';
+        var note=refused?t(late?'Earlier steer not delivered':'Steer not delivered')
+                        :t(late?'Earlier steer unconfirmed — it may have arrived':'Steer unconfirmed — it may have arrived; your words are kept');
+        if(turn) addStep(turn,t('Error'),note+' '+excerpt+': '+e.message,true);
+        if(steerBannerSeq<=seq){ showBanner(late?note+': '+excerpt:note); steerBannerSeq=seq; }
+        steerAnswered=Math.max(steerAnswered,seq); })
+      .then(function(){ delete steerInFlight[key]; });
+  } else { if(!validateRunSetup())return; inp.value=''; autosize(); runStream(qv); } }
+var cancelling=false;
+function watchCancel(){var watchSession=currentSession,watchRun=currentRun;clearTimeout(cancelTimer);cancelTimer=setTimeout(function poll(){fetch(api('/api/runs')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){var row=(d.runs||[]).find(function(x){return x.session===watchSession&&x.run===watchRun;});if(row&&['canceled','done','failed'].indexOf(row.state)>=0){var terminal={session:row.session,run:row.run,canceled:row.state==='canceled',error:row.state==='failed'?row.error:''};if(!terminalWasHandled(terminal))onEvent('done',terminal,watchSession);endRun(terminal);if(row.state!=='canceled')showBanner(row.state==='failed'?(row.error||'Run failed'):'The run finished before it could be stopped.');return;}cancelTimer=setTimeout(poll,700);}).catch(function(){cancelTimer=setTimeout(poll,1200);});},700);}
+function stopRun(){ var active=running||externalRunning; if(!active||cancelling) return;
+  if(!currentSession||!currentRun){ showBanner(t('The run is still starting; wait for its session id before stopping.')); return; }
+  cancelling=true; var b=$("send"); b.disabled=true; b.textContent='…'; showBanner(t('Stopping on the desktop…'));
+  fetch(api('/api/run/cancel'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:currentSession,run:currentRun})})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return{ok:r.ok,d:d};});})
+    .then(function(x){if(!x.ok||!x.d||x.d.ok===false)throw new Error((x.d&&(x.d.error||x.d.message))||'cancel unsupported');
+      showBanner(t('Stopping on the desktop…'));if(x.d.status==='already_canceled'){var terminal={session:currentSession,run:currentRun,canceled:true};if(!terminalWasHandled(terminal))onEvent('done',terminal,currentSession);endRun(terminal);}else watchCancel();})
+    .catch(function(e){cancelling=false;showBanner(t('Could not stop the run')+': '+e.message);setSendMode();}); }
 function autosize(){ var i=$("input"); i.style.height='auto'; i.style.height=Math.min(i.scrollHeight,140)+'px'; }
-function newChat(){ if(running) return; currentSession=null; $("log").innerHTML=''; $("title").innerHTML='<img src="'+LOGO+'" alt="">Collie'; welcome(); subscribeMirror(null); closeDrawer(); loadSessions(); }
-function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt="">'+t('Ask Collie to fix code, run commands, or investigate')+'</div>'; }
-function titleText(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
-function openSession(id){ if(running) return; currentSession=id; $("log").innerHTML=''; closeDrawer(); running=false; curTurn=null;
-  fetch(api('/api/session/'+encodeURIComponent(id))).then(function(r){return r.json();}).then(function(s){
-    var msgs=(s&&s.messages)||[]; var tt=titleText(msgs); $("title").innerHTML='<img src="'+LOGO+'" alt="">'+esc(tt||'Collie');
+function detachActive(){navigationToken++;clearTimeout(cancelTimer);cancelTimer=0;if(runES){try{runES.close();}catch(_){}runES=null;}if(mirrorES){try{mirrorES.close();}catch(_){}mirrorES=null;}running=false;externalRunning=false;cancelling=false;runCanSteer=false;runCapabilitiesKnown=false;currentRun=null;curTurn=null;packRows=[];mobileRunnerEventCount=0;pendingPermissions={};hideBanner();setSendMode();}
+function newChat(){ detachActive(); currentSession=null;refreshVerification();$("log").innerHTML='';setHeaderTitle('');welcome(); closeDrawer(false); loadSessions();refreshPendingApprovals(); $("input").focus(); }
+function welcome(){ $("log").innerHTML='<div class="empty"><img src="'+LOGO+'" alt=""><div class="lead">'+t('Your personal AI operations system')+'</div><div class="sub">'+t('Ask once. Collie can work across your files, browser, desktop, and long-running missions.')+'</div></div>'; }
+function sessionTitle(msgs){ for(var i=0;i<msgs.length;i++){ if(msgs[i].role==='user'&&typeof msgs[i].content==='string') return msgs[i].content.replace(/\s+/g,' ').slice(0,40); } return ''; }
+function openSession(id){detachActive();var request=++navigationToken;currentSession=id;refreshVerification();$("log").innerHTML='';closeDrawer(false);$("input").focus();
+  function render(s){if(request!==navigationToken||currentSession!==id)return;
+    var msgs=(s&&s.messages)||[]; var tt=sessionTitle(msgs);setHeaderTitle(tt);
     msgs.forEach(function(m){ if(m.role==='user'){ addUser(typeof m.content==='string'?m.content:t('[image]')); }
       else if(m.role==='assistant'&&m.content){ var tu=addAsst(); endCursor(tu); setMd(tu, typeof m.content==='string'?m.content:''); } });
-    scrollDown(); subscribeMirror(id); loadSessions(); }).catch(function(){}); }
-function loadSessions(){ fetch(api('/api/sessions')).then(function(r){return r.json();}).then(function(d){
-    var box=$("threads"); box.innerHTML=''; var list=(d&&d.sessions)||[];
+    scrollDown();subscribeMirror(id);loadSessions();refreshPendingApprovals();}
+  fetch(api('/api/session/'+encodeURIComponent(id))).then(function(r){if(!r.ok){var e=new Error('HTTP '+r.status);e.reachable=true;throw e;}return r.json();})
+    .then(function(s){markReachable(true);render(s);})
+    .catch(function(e){markReachable(!!e.reachable);showBanner(t('Could not open this chat')+': '+(e.message||e));}); }
+function loadSessions(){ fetch(api('/api/sessions')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+  return fetch(api('/api/runs')).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(rd){return{sessions:(d&&d.sessions)||[],runs:(rd&&rd.runs)||[],runsUnavailable:false};})
+    .catch(function(){return{sessions:(d&&d.sessions)||[],runs:[],runsUnavailable:true};});}).then(function(data){
+    markReachable(true);var box=$("threads");box.innerHTML='';var list=data.sessions.slice(),active={};
+    if(data.runsUnavailable){var unavailable=document.createElement('div');unavailable.className='thread tn';unavailable.textContent=t('Live run status unavailable');box.appendChild(unavailable);}
+    data.runs.forEach(function(r){if(r&&r.session&&(r.state==='running'||r.state==='canceling'))active[r.session]=r;});
+    var known={};list.forEach(function(s){known[s.id]=true;});Object.keys(active).forEach(function(id){if(!known[id]){var r=active[id];list.unshift({id:id,title:r.ask||'(…)',last:r.ask||'',turns:r.turns||0});}});
     if(!list.length){ box.innerHTML='<div class="thread tn">'+t('No chats yet')+'</div>'; return; }
-    list.forEach(function(s){ var el=document.createElement('div'); el.className='thread'+(s.id===currentSession?' active':'');
-      var n=s.turns||0; el.innerHTML='<div class="tt">'+esc(s.title||s.last||'(…)')+'</div><div class="tn">'+n+' '+t(n===1?'turn':'turns')+'</div>';
-      el.onclick=function(){ openSession(s.id); }; box.appendChild(el); }); }).catch(function(){}); }
-function openDrawer(){ $("drawer").classList.add('on'); $("scrim").classList.add('on'); }
-function closeDrawer(){ $("drawer").classList.remove('on'); $("scrim").classList.remove('on'); }
+    list.forEach(function(s){ var el=document.createElement('button'); el.type='button'; el.className='thread'+(s.id===currentSession?' active':'');
+      el.setAttribute('aria-label',t('Open chat')+' '+(s.title||s.last||'')); if(s.id===currentSession)el.setAttribute('aria-current','true');
+      var n=s.turns||0,r=active[s.id],status=r?t(r.state==='canceling'?'stopping…':'working…'):(n+' '+t(n===1?'turn':'turns'));
+      el.innerHTML='<div class="tt">'+esc(s.title||s.last||'(…)')+'</div><div class="tn">'+esc(status)+'</div>';
+      el.onclick=function(){ openSession(s.id); }; box.appendChild(el); }); }).catch(function(e){markReachable(false);var box=$("threads");if(box&&!box.children.length)box.innerHTML='<div class="thread tn">'+esc(t('Could not load chats')+': '+(e.message||e))+'</div>';}); }
+function openDrawer(){var d=$("drawer");d.removeAttribute('inert');d.classList.add('on');d.setAttribute('aria-hidden','false');$("scrim").classList.add('on');$("menuBtn").setAttribute('aria-expanded','true');$("newBtn2").focus();}
+function closeDrawer(restore){var d=$("drawer");d.classList.remove('on');d.setAttribute('aria-hidden','true');d.setAttribute('inert','');$("scrim").classList.remove('on');$("menuBtn").setAttribute('aria-expanded','false');if(restore)$("menuBtn").focus();}
 
-$("menuBtn").onclick=openDrawer; $("scrim").onclick=closeDrawer; $("newBtn").onclick=newChat; $("newBtn2").onclick=newChat;
-$("send").onclick=function(){ if(running) stopRun(); else doSend(); };
+$("menuBtn").onclick=openDrawer; $("scrim").onclick=function(){closeDrawer(true);}; $("newBtn").onclick=newChat; $("newBtn2").onclick=newChat;
+$("topState").onclick=function(){setMobileActivityOpen(true);};
+$("mobileActivityClose").onclick=function(){setMobileActivityOpen(false);};
+$("mobileActivityRefresh").onclick=refreshMobileActivity;
+$("send").onclick=function(){ if(running||externalRunning) stopRun(); else doSend(); };
 $("input").addEventListener('input',autosize);
-$("input").addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+// An IME (pinyin, kana, hangul…) confirms its candidate with Enter. That Enter belongs to the
+// keyboard, not to us: sending on it would post half-typed romaji and empty the box. `isComposing`
+// is the signal in Blink/Gecko (keydown arrives before compositionend); WebKit and older Android
+// keyboards end the composition first and/or report only the legacy keyCode 229, so both are read,
+// plus the composition state itself for keyboards that report neither. No timers: the state ends
+// on compositionend (or on the first non-composing input), so the next Enter sends normally.
+var imeComposing=false;
+$("input").addEventListener('compositionstart',function(){ imeComposing=true; });
+$("input").addEventListener('compositionend',function(){ imeComposing=false; });
+$("input").addEventListener('input',function(e){ if(!e.isComposing) imeComposing=false; });
+$("input").addEventListener('keydown',function(e){ if(e.key!=='Enter'||e.shiftKey) return; e.preventDefault();
+  if(e.isComposing||e.keyCode===229||imeComposing) return;   // the keyboard owns this Enter, not us
+  doSend(); });
+$("drawer").addEventListener('keydown',function(e){if(e.key!=='Tab')return;var items=Array.prototype.slice.call(this.querySelectorAll('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'));if(!items.length)return;var first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
+$("mobileActivity").addEventListener("keydown",function(e){if(e.key!=="Tab")return;var items=Array.prototype.slice.call(this.querySelectorAll('button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'));if(!items.length)return;var first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
+document.addEventListener('keydown',function(e){if(e.key!=="Escape")return;if(mobileActivityOpen)setMobileActivityOpen(false);else if($("drawer").classList.contains('on'))closeDrawer(true);});
 
-function applyStatic(){ document.documentElement.lang=UI_LANG; $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); }
+function applyStatic(){ document.documentElement.lang=UI_LANG; $("menuBtn").setAttribute('aria-expanded','false'); $("menuBtn").setAttribute('aria-controls','drawer');$("topState").setAttribute("aria-expanded","false");$("topState").setAttribute("aria-controls","mobileActivity");
+  document.querySelectorAll('[data-t]').forEach(function(el){el.textContent=t(el.getAttribute('data-t'));});
+  document.querySelectorAll('[data-t-placeholder]').forEach(function(el){el.placeholder=t(el.getAttribute('data-t-placeholder'));});
+  document.querySelectorAll('[data-t-aria-label]').forEach(function(el){el.setAttribute('aria-label',t(el.getAttribute('data-t-aria-label')));});
+  $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); }
+refreshVerification();
 fetch(api('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })
-  .finally(function(){ applyStatic(); welcome(); loadSessions(); });
+  .finally(function(){ applyStatic();refreshRunCapabilities();setHeaderTitle('');refreshIdentity();welcome();loadSessions();startApprovalLive();refreshPendingApprovals();setInterval(loadSessions,2500);setInterval(refreshMobileActivity,5000);setInterval(refreshIdentity,15000); });
 </script>
 </body>
 </html>

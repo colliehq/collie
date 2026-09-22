@@ -1,0 +1,734 @@
+{
+  "native-eventview": {
+    "name": "native-eventview",
+    "new_task": "versioned-event-projection-ledger",
+    "coverage_nudge_sha256": "67084efb34a8d39080e775c1f40b982c3aa33026193c603784e0b4efd64707cf",
+    "prompt_policy_fixed_before_new_task_results": true,
+    "source_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "worker_sha256": "7426b948ce942c17991e52ab83cac2c913fbda53955e7469ccd37e533bf15213",
+    "cohorts": [
+      "baseline",
+      "coverage-review"
+    ],
+    "blind_task_grading": true
+  },
+  "native-full-context": {
+    "name": "native-full-context",
+    "source_commit": "720c26ec8641d62e578cd178b5984360e9edc060",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "versioned-snapshot-cursor-pager",
+      "versioned-event-projection-ledger"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie",
+      "claude-code"
+    ],
+    "repetitions": 3,
+    "concurrency": 6,
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "cadaf30c8e22271ecc383c256daba0afa089385773980abc9a9403861e446f0d",
+      "native_batch.py": "9695d15ff2f8937da0aded137006b2c68a343ad01744d346c9faf37a6d0e24ed",
+      "native_jobs.py": "454ae8360c3105cf73aad1aed35099ce0f4276019153f2cd23840cd83daf72b0",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "f7bbe793e8c6aeb0f61424e616aa90889775c88d30963e1dae2e7040fdb1cdcb",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-pagination": {
+    "name": "native-pagination",
+    "new_task": "versioned-snapshot-cursor-pager",
+    "coverage_nudge_sha256": "67084efb34a8d39080e775c1f40b982c3aa33026193c603784e0b4efd64707cf",
+    "prompt_policy_fixed_before_new_task_results": true,
+    "source_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "worker_sha256": "7426b948ce942c17991e52ab83cac2c913fbda53955e7469ccd37e533bf15213",
+    "cohorts": [
+      "baseline",
+      "coverage-review"
+    ],
+    "blind_task_grading": true
+  },
+  "native-plain-control": {
+    "name": "native-plain-control",
+    "source_commit": "9e26c1428252cbf4886c61da760b3a8eafdd1d52",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "versioned-snapshot-cursor-pager",
+      "versioned-event-projection-ledger"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 2,
+    "concurrency": 4,
+    "structured_mode_override": "plain",
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "f5b967f76571401fe00d8b98554e080fd364c6647e8a38ba4ccf998a93dbad24",
+      "native_batch.py": "d3642052c2dc6d68a0013e023101578aa6bd4693883a6f1c5e286a92078c8575",
+      "native_jobs.py": "da21e8bb4fa96b57ae0f8a5dfdc10ad88883ded0b1b9d62f7bd17d616c346d3d",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "5e93db63a20bbecdd5cf069307319a02d9a18e26fa23e005a5fe4069234c680a",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-schema-repair": {
+    "name": "native-schema-repair",
+    "source_commit": "9e26c1428252cbf4886c61da760b3a8eafdd1d52",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "versioned-snapshot-cursor-pager",
+      "versioned-event-projection-ledger"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 2,
+    "concurrency": 4,
+    "structured_mode_override": "schema",
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "5faa9497e7689a9f344d6d7c42a58a2d8942728fd9d1cbff2947e76040440b3a",
+      "native_batch.py": "d456093f86f4c278d60006b5aa1b38c0f07ecb69550d318758d975d35c7b6f73",
+      "native_jobs.py": "b3a5f66968172ef53f43a85daee6a5b64c11b492acafba25608c3970d32b2579",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "5e93db63a20bbecdd5cf069307319a02d9a18e26fa23e005a5fe4069234c680a",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-product": {
+    "name": "native-session2-product",
+    "source_commit": "5eae2cff216ac551b4261c5c3aa2c942eb381417",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie",
+      "claude-code"
+    ],
+    "repetitions": 3,
+    "concurrency": 6,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": null,
+    "experimental_context_mode": "default",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:30:06.501339+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "af4e8f4453622df07f103f62b8b6e643a5ad8712d3ad398dc0598ce199ced466",
+      "native_batch.py": "df4ed99eb815ec334b49f578cce87f1000ed8209ed77b41206d7369a7f217998",
+      "native_jobs.py": "c6547018842959631ff8238b97e5a71fbb0381b7121effdf280c94c0caef5195",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "f5554be4b4cf35bf8dcb2c3afcab7571b43c7aaab52dcbfcbbcf2eaa4d7cdd2a",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-recovery-baseline": {
+    "name": "native-session2-recovery-baseline",
+    "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "session",
+    "experimental_context_mode": "full-tool-history",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:48:21.008665+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "3dd0fb31db37e054a9feca910dbd210a07a1ee890795ed7c100d869bdba900a0",
+      "native_batch.py": "7a2e4b5852f07f1517b6decfb3f44b5ea130e536776779f8f8ddeddaf887701d",
+      "native_jobs.py": "2cf863ff5c41e86abb098bba3eedf66b92ab6e571396cabe8cb44be89c881833",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "af63e2f194d68ba73674258f89359bc5e31592bca9d980d0e89e4aede2e407aa",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-recovery-recovered": {
+    "name": "native-session2-recovery-recovered",
+    "source_commit": "310a3418647c652410b5bd88f5c0297600bfd1dc",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "session",
+    "experimental_context_mode": "full-tool-history",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:48:21.008427+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "aa9486484e3e4da2eaa36d30e263a921a065929357bf78a854dbdac7f445ba21",
+      "native_batch.py": "3253e90acfd9d756ee2153e86db62e950c4c64bd2e7906d8316b07d7c0d21673",
+      "native_jobs.py": "734418b9704d60ee0be24893a46d84ed044dca5b835bb7e85da1ef27dd7094af",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "82b8a5ffb990bb4aee300e5b2e1dd6d403bd54d111edb930320f69bb5b70f7d5",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-reminder-reminded": {
+    "name": "native-session2-reminder-reminded",
+    "source_commit": "310a3418647c652410b5bd88f5c0297600bfd1dc",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "session",
+    "experimental_context_mode": "full-tool-history",
+    "experimental_response_reminder": true,
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T06:02:43.468071+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "710fdb5f212ba4a6bd3facc83e3ca305288d03b2e4d9133b70c70ae875160dd3",
+      "native_batch.py": "d7271174514216f6cf90c3095bcd1374f83269a05bc753b7a7ce0362609f21d5",
+      "native_jobs.py": "5298eddf51cfc91017f88ac8d0f645d6da99bb1574567237c8a8cc162af6839f",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "82b8a5ffb990bb4aee300e5b2e1dd6d403bd54d111edb930320f69bb5b70f7d5",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-reminder-session": {
+    "name": "native-session2-reminder-session",
+    "source_commit": "310a3418647c652410b5bd88f5c0297600bfd1dc",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "session",
+    "experimental_context_mode": "full-tool-history",
+    "experimental_response_reminder": false,
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T06:02:43.468131+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "a8fca426cdc257323906523666b8ec5de20b01768cb139c1e086c204173a3eba",
+      "native_batch.py": "5c90c0d5d6745b5169d072bcaa62fcbe17917313fd89341d025a80d37ae8adab",
+      "native_jobs.py": "35379e01e8f60ae3c32083def909cdabd58ab614506685c1f11c314cbc1efba3",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "82b8a5ffb990bb4aee300e5b2e1dd6d403bd54d111edb930320f69bb5b70f7d5",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-reminder-stateless": {
+    "name": "native-session2-reminder-stateless",
+    "source_commit": "310a3418647c652410b5bd88f5c0297600bfd1dc",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "stateless",
+    "experimental_context_mode": "full-tool-history",
+    "experimental_response_reminder": false,
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T06:02:43.468222+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "14e25236b8cf703fb564f7896acc26632165e07119a8794d860d25a931da970d",
+      "native_batch.py": "4815a0d4dee7c23347c02d01346ed395817a9a42e30170742df237997ca51af2",
+      "native_jobs.py": "7a5ff111a0e91834158066deb3839fdd32d1bc106f0a6147ec531caeba0cbeb4",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "82b8a5ffb990bb4aee300e5b2e1dd6d403bd54d111edb930320f69bb5b70f7d5",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-session-default": {
+    "name": "native-session2-session-default",
+    "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "session",
+    "experimental_context_mode": "default",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:30:18.441204+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "c0c51a774959305dc370f9a691e166caa0c8798ad4841a4cc916325d464922c0",
+      "native_batch.py": "e4d8231110e4d3f23cd16f7b04c2a3682ca8e25d84639be4c2d69cbfce20eace",
+      "native_jobs.py": "2486f84a59fa3f1c2d6277d94ddd600785029f687015120520bd60dde582820f",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "af63e2f194d68ba73674258f89359bc5e31592bca9d980d0e89e4aede2e407aa",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-session-full-history": {
+    "name": "native-session2-session-full-history",
+    "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "session",
+    "experimental_context_mode": "full-tool-history",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:39:39.225632+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "12690907f8d51fd805f9ab553b1ecaa97b280a300447fe16e1d3c1f526e58717",
+      "native_batch.py": "19570a02a7565e28f86c713e2faca65c2665263fc72a0a2fdfa360b4b61f07ff",
+      "native_jobs.py": "98a5ead7d65baa84d5c9e96b12f0466d079bd39559775767492c2357e42ab591",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "af63e2f194d68ba73674258f89359bc5e31592bca9d980d0e89e4aede2e407aa",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-stateless-default": {
+    "name": "native-session2-stateless-default",
+    "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "stateless",
+    "experimental_context_mode": "default",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:30:18.441273+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "96003956e20f86104241419cd74a1d0f71c3dbdf5071fb1931f2dd17f04bac74",
+      "native_batch.py": "6eebbb14052bfcefb5e6eaaa39865e743750ccedd3600bfab795a456cc788170",
+      "native_jobs.py": "b2ff2b450368a70dcc197c9440297d27059554458d6fb0b44b71a37d1bb4b5db",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "af63e2f194d68ba73674258f89359bc5e31592bca9d980d0e89e4aede2e407aa",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-session2-stateless-full-history": {
+    "name": "native-session2-stateless-full-history",
+    "source_commit": "31d0b0c73e4f7e066915644de313686f9a28bdb0",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie"
+    ],
+    "repetitions": 3,
+    "concurrency": 3,
+    "structured_mode_override": "plain",
+    "experimental_session_mode": "stateless",
+    "experimental_context_mode": "full-tool-history",
+    "http_retry_override": 0,
+    "runtime_inventory": {
+      "observed_at_utc": "2026-09-08T05:39:39.219224+00:00",
+      "sdk_package": "0.2.136",
+      "sdk_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      },
+      "native_cli": {
+        "filename": "claude.exe",
+        "version": "2.1.228 (Claude Code)",
+        "sha256": "841efce70b048ae03c752f79000cb6be5c2c2c4d0478f3eaaa762494ade9daf5",
+        "bytes": 296308896,
+        "modified_utc": "2026-08-12T17:37:13.834319+00:00"
+      }
+    },
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "b87b0b707ffa0016217f5cb070976c95402f5b4a111965448207d724e6f7cac4",
+      "native_batch.py": "5ffb7d1034b19e7e4b348767e492e98a7ed20cfdcfff4b5d484f075ea3a9c632",
+      "native_jobs.py": "b616994c66bf0c1565afc1d64dfc0aa0198b5596d780da7507fc945f733d8154",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "af63e2f194d68ba73674258f89359bc5e31592bca9d980d0e89e4aede2e407aa",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-structured": {
+    "name": "native-structured",
+    "source_commit": "a5edbe21c91885d5e5cd065c6556120c1bcd0ee1",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "versioned-snapshot-cursor-pager",
+      "versioned-event-projection-ledger"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie",
+      "claude-code"
+    ],
+    "repetitions": 3,
+    "concurrency": 6,
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "7e41cfdf98b34b604c4220d38d2e8217d9e0fb9a50e518761384eaec91989ae7",
+      "native_batch.py": "c5a273c1c0757b1b18c1c4c606dc49fcf5c6449246b26e8fcdb4297a5b00e8f0",
+      "native_jobs.py": "9526be3d84826593f3780b5fc41b1ccb0fabc51d56b6777af086fceedba003c7",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "80c70fc28898b8c44afe014d0e8e84b056a567cde2e2c063bf9e9e7005e6be95",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "native-structured-v2": {
+    "name": "native-structured-v2",
+    "source_commit": "b8004abd9a16a4e73a321e15e11a9d5600ab988d",
+    "baseline_commit": "8577c10a33370bf84ae9cf953db64354be92a30d",
+    "tasks": [
+      "versioned-snapshot-cursor-pager",
+      "versioned-event-projection-ledger"
+    ],
+    "coverage_nudge": false,
+    "arms": [
+      "collie",
+      "claude-code"
+    ],
+    "repetitions": 3,
+    "concurrency": 6,
+    "methodology": "New source-variant experiment. Frozen evaluator; explicit source pin, task set and observation wrapper changes. No historical result overwritten.",
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "c7ee9d74ee1fe506f8d38baba988b97a3a6ff94b0e2635cd7bc6cc31c3f8cdcd",
+      "native_batch.py": "a49bec1f5cb3e238dc4041f4dd91d2c246017396e79bf0eee56366c6e25571a9",
+      "native_jobs.py": "c14d85a6f533b11c88ca89e663103009f849d41d14d2e190fd8fd9fa5ec3ef12",
+      "normalized_batch.py": "6404782167b2a3cb7ea5e4d82e2764749a70043a06ec7fa7855b76fd2672496f",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "201eb7bb63b4c0385d0510824e543273391e08855ce8e147eb0def543e69118a",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "normalized-fresh": {
+    "source_commit": "720c26ec8641d62e578cd178b5984360e9edc060",
+    "tasks": [
+      "versioned-snapshot-cursor-pager",
+      "versioned-event-projection-ledger"
+    ],
+    "arms": [
+      "collie",
+      "prime",
+      "pi",
+      "hermes"
+    ],
+    "methodology": "New admitted tasks and explicit source pin using frozen normalized evaluator. Adapted loop comparison with shared native SDK transport, not native product ranking.",
+    "repetitions": 2,
+    "concurrency": 4,
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "77820eadceae11253fef897610fec933f72a860752d640c82249dbef1a47d869",
+      "native_batch.py": "552d38a238002aeaf5cfa4b4258ad545b59f15306e64a6efb86fcf8ec86bee57",
+      "native_jobs.py": "136f23a853e4bc396e0b65923e7b54da626a7ecaa4f01e9581d5702c7a9b1a1b",
+      "normalized_batch.py": "f83ca2d20641a6e99ad87c44e94bf13bf71ea1f66e54e57ae2ac033cd8d64abf",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "f7bbe793e8c6aeb0f61424e616aa90889775c88d30963e1dae2e7040fdb1cdcb",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  },
+  "normalized-session2": {
+    "source_commit": "5eae2cff216ac551b4261c5c3aa2c942eb381417",
+    "tasks": [
+      "ordered-pathrule-priority-engine",
+      "capacity-ledger-reservation-audit"
+    ],
+    "arms": [
+      "collie",
+      "prime",
+      "pi",
+      "hermes"
+    ],
+    "methodology": "New admitted tasks and explicit source pin using frozen normalized evaluator. Adapted loop comparison with shared native SDK transport, not native product ranking.",
+    "repetitions": 2,
+    "concurrency": 4,
+    "scripts": {
+      "analyze.py": "ad7f5d7f8c301dd08d471af84c9d306743d3f72ec697c9e8bccb9ac45038ccfc",
+      "native_attempt.py": "da1c2da0dd1b77d7072b10880f05e52741cb108d1557437bc6c53d5e63f8f5f1",
+      "native_batch.py": "59295bf2abed0f3cd9a10bb54fe942ad9e18b0b3a0a392e1044db3dab524732f",
+      "native_jobs.py": "84208040d6ca08a8d4206f9ae57247ef8422e50b5253a2ddc2911cb02225b467",
+      "normalized_batch.py": "4b7f8a29121906899e7bd54a3231fe1c63a17a1eac106344068e12c749971df7",
+      "normalized_ledger_capture.py": "7da95f7fb20687efc939e8663576c08d3756a375240ede5c77cd0cd017eecd96",
+      "regrade_initial.py": "905f6f0edbbbf08f7d31f7937d8bd834c95d6ce2790dcaa0c8a35f2fbd2ae156",
+      "regrade_patch.py": "ffabc8711437bb68849d149516affbd9184511a325ea4b10cea62795bb5493d9",
+      "run_normalized.py": "02c73f4d292508a171c508a240aaa3692bcfa9658fc1551303b9cee614bf6cef",
+      "workflow_attempt.py": "f5554be4b4cf35bf8dcb2c3afcab7571b43c7aaab52dcbfcbbcf2eaa4d7cdd2a",
+      "workflow_batch.py": "588632307e69f00b3cccee03b4ea8d141f8470e229097a2ae7c713c28048865d"
+    }
+  }
+}

@@ -1,0 +1,423 @@
+diff --git a/layercfg/__init__.py b/layercfg/__init__.py
+index b0bb7f2..2b32472 100644
+--- a/layercfg/__init__.py
++++ b/layercfg/__init__.py
+@@ -6,7 +6,7 @@ from .loader import Config, ConfigLoader
+ from .merge import deep_merge, walk
+ from .sentinels import DELETE, is_delete
+ 
+-__version__ = "1.0.0"
++__version__ = "2.0.0"
+ 
+ __all__ = [
+     "DELETE",
+diff --git a/layercfg/interpolate.py b/layercfg/interpolate.py
+index 0e519b0..387e0d5 100644
+--- a/layercfg/interpolate.py
++++ b/layercfg/interpolate.py
+@@ -1,29 +1,69 @@
+-"""Environment interpolation (v1: plain ${NAME} substitution)."""
+-
+-import re
+-
+-_PATTERN = re.compile(r"\$\{(\w+)\}")
+-
+-
+-def interpolate(text, env):
+-    """Replace every ``${NAME}`` in ``text`` with ``env[NAME]``."""
+-
+-    def _replace(match):
+-        name = match.group(1)
+-        if name in env:
+-            return str(env[name])
+-        return match.group(0)
+-
+-    return _PATTERN.sub(_replace, text)
+-
+-
+-def interpolate_tree(value, env):
+-    """Interpolate the string values held by ``value``."""
+-    if isinstance(value, dict):
+-        return {
+-            key: interpolate(item, env) if isinstance(item, str) else item
+-            for key, item in value.items()
+-        }
+-    if isinstance(value, str):
+-        return interpolate(value, env)
+-    return value
++"""Environment interpolation with escaping and defaults."""
++
++import re
++
++from .errors import InterpolationError
++from .sentinels import is_delete
++
++_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
++
++
++def _resolve(body, env):
++    if ":-" in body:
++        name, default = body.split(":-", 1)
++        has_default = True
++    else:
++        name, default = body, None
++        has_default = False
++    if not _NAME_RE.match(name):
++        raise InterpolationError("invalid placeholder name: %r" % (name,))
++    if name in env:
++        return str(env[name])
++    if has_default:
++        return default
++    raise InterpolationError("undefined variable: %r" % (name,))
++
++
++def interpolate(text, env=None):
++    """Expand ``${NAME}`` / ``${NAME:-default}`` placeholders in ``text``."""
++    if not isinstance(text, str):
++        raise InterpolationError("interpolate() expects a str")
++    if env is None:
++        env = {}
++    out = []
++    i = 0
++    n = len(text)
++    while i < n:
++        ch = text[i]
++        if ch != "$":
++            out.append(ch)
++            i += 1
++            continue
++        nxt = text[i + 1] if i + 1 < n else ""
++        if nxt == "$":
++            out.append("$")
++            i += 2
++            continue
++        if nxt == "{":
++            end = text.find("}", i + 2)
++            if end == -1:
++                raise InterpolationError("unterminated placeholder in %r" % (text,))
++            out.append(_resolve(text[i + 2:end], env))
++            i = end + 1
++            continue
++        out.append("$")
++        i += 1
++    return "".join(out)
++
++
++def interpolate_tree(value, env=None):
++    """Return a new structure with every string interpolated."""
++    if is_delete(value):
++        return value
++    if isinstance(value, dict):
++        return {key: interpolate_tree(item, env) for key, item in value.items()}
++    if isinstance(value, list):
++        return [interpolate_tree(item, env) for item in value]
++    if isinstance(value, str):
++        return interpolate(value, env)
++    return value
+diff --git a/layercfg/loader.py b/layercfg/loader.py
+index f01f7d0..61ccb75 100644
+--- a/layercfg/loader.py
++++ b/layercfg/loader.py
+@@ -1,71 +1,91 @@
+-"""Layer registry, provenance tracking and the Config view."""
+-
+-from collections.abc import Mapping
+-
+-from .errors import LayerError
+-from .interpolate import interpolate_tree
+-from .merge import deep_merge
+-from .sentinels import is_delete
+-
+-
+-class Config(Mapping):
+-    """View over a merged configuration."""
+-
+-    def __init__(self, data, provenance):
+-        self._data = data
+-        self._provenance = provenance
+-
+-    @property
+-    def data(self):
+-        return self._data
+-
+-    @property
+-    def provenance(self):
+-        return self._provenance
+-
+-    def source_of(self, *path):
+-        return self._provenance[path[0]]
+-
+-    def __getitem__(self, key):
+-        return self._data[key]
+-
+-    def __iter__(self):
+-        return iter(self._data)
+-
+-    def __len__(self):
+-        return len(self._data)
+-
+-    def __repr__(self):
+-        return "Config(%r)" % (self._data,)
+-
+-
+-class ConfigLoader:
+-    """Accumulates named layers and merges them into a Config."""
+-
+-    def __init__(self, env=None):
+-        self._env = env or {}
+-        self._layers = []
+-
+-    @property
+-    def layer_names(self):
+-        return tuple(name for name, _ in self._layers)
+-
+-    def add_layer(self, name, data):
+-        if not name:
+-            raise LayerError("layer name must be a non-empty string")
+-        self._layers.append((name, data))
+-        return self
+-
+-    def build(self):
+-        merged = {}
+-        provenance = {}
+-        for name, raw in self._layers:
+-            layer = interpolate_tree(raw, self._env)
+-            for key, value in layer.items():
+-                if is_delete(value):
+-                    merged.pop(key, None)
+-                    provenance.pop(key, None)
+-                else:
+-                    merged = deep_merge(merged, {key: value})
+-                    provenance[key] = name
+-        return Config(merged, provenance)
++"""Layer registry, provenance tracking and the Config view."""
++
++import copy
++from collections.abc import Mapping
++
++from .errors import LayerError
++from .interpolate import interpolate_tree
++from .merge import deep_merge, walk
++
++
++class Config(Mapping):
++    """Immutable view over a merged configuration."""
++
++    def __init__(self, data, provenance=None):
++        if not isinstance(data, dict):
++            raise TypeError("data must be a dict")
++        self._data = copy.deepcopy(data)
++        self._provenance = dict(provenance) if provenance else {}
++
++    @property
++    def data(self):
++        return copy.deepcopy(self._data)
++
++    def to_dict(self):
++        return copy.deepcopy(self._data)
++
++    @property
++    def provenance(self):
++        return dict(self._provenance)
++
++    def source_of(self, *path):
++        if len(path) == 1 and isinstance(path[0], (tuple, list)):
++            key = tuple(path[0])
++        else:
++            key = tuple(path)
++        return self._provenance[key]
++
++    def __getitem__(self, key):
++        return copy.deepcopy(self._data[key])
++
++    def __iter__(self):
++        return iter(self._data)
++
++    def __len__(self):
++        return len(self._data)
++
++    def __repr__(self):
++        return "Config(%r)" % (self._data,)
++
++
++class ConfigLoader:
++    """Accumulates named layers and merges them into a Config."""
++
++    def __init__(self, env=None):
++        if env is None:
++            self._env = {}
++        elif isinstance(env, Mapping):
++            self._env = dict(env)
++        else:
++            raise LayerError("env must be a mapping or None")
++        self._layers = []
++
++    @property
++    def layer_names(self):
++        return tuple(name for name, _ in self._layers)
++
++    def add_layer(self, name, data):
++        if not isinstance(name, str) or not name:
++            raise LayerError("layer name must be a non-empty string")
++        if not isinstance(data, dict):
++            raise LayerError("layer data must be a dict")
++        if any(existing == name for existing, _ in self._layers):
++            raise LayerError("duplicate layer name: %r" % (name,))
++        self._layers.append((name, copy.deepcopy(data)))
++        return self
++
++    def build(self):
++        merged = {}
++        provenance = {}
++        for name, raw in self._layers:
++            layer = interpolate_tree(raw, self._env)
++            merged = deep_merge(merged, layer)
++            layer_paths = {path for path, _ in walk(layer)}
++            new_provenance = {}
++            for path, _value in walk(merged):
++                if path in layer_paths:
++                    new_provenance[path] = name
++                else:
++                    new_provenance[path] = provenance.get(path, name)
++            provenance = new_provenance
++        return Config(merged, provenance)
+diff --git a/layercfg/merge.py b/layercfg/merge.py
+index 1b5e8ec..e35d444 100644
+--- a/layercfg/merge.py
++++ b/layercfg/merge.py
+@@ -1,25 +1,50 @@
+-"""Deep merge helpers (v1)."""
+-
+-
+-def deep_merge(base, overlay):
+-    """Merge ``overlay`` on top of ``base`` and return a new dict."""
+-    result = {}
+-    for key in sorted(set(base) | set(overlay)):
+-        if key in base and key in overlay:
+-            left = base[key]
+-            right = overlay[key]
+-            if isinstance(left, dict) and isinstance(right, dict):
+-                result[key] = deep_merge(left, right)
+-            else:
+-                result[key] = right
+-        elif key in base:
+-            result[key] = base[key]
+-        else:
+-            result[key] = overlay[key]
+-    return result
+-
+-
+-def walk(data, prefix=()):
+-    """Yield ``(path, value)`` pairs for the entries of ``data``."""
+-    for key, value in data.items():
+-        yield prefix + (key,), value
++"""Order-preserving deep merge helpers."""
++
++import copy
++
++from .sentinels import is_delete
++
++
++def _clean_copy(value):
++    """Deep copy ``value``, dropping dict entries whose value is ``DELETE``."""
++    if isinstance(value, dict):
++        return {
++            key: _clean_copy(item)
++            for key, item in value.items()
++            if not is_delete(item)
++        }
++    return copy.deepcopy(value)
++
++
++def deep_merge(base, overlay):
++    """Merge ``overlay`` on top of ``base`` and return a new independent dict."""
++    if not isinstance(base, dict):
++        raise TypeError("base must be a dict")
++    if not isinstance(overlay, dict):
++        raise TypeError("overlay must be a dict")
++
++    result = _clean_copy(base)
++    for key, value in overlay.items():
++        if is_delete(value):
++            result.pop(key, None)
++        elif isinstance(value, dict) and isinstance(result.get(key), dict):
++            result[key] = deep_merge(result[key], value)
++        else:
++            result[key] = _clean_copy(value)
++    return result
++
++
++def _walk(data, prefix):
++    for key, value in data.items():
++        path = prefix + (key,)
++        if isinstance(value, dict) and value:
++            yield from _walk(value, path)
++        else:
++            yield path, value
++
++
++def walk(data, prefix=()):
++    """Yield ``(path, value)`` for every leaf of ``data`` in depth-first order."""
++    if not isinstance(data, dict):
++        raise TypeError("walk() expects a dict")
++    return _walk(data, tuple(prefix))
+diff --git a/layercfg/sentinels.py b/layercfg/sentinels.py
+index cc6e7fe..4582206 100644
+--- a/layercfg/sentinels.py
++++ b/layercfg/sentinels.py
+@@ -1,16 +1,39 @@
+-"""The explicit deletion sentinel."""
+-
+-
+-class _Delete:
+-    """Marker meaning: remove this key from the merged result."""
+-
+-    def __repr__(self):
+-        return "<DELETE>"
+-
+-
+-DELETE = _Delete()
+-
+-
+-def is_delete(value):
+-    """Return True only for the DELETE sentinel."""
+-    return value is DELETE
++"""The explicit deletion sentinel."""
++
++
++class _Delete:
++    """Marker meaning: remove this key from the merged result."""
++
++    _instance = None
++
++    def __new__(cls):
++        if cls._instance is None:
++            cls._instance = super().__new__(cls)
++        return cls._instance
++
++    def __repr__(self):
++        return "DELETE"
++
++    def __bool__(self):
++        return False
++
++    def __copy__(self):
++        return self
++
++    def __deepcopy__(self, memo):
++        return self
++
++    def __reduce__(self):
++        return (_delete_singleton, ())
++
++
++def _delete_singleton():
++    return DELETE
++
++
++DELETE = _Delete()
++
++
++def is_delete(value):
++    """Return ``True`` only for the :data:`DELETE` sentinel itself."""
++    return value is DELETE

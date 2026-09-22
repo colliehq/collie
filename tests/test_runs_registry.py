@@ -17,6 +17,7 @@ could not tell whether the machine was busy, and a sidebar could not show it.
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -96,10 +97,15 @@ def integration():
     enough that every emit lands in the send buffer before the RST is felt, so it passes with or
     without `_tx`. That one is held by reading the path, not by this.
     """
-    port = 8994
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
     tmp = tempfile.mkdtemp(prefix="collie_runs_")
     env = dict(os.environ, COLLIE_SETTINGS_PATH=os.path.join(tmp, "settings.json"),
-               COLLIE_SESSIONS_DIR=os.path.join(tmp, "sessions"), PYTHONUNBUFFERED="1")
+               COLLIE_SESSIONS_DIR=os.path.join(tmp, "sessions"),
+               COLLIE_STATE_DIR=os.path.join(tmp, "state"),
+               COLLIE_DATA_DIR=os.path.join(tmp, "data"),
+               COLLIE_MCP_CONFIG=os.path.join(tmp, "mcp.json"), PYTHONUNBUFFERED="1")
     env.pop("COLLIE_PROVIDER", None)
     with open(env["COLLIE_SETTINGS_PATH"], "w") as fh:
         json.dump({"PROVIDER": "mock", "MODEL": "mock"}, fh)
@@ -148,7 +154,7 @@ def integration():
                 # test measure nothing — the run is equally absent whether or not the fix is in.
                 buf = b""
                 deadline = time.time() + 10
-                while b"event: start" not in buf and time.time() < deadline:
+                while (b"event: start" not in buf or b"\n\n" not in buf.split(b"event: start", 1)[-1]) and time.time() < deadline:
                     chunk = s.recv(4096)
                     if not chunk:
                         break
@@ -188,6 +194,16 @@ def integration():
             check(finished["turns"] > 0, "having actually done turns (%s)" % finished["turns"])
     finally:
         srv.kill()
+        srv.wait(timeout=5)
+
+
+def test_module_entrypoint_keeps_one_run_registry_after_client_disconnect():
+    before = len(fails)
+    try:
+        integration()
+        assert not fails[before:], "\n".join(fails[before:])
+    finally:
+        del fails[before:]
 
 
 def main():

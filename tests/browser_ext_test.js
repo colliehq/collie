@@ -64,6 +64,69 @@ function eq(name, got, want) {
   ok ? pass++ : fail++;
 }
 
+t('canvas text uses bounded trusted CDP insertion',
+  src.includes('async function doInsertText(text)') &&
+  src.includes('"Input.insertText", { text }') &&
+  src.includes('cmd.action === "insert_text"'));
+
+t('Live tab context returns only the active web host and bounded title',
+  src.includes('async function liveTabContext()') &&
+  src.includes('chrome.tabs.query({ active: true, lastFocusedWindow: true })') &&
+  src.includes('cmd.action === "live_context"') &&
+  !/liveTabContext[\s\S]{0,1000}url\.pathname/.test(src));
+
+// --- product shell: presence, hard takeover, and side-panel entry points -------------------------
+{
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'harness', 'browser_ext', 'manifest.json'), 'utf8'));
+  const storeManifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'harness', 'browser_ext', 'manifest.store.json'), 'utf8'));
+  const scripts = (manifest.content_scripts || []).flatMap((row) => row.js || []);
+  t('the visible presence/takeover sensor ships as an isolated content script', scripts.includes('presence.js'));
+  t('the extension declares a real side panel', manifest.side_panel && manifest.side_panel.default_path === 'sidepanel.html');
+  t('selection/page entry points have context-menu permission', (manifest.permissions || []).includes('contextMenus'));
+  t('store install keeps high-fidelity debugger and verified-download support',
+    (storeManifest.permissions || []).includes('debugger') &&
+    (storeManifest.permissions || []).includes('downloads') &&
+    (storeManifest.permissions || []).includes('webNavigation') &&
+    !(storeManifest.permissions || []).includes('tabs') &&
+    !(storeManifest.host_permissions || []).includes('<all_urls>'));
+  t('power install can verify downloads too', (manifest.permissions || []).includes('downloads'));
+  t('history is an optional one-time runtime grant in both builds',
+    (manifest.optional_permissions || []).includes('history') &&
+    (storeManifest.optional_permissions || []).includes('history') &&
+    !(manifest.permissions || []).includes('history') &&
+    !(storeManifest.permissions || []).includes('history'));
+  t('store asks for broad website reach only as an optional runtime grant',
+    (storeManifest.optional_host_permissions || []).includes('http://*/*') &&
+    (storeManifest.optional_host_permissions || []).includes('https://*/*') &&
+    !(storeManifest.content_scripts || []).length);
+  t('debugger-dependent listeners are guarded in the shared service worker',
+    /if \(HAS_DEBUGGER_PERMISSION\) chrome\.debugger\.onDetach/.test(src) &&
+    /if \(HAS_DEBUGGER_PERMISSION\) chrome\.debugger\.onEvent/.test(src));
+  t('Chrome debugger cancellation becomes a hard pause',
+    /reason === "canceled_by_user"[\s\S]{0,300}pauseSpacesForTab/.test(src));
+  t('download clicks wait for a concrete Chrome download receipt',
+    /function startDownloadWatch\(/.test(src) && /function finishDownloadWatch\(/.test(src) &&
+    /out\.download = await finishDownloadWatch/.test(src));
+  t('agent clicks adopt only exact opener child tabs and retain owned lineage',
+    /function startChildTabWatch\(parentTabId\)/.test(src) &&
+    /tab\.openerTabId === parentTabId/.test(src) && /sourceTabId === parentTabId/.test(src) &&
+    /rec\.ownedTabIds/.test(src) && /out\.opened_tab = child/.test(src));
+  t('visible pointer has independent scoot and bounded-curve paths',
+    /path: curved \? "curve" : "scoot"/.test(src) && /const curved = distance > 190/.test(src) &&
+    /crypto\.getRandomValues/.test(src) && /const tempo = \.88 \+ rand\(\) \* \.24/.test(src) &&
+    /await execMain\(pageCursor, \[pt\.x, pt\.y, true\]\)/.test(src));
+  t('a paused CDP path refuses synthetic fallback',
+    /const stopped = pausedResult\(tab\.id\); if \(stopped\) return stopped;[\s\S]{0,180}synthetic/.test(src));
+  const presence = fs.readFileSync(path.join(__dirname, '..', 'harness', 'browser_ext', 'presence.js'), 'utf8');
+  t('page takeover reacts only to physical trusted input', /!event\.isTrusted/.test(presence));
+  t('the page cannot forge resume', !/collie:resume-active/.test(presence));
+  const sidepanel = fs.readFileSync(path.join(__dirname, '..', 'harness', 'browser_ext', 'sidepanel.js'), 'utf8');
+  t('side chat lazily starts its authenticated local Web backend',
+    /8677\/web\/start/.test(sidepanel) && /X-Collie-Bridge/.test(sidepanel));
+}
+
 // --- the smallest DOM these functions actually touch ---------------------------------------------
 const VIEW = { w: 1000, h: 800 };
 function el(tag, opts) {
@@ -375,6 +438,135 @@ function run(root, max, opts, frames) {
 // pageFields did not list selects at all, and pageTypeRef wrote through the HTMLInputElement value
 // setter, which leaves a <select> untouched — every attempt came back "typed" with the old option
 // still selected. A dropdown the agent is shown but cannot move is worse than one it cannot see.
+// Rich editors (X, LinkedIn, Reddit) are contenteditable divs rather than input/textarea controls.
+// They must be visible to browser_fields and writable by both a label and a snapshot ref.
+{
+  const company = el('button', { text: 'Company' });
+  const publish = el('button', { text: 'Publish' });
+  const startPost = el('button', { text: 'Start a post' });
+  const captcha = el('button', { attrs: { 'aria-label': 'Complete CAPTCHA' }, text: 'Continue' });
+  const win = { __collieRefs: new Map([['e1', company], ['e2', publish], ['e3', captcha],
+                                       ['e4', startPost]]) };
+  const api = new Function('window', grab('function pageAdvanceInfo(ref)') +
+    '\nreturn { pageAdvanceInfo };')(win);
+  t('ordinary Company selection is a reversible advance', api.pageAdvanceInfo('e1').allowed === true);
+  t('a final Publish control is refused before click', !!api.pageAdvanceInfo('e2').error);
+  t('CAPTCHA controls are refused before click', !!api.pageAdvanceInfo('e3').error);
+  t('Start a post may open a reversible composer', api.pageAdvanceInfo('e4').allowed === true);
+}
+
+{
+  const menu = el('button', { text: 'Filters' });
+  const send = el('button', { text: 'Send' });
+  const buy = el('button', { text: 'Buy now' });
+  const captcha = el('button', { attrs: { 'aria-label': 'Verify you are human' }, text: 'Continue' });
+  const download = el('a', { attrs: { href: '/receipt', download: '' }, text: 'Receipt' });
+  const win = { __collieRefs: new Map([['e1', menu], ['e2', send], ['e3', buy], ['e4', captcha],
+                                       ['e5', download]]) };
+  const api = new Function('window', grab('function pageIntentInfo(ref)') +
+    '\nreturn { pageIntentInfo };')(win);
+  t('intent preflight calls ordinary navigation preparation', api.pageIntentInfo('e1').effect === 'prepare');
+  t('intent preflight identifies Send as a commit', api.pageIntentInfo('e2').action === 'send' && api.pageIntentInfo('e2').effect === 'commit');
+  t('intent preflight identifies commerce as restricted', api.pageIntentInfo('e3').effect === 'restricted');
+  t('intent preflight keeps CAPTCHA person-bound', api.pageIntentInfo('e4').action === 'person_verification');
+  t('intent preflight identifies a browser download as a local commit',
+    api.pageIntentInfo('e5').action === 'download' && api.pageIntentInfo('e5').effect === 'commit');
+}
+
+{
+  const token = el('textarea', { attrs: { name: 'g-recaptcha-response' },
+                                 value: '0cAF-live-secret' });
+  const oauth = el('input', { attrs: { name: 'session_redirect' },
+                              value: '/oauth?state=private' });
+  const doc = {
+    querySelectorAll: (q) => String(q).startsWith('input,textarea') ? [token, oauth] : [],
+    querySelector: () => null,
+  };
+  const api = new Function('document', 'CSS', grab('function pageFormSnapshot()') +
+    '\nreturn { pageFormSnapshot };')(doc, { escape: (s) => s });
+  const field = api.pageFormSnapshot().fields[0];
+  eq('CAPTCHA response tokens are redacted in CSP-safe snapshots', field && field.value, '[redacted]');
+  t('the CAPTCHA field is marked sensitive', !!(field && field.sensitive));
+  eq('OAuth redirect state is redacted in CSP-safe snapshots',
+     api.pageFormSnapshot().fields[1].value, '[redacted]');
+}
+
+{
+  const editor = el('div', { attrs: { contenteditable: 'true', role: 'textbox',
+                                      'aria-label': 'Post text' } });
+  editor.isContentEditable = true;
+  editor.innerText = '';
+  editor.textContent = '';
+  editor.focus = () => {};
+  editor.events = [];
+  editor.dispatchEvent = function (e) {
+    this.events.push(e.type);
+    if (e.type === 'input') this.innerText = this.textContent;
+    return true;
+  };
+  const win = { HTMLSelectElement: { prototype: {} }, HTMLInputElement: { prototype: {} },
+                HTMLTextAreaElement: { prototype: {} }, __collieRefs: new Map([['e1', editor]]) };
+  const doc = {
+    querySelectorAll: (q) => String(q).includes('contenteditable') ? [editor] : [],
+    querySelector: () => null,
+    getElementById: () => null,
+  };
+  const Input = function (type) { return { type: type }; };
+  const api = new Function(
+    'window', 'document', 'CSS', 'Event', 'InputEvent', 'innerWidth', 'innerHeight',
+    [grab('function pageFields()'), grab('function pageTypeLabel(labelText, text)'),
+     grab('function pageTypeRef(ref, text, submit)'),
+     grab('function pageFormSnapshot()')].join('\n') +
+    '\nreturn { pageFields, pageTypeLabel, pageTypeRef, pageFormSnapshot };'
+  )(win, doc, { escape: (s) => s }, Input, Input, VIEW.w, VIEW.h);
+  const fields = api.pageFields();
+  eq('a contenteditable editor is listed as richtext', fields[0] && fields[0].kind, 'richtext');
+  eq('its accessible name survives as the field label', fields[0] && fields[0].label, 'Post text');
+  api.pageTypeLabel('Post text', 'VocalCode by label');
+  eq('label typing lands in a contenteditable editor', editor.innerText, 'VocalCode by label');
+  api.pageTypeRef('e1', 'VocalCode by ref');
+  eq('ref typing lands in a contenteditable editor', editor.innerText, 'VocalCode by ref');
+  eq('CSP-safe form snapshot retains the full rich-editor value',
+     api.pageFormSnapshot().fields[0].value, 'VocalCode by ref');
+  t('rich editor typing emits an input event', editor.events.indexOf('input') >= 0);
+}
+
+// X and similar React apps keep stale composers mounted with the same accessible label. Label-based
+// typing must choose the rendered/in-viewport editor, and high-fidelity mode must have a real label
+// route instead of silently falling back to synthetic DOM events.
+{
+  function editorAt(rect) {
+    const e = el('div', { attrs: { contenteditable: 'true', role: 'textbox',
+                                   'aria-label': 'Post text' }, rect });
+    e.isContentEditable = true; e.innerText = ''; e.textContent = ''; e.focus = () => {};
+    e.dispatchEvent = function (ev) { if (ev.type === 'input') this.innerText = this.textContent; return true; };
+    return e;
+  }
+  const stale = editorAt(OFFSCREEN);
+  const active = editorAt({ width: 400, height: 100, top: 100, left: 100, bottom: 200, right: 500 });
+  const doc = {
+    querySelectorAll: () => [stale, active],
+    querySelector: () => null,
+    getElementById: () => null,
+  };
+  const Input = function (type) { return { type }; };
+  const api = new Function(
+    'document', 'Event', 'InputEvent', 'innerWidth', 'innerHeight',
+    grab('function pageTypeLabel(labelText, text)') + '\n' +
+    grab('function pagePointLabel(labelText)') +
+    '\nreturn { pageTypeLabel, pagePointLabel };'
+  )(doc, Input, Input, VIEW.w, VIEW.h);
+  api.pageTypeLabel('Post text', 'active copy');
+  eq('label typing ignores an off-screen stale composer', [stale.innerText, active.innerText], ['', 'active copy']);
+  eq('trusted label targeting resolves the active editor point',
+     [api.pagePointLabel('Post text').x, api.pagePointLabel('Post text').y], [300, 150]);
+  t('trusted browser typing has a label-addressed CDP path',
+    src.includes('await trustedTypeLabel(cmd.label, cmd.text, !!cmd.submit)'));
+  t('trusted exact-ref clicks revalidate the same live node after the cursor delay',
+    src.includes('await execMain(pagePointStillRef, [ref])') &&
+    src.includes('refRevalidated: true'));
+}
+
 {
   function option(text, value) { return { text: text, value: value === undefined ? text : value }; }
   function select(opts, attrs) {

@@ -27,7 +27,7 @@ def check(ok, what):
 
 
 def png_pixels(data):
-    """Decode our own PNG back to rows of (r,g,b) — the encoder is ours, so nothing else would."""
+    """Decode our own RGB/RGBA PNG — the encoder is ours, so nothing else would."""
     import zlib
     w, h, depth, ctype = struct.unpack(">IIBB", data[16:26])
     idat = b""
@@ -39,13 +39,14 @@ def png_pixels(data):
             idat += data[i + 8:i + 8 + n]
         i += 12 + n
     raw = zlib.decompress(idat)
-    stride = w * 3
+    channels = 4 if ctype == 6 else 3
+    stride = w * channels
     rows = []
     for y in range(h):
         off = y * (stride + 1)
         assert raw[off] == 0, "only filter 0 is written"
         r = raw[off + 1:off + 1 + stride]
-        rows.append([tuple(r[x * 3:x * 3 + 3]) for x in range(w)])
+        rows.append([tuple(r[x * channels:x * channels + channels]) for x in range(w)])
     return w, h, rows
 
 
@@ -149,6 +150,9 @@ def main():
           "every path's geometry is byte-identical — only fills change (%d paths)" % len(d_src))
     check('<rect' in marked and marked.index("<rect") < marked.index("<path"),
           "the plate is inserted BEHIND the head, not over it")
+    clear = avatar.svg("Rowan", src, plate=False)
+    check("<rect" not in clear and re.findall(r'd="([^"]*)"', clear) == d_src,
+          "the first-party variant removes only the plate and keeps every path")
 
     # --- the white face stays the face -----------------------------------------------------------
     for n in ("Rowan", "Juno", "Skye"):
@@ -161,12 +165,28 @@ def main():
     w, h, depth, ctype = struct.unpack(">IIBB", data[16:26])
     check((w, h, depth, ctype) == (64, 64, 8, 2), "64x64, 8-bit truecolour")
     check(len(png_pixels(data)[2]) == 64, "and it decodes back to 64 rows")
+    clear_data = avatar.png("Meg", 64, plate=False)
+    cw, ch, depth, ctype = struct.unpack(">IIBB", clear_data[16:26])
+    clear_rows = png_pixels(clear_data)[2]
+    alphas = [px[3] for row in clear_rows for px in row]
+    check((cw, ch, depth, ctype) == (64, 64, 8, 6),
+          "the first-party avatar is 8-bit RGBA")
+    check(clear_rows[0][0][3] == 0 and max(alphas) == 255 and 0 in alphas,
+          "its background is genuinely transparent while the dog stays opaque")
+    avatar._cached_named_png.cache_clear()
+    avatar.png("Cache Me", 64, plate=False)
+    before = avatar._cached_named_png.cache_info()
+    avatar.png("  cache me  ", 64, plate=False)
+    after = avatar._cached_named_png.cache_info()
+    check(after.hits == before.hits + 1 and after.maxsize == 64,
+          "repeated first-party identity polls reuse a bounded deterministic render cache")
 
     # --- stdlib only, because collie's core is ----------------------------------------------------
     mod = open(os.path.join(ROOT, "harness", "avatar.py"), encoding="utf-8").read()
     third_party = [m for m in re.findall(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", mod, re.M)
                    if m.split(".")[0] not in
-                   {"os", "re", "sys", "zlib", "struct", "hashlib", "colorsys", "math", "io"}]
+                   {"os", "re", "sys", "zlib", "struct", "hashlib", "colorsys", "functools",
+                    "math", "io"}]
     check(not third_party, "no third-party imports (found %s)" % (third_party or "none"))
 
     print("\n  " + ("%d FAILED" % len(fails) if fails else "avatar: all green"))

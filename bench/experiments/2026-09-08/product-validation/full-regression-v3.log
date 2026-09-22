@@ -1,0 +1,405 @@
+── py_compile (all modules) ─────────────────────────────
+  OK
+── core component tests (Python) ────────────────────────
+  PASS test_a_provider_outage_is_not_scored_as_a_failed_attempt
+  PASS test_both_arms_record_cache_tokens_and_cost
+  PASS test_checkpoint_commits_carry_no_user_text
+  PASS test_checkpoint_never_touches_the_users_stash_list_or_index
+  PASS test_checkpoint_refuses_to_stash_apply_an_ordinary_merge
+  PASS test_checkpoint_rewinds_edits_new_files_and_deletions
+  PASS test_checkpoint_says_when_it_cannot_protect_you
+  PASS test_checkpoint_taken_on_a_clean_tree_still_removes_what_the_agent_created
+  PASS test_checkpoints_do_not_accumulate_forever
+  PASS test_codeindex_normalizes_windows_paths_without_stripping_dot_directories
+  PASS test_codeindex_ripgrep_fresh
+  PASS test_compare_num_in_boundary
+  PASS test_cost_cache_creation
+  PASS test_cost_price_match_prefers_exact_then_longest
+  PASS test_cost_unknown_model_zero
+  PASS test_dashboard_escapes_adversarial
+  PASS test_embedder_singleton
+  PASS test_every_agent_cli_is_resolved_on_path_before_exec
+  PASS test_launch_failure_carries_a_reason
+  PASS test_macos_update_kickstarts_loaded_slack_agents
+  PASS test_memory_global_union_and_dedup
+  PASS test_multiline_prompt_is_never_passed_as_a_windows_argv
+  PASS test_new_windows_installer_migrates_slack_to_single_supervisor_owner
+  PASS test_pack_selection
+  PASS test_panel_settings_survive_a_fork
+  PASS test_rewind_button_is_hidden_when_nothing_can_be_rewound
+  PASS test_sessions_corrupt_json
+  PASS test_sessions_legacy_str_recovery
+  PASS test_sessions_path_traversal
+  PASS test_sessions_set_title_roundtrip
+  PASS test_sessions_toolcall_roundtrip
+  PASS test_settings_layering
+  PASS test_update_bootstrap_waits_installs_and_refuses_to_restart_after_a_failure
+  PASS test_update_handoff_does_not_detach_the_bootstrap
+  PASS test_update_inventory_and_restart_include_live_slack_listener
+  PASS test_update_tells_wallpaper_and_window_apart
+  PASS test_websearch_graceful
+  PASS test_windows_update_refuses_a_guard_owned_handoff
+
+== CORE: 38/38 passed ==
+── verifier protocol (done-check equivalence) ───────────
+  verifier OK
+  observe (real-socket e2e) OK
+  actions (confirm/executor/receipt) OK
+  jobs (lifecycle/registry/executor) OK
+  leash (authority allow/ask/deny) OK
+  capabilities (note.append live e2e) OK
+  scheduler (durable wait/catch-up) OK
+  gate freshness (loop regression) OK
+  mandate (NL compiler) OK
+  research (web capability) OK
+  everyday (translate/summarize/reminder/note.list) OK
+  jobs web (dashboard + CSRF) OK
+  cli jobs (inbox/confirm/receipts) OK
+  plat (OS layer: detect/kill_tree/rmtree/open_excl) OK
+  mission (multi-step campaign: plan/loop/gate/hand-off) OK
+  mission web (NL front-door service: start/confirm/resume) OK
+  primitives (real: research/compose/observe/web.submit+verify/web.send) OK
+  router (front-door classify: chat/code/mission + threshold/abstain/override) OK
+  update (version compare + refuses unsigned/tampered downloads) OK
+  platform purity (one codebase, three OSes: no unguarded Windows-only API) OK
+  desktop (ambient widgets/music: clean/lrc/intent/config/pick/resolve caps) OK
+  desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate) OK
+── model catalog + codex provider (offline) ─────────────
+  catalog OK
+  codex_oauth OK
+── renderer tests (JS) ──────────────────────────────────
+== RENDERER: 29/29 passed == — ALL GREEN
+fold: n1gger -> niger · fuuuck -> fuck · a$$hole -> ashole · assistant -> asistant
+  PASS n1gger           blocked — digit for a letter
+  PASS f4ck             blocked — leetspeak
+  PASS fuuuuck          blocked — stretched
+  PASS sh1t             blocked — digit inside
+  PASS 0fficial         blocked — zero for o
+  PASS fuck-collie      blocked — punctuation is not a disguise
+  PASS assistant        allowed — folds to asistant — no longer contains ass
+  PASS analysis         allowed — on the allow list
+  PASS shitake          allowed — folds into a blocked word, explicitly permitted
+  PASS class            allowed — ordinary word
+  PASS rowan            allowed — a dog
+  PASS daming           allowed — a person
+  PASS verifier         allowed — allowed even though it contains verify
+
+  name filter: all green
+── browser extension: page-side logic (JS) ──────────────
+
+== browser extension (page-side): 130/130 passed ==
+  PASS command source rejects workspace absolute and every relative path
+  PASS PATH resolution is absolute and ignores the current-directory entry
+  PASS default launch prefers the bundled isolated Collie runtime over PATH
+  PASS managed exposure flags cannot be smuggled through extraArgs
+  PASS webview frames only the exact forwarded origin and HTML-escapes its token
+  PASS map panel URL preserves a forwarded path and tunnel query
+  PASS map follows the workspace containing the active editor
+  PASS map file bridge is confined to a real file in the open workspace
+  PASS package settings that can spawn code are machine scoped
+  PASS restart discards a cancelled startup and reports only a real replacement
+  PASS activation stays lazy and editor context additions do not reveal by default
+  PASS secondary sidebar is version gated for older VS Code
+
+== VS Code entrance: 12 passed ==
+── browser bridge tools (batching / spaces / warnings) ──
+  browserbridge OK
+── browser, LIVE (opt-in: COLLIE_BROWSER_LIVE=1 + extension) ─
+    SKIP live browser suite (set COLLIE_BROWSER_LIVE=1 to run it)
+── relay pairing handshake (JS) ─────────────────────────
+  PASS invalid room names are rejected before allocating a Durable Object
+  PASS a deployment missing APNs bindings fails closed before routing Remote traffic
+  PASS the relay health check becomes ready when every APNs binding is structurally valid
+  PASS the relay never stores a QR/pairing secret from hello
+  PASS desktop bearer hashes are validated, deduplicated, and bounded before attachment storage
+  PASS the room agent-key first claim is atomic under concurrent attempts
+  PASS a v1 body containing a pairing code is rejected
+  PASS the rejected credential is never forwarded or persisted
+  PASS an oversized pairing body is rejected before desktop forwarding
+  PASS POST /pair immediately returns a durable validating ticket
+  PASS no comparison number is trusted before desktop validation
+  PASS the relay forwards only the public key and transcript proof
+  PASS the desktop pairing message contains no QR secret
+  PASS polling before proof validation stays in validating phase
+  PASS after validation the phone receives the authenticated approval transcript
+  PASS approval issues one bearer token with the authenticated desktop proof
+  PASS the desktop is told the new token hash for durable authorization
+  PASS a collected ticket cannot issue a second token
+  PASS a desktop-rejected proof is terminal and tokenless
+  PASS human denial is terminal and tokenless
+  PASS a validating ticket survives hibernation and receives the correct desktop reply
+  PASS concurrent approval polls mint exactly one token
+  PASS a failed durable-store acknowledgement never issues the bearer token
+  PASS a missing durable-store acknowledgement times out without leaking a waiter or bearer
+  PASS token issuance fails closed when device_added cannot reach the desktop
+  PASS concurrent valid-shaped pairing POSTs share one atomic five-attempt budget
+  PASS the over-limit proof is never forwarded to the desktop
+  PASS an expired ticket cannot be approved or redeemed
+
+  relay pairing: all green
+  PASS real API paths and prompt-bearing query strings are never proxied
+  PASS the fixed endpoint still requires a paired bearer token
+  PASS a legacy ciphertext header is not accepted as a body-less downgrade
+  PASS a sealed request without explicit session binding fails closed
+  PASS a dispatch-time desktop disconnect fails immediately instead of hanging
+  PASS a sealed envelope is forwarded intact
+  PASS the relay-to-desktop frame exposes no inner path, query, headers, body or prompt
+  PASS opaque records stream through the fixed endpoint in exact contiguous order
+  PASS a response sequence gap errors the stream instead of hiding dropped records
+  PASS a duplicate response record errors the stream
+  PASS a desktop that never returns a response head releases the relay slot
+  PASS a room cannot allocate more than its bounded number of in-flight streams
+  PASS phone stream cancellation releases its relay slot
+
+  relay sealed transport: all green
+── relay push + APNs bearer token (JS) ──────────────────
+  PASS a paired device can register for pushes
+  PASS an unpaired device cannot attach itself to this desktop's notifications
+  PASS and neither can one with no session at all
+  PASS a device token that is not a device token is refused
+  PASS an oversized push-registration body is bounded before parsing
+  PASS the token is stored
+  PASS one registered phone gets one request
+  PASS push registrations whose bearer is no longer paired are garbage-collected
+  PASS production gateway and the device token in the path
+  PASS apns-topic is the bundle id
+  PASS declared as an alert
+  PASS the alert carries the desktop's words
+  PASS and the session, so a tap can open the right run
+  PASS header names ES256 and the key id
+  PASS payload carries the team and an issued-at
+  PASS the signature is a raw 64-byte r‖s pair, not DER
+  PASS and it VERIFIES against the key it claims to be signed with
+  PASS the bearer token is reused across pushes rather than re-signed each time
+  PASS a transient desktop disconnect keeps push registrations for the next reconnect
+  PASS the phone sees revoke success only after the desktop ACK
+  PASS the ACK is retained so a lost HTTP response can be retried idempotently
+  PASS the bearer is blocked at the edge as soon as revocation starts
+  PASS a send/ACK failure returns 503 and leaves a durable pending tombstone
+  PASS a reconnect cannot resurrect a tombstoned bearer and receives a retry command
+  PASS after reconciliation, the phone can retry and safely clear its local credential
+  PASS a 410 from Apple drops the token instead of signing a request for it forever
+  PASS a debug build is pushed through the sandbox gateway, not production
+  PASS with no APNs key configured, nothing is sent and nothing throws
+  PASS desktop notify contents are replaced by a generic alert the relay can safely see
+
+  relay push: all green
+  PASS a missing or weak limiter secret fails closed before model use
+  PASS a request without Cloudflare's client-address boundary fails closed
+  PASS the atomic limiter is charged before successful model requests
+  PASS the same address gets a stable daily HMAC bucket with no raw address in its object name
+  PASS rate-limit exhaustion prevents the Workers AI call
+
+  landing security: all green
+── phone notifications: when a run is worth a buzz ──────
+  notify OK
+  pairprompt OK
+  e2e_persist OK
+  playhere OK
+  app_port OK
+  output_encoding OK
+  data_dir OK
+  model_pin OK
+  no_console_flash OK
+  settings_fallback OK
+  relay_keepalive OK
+  remote_protocol_v2 OK
+  repos_deadline OK
+  runs_registry OK
+  mirror_backlog OK
+  worktree OK
+  mcp_catalog OK
+  mcp_confidential OK
+  slackbot OK
+  slack guard (parent/process-tree ownership) OK
+  slack setup (one app per dog) OK
+  dog mail (sealed to the dog, replay-proof) OK
+  dog mail wire (python ↔ worker agree on the bytes) OK
+  packaging OK
+── GUI interactive components (Playwright, mock, $0) ────
+  PASS collie.localhost loads
+  PASS Today dashboard shown
+  PASS first run offers a companion name
+  PASS naming starts from a calm editable default
+  PASS onboarding appears when no provider is authed
+  PASS onboarding dismisses and stops blocking the page
+  PASS chosen name updates the task identity live
+  PASS renamed avatar uses a versioned transparent endpoint
+  PASS CSRF token injected
+  PASS slash opens a command palette
+  PASS slash palette keyboard selection fills without sending
+  PASS run setup has intent/effort/verify/workspace/strategy axes
+  PASS worker radio arrow selects and moves the roving tab stop
+  PASS radio arrow selects and moves the roving tab stop
+  PASS radio End key selects the last effort option
+  PASS failed image upload restores the draft and starts no text-only run
+  PASS desktop rejects out-of-range Pack attempts before launch
+  PASS status rail removed
+  PASS model trigger present in toolbar
+  PASS run details collapsed by default
+  PASS secondary toolbar actions open from More tools
+  PASS model picker opens with catalog
+  PASS model picker keyboard switch persists
+  PASS model picker shortcut opens and closes
+  PASS theme toggles
+  PASS theme persists across reload
+  PASS sidebar collapses
+  PASS collapsed sidebar has ~0 width
+  PASS sidebar state persists
+  PASS sidebar expands back
+  PASS session delete (token'd) works
+  PASS deleted session file gone
+  PASS CSRF: unauth delete -> 403
+  PASS settings modal opens w/ rows
+  PASS My Collie keeps a permanent rename control
+  PASS Settings rename propagates without a reload
+  PASS Settings rename busts the previous avatar URL
+  PASS save closes the settings panel
+  PASS settings persisted to disk
+  PASS settings GET reflects save
+  PASS MCP pane draws a configured server
+  PASS and names it
+  PASS with the one-press catalog beside it
+  PASS settings ESC closes
+  PASS settings CSRF: unauth POST -> 403
+  PASS mobile: no horizontal overflow
+  PASS 390px: run setup popup stays inside viewport
+  PASS 320px: topbar and document do not overflow
+  PASS 320px: run setup popup stays inside viewport
+  PASS phone closed drawer is inert and declared modal
+  PASS phone drawer traps keyboard focus
+  PASS phone drawer closes inert and returns focus
+  PASS phone run setup shows all five axes without overflow
+  PASS phone Plan resets and locks incompatible execution choices
+  PASS phone Pack owns isolation and requires a check
+  PASS phone rejects out-of-range Pack attempts before launch
+  PASS phone sends every selected axis and Pack check
+  PASS 320px phone controls stay in viewport
+  PASS no uncaught page errors
+== GUI: 59/59 passed ==
+  steer_ui_check OK
+  parallel_ui_check OK
+  live_review_ui_check OK
+── remote E2E crypto (zero-knowledge relay) ─────────────
+  e2e OK
+── pair code (collie's own optical format) ──────────────
+  paircode OK
+── QR encoder (fallback pairing code) ───────────────────
+  qr OK
+── web --lan host guard (phone pairing) ─────────────────
+  web --lan OK
+── all collected pytest regressions ─────────────────────
+........................................................................ [  1%]
+........................................................................ [  3%]
+.............................................................s.......... [  5%]
+...............s........................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+...................................s.................................... [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+............................................s...s....................... [ 33%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+......................................s................................. [ 55%]
+...........s.....s...................................................... [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+...............................................sssss.................... [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+.....................................................................s.. [ 75%]
+.........s.............................................................. [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+...........................................s............................ [ 91%]
+........................................................................ [ 93%]
+.....s.................................................................. [ 95%]
+........................................................................ [ 97%]
+........................................................----------------------------------------
+.----------------------------------------
+...----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 16870)
+............ [ 99%]
+....                                                                     [100%]
+3587 passed, 17 skipped in 704.70s (0:11:44)
+  pytest suite OK
+── what collie slack does with an ask ───────────────────
+  slack worker OK
+  whoami (which dog is this) OK
+  slack answer (executed) OK
+── a face per dog (deterministic logo variants) ─────────
+  avatar OK
+── which directories are a user's projects (star-map) ───
+  repo discovery OK
+── what the star-map shows when you just open it ────────
+  map landing OK
+── CLI surfaces (run/dashboard/repl/tui/acp/bridge, mock) ─
+  PASS browser-bridge /health responds
+  PASS browser-bridge blocks web-origin /enqueue (403)
+  PASS browser-bridge /poll refuses no-header GET (403)
+  PASS browser-bridge /enqueue refuses no-header POST (403)
+  PASS browser-bridge /poll allows header'd request (not 403)
+  PASS init exits 0
+  PASS init reports memory status
+  PASS init scans codemap
+  PASS dashboard builds valid html
+  PASS image upload returns an id
+  PASS image upload CSRF: unauth -> 403
+  PASS image upload: run with a multimodal message completes
+  PASS codemap.build_tree returns files
+  PASS codemap facts (defs+imports present)
+  PASS codemap.read_source reads a real file
+  PASS codemap.read_source blocks path traversal
+  PASS codemap.git_root finds this repo
+  PASS codemap.git_root None outside a repo
+  PASS codemap.session_map maps touched files (incl bash)
+  PASS codemap.session_map carries abs paths for cross-repo reads
+  PASS codemap.session_map flags edited files with diff hunks
+  PASS codemap.read_abs reads under home
+  PASS codemap.read_abs blocks outside home
+  PASS map web: server came up
+  PASS map web: /map serves the galaxy page
+  PASS map web: /meadow is removed (404)
+  PASS map web: /api/tree builds the map
+  PASS map web: /api/file returns source
+  PASS map web: /api/file guards traversal
+  PASS map web: /api/session tool_calls are structured (not repr strings)
+  PASS map web: /api/session_map returns a constellation shape
+  PASS map web: /api/repos answers within its budget
+  PASS map web: /api/repos discovers projects
+  PASS map web: /api/tree?repo builds a chosen project
+  PASS map web: /api/file?abs guards outside home
+  PASS map web: /api/live streams the event bus
+  PASS repl greets + saves + exits
+  PASS run --json valid + keyed
+  PASS run --stream-json valid NDJSON
+  PASS sse write-lock: no interleaved frames
+  PASS tui starts + exits clean
+== SURFACES: 41/41 passed ==
+── selftest (mock provider, $0 — informational) ─────────
+  3/3 tasks passed · memory facts=1
+
+✅ ALL GATED SUITES GREEN (compile + core + renderer)

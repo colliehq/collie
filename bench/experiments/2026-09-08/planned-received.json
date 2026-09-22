@@ -1,0 +1,359 @@
+{
+  "suites": [
+    {
+      "suite": "native-eventview",
+      "planned": 12,
+      "received": 12,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-event-projection-ledger",
+        "versioned-event-projection-ledger-coverage-review"
+      ],
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "tasks.json + replay-plan.json command + snapshotted native_batch.py arm grid",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-full-context",
+      "planned": 12,
+      "received": 12,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-event-projection-ledger"
+      ],
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-pagination",
+      "planned": 12,
+      "received": 12,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-snapshot-cursor-pager-coverage-review"
+      ],
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "tasks.json + replay-plan.json command + snapshotted native_batch.py arm grid",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-plain-control",
+      "planned": 4,
+      "received": 4,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-event-projection-ledger"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 2,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-schema-repair",
+      "planned": 4,
+      "received": 4,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-event-projection-ledger"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 2,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-product",
+      "planned": 12,
+      "received": 12,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-recovery-baseline",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-recovery-recovered",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-reminder-reminded",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-reminder-session",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-reminder-stateless",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-session-default",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-session-full-history",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-stateless-default",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-session2-stateless-full-history",
+      "planned": 6,
+      "received": 6,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-structured",
+      "planned": 12,
+      "received": 12,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-event-projection-ledger"
+      ],
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "native-structured-v2",
+      "planned": 12,
+      "received": 12,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-event-projection-ledger"
+      ],
+      "arms": [
+        "collie",
+        "claude-code"
+      ],
+      "repetitions": 3,
+      "repetition_start": 0,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "normalized-fresh",
+      "planned": 16,
+      "received": 16,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "versioned-snapshot-cursor-pager",
+        "versioned-event-projection-ledger"
+      ],
+      "arms": [
+        "collie",
+        "prime",
+        "pi",
+        "hermes"
+      ],
+      "repetitions": 2,
+      "repetition_start": 1,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    },
+    {
+      "suite": "normalized-session2",
+      "planned": 16,
+      "received": 16,
+      "missing": 0,
+      "extra": 0,
+      "tasks": [
+        "ordered-pathrule-priority-engine",
+        "capacity-ledger-reservation-audit"
+      ],
+      "arms": [
+        "collie",
+        "prime",
+        "pi",
+        "hermes"
+      ],
+      "repetitions": 2,
+      "repetition_start": 1,
+      "basis": "experiment.json",
+      "exact_grid_matches": true
+    }
+  ],
+  "scope": "Represented coding suites, including every first-window suite. Unused prepare-only configurations and source reviews are not completed attempts."
+}

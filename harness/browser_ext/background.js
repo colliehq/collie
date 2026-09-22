@@ -2,6 +2,9 @@
 // Long-polls the collie bridge for commands and runs them in the active tab using the user's
 // real, logged-in session. The continuous /poll fetch keeps the MV3 worker alive between commands.
 const BRIDGE = "http://127.0.0.1:8677";
+const EXTENSION_PERMISSIONS = (chrome.runtime.getManifest().permissions || []);
+const HAS_DEBUGGER_PERMISSION = EXTENSION_PERMISSIONS.includes("debugger") && !!chrome.debugger;
+const HAS_DOWNLOADS_PERMISSION = EXTENSION_PERMISSIONS.includes("downloads") && !!chrome.downloads;
 
 // --- spaces: one lane of work, one tab -----------------------------------------------------------
 // Every browser_* command names a SPACE (default "default") and each space owns its own tab, so two
@@ -29,6 +32,7 @@ const DEFAULT_SPACE = "default";
 let curSpace = DEFAULT_SPACE;
 
 let spaces = null;                       // {name: {tabId, owned, opened}}
+const pausedTabs = new Set();
 
 function spaceOf(cmd) {
   const s = cmd && typeof cmd.space === "string" ? cmd.space.trim() : "";
@@ -44,6 +48,9 @@ async function loadSpaces() {
   let saved = {};
   try { saved = await chrome.storage.session.get(["collieSpaces", "collieTabId"]); } catch (e) {}
   spaces = (saved.collieSpaces && typeof saved.collieSpaces === "object") ? saved.collieSpaces : {};
+  for (const rec of Object.values(spaces)) {
+    if (rec && rec.paused && rec.tabId != null) pausedTabs.add(rec.tabId);
+  }
   // Upgrade in place: a bridge that was already driving a tab keeps driving THAT tab after the
   // extension reloads into this version, instead of quietly opening a second one beside it.
   if (!spaces[DEFAULT_SPACE] && saved.collieTabId != null) {
@@ -66,13 +73,117 @@ async function setSpace(name, rec) {
 
 async function dropSpace(name) {
   const all = await loadSpaces();
+  const rec = all[name];
   delete all[name];
+  if (rec && rec.tabId != null && !Object.values(all).some((r) => r && r.tabId === rec.tabId)) {
+    try { await chrome.tabs.sendMessage(rec.tabId, { type: "collie:presence",
+                                                     state: { attached: false, space: name } }); }
+    catch (e) {}
+  }
+  if (rec && rec.tabId != null && !Object.values(all).some((r) => r && r.tabId === rec.tabId && r.paused))
+    pausedTabs.delete(rec.tabId);
   await saveSpaces();
+}
+
+function presenceState(name, rec) {
+  if (!rec) return { attached: false, space: name };
+  return { attached: true, space: name, tabId: rec.tabId,
+           state: rec.paused ? "paused" : (rec.state || "idle"),
+           action: rec.action || "", reason: rec.reason || "",
+           updatedAt: rec.updatedAt || 0, owned: !!rec.owned };
+}
+
+async function sendPresence(name, rec) {
+  if (!rec || rec.tabId == null || !(await tabExists(rec.tabId))) return;
+  const message = { type: "collie:presence", state: presenceState(name, rec) };
+  try { await chrome.tabs.sendMessage(rec.tabId, message); return; } catch (e) {}
+  // The store build has no always-on content script. Inject the visible presence/takeover sensor
+  // only into a tab the user has granted (activeTab or optional site access), then retry once.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: rec.tabId }, files: ["presence.js"] });
+    await chrome.tabs.sendMessage(rec.tabId, message);
+  } catch (e) {}
+}
+
+async function setSpacePresence(name, state, action, reason) {
+  const rec = await getSpace(name);
+  if (!rec) return null;
+  if (rec.paused && state !== "paused") state = "paused";
+  rec.state = state || "idle";
+  rec.action = String(action || "").slice(0, 80);
+  if (reason !== undefined) rec.reason = String(reason || "").slice(0, 160);
+  rec.updatedAt = Date.now();
+  await setSpace(name, rec);
+  await sendPresence(name, rec);
+  return rec;
+}
+
+async function pauseSpace(name, reason) {
+  const rec = await getSpace(name);
+  if (!rec) return { paused: false, note: "space '" + name + "' has no tab" };
+  pausedTabs.add(rec.tabId);
+  rec.paused = true;
+  rec.state = "paused";
+  rec.reason = String(reason || "Paused by user").slice(0, 160);
+  rec.updatedAt = Date.now();
+  await setSpace(name, rec);
+  if (dbgTab === rec.tabId) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
+  await sendPresence(name, rec);
+  return { paused: true, space: name, reason: rec.reason };
+}
+
+async function pauseSpacesForTab(tabId, reason) {
+  if (tabId == null) return { paused: false };
+  pausedTabs.add(tabId);                    // hard stop before a rejected CDP call can fall back
+  const all = await loadSpaces();
+  const names = Object.keys(all).filter((name) => all[name] && all[name].tabId === tabId);
+  for (const name of names) await pauseSpace(name, reason);
+  return { paused: names.length > 0, spaces: names };
+}
+
+async function resumeSpace(name) {
+  const rec = await getSpace(name);
+  if (!rec) return { resumed: false, note: "space '" + name + "' has no tab" };
+  rec.paused = false;
+  rec.state = "idle";
+  rec.reason = "";
+  rec.updatedAt = Date.now();
+  pausedTabs.delete(rec.tabId);
+  await setSpace(name, rec);
+  await sendPresence(name, rec);
+  return { resumed: true, space: name };
+}
+
+async function spaceForTab(tabId) {
+  const all = await loadSpaces();
+  const name = Object.keys(all).find((key) => all[key] && all[key].tabId === tabId);
+  return name ? { name, rec: all[name] } : null;
+}
+
+async function agentInput(tabId, ms) {
+  try { await chrome.tabs.sendMessage(tabId, { type: "collie:agent-input", until: Date.now() + (ms || 1400) }); }
+  catch (e) {}
+}
+
+function pausedResult(tabId) {
+  return pausedTabs.has(tabId) ? { error: "Collie is paused because you took over this tab. Resume it from the extension.",
+                                   paused: true } : null;
 }
 
 async function tabExists(id) {
   if (id == null) return false;
   try { await chrome.tabs.get(id); return true; } catch (e) { return false; }
+}
+
+async function closeOwnedTabs(rec) {
+  if (!rec || !rec.owned) return [];
+  const ids = [...new Set((Array.isArray(rec.ownedTabIds) ? rec.ownedTabIds : [rec.tabId])
+    .filter((id) => Number.isInteger(id)))];
+  const closed = [];
+  for (const id of ids) {
+    try { await chrome.tabs.remove(id); closed.push(id); } catch (e) {}
+  }
+  return closed;
 }
 
 // Is this tab already spoken for by ANOTHER space? Adopting one twice would recreate the collision
@@ -106,12 +217,68 @@ async function targetTab(create, opts) {
   } else {
     fresh = await chrome.tabs.create({ url: "about:blank", active: false });
   }
-  await setSpace(name, { tabId: fresh.id, owned: true });
+  await setSpace(name, { tabId: fresh.id, owned: true, ownedTabIds: [fresh.id] });
   return fresh;
 }
 
 async function activeTab() {
   return await targetTab(false);
+}
+
+// Live's ambient observation must never take ownership of, inspect, or alter the user's tab.
+// This deliberately returns the smallest useful browser signal: a web origin's host and the
+// Chrome tab title.  In particular, paths, queries, fragments, page text, selections, cookies,
+// and form values never cross the loopback bridge.
+async function liveTabContext() {
+  let tab = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = tabs && tabs[0];
+  } catch (e) {}
+  if (!tab) return { app: "chrome", host: "", title: "" };
+  let host = "";
+  try {
+    const url = new URL(tab.url || "");
+    if (url.protocol === "http:" || url.protocol === "https:") host = (url.hostname || "").toLowerCase();
+  } catch (e) {}
+  return { app: "chrome", host: host.slice(0, 255), title: (tab.title || "").slice(0, 300) };
+}
+
+// This fuller view is reached only after a user explicitly enables visual context for a Live
+// session. It neither adopts the tab nor changes focus; the minimal liveTabContext above remains
+// the default path.
+async function liveTabObservation(maxText, maxDim) {
+  let tab = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = tabs && tabs[0];
+  } catch (e) {}
+  if (!tab) return { error: "no active Chrome tab" };
+  let url;
+  try { url = new URL(tab.url || ""); } catch (e) { return { error: "active tab has no web origin" }; }
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    return { error: "active tab is not an ordinary web page" };
+  const limit = Math.max(1_000, Math.min(32_000, Number(maxText) || 16_000));
+  let body = { text: "", chars: 0, truncated: false };
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, world: "MAIN", func: livePageText, args: [limit],
+    });
+    if (result && result.result && typeof result.result === "object") body = result.result;
+  } catch (e) { body.error = "page text unavailable: " + String((e && e.message) || e); }
+  let screenshot = null;
+  try {
+    // This reads the viewport the user is already seeing. It does not use the debugger or switch
+    // tabs, avoiding both the debugger banner and focus stealing.
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    const image = await shrinkPng(dataUrl, Math.max(640, Math.min(1568, Number(maxDim) || 1280)));
+    screenshot = { data: image.data, width: image.width, height: image.height,
+                   media_type: "image/png", how: "visible Chrome viewport" };
+  } catch (e) { screenshot = { error: "screenshot unavailable: " + String((e && e.message) || e) }; }
+  return { app: "chrome", host: (url.hostname || "").toLowerCase().slice(0, 255),
+           title: (tab.title || "").slice(0, 300), body_text: String(body.text || ""),
+           body_chars: Math.max(0, Number(body.chars) || 0), body_truncated: body.truncated === true,
+           body_error: String(body.error || "").slice(0, 240), screenshot };
 }
 
 // Adopt a tab the user already has on that site — ONLY when the caller explicitly asked for it
@@ -174,6 +341,11 @@ function httpUrl(raw) {
 
 // --- functions injected into the page (must be self-contained) ---
 function pageRead() { return document.body ? document.body.innerText : ""; }
+function livePageText(limit) {
+  const text = document.body ? String(document.body.innerText || "") : "";
+  const max = Math.max(1_000, Math.min(32_000, Number(limit) || 16_000));
+  return { text: text.slice(0, max), chars: text.length, truncated: text.length > max };
+}
 
 function pageLinks(filter) {
   const f = (filter || "").toLowerCase();
@@ -245,33 +417,145 @@ function pagePoint(text, selector, broad) {
   return out;
 }
 
-// Injected (MAIN world): show a visible pointer that GLIDES to (x,y) and pulses a ring — so you can
-// watch Collie operate the page instead of things just changing on their own. Self-contained.
-function pageCursor(x, y) {
-  const D = document, ID = "__collieCursor";
-  let c = D.getElementById(ID);
-  if (!c) {
-    c = D.createElement("div"); c.id = ID;
-    c.style.cssText = "position:fixed;left:0;top:0;z-index:2147483647;width:26px;height:26px;margin:-3px 0 0 -3px;" +
-      "pointer-events:none;opacity:0;will-change:transform,opacity;" +
-      "transition:transform .32s cubic-bezier(.22,.61,.36,1),opacity .25s;" +
-      "filter:drop-shadow(0 1px 3px rgba(0,0,0,.5));" +
-      "background:center/contain no-repeat url(\"data:image/svg+xml;utf8," +
-      "<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24'>" +
-      "<path d='M4 2l6.5 17 2.4-6.8L20 9.5z' fill='%23ffffff' stroke='%23202020' stroke-width='1.4' stroke-linejoin='round'/></svg>\")";
-    (D.body || D.documentElement).appendChild(c);
+// Resolve a labelled editor to one physical point for the trusted-input path.  A label is a useful
+// addressing fallback on obfuscated apps, but unlike a snapshot ref it can match several mounted
+// composers.  Use the same active-editor ranking as pageTypeLabel so the real keystrokes and the
+// synthetic fallback never disagree about which field they target. Self-contained (page-injected).
+function pagePointLabel(labelText) {
+  const t = (labelText || "").trim().toLowerCase();
+  const candidates = [...document.querySelectorAll(
+    "input,textarea,[contenteditable=true],[role=textbox]")].map((e) => {
+    const l = e.closest("label");
+    const names = [l ? (l.innerText || "") : "", e.getAttribute("aria-label") || "",
+                   e.getAttribute("data-testid") || "", e.getAttribute("name") || ""];
+    if (!t || !names.join(" ").toLowerCase().includes(t)) return null;
+    const r = e.getBoundingClientRect();
+    const rendered = r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+                     (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+    const inView = rendered && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+    const exact = names.some((n) => n.trim().toLowerCase() === t);
+    const modal = !!e.closest('[aria-modal="true"],[role="dialog"],dialog[open]');
+    return { e, score: (rendered ? 100 : 0) + (inView ? 20 : 0) + (modal ? 10 : 0) + (exact ? 5 : 0) };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+  const el = candidates.length ? candidates[0].e : null;
+  if (!el || candidates[0].score < 100) return { error: "no rendered field labeled " + labelText };
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  return { x, y, inView: r.width > 0 && r.height > 0 && x >= 0 && y >= 0 &&
+          x <= innerWidth && y <= innerHeight,
+          label: (el.getAttribute("aria-label") || labelText || "").trim().slice(0, 80) };
+}
+
+// Injected (MAIN world): move a page-isolated visible pointer to (x,y), and resolve only after it
+// ARRIVES. Short moves use a compact eased "scoot"; long moves follow a viewport-bounded asymmetric
+// Bézier curve. Small bounded variations in tempo and bend keep repeated motions from looking
+// mechanical, while the final sample always lands on the exact target. The physical CDP click waits
+// for this promise, so the visible hand and the actual input no
+// longer disagree.  This is intentionally self-contained because chrome.scripting serializes only
+// this function body.
+async function pageCursor(x, y, pulse) {
+  const D = document, ID = "__collieCursorHostV2";
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || 0));
+  const rand = () => {
+    try {
+      const sample = new Uint32Array(1);
+      crypto.getRandomValues(sample);
+      return sample[0] / 4294967296;
+    } catch (e) { return Math.random(); }
+  };
+  x = clamp(x, 0, innerWidth); y = clamp(y, 0, innerHeight);
+  let host = D.getElementById(ID), state = host && host.__collieCursorState;
+  if (!host || !host.isConnected || !state || !state.cursor || !state.root) {
+    if (host) host.remove();
+    host = D.createElement("div"); host.id = ID;
+    host.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+    const root = host.attachShadow({ mode: "closed" });
+    const cursor = D.createElement("div");
+    cursor.style.cssText = "position:absolute;left:0;top:0;width:26px;height:28px;opacity:0;" +
+      "pointer-events:none;will-change:transform,opacity,filter;transform-origin:4px 3px;" +
+      "filter:drop-shadow(0 1px 2px rgba(0,0,0,.62)) drop-shadow(0 0 8px rgba(48,180,127,.36));";
+    cursor.innerHTML = "<svg xmlns='http://www.w3.org/2000/svg' width='26' height='28' viewBox='0 0 26 28' aria-hidden='true'>" +
+      "<path d='M3 2.5 11.2 24l3.15-8.35 8.25-3.45z' fill='white' stroke='#111715' stroke-width='1.65' stroke-linejoin='round'/></svg>";
+    root.appendChild(cursor); (D.documentElement || D.body).appendChild(host);
+    state = { root, cursor, x: Math.round(innerWidth * .58), y: Math.round(innerHeight * .55),
+              raf: 0, finish: null, sequence: 0, fade: 0 };
+    try { Object.defineProperty(host, "__collieCursorState", { value: state }); }
+    catch (e) { host.__collieCursorState = state; }
   }
-  requestAnimationFrame(function () { c.style.opacity = "1"; c.style.transform = "translate(" + x + "px," + y + "px)"; });
-  setTimeout(function () {                                   // click ring, timed to when the pointer arrives
-    const r = D.createElement("div");
-    r.style.cssText = "position:fixed;left:" + x + "px;top:" + y + "px;z-index:2147483646;width:16px;height:16px;" +
-      "margin:-8px 0 0 -8px;border-radius:50%;pointer-events:none;border:2px solid rgba(70,200,140,.95);" +
-      "transform:scale(.3);opacity:1;transition:transform .5s ease-out,opacity .5s;";
-    (D.body || D.documentElement).appendChild(r);
-    requestAnimationFrame(function () { r.style.transform = "scale(2.6)"; r.style.opacity = "0"; });
-    setTimeout(function () { r.remove(); }, 520);
-  }, 300);
-  return true;
+  state.sequence += 1;
+  const sequence = state.sequence;
+  if (state.raf) cancelAnimationFrame(state.raf);
+  if (state.finish) { state.finish(false); state.finish = null; }
+  if (state.fade) clearTimeout(state.fade);
+  const sx = state.x, sy = state.y, dx = x - sx, dy = y - sy;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const tempo = .88 + rand() * .24;
+  const duration = Math.max(165, Math.min(650, (150 + distance * .34) * tempo));
+  const curved = distance > 190;
+  const sign = rand() < .5 ? 1 : -1;
+  const bend = (curved
+    ? Math.min(124, Math.max(30, distance * (.13 + rand() * .10)))
+    : Math.min(10, Math.max(1.5, distance * (.025 + rand() * .035)))) * sign;
+  const length = distance || 1, nx = -dy / length, ny = dx / length;
+  const cx = clamp((sx + x) / 2 + nx * bend, 18, Math.max(18, innerWidth - 18));
+  const cy = clamp((sy + y) / 2 + ny * bend, 18, Math.max(18, innerHeight - 18));
+  const tail = .34 + rand() * .42;
+  const c1x = clamp(sx + dx * .30 + nx * bend, 18, Math.max(18, innerWidth - 18));
+  const c1y = clamp(sy + dy * .30 + ny * bend, 18, Math.max(18, innerHeight - 18));
+  const c2x = clamp(sx + dx * .72 + nx * bend * tail, 18, Math.max(18, innerWidth - 18));
+  const c2y = clamp(sy + dy * .72 + ny * bend * tail, 18, Math.max(18, innerHeight - 18));
+  state.cursor.style.opacity = "1";
+  const landed = await new Promise((resolve) => {
+    state.finish = resolve;
+    const began = performance.now();
+    const frame = (now) => {
+      if (sequence !== state.sequence) return resolve(false);
+      const raw = Math.min(1, Math.max(0, (now - began) / duration));
+      // A critically damped-looking ease. It stops exactly at the target rather than wobbling over
+      // the control, which keeps the visual arrival receipt honest.
+      const t = 1 - Math.pow(1 - raw, 3);
+      let px, py, tx, ty;
+      if (curved) {
+        const q = 1 - t;
+        px = q * q * q * sx + 3 * q * q * t * c1x + 3 * q * t * t * c2x + t * t * t * x;
+        py = q * q * q * sy + 3 * q * q * t * c1y + 3 * q * t * t * c2y + t * t * t * y;
+        tx = 3 * q * q * (c1x - sx) + 6 * q * t * (c2x - c1x) + 3 * t * t * (x - c2x);
+        ty = 3 * q * q * (c1y - sy) + 6 * q * t * (c2y - c1y) + 3 * t * t * (y - c2y);
+      } else {
+        const q = 1 - t;
+        px = q * q * sx + 2 * q * t * cx + t * t * x;
+        py = q * q * sy + 2 * q * t * cy + t * t * y;
+        tx = 2 * q * (cx - sx) + 2 * t * (x - cx);
+        ty = 2 * q * (cy - sy) + 2 * t * (y - cy);
+      }
+      const angle = distance < .5 ? 0 : Math.max(-26, Math.min(26, Math.atan2(ty, tx) * 180 / Math.PI * .18));
+      const stretch = 1 + Math.sin(raw * Math.PI) * Math.min(.14, distance / 4200);
+      state.cursor.style.transform = "translate3d(" + (px - 3).toFixed(2) + "px," +
+        (py - 3).toFixed(2) + "px,0) rotate(" + angle.toFixed(2) + "deg) scale(" +
+        stretch.toFixed(3) + "," + (2 - stretch).toFixed(3) + ")";
+      state.x = px; state.y = py;
+      if (raw < 1) state.raf = requestAnimationFrame(frame);
+      else { state.raf = 0; state.x = x; state.y = y; state.finish = null; resolve(true); }
+    };
+    state.raf = requestAnimationFrame(frame);
+  });
+  if (landed && pulse !== false && sequence === state.sequence) {
+    const ring = D.createElement("div");
+    ring.style.cssText = "position:absolute;left:" + x + "px;top:" + y + "px;width:16px;height:16px;" +
+      "margin:-8px 0 0 -8px;border-radius:50%;pointer-events:none;border:2px solid rgba(54,190,132,.95);" +
+      "transform:scale(.3);opacity:1;transition:transform .48s ease-out,opacity .48s;";
+    state.root.appendChild(ring);
+    requestAnimationFrame(() => { ring.style.transform = "scale(2.7)"; ring.style.opacity = "0"; });
+    setTimeout(() => ring.remove(), 520);
+  }
+  // Keep the pointer parked long enough for a human to see where Collie landed and for a
+  // subsequent screenshot to record it.  The next action cancels this timer and moves the same
+  // pointer, so this does not add latency or leave a trail of stale cursors.
+  state.fade = setTimeout(() => {
+    if (sequence === state.sequence && state.cursor) state.cursor.style.opacity = "0";
+  }, 6000);
+  return { arrived: landed, x, y, path: curved ? "curve" : "scoot", duration: Math.round(duration) };
 }
 
 function pageType(selector, text, submit) {
@@ -282,7 +566,12 @@ function pageType(selector, text, submit) {
   // set through the NATIVE prototype setter so React's tracker registers it. Inlined
   // (not a shared helper): this function is injected into the PAGE via
   // chrome.scripting.executeScript and cannot reference other extension-scope functions.
-  {
+  if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true,
+                                               inputType: "insertText", data: text }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
     const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
                                             : window.HTMLInputElement.prototype;
     const d = Object.getOwnPropertyDescriptor(proto, "value");
@@ -303,18 +592,41 @@ function pageType(selector, text, submit) {
 // Self-contained: this runs injected in the PAGE, so it can't call other extension fns.
 function pageTypeLabel(labelText, text) {
   const t = (labelText || "").toLowerCase();
-  const el = [...document.querySelectorAll("input,textarea")].find((e) => {
-    const l = e.closest("label"); return l && (l.innerText || "").toLowerCase().includes(t);
-  });
+  // Modern editors commonly keep a second, stale composer mounted off-screen (X is a
+  // representative example).  Choosing the first matching aria-label writes into that dormant
+  // editor: a DOM read-back looks perfect while React keeps the real Post button disabled.  Rank
+  // rendered, in-viewport, modal-local and exact-label candidates before fuzzy/off-screen ones.
+  const candidates = [...document.querySelectorAll(
+    "input,textarea,[contenteditable=true],[role=textbox]")].map((e) => {
+    const l = e.closest("label");
+    const names = [l ? (l.innerText || "") : "", e.getAttribute("aria-label") || "",
+                   e.getAttribute("data-testid") || "", e.getAttribute("name") || ""];
+    if (!names.join(" ").toLowerCase().includes(t)) return null;
+    const r = e.getBoundingClientRect();
+    const rendered = r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+                     (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+    const inView = rendered && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+    const exact = names.some((n) => n.trim().toLowerCase() === t);
+    const modal = !!e.closest('[aria-modal="true"],[role="dialog"],dialog[open]');
+    return { e, score: (rendered ? 100 : 0) + (inView ? 20 : 0) + (modal ? 10 : 0) + (exact ? 5 : 0) };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+  const el = candidates.length ? candidates[0].e : null;
   if (!el) return { error: "no field labeled " + labelText };
   el.focus();
-  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
-                                          : window.HTMLInputElement.prototype;
-  const d = Object.getOwnPropertyDescriptor(proto, "value");
-  if (d && d.set) d.set.call(el, text); else el.value = text;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true,
+                                               inputType: "insertText", data: text }));
+  } else {
+    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                            : window.HTMLInputElement.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, "value");
+    if (d && d.set) d.set.call(el, text); else el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { typed: (text || "").slice(0, 40), value: (el.value || "").slice(0, 40), label: labelText };
+  const landed = el.isContentEditable ? el.innerText : el.value;
+  return { typed: (text || "").slice(0, 40), value: (landed || "").slice(0, 40), label: labelText };
 }
 
 // Pick an option from a labelled dropdown/combobox: click the combobox, wait for its
@@ -380,19 +692,110 @@ function pageFields() {
   // native dropdowns were invisible here — the agent could not even see that the field existed,
   // let alone that it had to be set before the form would submit. Their options are returned too,
   // because "there is a dropdown" is useless without knowing what may be chosen.
-  return [...document.querySelectorAll("input,textarea,select,[role=combobox]")].map((e) => {
+  return [...document.querySelectorAll(
+    "input,textarea,select,[role=combobox],[contenteditable=true],[role=textbox]")].filter((e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+           (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+  }).map((e) => {
     const anc = e.closest("label");
     let lt = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
     if (!lt && e.id) { const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]'); if (f) lt = (f.innerText || "").trim().split("\n")[0]; }
     const role = e.getAttribute("role");
     const isSelect = e.tagName === "SELECT";
+    const rich = e.isContentEditable || e.getAttribute("contenteditable") !== null;
     const out = { label: lt || e.getAttribute("aria-label") || e.getAttribute("name") || "",
                   kind: (isSelect || role === "combobox") ? "dropdown"
-                        : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text")),
-                  value: (e.value || "").slice(0, 40) };
+                        : (rich ? "richtext"
+                           : (e.tagName === "TEXTAREA" ? "text" : (e.getAttribute("type") || "text"))),
+                  value: ((rich ? e.innerText : e.value) || "").slice(0, 40) };
     if (isSelect) out.options = [...e.options].map((o) => (o.text || "").trim()).slice(0, 20);
     return out;
   }).filter((x) => x.label && x.kind !== "hidden");
+}
+
+// Independent verification snapshot. Unlike pageEval this is injected as a
+// real function by chrome.scripting, so strict sites such as X can be reread
+// without requiring CSP `unsafe-eval`. Keep full rich-editor text for exact
+// done-checks; Python applies the durable redaction and size bounds.
+function pageFormSnapshot() {
+  const fields = [...document.querySelectorAll(
+    "input,textarea,select,[role=combobox],[contenteditable],[role=textbox]")].filter((e) => {
+    // Verification is about the form a person can act on, not hidden framework/OAuth state or a
+    // stale composer mounted outside the rendered page.  Besides preventing false positives this
+    // makes the snapshot agree with browser_fields and label-based typing.
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && e.getAttribute("aria-hidden") !== "true" &&
+           (e.getAttribute("type") || "").toLowerCase() !== "hidden";
+  }).map((e) => {
+    const anc = e.closest("label");
+    let label = anc ? (anc.innerText || "").trim().split("\n")[0] : "";
+    if (!label && e.id) {
+      const f = document.querySelector('label[for="' + CSS.escape(e.id) + '"]');
+      if (f) label = (f.innerText || "").trim().split("\n")[0];
+    }
+    label = label || e.getAttribute("aria-label") || e.getAttribute("data-testid") ||
+      e.getAttribute("name") || e.getAttribute("role") || e.tagName;
+    const role = e.getAttribute("role");
+    const rich = e.isContentEditable || e.getAttribute("contenteditable") !== null;
+    const type = (e.type || "").toLowerCase();
+    const checkable = type === "checkbox" || type === "radio" ||
+      role === "checkbox" || role === "switch";
+    const checked = !!e.checked || e.getAttribute("aria-checked") === "true";
+    const value = checkable ? (checked ? "checked" : "") : role === "combobox"
+      ? (anc ? (anc.innerText || "").replace(/\n/g, " ").trim() : "")
+      : ((rich ? e.innerText : e.value) || "");
+    const meta = [label, e.type, e.name, e.id, e.autocomplete,
+                  e.getAttribute("aria-label")].join(" ");
+    const sensitive = e.type === "password" || e.type === "email" || e.type === "tel" ||
+      /(pass(word|code)?|secret|token|api.?key|captcha|recaptcha|csrf|authenticity|oauth|session.?redirect|cancel.?redirect|redirect.?uri|login.?csrf|page.?instance|sid.?string|control.?id|referer|otp|one.?time|verification.?code|cvv|cvc|card.?number|ssn|social.?security|e.?mail|phone|mobile|street.?address|postal|zip.?code|birth|dob|user.?name)/i.test(meta);
+    return { label, kind: checkable ? (type || role) : "",
+             value: sensitive ? "[redacted]" : String(value).slice(0, 4000),
+             sensitive: !!sensitive, filled: !!value };
+  }).filter((x) => x.label && x.filled);
+  const actions = [...document.querySelectorAll("button,input[type=submit],[role=button]")].map((e) => {
+    const label = (e.getAttribute("aria-label") || e.innerText || e.value || "").trim();
+    const disabled = !!e.disabled || e.getAttribute("aria-disabled") === "true";
+    const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    return { label, disabled, visible };
+  }).filter((x) => x.visible && /^(post|publish|send|submit|save|next|continue)$/i.test(x.label));
+  return { fields, actions };
+}
+
+// Connection-only helpers.  They return the minimum material needed by the host:
+// identity returns only the final four digits, and OTP returns one fresh code to
+// the dedicated read-and-fill primitive (never to a model/browser snapshot).
+function pageVoiceIdentity() {
+  if (location.origin !== "https://voice.google.com") return { error: "not a Google Voice page" };
+  const panel = document.querySelector('[aria-label="Call panel"], [role="region"][aria-label*="Call"]');
+  const text = (panel && panel.innerText) || "";
+  const digits = text.replace(/\D/g, "");
+  if (digits.length < 10) return { error: "Google Voice number is not visible" };
+  return { connected: true, last4: digits.slice(0, 10).slice(-4) };
+}
+
+function pageGoogleVoiceOtp(service, maxAgeSeconds) {
+  if (location.origin !== "https://voice.google.com") return { error: "not a Google Voice page" };
+  const wanted = String(service || "").trim().toLowerCase();
+  if (!wanted) return { error: "expected service is required" };
+  const maxAge = Math.min(900, Math.max(60, Number(maxAgeSeconds) || 600)) * 1000;
+  const now = Date.now(), hits = [];
+  const roots = document.querySelectorAll('[aria-label="Latest messages"] button, main button');
+  for (const button of roots) {
+    const raw = String(button.getAttribute("aria-label") || button.innerText || "").trim();
+    if (!raw || raw.toLowerCase().indexOf(wanted) < 0 ||
+        !/(verification|security|one[ -]?time|\botp\b|验证码|驗證碼|校验码|確認碼)/i.test(raw)) continue;
+    const stampNode = button.querySelector("p");
+    const stamp = stampNode ? Date.parse(stampNode.textContent || "") : NaN;
+    if (!Number.isFinite(stamp) || stamp > now + 60000 || now - stamp > maxAge) continue;
+    const message = stampNode ? raw.replace(stampNode.textContent || "", " ") : raw;
+    const codes = [...message.matchAll(/(^|\D)(\d{4,8})(?!\d)/g)]
+      .map((m) => m[2]).filter((x) => !/^20\d\d$/.test(x));
+    const unique = [...new Set(codes)];
+    if (unique.length === 1) hits.push({ code: unique[0], received_at: Math.floor(stamp / 1000) });
+  }
+  if (hits.length !== 1) return { error: hits.length ? "multiple fresh matching codes" : "no fresh matching code" };
+  return hits[0];
 }
 
 // Attach files by writing the <input type=file>'s FileList directly — never by clicking the page's
@@ -734,12 +1137,125 @@ function pagePointRef(ref) {
   return { x, y, inView, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
 }
 
+// Re-resolve an exact ref immediately before a trusted coordinate click. Moving the visible cursor
+// and attaching the debugger takes a few hundred milliseconds; a responsive layout can move a
+// different control under the old coordinates during that window. The final-action path must keep
+// both properties: a genuine isTrusted event and the exact node that the outer Gate approved.
+function pagePointStillRef(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "approved ref " + ref + " is no longer live" };
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  if (!inView) return { error: "approved ref " + ref + " moved off-screen before click" };
+  const hit = document.elementFromPoint(x, y);
+  let approved = !!hit && (hit === el || (el.contains && el.contains(hit)));
+  // document.elementFromPoint() retargets a hit inside a shadow tree to its host. Walk the exact
+  // ref's host chain so a closed-shadow control can still be revalidated without weakening the
+  // requirement that the approved node (or one of its composed hosts) owns the click point.
+  let composed = el;
+  while (!approved && composed && composed.getRootNode) {
+    const root = composed.getRootNode();
+    if (!root || !root.host) break;
+    composed = root.host;
+    approved = hit === composed || (composed.contains && composed.contains(hit));
+  }
+  if (!approved)
+    return { error: "approved ref " + ref + " moved or became covered before click" };
+  return { x, y, inView: true, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
+}
+
 function pageClickRef(ref) {
   const m = window.__collieRefs;
   const el = m && m.get ? m.get(ref) : null;
   if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
   el.scrollIntoView({ block: "center" }); el.click();
   return { clicked: (el.innerText || el.value || ref).trim().slice(0, 80) };
+}
+
+// Classify a snapshot ref before the restricted Mission browser may click it. This is an
+// enforcement boundary, not a model prompt: navigation/menu/focus steps may proceed, while a
+// final external write, consent, purchase, destructive action or human-verification control stays
+// behind the outer Mission gate. Only exact refs are accepted, never fuzzy text/coordinates.
+function pageAdvanceInfo(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected) return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  const label = (el.getAttribute("aria-label") || el.innerText || el.value ||
+                 el.getAttribute("title") || ref || "").trim().slice(0, 160);
+  const role = (el.getAttribute("role") || "").toLowerCase();
+  const tag = (el.tagName || "").toLowerCase();
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  const link = tag === "a" ? el : (el.closest ? el.closest("a") : null);
+  const href = link ? String(link.getAttribute("href") || link.href || "") : "";
+  const meta = [label, role, tag, type, href, el.id || "", el.getAttribute("name") || "",
+                el.getAttribute("data-testid") || ""].join(" ");
+  if (el.disabled || el.getAttribute("aria-disabled") === "true")
+    return { error: "ref " + ref + " is disabled" };
+  if (type === "file") return { error: "file controls require the gated upload path" };
+  if (/(captcha|recaptcha|hcaptcha|human.?verification|verify.?you.?are.?human|security.?challenge)/i.test(meta))
+    return { error: "CAPTCHA or human verification requires Needs You" };
+  // Opening LinkedIn's editor is reversible; its launcher is literally "Start a post".
+  // Keep the final "Post" button fenced while permitting only this explicit setup label.
+  const reversibleComposerLauncher = /^start\s+(?:a\s+)?post$/i.test(label);
+  if (!reversibleComposerLauncher && /(?:^|\b)(post|publish|send|submit|save|create\s+(?:account|page)|sign\s*up|register|authorize|grant\s+access|allow\s+access|approve|pay|buy|purchase|checkout|place\s+order|delete|remove|deactivate|unsubscribe|log\s*out|sign\s*out)(?:\b|$)/i.test(label))
+    return { error: "consequential control '" + label + "' requires the outer Mission gate" };
+  if (href && /(?:^|[/?&=])(?:logout|signout|unsubscribe|delete|remove|deactivate|activate|verify|confirm)(?:[/?&=]|$)/i.test(href))
+    return { error: "consequential navigation requires the outer Mission gate" };
+  const editable = !!el.isContentEditable || el.getAttribute("contenteditable") !== null ||
+                   role === "textbox" || tag === "input" || tag === "textarea";
+  return { allowed: true, label, role, tag, href: href.slice(0, 300), editable };
+}
+
+// Describe the effect of an exact snapshot ref without clicking it. The host's
+// Authority v2 gate uses this read-only preflight so a bare ref such as `e7` does
+// not hide whether the control means Open menu, Send, Buy, or CAPTCHA. Keep it
+// self-contained: chrome.scripting serializes only this function body.
+function pageIntentInfo(ref) {
+  const m = window.__collieRefs;
+  const el = m && m.get ? m.get(ref) : null;
+  if (!el || !el.isConnected)
+    return { error: "no live element for ref " + ref + " — take a fresh browser_snapshot" };
+  const label = (el.getAttribute("aria-label") || el.innerText || el.value ||
+                 el.getAttribute("title") || ref || "").trim().slice(0, 160);
+  const role = (el.getAttribute("role") || "").toLowerCase();
+  const tag = (el.tagName || "").toLowerCase();
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  const link = tag === "a" ? el : (el.closest ? el.closest("a") : null);
+  const href = link ? String(link.getAttribute("href") || link.href || "") : "";
+  const meta = [label, role, tag, type, href, el.id || "", el.getAttribute("name") || "",
+                el.getAttribute("data-testid") || ""].join(" ");
+  const base = { label, role, tag, type, href: href.slice(0, 300) };
+  if (el.disabled || el.getAttribute("aria-disabled") === "true")
+    return Object.assign(base, { error: "ref " + ref + " is disabled" });
+  if (/(captcha|recaptcha|hcaptcha|human.?verification|verify.?you.?are.?human|security.?challenge)/i.test(meta))
+    return Object.assign(base, { effect: "restricted", action: "person_verification",
+                                 reason: "CAPTCHA or human verification requires Needs You" });
+  if (/(pay|buy|purchase|checkout|place\s+order|subscribe|付款|支付|购买|購買|结账|結帳|下单|下單|订阅|訂閱)/i.test(meta))
+    return Object.assign(base, { effect: "restricted", action: "purchase",
+                                 reason: "spending requires a bounded grant" });
+  if (/(change|reset).{0,20}(password|passkey|mfa|2fa)|grant.{0,12}admin|修改密码|修改密碼|重置密码|重設密碼|管理员|管理員/i.test(meta))
+    return Object.assign(base, { effect: "restricted", action: "security_change",
+                                 reason: "account security changes require the person" });
+  if (link && (link.hasAttribute("download") ||
+      /(?:^|\b)(download|export|save\s+(?:file|copy)|下载|下載|导出|匯出)(?:\b|$)/i.test(meta)))
+    return Object.assign(base, { effect: "commit", action: "download", reversible: true });
+  if (type === "file")
+    return Object.assign(base, { effect: "commit", action: "upload", reversible: false });
+  let action = "";
+  if (/(?:^|\b)(send)(?:\b|$)|发送|發送|发给|發給/i.test(label)) action = "send";
+  else if (/(?:^|\b)(publish|post|release|deploy)(?:\b|$)|发布|發佈|发帖|發帖|上线|上線/i.test(label)) action = "publish";
+  else if (/(?:^|\b)(submit|save|confirm|apply)(?:\b|$)|提交|保存|确认|確認|申请|申請/i.test(label)) action = "submit";
+  else if (/(?:^|\b)merge(?:\b|$)|合并|合併/i.test(label)) action = "merge";
+  else if (/(?:^|\b)invite(?:\b|$)|邀请|邀請/i.test(label)) action = "invite";
+  else if (/(?:^|\b)(delete|remove|unsubscribe|deactivate)(?:\b|$)|删除|刪除|移除|退订|退訂/i.test(label)) action = "delete";
+  else if (/(?:^|\b)(register|sign\s*up|create\s+(?:an?\s+)?account)(?:\b|$)|注册|註冊|创建账号|建立帳號/i.test(label)) action = "register";
+  else if (/(?:^|\b)(authorize|approve|grant\s+access|allow\s+access)(?:\b|$)|授权|授權|批准/i.test(label)) action = "grant_access";
+  if (!action && href && /(?:^|[/?&=])(?:logout|signout|unsubscribe|delete|remove|deactivate|activate|verify|confirm)(?:[/?&=]|$)/i.test(href))
+    action = "submit";
+  if (action) return Object.assign(base, { effect: "commit", action, reversible: false });
+  return Object.assign(base, { effect: "prepare", action: "navigate", reversible: true });
 }
 
 function pageTypeRef(ref, text, submit) {
@@ -765,10 +1281,16 @@ function pageTypeRef(ref, text, submit) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return { picked: (hit.text || "").trim(), value: el.value, landed: el.value === hit.value };
   }
-  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-  const d = Object.getOwnPropertyDescriptor(proto, "value");
-  if (d && d.set) d.set.call(el, text); else el.value = text;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (el.isContentEditable || el.getAttribute("contenteditable") !== null) {
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true,
+                                               inputType: "insertText", data: text }));
+  } else {
+    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, "value");
+    if (d && d.set) d.set.call(el, text); else el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   el.dispatchEvent(new Event("change", { bubbles: true }));
   if (submit) {
     const form = el.form;
@@ -921,7 +1443,21 @@ async function getConsole(clear) {
 async function evalExpr(expr) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  return await execMain(pageEval, [expr]);
+  const first = await execMain(pageEval, [expr]);
+  if (!first || !first.error || !/content security policy|unsafe-eval/i.test(String(first.error)))
+    return first;
+  try {
+    await ensureAttached(tab.id);
+    const result = await dbgSend(tab.id, "Runtime.evaluate", {
+      expression: String(expr || ""), returnByValue: true, awaitPromise: true
+    });
+    if (result && result.exceptionDetails)
+      return { error: String(result.exceptionDetails.text || "CDP evaluation failed") };
+    const remote = result && result.result ? result.result : {};
+    return { value: remote.value !== undefined ? remote.value : (remote.description || "undefined"), trusted: true };
+  } catch (error) {
+    return { error: "CDP evaluation failed: " + String((error && error.message) || error) };
+  }
 }
 
 // --- trusted input via chrome.debugger (CDP) -----------------------------------------------------
@@ -938,8 +1474,9 @@ async function evalExpr(expr) {
 // - session overrides live in storage.session   (cleared when the browser closes = "just this session")
 // Off only when EXPLICITLY disabled (popup, `mode` command, or dismissing the debug banner).
 async function trustedGlobal() {
+  if (!HAS_DEBUGGER_PERMISSION) return false;
   try { const s = await chrome.storage.local.get("trustedInput"); return s.trustedInput !== false; }
-  catch (e) { return true; }
+  catch (e) { return HAS_DEBUGGER_PERMISSION; }
 }
 function originOf(tab) { try { return new URL(tab.url).origin; } catch (e) { return ""; } }
 
@@ -968,6 +1505,7 @@ async function setSiteMode(origin, scope) {
 }
 
 function dbgAttach(tabId) {
+  if (!HAS_DEBUGGER_PERMISSION) return Promise.reject(new Error("high-fidelity input is available only in the local Power build"));
   return new Promise((resolve, reject) => {
     chrome.debugger.attach({ tabId }, "1.3", () => {
       const e = chrome.runtime.lastError;
@@ -976,6 +1514,7 @@ function dbgAttach(tabId) {
   });
 }
 function dbgSend(tabId, method, params) {
+  if (!HAS_DEBUGGER_PERMISSION) return Promise.reject(new Error("Chrome debugger permission is not available in this build"));
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params || {}, (res) => {
       const e = chrome.runtime.lastError;
@@ -984,6 +1523,7 @@ function dbgSend(tabId, method, params) {
   });
 }
 function dbgDetach(tabId) {
+  if (!HAS_DEBUGGER_PERMISSION) return Promise.resolve();
   return new Promise((resolve) => {
     try { chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }); }
     catch (e) { resolve(); }
@@ -993,17 +1533,126 @@ function dbgDetach(tabId) {
 // steady banner instead of a flashing one, and faster. onDetach fires when the tab closes OR the user
 // clicks the banner's "Cancel": we treat an explicit cancel as "turn high-fidelity off" and respect it.
 let dbgTab = null;
-chrome.debugger.onDetach.addListener((src, reason) => {
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onDetach.addListener((src, reason) => {
   if (src && src.tabId === dbgTab) dbgTab = null;
   // Every child session died with the attachment; keeping their ids would hand out dead handles.
   if (src && src.tabId != null) frameSessions.delete(src.tabId);
-  if (reason === "canceled_by_user") { try { chrome.storage.local.set({ trustedInput: false }); } catch (e) {} }
+  if (reason === "canceled_by_user") {
+    if (src && src.tabId != null) {
+      pausedTabs.add(src.tabId);
+      pauseSpacesForTab(src.tabId, "Chrome debugger control was canceled by you");
+    }
+    try { chrome.storage.local.set({ trustedInput: false }); } catch (e) {}
+  }
 });
 async function ensureAttached(tabId) {
+  if (pausedTabs.has(tabId)) throw new Error("Collie is paused on this tab");
   if (dbgTab === tabId) return;
   if (dbgTab != null) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
   await dbgAttach(tabId);
   dbgTab = tabId;
+}
+
+// Attach local files through Chrome DevTools Protocol. Some Chromium builds refuse to add a
+// programmatically-created File to DataTransfer even though assigning an existing OS file through
+// DOM.setFileInputFiles is supported. The bridge already has an explicitly granted `debugger`
+// permission for high-fidelity input, so callers may provide local paths as the reliable fallback.
+async function trustedUpload(selector, paths) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const files = Array.isArray(paths) ? paths.map((p) => String(p || "")).filter(Boolean) : [];
+  if (!files.length) return { error: "no local file paths supplied" };
+  if (files.length > 10) return { error: "at most 10 files can be attached at once" };
+  const query = String(selector || "input[type=file]");
+  try {
+    await agentInput(tab.id, 2200);
+    await ensureAttached(tab.id);
+    await dbgSend(tab.id, "DOM.enable", {});
+    const doc = await dbgSend(tab.id, "DOM.getDocument", { depth: -1, pierce: true });
+    const found = await dbgSend(tab.id, "DOM.querySelector", {
+      nodeId: doc && doc.root ? doc.root.nodeId : 0,
+      selector: query
+    });
+    if (!found || !found.nodeId) return { error: "no file input " + query };
+    await dbgSend(tab.id, "DOM.setFileInputFiles", { nodeId: found.nodeId, files });
+    const probe = await dbgSend(tab.id, "Runtime.evaluate", {
+      expression: "(() => { const e = document.querySelector(" + JSON.stringify(query) + "); " +
+                  "return e && e.files ? {count:e.files.length,names:Array.from(e.files).map(f=>f.name)} : {count:0,names:[]}; })()",
+      returnByValue: true
+    });
+    const value = probe && probe.result && probe.result.value ? probe.result.value : { count: files.length, names: [] };
+    const count = Number(value.count || 0);
+    return { uploaded: count, attached: count === files.length, names: value.names || [], trusted: true };
+  } catch (error) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return { error: "native file upload failed: " + String((error && error.message) || error) };
+  }
+}
+
+// Read file-input placement through CDP. These controls are normally hidden, so the accessibility
+// snapshot cannot distinguish an active composer from a stale one kept mounted by an SPA.
+async function trustedFileInputs(selector) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const query = String(selector || "input[type=file]");
+  try {
+    await ensureAttached(tab.id);
+    const expression = "Array.from(document.querySelectorAll(" + JSON.stringify(query) + ")).map((e,i)=>{" +
+      "const r=e.getBoundingClientRect();let p=e.parentElement,parents=[];" +
+      "for(let n=0;p&&n<8;n++,p=p.parentElement)parents.push({tag:p.tagName,id:p.id||'',testid:p.getAttribute('data-testid')||'',aria:p.getAttribute('aria-label')||'',role:p.getAttribute('role')||'',text:(p.innerText||'').trim().slice(0,100)});" +
+      "return {i,accept:e.accept||'',multiple:!!e.multiple,disabled:!!e.disabled,display:getComputedStyle(e).display,rect:{x:r.x,y:r.y,w:r.width,h:r.height},parents};})";
+    const probe = await dbgSend(tab.id, "Runtime.evaluate", { expression, returnByValue: true });
+    return { inputs: probe && probe.result ? (probe.result.value || []) : [] };
+  } catch (error) {
+    return { error: "file input inspection failed: " + String((error && error.message) || error) };
+  }
+}
+
+// Click the visible upload control and bind files to the exact chooser node Chrome opens. SPAs such
+// as X can keep stale file inputs mounted; querying the DOM may therefore target a valid-looking
+// input whose React handler immediately discards the file. Intercepting the chooser preserves the
+// genuine user-gesture path and gives us Chrome's precise backend node id.
+async function trustedChooseUpload(ref, text, selector, paths) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  const files = Array.isArray(paths) ? paths.map((p) => String(p || "")).filter(Boolean) : [];
+  if (!files.length) return { error: "no local file paths supplied" };
+  if (files.length > 10) return { error: "at most 10 files can be attached at once" };
+  let listener = null;
+  try {
+    await agentInput(tab.id, 9000);
+    await ensureAttached(tab.id);
+    await dbgSend(tab.id, "Page.enable", {});
+    await dbgSend(tab.id, "Page.setInterceptFileChooserDialog", { enabled: true });
+    const chooser = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("file chooser did not open")), 7000);
+      listener = (source, method, params) => {
+        if (!source || source.tabId !== tab.id || method !== "Page.fileChooserOpened") return;
+        clearTimeout(timer);
+        resolve(params || {});
+      };
+      chrome.debugger.onEvent.addListener(listener);
+    });
+    const clicked = ref ? await trustedClickRef(ref) : await trustedClick(text || "", selector || "");
+    if (!clicked || clicked.error) throw new Error((clicked && clicked.error) || "upload control click failed");
+    const opened = await chooser;
+    if (!opened.backendNodeId) throw new Error("file chooser did not expose its input node");
+    await dbgSend(tab.id, "DOM.setFileInputFiles", { backendNodeId: opened.backendNodeId, files });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return {
+      uploaded: files.length,
+      attached: true,
+      names: files.map((p) => p.replace(/^.*[\\/]/, "")),
+      chooser: true,
+      trusted: true
+    };
+  } catch (error) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return { error: "chooser upload failed: " + String((error && error.message) || error) };
+  } finally {
+    if (listener) chrome.debugger.onEvent.removeListener(listener);
+    try { await dbgSend(tab.id, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e) {}
+  }
 }
 
 // --- cross-origin iframes (OOPIF) over CDP -------------------------------------------------------
@@ -1028,7 +1677,7 @@ async function ensureAttached(tabId) {
 const frameSessions = new Map();       // tabId -> Map(targetId -> {sessionId, targetId, url})
 let frameIndex = null;                 // { tabId, frames: [{tag, sessionId, targetId, url}] }
 
-chrome.debugger.onEvent.addListener((src, method, params) => {
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onEvent.addListener((src, method, params) => {
   if (!src || src.tabId == null || !params) return;
   if (method === "Target.attachedToTarget" && params.sessionId) {
     const info = params.targetInfo || {};
@@ -1204,6 +1853,7 @@ async function snapshotFrames(tabId, max, opts) {
 // Click/type a `f1e7` ref: resolve the element inside its frame, then place a REAL click at the
 // frame's offset when the geometry is available, else act synthetically inside the frame.
 async function frameActRef(tabId, tag, ref, kind, text, submit) {
+  { const stopped = pausedResult(tabId); if (stopped) return stopped; }
   const fr = lookupFrame(tabId, tag);
   if (!fr) return { error: "no frame " + tag + " on this tab — take a browser_snapshot with frames:true first" };
   const tab = await activeTab();
@@ -1236,6 +1886,8 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
       if (pt2 && !pt2.error && pt2.inView) pt = pt2;
       const x = off.x + pt.x, y = off.y + pt.y;
       try {
+        try { await execMain(pageCursor, [x, y, true]); } catch (e) {}
+        await agentInput(tabId, kind === "type" ? 2000 : 1400);
         await ensureAttached(tabId);
         const b = { x, y, button: "left" };
         await dbgSend(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons: 0 });
@@ -1259,6 +1911,7 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
         return { clicked: pt.label, trusted: true, frame: tag };
       } catch (e) {
         if (dbgTab === tabId) dbgTab = null;   // fall through to the synthetic path below
+        const stopped = pausedResult(tabId); if (stopped) return stopped;
       }
     }
     // No usable geometry (frame scrolled out of view, or getFrameOwner refused): act inside the
@@ -1269,6 +1922,7 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
                     : !pt.inView ? "the element is off-screen inside the frame"
                     : "the frame's position on the page could not be read (" +
                       ((geom && geom.error) || "unknown") + ")";
+    { const stopped = pausedResult(tabId); if (stopped) return stopped; }
     try {
       if (kind === "type") {
         const r = await frameEval(tabId, sid, asCall(pageTypeRef, [ref, text, !!submit]));
@@ -1313,6 +1967,7 @@ async function focusForTrusted(tab) {
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
   }
+  if (pausedTabs.has(tab.id)) return false;
   if (tab.active) return true;
   try {                                     // fallback: a tab switch inside Chrome, as pageShot does
     await chrome.tabs.update(tab.id, { active: true });
@@ -1329,14 +1984,17 @@ const NO_FOCUS = "collie's tab could be neither focus-emulated nor brought to th
 async function trustedClick(text, selector) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await exec(pageClick, [text || "", selector || ""]));
+                         await syntheticClick(text || "", selector || ""));
+  }
   const pt = await exec(pagePoint, [text || "", selector || ""]);
   if (!pt || pt.error) return pt || { error: "no element for " + (selector || text) };
   if (!pt.inView) return { error: "element found but off-screen after scroll — cannot place a real click there" };
-  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
+  try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}  // wait for the visible hand to arrive
   try {
+    await agentInput(tab.id);
     await ensureAttached(tab.id);
     const b = { x: pt.x, y: pt.y, button: "left" };
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
@@ -1345,7 +2003,8 @@ async function trustedClick(text, selector) {
     return { clicked: pt.label, trusted: true, matches: pt.matches, candidates: pt.candidates };
   } catch (e) {                          // devtools open / attach blocked — NEVER regress below synthetic
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await exec(pageClick, [text || "", selector || ""]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticClick(text || "", selector || "");
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic click: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1353,14 +2012,17 @@ async function trustedClick(text, selector) {
 async function trustedType(selector, text, submit) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await exec(pageType, [selector, text, !!submit]));
+                         await syntheticType("", selector, "", text, !!submit));
+  }
   const pt = await exec(pagePoint, ["", selector]);
   if (!pt || pt.error) return pt || { error: "no field " + selector };
   if (!pt.inView) return { error: "field '" + selector + "' off-screen after scroll — cannot type there" };
-  try { await exec(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
+  try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   try {
+    await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
     {   // click to focus the field first
       const b = { x: pt.x, y: pt.y, button: "left" };
@@ -1379,8 +2041,44 @@ async function trustedType(selector, text, submit) {
     return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await exec(pageType, [selector, text, !!submit]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticType("", selector, "", text, !!submit);
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
+  }
+}
+
+async function trustedTypeLabel(label, text, submit) {
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return Object.assign({ trusted: false, note: NO_FOCUS },
+                         await syntheticType("", "", label, text, !!submit));
+  }
+  const pt = await exec(pagePointLabel, [label]);
+  if (!pt || pt.error) return pt || { error: "no field labeled " + label };
+  if (!pt.inView) return { error: "field '" + label + "' off-screen after scroll — cannot type there" };
+  try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
+  try {
+    await agentInput(tab.id, 1800);
+    await ensureAttached(tab.id);
+    const b = { x: pt.x, y: pt.y, button: "left" };
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
+    await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+    await dbgSend(tab.id, "Input.insertText", { text: text || "" });
+    if (submit) {
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+      await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    }
+    return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
+  } catch (e) {
+    if (dbgTab === tab.id) dbgTab = null;
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticType("", "", label, text, !!submit);
+    return Object.assign({ trusted: false,
+      note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
   }
 }
 
@@ -1390,22 +2088,28 @@ async function trustedType(selector, text, submit) {
 async function trustedClickRef(ref) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
-  if (!(await focusForTrusted(tab)))
-    return Object.assign({ trusted: false, note: NO_FOCUS }, await execMain(pageClickRef, [ref]));
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    return Object.assign({ trusted: false, note: NO_FOCUS }, await syntheticClickRef(ref));
+  }
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no element for ref " + ref };
   if (!pt.inView) return { error: "element " + ref + " off-screen after scroll — cannot place a real click there" };
-  try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}  // show it move
+  try { await execMain(pageCursor, [pt.x, pt.y, true]); } catch (e) {}  // wait for the visible hand to arrive
   try {
+    await agentInput(tab.id);
     await ensureAttached(tab.id);
-    const b = { x: pt.x, y: pt.y, button: "left" };
+    const fresh = await execMain(pagePointStillRef, [ref]);
+    if (!fresh || fresh.error) return fresh || { error: "approved element changed before click" };
+    const b = { x: fresh.x, y: fresh.y, button: "left" };
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x, y: b.y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mousePressed", buttons: 1, clickCount: 1 }, b));
     await dbgSend(tab.id, "Input.dispatchMouseEvent", Object.assign({ type: "mouseReleased", buttons: 0, clickCount: 1 }, b));
-    return { clicked: pt.label, trusted: true };
+    return { clicked: fresh.label, trusted: true, refRevalidated: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await execMain(pageClickRef, [ref]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticClickRef(ref);
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic click: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1429,14 +2133,17 @@ async function trustedTypeRef(ref, text, submit) {
       return Object.assign({ trusted: false, note: "native <select>: option chosen in the DOM" },
                            await execMain(pageTypeRef, [ref, text, !!submit]));
   } catch (e) {}
-  if (!(await focusForTrusted(tab)))
+  if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
-                         await execMain(pageTypeRef, [ref, text, !!submit]));
+                         await syntheticType(ref, "", "", text, !!submit));
+  }
   const pt = await execMain(pagePointRef, [ref]);
   if (!pt || pt.error) return pt || { error: "no field for ref " + ref };
   if (!pt.inView) return { error: "field " + ref + " off-screen after scroll — cannot type there" };
-  try { await execMain(pageCursor, [pt.x, pt.y]); await new Promise((r) => setTimeout(r, 320)); } catch (e) {}
+  try { await execMain(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
   try {
+    await agentInput(tab.id, 1800);
     await ensureAttached(tab.id);
     {   // click to focus the field first
       const b = { x: pt.x, y: pt.y, button: "left" };
@@ -1454,7 +2161,8 @@ async function trustedTypeRef(ref, text, submit) {
     return { typed: (text || "").slice(0, 40), submit: !!submit, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
-    const r = await execMain(pageTypeRef, [ref, text, !!submit]);
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
+    const r = await syntheticType(ref, "", "", text, !!submit);
     return Object.assign({ trusted: false, note: "debugger unavailable, used synthetic type: " + String((e && e.message) || e) }, r);
   }
 }
@@ -1635,6 +2343,7 @@ async function doPress(key, mods, repeat) {
   if (!tab) return { error: NO_TAB };
   if (await focusForTrusted(tab)) {
     try {
+      await agentInput(tab.id, 1600);
       await ensureAttached(tab.id);
       for (let i = 0; i < times; i++) {
         const down = { type: "keyDown", modifiers: mask, key: spec.key, code: spec.code,
@@ -1651,12 +2360,40 @@ async function doPress(key, mods, repeat) {
       return { pressed: spec.key, modifiers: mods || [], times: times, trusted: true };
     } catch (e) {
       if (dbgTab === tab.id) dbgTab = null;
+      const stopped = pausedResult(tab.id); if (stopped) return stopped;
     }
   }
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
   const r = await execMain(pageKey, [spec.key, spec.code, mask]);
   return Object.assign({ trusted: false, times: 1,
                          note: "sent a synthetic key; a page that checks isTrusted will ignore it" },
                        r || {});
+}
+
+// Insert an entire bounded string into the control/canvas that currently owns focus.  This is the
+// text half of canvas automation: whiteboards expose their shape editor only after a pointer/Enter
+// sequence, so there is no durable DOM selector for browser_type to target.  CDP Input.insertText
+// follows the same IME-safe path Chrome uses for Unicode typing and does not synthesize one key per
+// character.  It is deliberately focus-relative and never presses Enter/Submit.
+async function doInsertText(text) {
+  text = String(text == null ? "" : text).replace(/\0/g, "").slice(0, 4000);
+  if (!text) return { error: "insert_text needs non-empty text" };
+  const tab = await activeTab();
+  if (!tab) return { error: NO_TAB };
+  if (await focusForTrusted(tab)) {
+    try {
+      await agentInput(tab.id, 2200);
+      await ensureAttached(tab.id);
+      await dbgSend(tab.id, "Input.insertText", { text });
+      return { inserted: true, characters: [...text].length, trusted: true };
+    } catch (e) {
+      if (dbgTab === tab.id) dbgTab = null;
+      const stopped = pausedResult(tab.id); if (stopped) return stopped;
+      return { error: "trusted text insertion failed: " + String((e && e.message) || e) };
+    }
+  }
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
+  return { error: "high-fidelity browser input is required to type into a canvas" };
 }
 
 async function doHover(target) {
@@ -1666,15 +2403,18 @@ async function doHover(target) {
   if (!pt || pt.error) return pt || { error: "nothing to hover" };
   if (await focusForTrusted(tab)) {
     try {
+      await agentInput(tab.id);
       await ensureAttached(tab.id);
-      await execMain(pageCursor, [pt.x, pt.y]);
+      await execMain(pageCursor, [pt.x, pt.y, false]);
       await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: pt.x, y: pt.y, buttons: 0 });
       await sleep(350);                       // menus open on a timer; give it one
       return { hovered: pt.label, trusted: true };
     } catch (e) {
       if (dbgTab === tab.id) dbgTab = null;
+      const stopped = pausedResult(tab.id); if (stopped) return stopped;
     }
   }
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
   const t = target || {};
   const r = await execMain(pageHover, [t.ref || "", t.selector || "", t.text || ""]);
   return Object.assign({ trusted: false, note: "synthetic hover" }, r || {});
@@ -1683,6 +2423,7 @@ async function doHover(target) {
 async function doDrag(from, to, steps) {
   const tab = await activeTab();
   if (!tab) return { error: NO_TAB };
+  { const stopped = pausedResult(tab.id); if (stopped) return stopped; }
   // An HTML5-draggable source needs the DataTransfer path; mouse movement alone does nothing there.
   const d = await execMain(pageIsDraggable, [from || {}]);
   if (d && d.draggable) {
@@ -1696,6 +2437,7 @@ async function doDrag(from, to, steps) {
   if (!(await focusForTrusted(tab))) return { error: NO_FOCUS };
   const n = Math.max(2, Math.min(60, Number(steps) || 12));
   try {
+    await agentInput(tab.id, 3500);
     await ensureAttached(tab.id);
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x, y: a.y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", x: a.x, y: a.y,
@@ -1721,19 +2463,21 @@ async function doClickAt(x, y) {
   if (!tab) return { error: NO_TAB };
   const before = await execMain(pageElementAt, [x, y]);
   if (!(await focusForTrusted(tab))) {
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: NO_FOCUS },
                          await execMain(pageClickAtSynthetic, [x, y]));
   }
   try {
+    await agentInput(tab.id);
     await ensureAttached(tab.id);
-    await execMain(pageCursor, [x, y]);
-    await sleep(320);
+    await execMain(pageCursor, [x, y, true]);
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseMoved", x: x, y: y, buttons: 0 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", x: x, y: y, button: "left", buttons: 1, clickCount: 1 });
     await dbgSend(tab.id, "Input.dispatchMouseEvent", { type: "mouseReleased", x: x, y: y, button: "left", buttons: 0, clickCount: 1 });
     return { clicked_at: [x, y], hit: before, trusted: true };
   } catch (e) {
     if (dbgTab === tab.id) dbgTab = null;
+    const stopped = pausedResult(tab.id); if (stopped) return stopped;
     return Object.assign({ trusted: false, note: "debugger unavailable, clicked synthetically" },
                          await execMain(pageClickAtSynthetic, [x, y]));
   }
@@ -1843,6 +2587,140 @@ function pageViewport() {
   return { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
 }
 
+// Downloads are browser-owned I/O, so a successful DOM click proves only that the request was
+// dispatched.  Listen before the click, then follow the concrete Chrome download item through
+// complete/interrupted.  This is the same distinction uploads already make between "attached" and
+// "submitted": no more reporting a file as downloaded merely because a link accepted a click.
+function startDownloadWatch() {
+  if (!HAS_DOWNLOADS_PERMISSION || !chrome.downloads.onCreated) return null;
+  let finish = null, stopped = false;
+  const promise = new Promise((resolve) => { finish = resolve; });
+  const listener = (item) => {
+    if (stopped || !item || !Number.isInteger(item.id)) return;
+    stopped = true;
+    try { chrome.downloads.onCreated.removeListener(listener); } catch (e) {}
+    finish(item);
+  };
+  chrome.downloads.onCreated.addListener(listener);
+  return {
+    promise,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      try { chrome.downloads.onCreated.removeListener(listener); } catch (e) {}
+      finish(null);
+    }
+  };
+}
+
+// A click can legitimately continue in a new tab (OAuth, checkout, documentation, social compose).
+// Watch only while an agent click is in flight and only accept a tab whose opener is the exact tab
+// this space owns.  A global "latest tab wins" listener would let an unrelated user-created tab
+// steal the agent lane.
+function startChildTabWatch(parentTabId) {
+  if (parentTabId == null || !chrome.tabs || !chrome.tabs.onCreated) return null;
+  let finish = null, stopped = false, expiry = 0, tabListener = null, navigationListener = null;
+  const promise = new Promise((resolve) => { finish = resolve; });
+  const cleanup = () => {
+    if (expiry) clearTimeout(expiry);
+    try { if (tabListener) chrome.tabs.onCreated.removeListener(tabListener); } catch (e) {}
+    try {
+      if (navigationListener && chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget)
+        chrome.webNavigation.onCreatedNavigationTarget.removeListener(navigationListener);
+    } catch (e) {}
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    cleanup();
+    finish(null);
+  };
+  const accept = async (tabId, known) => {
+    if (stopped || !Number.isInteger(tabId)) return;
+    stopped = true;
+    cleanup();
+    if (known) return finish(known);
+    try { finish(await chrome.tabs.get(tabId)); } catch (e) { finish(null); }
+  };
+  tabListener = (tab) => {
+    if (tab && tab.openerTabId === parentTabId) accept(tab.id, tab);
+  };
+  navigationListener = (details) => {
+    if (details && details.sourceTabId === parentTabId) accept(details.tabId, null);
+  };
+  chrome.tabs.onCreated.addListener(tabListener);
+  if (chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget)
+    chrome.webNavigation.onCreatedNavigationTarget.addListener(navigationListener);
+  expiry = setTimeout(stop, 2500);
+  return {
+    parentTabId,
+    promise,
+    stop
+  };
+}
+
+async function finishChildTabWatch(watch, timeoutMs, spaceName) {
+  if (!watch) return null;
+  const timer = new Promise((resolve) => setTimeout(() => resolve(null), Math.max(100, timeoutMs || 1000)));
+  const child = await Promise.race([watch.promise, timer]);
+  watch.stop();
+  if (!child) return null;
+  const rec = await getSpace(spaceName);
+  if (!rec || rec.tabId !== watch.parentTabId || rec.paused) return null;
+  const held = await spaceHolding(child.id, spaceName);
+  if (held) return { error: "new tab is already held by space '" + held + "'" };
+  rec.tabId = child.id;
+  rec.openedFrom = watch.parentTabId;
+  // When Collie created the parent, every child produced by its own click belongs to the same
+  // disposable lane.  Keep the lineage so finalize closes all of it, not just the newest tab.
+  if (rec.owned) {
+    const ids = Array.isArray(rec.ownedTabIds) ? rec.ownedTabIds : [watch.parentTabId];
+    rec.ownedTabIds = [...new Set(ids.concat([child.id]))];
+  }
+  await setSpace(spaceName, rec);
+  await sendPresence(spaceName, rec);
+  const deadline = Date.now() + 10000;
+  let live = child;
+  while (live && live.status !== "complete" && Date.now() < deadline) {
+    await sleep(120);
+    try { live = await chrome.tabs.get(child.id); } catch (e) { live = null; }
+  }
+  return { adopted: true, tab_id: child.id, opener_tab_id: watch.parentTabId,
+           title: (live && live.title) || child.title || "",
+           url: (live && live.url) || child.url || "" };
+}
+
+async function finishDownloadWatch(watch, timeoutMs) {
+  if (!watch) return { observed: false, status: "unavailable",
+                       note: "the extension has no downloads permission" };
+  const timer = new Promise((resolve) => setTimeout(() => resolve(null), Math.max(500, timeoutMs || 5000)));
+  let item = await Promise.race([watch.promise, timer]);
+  watch.stop();
+  if (!item) return { observed: false, status: "not_observed",
+                      note: "the click produced no Chrome download item" };
+  const deadline = Date.now() + 10000;
+  while (item.state === "in_progress" && Date.now() < deadline) {
+    await sleep(120);
+    try {
+      const rows = await chrome.downloads.search({ id: item.id });
+      if (rows && rows[0]) item = rows[0];
+    } catch (e) { break; }
+  }
+  const out = {
+    observed: true,
+    id: item.id,
+    status: item.state || "unknown",
+    filename: String(item.filename || "").slice(0, 1000),
+    bytes_received: Number(item.bytesReceived) || 0,
+    total_bytes: Number(item.totalBytes) || 0,
+    exists: item.exists !== false,
+    danger: item.danger || "unknown"
+  };
+  if (item.error) out.error = item.error;
+  if (item.state === "in_progress") out.note = "download started but did not finish within 10 seconds";
+  return out;
+}
+
 // Decide trusted vs synthetic for THIS step: a command can force it (trusted:true/false), otherwise
 // resolve the per-origin authorization (session -> permanent -> global default ON).
 async function wantTrusted(cmd) {
@@ -1852,9 +2730,47 @@ async function wantTrusted(cmd) {
   return await trustedForOrigin(t ? originOf(t) : "");
 }
 
+async function syntheticClick(text, selector) {
+  const pt = await exec(pagePoint, [text || "", selector || ""]);
+  if (pt && !pt.error && pt.inView) {
+    try { await exec(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
+  }
+  return await exec(pageClick, [text || "", selector || ""]);
+}
+
+async function syntheticClickRef(ref) {
+  const pt = await execMain(pagePointRef, [ref]);
+  if (pt && !pt.error && pt.inView) {
+    try { await execMain(pageCursor, [pt.x, pt.y, true]); } catch (e) {}
+  }
+  return await execMain(pageClickRef, [ref]);
+}
+
+async function syntheticType(ref, selector, label, text, submit) {
+  let pt = null;
+  if (ref) pt = await execMain(pagePointRef, [ref]);
+  else if (label) pt = await exec(pagePointLabel, [label]);
+  else if (selector) pt = await exec(pagePoint, ["", selector]);
+  if (pt && !pt.error && pt.inView) {
+    try { await (ref ? execMain(pageCursor, [pt.x, pt.y, true]) : exec(pageCursor, [pt.x, pt.y, true])); }
+    catch (e) {}
+  }
+  if (ref) return await execMain(pageTypeRef, [ref, text, !!submit]);
+  if (label) return await exec(pageTypeLabel, [label, text]);
+  return await exec(pageType, [selector, text, !!submit]);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runStep(cmd) {
+    // Independent of a Collie-owned browser space: Live is passively observing the tab the user is
+    // already looking at, and this action has no read/write capability beyond liveTabContext().
+    if (cmd.action === "live_context") return await liveTabContext();
+    if (cmd.action === "live_observation") return await liveTabObservation(cmd.max_text, cmd.max_dim);
+    const held = await getSpace(curSpace);
+    if (held && held.paused && !["spaces", "mode", "release"].includes(cmd.action))
+      return { error: "Collie is paused in space '" + curSpace + "'. Resume it from the extension before continuing.",
+               paused: true, space: curSpace, reason: held.reason || "user takeover" };
     if (cmd.action === "open") {
       const url = httpUrl(cmd.url);
       if (!url) return { error: "browser_open only accepts http(s) URLs" };
@@ -1884,6 +2800,14 @@ async function runStep(cmd) {
       let tab = null;
       if (cmd.tab_id != null) {
         try { tab = await chrome.tabs.get(cmd.tab_id); } catch (e) { return { error: "no tab with id " + cmd.tab_id }; }
+      } else if (cmd.origin) {
+        let origin;
+        try { origin = new URL(cmd.origin).origin; } catch (e) { return { error: "invalid attach origin" }; }
+        try {
+          const found = await chrome.tabs.query({ url: origin + "/*" });
+          if (found.length > 1) return { error: "more than one tab is open for " + origin };
+          tab = found[0] || null;
+        } catch (e) {}
       } else {
         try { const found = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); tab = found && found[0]; }
         catch (e) {}
@@ -1918,8 +2842,8 @@ async function runStep(cmd) {
       if (cmd.close) {
         if (!rec.owned) return { released: true, closed: false,
                                  note: "the claim on that tab is dropped, but it was YOUR tab, not one collie opened, so it was left open" };
-        try { await chrome.tabs.remove(rec.tabId); } catch (e) {}
-        return { released: true, closed: true };
+        const closed = await closeOwnedTabs(rec);
+        return { released: true, closed: closed.length > 0, closed_tab_ids: closed };
       }
       return { released: true, closed: false };
     }
@@ -1956,42 +2880,87 @@ async function runStep(cmd) {
     }
     if (cmd.action === "scroll") return await execMain(pageScroll, [cmd.to || "", cmd.by || 0, cmd.ref || ""]);
     if (cmd.action === "mode") {   // read/set high-fidelity input from the bridge/CLI
-      if (typeof cmd.trusted === "boolean") await chrome.storage.local.set({ trustedInput: cmd.trusted });
+      if (typeof cmd.trusted === "boolean" && HAS_DEBUGGER_PERMISSION)
+        await chrome.storage.local.set({ trustedInput: cmd.trusted });
       if (cmd.origin && cmd.scope) await setSiteMode(cmd.origin, cmd.scope);
       const t = await targetTab(false);
       const origin = t ? originOf(t) : "";
-      return { global: await trustedGlobal(), origin, effective: await trustedForOrigin(origin) };
+      return { available: HAS_DEBUGGER_PERMISSION, global: await trustedGlobal(), origin,
+               effective: await trustedForOrigin(origin),
+               configured_origin: cmd.origin || "",
+               configured_effective: cmd.origin ? await trustedForOrigin(cmd.origin) : undefined };
     }
     if (cmd.action === "press")
       return await doPress(cmd.key, cmd.modifiers, cmd.repeat);
+    if (cmd.action === "insert_text")
+      return await doInsertText(cmd.text);
     if (cmd.action === "hover")
       return await doHover({ ref: cmd.ref, selector: cmd.selector, text: cmd.text,
                              x: cmd.x, y: cmd.y });
     if (cmd.action === "drag")
       return await doDrag(cmd.from || {}, cmd.to || {}, cmd.steps);
     if (cmd.action === "click") {
+      const clickTab = await activeTab();
+      const childWatch = startChildTabWatch(clickTab && clickTab.id);
       // A point on the screen is its own addressing mode — for a canvas, a map, a chart, anything
       // whose target is not an element. The reply says what was under the point, because otherwise
       // "clicked (400,300)" is a claim with nothing behind it.
       if (typeof cmd.x === "number" && typeof cmd.y === "number" && !cmd.ref && !cmd.text && !cmd.selector) {
         const r = await doClickAt(cmd.x, cmd.y);
         await sleep(600);
-        return { click: r, page: await exec(pageRead, []) };
+        const child = await finishChildTabWatch(childWatch, 150, curSpace);
+        const out = { click: r, page: await exec(pageRead, []) };
+        if (child) out.opened_tab = child;
+        return out;
       }
       let r;
       const fref = splitFrameRef(cmd.ref);
+      let downloadWatch = null;
+      if (cmd.ref && !fref) {
+        try {
+          const intent = await execMain(pageIntentInfo, [cmd.ref]);
+          if (intent && intent.action === "download") downloadWatch = startDownloadWatch();
+        } catch (e) {}
+      }
       if (fref) {                                     // a ref from inside a cross-origin iframe
         const tab = await activeTab();
         if (!tab) return { error: NO_TAB };
         r = await frameActRef(tab.id, fref.tag, fref.ref, "click");
       } else if (cmd.ref) {                           // act on the exact element from a browser_snapshot
-        r = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref) : await execMain(pageClickRef, [cmd.ref]);
+        r = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref) : await syntheticClickRef(cmd.ref);
       } else {
         r = (await wantTrusted(cmd)) ? await trustedClick(cmd.text || "", cmd.selector || "")
-                                     : await exec(pageClick, [cmd.text || "", cmd.selector || ""]);
+                                     : await syntheticClick(cmd.text || "", cmd.selector || "");
       }
       await sleep(800);
-      return { click: r, page: await exec(pageRead, []) };
+      const child = await finishChildTabWatch(childWatch, 150, curSpace);
+      const out = { click: r, page: await exec(pageRead, []) };
+      if (child) out.opened_tab = child;
+      if (downloadWatch) out.download = await finishDownloadWatch(downloadWatch, 5000);
+      return out;
+    }
+    if (cmd.action === "advance") {
+      if (!cmd.ref || splitFrameRef(cmd.ref))
+        return { advance: { error: "browser_advance currently requires a top-page snapshot ref" } };
+      const info = await execMain(pageAdvanceInfo, [cmd.ref]);
+      if (!info || info.error || !info.allowed)
+        return { advance: info || { error: "could not classify the target" } };
+      const advanceTab = await activeTab();
+      const childWatch = startChildTabWatch(advanceTab && advanceTab.id);
+      const clicked = (await wantTrusted(cmd)) ? await trustedClickRef(cmd.ref)
+                                               : await syntheticClickRef(cmd.ref);
+      await sleep(500);
+      if (clicked && clicked.error) return { advance: clicked };
+      const child = await finishChildTabWatch(childWatch, 150, curSpace);
+      const out = { advance: Object.assign({}, info, clicked || {}), page: await exec(pageRead, []) };
+      if (child) out.opened_tab = child;
+      return out;
+    }
+    if (cmd.action === "intent") {
+      if (!cmd.ref || splitFrameRef(cmd.ref))
+        return { intent: { error: "intent preflight currently requires a top-page snapshot ref" } };
+      const info = await execMain(pageIntentInfo, [cmd.ref]);
+      return { intent: info || { error: "could not classify the target" } };
     }
     if (cmd.action === "type") {
       let r;
@@ -2003,12 +2972,13 @@ async function runStep(cmd) {
       }
       if (cmd.ref) {                                  // act on the exact field from a browser_snapshot
         r = (await wantTrusted(cmd)) ? await trustedTypeRef(cmd.ref, cmd.text, !!cmd.submit)
-                                     : await execMain(pageTypeRef, [cmd.ref, cmd.text, !!cmd.submit]);
+                                     : await syntheticType(cmd.ref, "", "", cmd.text, !!cmd.submit);
       } else if ((await wantTrusted(cmd)) && cmd.selector) {
         r = await trustedType(cmd.selector, cmd.text, !!cmd.submit);
+      } else if ((await wantTrusted(cmd)) && cmd.label) {
+        r = await trustedTypeLabel(cmd.label, cmd.text, !!cmd.submit);
       } else {
-        r = cmd.label ? await exec(pageTypeLabel, [cmd.label, cmd.text])
-                      : await exec(pageType, [cmd.selector, cmd.text, !!cmd.submit]);
+        r = await syntheticType("", cmd.selector || "", cmd.label || "", cmd.text, !!cmd.submit);
       }
       // Verify the write instead of trusting it. Skipped when submit was requested: submitting can
       // navigate or clear the field, so an empty read-back there would be a false alarm.
@@ -2026,8 +2996,18 @@ async function runStep(cmd) {
     }
     if (cmd.action === "pick") return await exec(pagePick, [cmd.label, cmd.option]);
     if (cmd.action === "fields") return await exec(pageFields, []);
-    if (cmd.action === "upload")   // MAIN world: a snapshot ref resolves against window.__collieRefs
+    if (cmd.action === "form_snapshot") return await exec(pageFormSnapshot, []);
+    if (cmd.action === "voice_identity") return await exec(pageVoiceIdentity, []);
+    if (cmd.action === "google_voice_otp")
+      return await exec(pageGoogleVoiceOtp, [cmd.service || "", cmd.max_age_seconds || 600]);
+    if (cmd.action === "upload") { // MAIN world: a snapshot ref resolves against window.__collieRefs
+      if (Array.isArray(cmd.paths) && cmd.paths.length && (cmd.button_ref || cmd.button_text || cmd.button_selector))
+        return await trustedChooseUpload(cmd.button_ref || "", cmd.button_text || "", cmd.button_selector || "", cmd.paths);
+      if (Array.isArray(cmd.paths) && cmd.paths.length)
+        return await trustedUpload(cmd.selector || "input[type=file]", cmd.paths);
       return await execMain(pageUpload, [cmd.selector || "", cmd.files || [], cmd.ref || ""]);
+    }
+    if (cmd.action === "file_inputs") return await trustedFileInputs(cmd.selector || "input[type=file]");
     if (cmd.action === "reload") {
       // Pick up new extension files from disk. Chrome never re-reads an unpacked extension on its
       // own, and chrome://extensions cannot be automated (privileged page — no scripting, no
@@ -2126,13 +3106,92 @@ async function runScript(cmd) {
 
 async function handle(cmd) {
   curSpace = spaceOf(cmd);
+  if (cmd.action === "pause") return await pauseSpace(curSpace, cmd.reason || "Paused from Collie");
+  if (cmd.action === "resume") return await resumeSpace(curSpace);
+  if (cmd.action === "status") {
+    const all = await loadSpaces();
+    return { current: curSpace, spaces: Object.keys(all).map((name) => presenceState(name, all[name])) };
+  }
+  if (cmd.action === "finalize") {
+    const rec = await getSpace(curSpace);
+    if (!rec) return { finalized: false, note: "space '" + curSpace + "' has no tab" };
+    await dropSpace(curSpace);
+    let closed = false;
+    let closedTabIds = [];
+    if (cmd.close_owned && rec.owned) {
+      closedTabIds = await closeOwnedTabs(rec);
+      closed = closedTabIds.length > 0;
+    }
+    return { finalized: true, released: true, closed, closed_tab_ids: closedTabIds,
+             note: rec.owned ? (closed ? "Collie's tab was closed" : "Collie's tab was left open")
+                             : "Your tab was released and left open" };
+  }
+  const readActions = new Set(["read", "snapshot", "links", "screenshot", "wait", "wait_for",
+                               "fields", "form_snapshot", "voice_identity", "google_voice_otp",
+                               "file_inputs", "console", "spaces", "mode", "live_context",
+                               "live_observation"]);
+  const state = readActions.has(cmd.action) ? "observing" : "acting";
+  await setSpacePresence(curSpace, state, cmd.action || "browser action", "");
   try {
-    if (cmd.action === "script") return await runScript(cmd);
-    return await runStep(cmd);
+    const result = cmd.action === "script" ? await runScript(cmd) : await runStep(cmd);
+    return result;
   } catch (e) {
     return { error: String(e) };
+  } finally {
+    const rec = await getSpace(curSpace);
+    if (rec && !rec.paused) await setSpacePresence(curSpace, "idle", cmd.action || "", "");
   }
 }
+
+// Messages from the isolated presence script and extension-owned UI.  A web
+// page can cause a pause (safe denial of service) only through a genuinely
+// trusted physical input; it can never manufacture a Resume.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message !== "object") return false;
+  const run = async () => {
+    if (message.type === "collie:pause" || message.type === "collie:user-takeover") {
+      return await pauseSpacesForTab(sender.tab && sender.tab.id,
+        message.reason || (message.type === "collie:user-takeover" ? "You took over the page" : "Paused by user"));
+    }
+    if (message.type === "collie:presence-ready") {
+      const found = await spaceForTab(sender.tab && sender.tab.id);
+      return { state: found ? presenceState(found.name, found.rec) : { attached: false } };
+    }
+    if (message.type === "collie:get-status" || message.type === "collie:pause-active" ||
+        message.type === "collie:resume-active") {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const found = await spaceForTab(tabs[0] && tabs[0].id);
+      if (!found) return { state: { attached: false }, note: "the active tab is not controlled by Collie" };
+      if (message.type === "collie:pause-active") await pauseSpace(found.name, "Paused from extension");
+      if (message.type === "collie:resume-active") await resumeSpace(found.name);
+      const rec = await getSpace(found.name);
+      return { state: presenceState(found.name, rec) };
+    }
+    if (message.type === "collie:get-bridge-token") return { token: await bridgeToken() };
+    if (message.type === "collie:sync-personal-history") return await syncPersonalHistory();
+    return null;
+  };
+  run().then(sendResponse).catch((error) => sendResponse({ error: String(error) }));
+  return true;
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: "collie-ask-selection", title: "Ask Collie about this selection",
+                                 contexts: ["selection"] });
+    chrome.contextMenus.create({ id: "collie-ask-page", title: "Ask Collie about this page",
+                                 contexts: ["page"] });
+  });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!info || !String(info.menuItemId || "").startsWith("collie-ask-")) return;
+  await chrome.storage.session.set({ collieSideContext: {
+    title: (tab && tab.title) || "Current tab", url: (tab && tab.url) || "",
+    selection: String(info.selectionText || "").slice(0, 5000), at: Date.now()
+  } });
+  try { await chrome.sidePanel.open({ windowId: tab.windowId }); } catch (e) {}
+});
 
 // --- MV3-hardened poll loop (pattern proven in the user's auto-apply / forum-autopost bridges) ---
 // A plain for-loop of fetches dies when the service worker is suspended (~30s idle) and is NEVER
@@ -2150,12 +3209,137 @@ let __authFailed = false;
 
 async function bridgeToken() {
   if (__token !== null) return __token;
+  // An unpacked extension ships beside token.txt. Prefer that authoritative
+  // machine token over chrome.storage.local so a bridge-token rotation cannot
+  // leave this service worker permanently stuck on a cached credential. A
+  // packed/store build has no token.txt and falls back to the popup value.
+  const disk = await tokenFromDisk();
+  if (disk) {
+    __token = disk;
+    return __token;
+  }
   try {
     const s = await chrome.storage.local.get("collieToken");
     __token = typeof s.collieToken === "string" ? s.collieToken : "";
   } catch (e) { __token = ""; }
-  if (!__token) __token = await tokenFromDisk();
   return __token;
+}
+
+// --- privacy-compressed history learning ---------------------------------------------------------
+// The raw chrome.history result lives only in this function. Before the first loopback request it is
+// collapsed to origin + time bucket + small counters; titles, paths, queries and searches are never
+// sent to Collie, written to extension storage, or uploaded.
+let __historySyncing = false;
+
+async function personalWebAuth() {
+  const saved = Number((await chrome.storage.local.get("collieWebPort")).collieWebPort || 0);
+  const ports = [];
+  if (saved >= 8787 && saved <= 8798) ports.push(saved);
+  for (let port = 8787; port <= 8798; port++) if (!ports.includes(port)) ports.push(port);
+  const secret = await bridgeToken();
+  if (!secret) throw new Error("bridge token missing");
+  for (const port of ports) {
+    try {
+      const response = await fetch("http://127.0.0.1:" + port + "/api/browser/bridge-auth", {
+        headers: { Authorization: "Bearer " + secret }, cache: "no-store"
+      });
+      if (!response.ok) continue;
+      const auth = await response.json();
+      if (!auth.token) continue;
+      await chrome.storage.local.set({ collieWebPort: port });
+      return { base: "http://127.0.0.1:" + port, token: auth.token };
+    } catch (e) {}
+  }
+  // The browser bridge can start Web without displaying a window. This is ordinary background
+  // continuity after consent, not a new data grant.
+  try {
+    const started = await fetch(BRIDGE + "/web/start", { method: "POST", headers: await bridgeHeaders({
+      "content-type": "application/json"
+    }), body: "{}" });
+    const detail = await started.json();
+    if (!started.ok || !detail.ok) throw new Error(detail.error || "web start failed");
+    const port = Number(detail.port || 8787);
+    await chrome.storage.local.set({ collieWebPort: port });
+    const response = await fetch("http://127.0.0.1:" + port + "/api/browser/bridge-auth", {
+      headers: { Authorization: "Bearer " + secret }, cache: "no-store"
+    });
+    const auth = await response.json();
+    if (response.ok && auth.token) return { base: "http://127.0.0.1:" + port, token: auth.token };
+  } catch (e) {}
+  throw new Error("Collie Web is unavailable");
+}
+
+async function purgePersonalHistory() {
+  const auth = await personalWebAuth();
+  const response = await fetch(auth.base + "/api/personal/source?token=" +
+    encodeURIComponent(auth.token), { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source_id: "browser_history", enabled: false,
+      permission_state: "revoked", purge: true }) });
+  if (!response.ok) {
+    const value = await response.json().catch(() => ({}));
+    throw new Error(value.error || "history-summary purge failed");
+  }
+  await chrome.storage.local.set({ colliePersonalPurgePending: false });
+}
+
+async function syncPersonalHistory() {
+  if (__historySyncing) return { ok: true, skipped: "already_running" };
+  __historySyncing = true;
+  try {
+    const pending = !!(await chrome.storage.local.get(
+      "colliePersonalPurgePending")).colliePersonalPurgePending;
+    if (pending) {
+      try { await purgePersonalHistory(); }
+      catch (e) { return { ok: false, skipped: "purge_pending", error: String(e) }; }
+    }
+    const enabled = !!(await chrome.storage.local.get("colliePersonalHistory")).colliePersonalHistory;
+    const granted = await chrome.permissions.contains({ permissions: ["history"] });
+    if (!enabled || !granted || !chrome.history) return { ok: true, skipped: "not_enabled" };
+    const auth = await personalWebAuth();
+    const stateResponse = await fetch(auth.base + "/api/personal?token=" +
+      encodeURIComponent(auth.token), { cache: "no-store" });
+    const state = await stateResponse.json().catch(() => ({}));
+    const source = (state.sources || []).find((item) => item.source_id === "browser_history");
+    if (!stateResponse.ok || !state.observation || state.observation.observation_mode !== "personal" ||
+        !source || !source.enabled) {
+      await chrome.storage.local.set({ colliePersonalHistory: false });
+      return { ok: true, skipped: "disabled_in_collie" };
+    }
+    const raw = await chrome.history.search({ text: "", startTime: Date.now() - 14 * 86400000,
+                                              maxResults: 2000 });
+    const compressed = new Map();
+    for (const item of raw) {
+      let origin = "";
+      try {
+        const url = new URL(item.url || "");
+        if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+        origin = url.origin;
+      } catch (e) { continue; }
+      const stamp = Number(item.lastVisitTime || 0);
+      if (!stamp) continue;
+      const day = new Date(stamp).toLocaleDateString("en-CA");
+      const key = day + "\n" + origin;
+      const current = compressed.get(key) || {
+        origin, last_visit_at: stamp, visit_count: 0, typed_count: 0
+      };
+      current.last_visit_at = Math.max(current.last_visit_at, stamp);
+      current.visit_count = Math.min(10000, current.visit_count + Math.max(1, Number(item.visitCount || 1)));
+      current.typed_count = Math.min(10000, current.typed_count + Math.max(0, Number(item.typedCount || 0)));
+      compressed.set(key, current);
+    }
+    // Release the only raw references before making a network call. The endpoint is loopback and
+    // receives only the compressed array below.
+    raw.length = 0;
+    const response = await fetch(auth.base + "/api/personal/history?token=" +
+      encodeURIComponent(auth.token), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items: Array.from(compressed.values()).slice(0, 2000) }) });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(value.error || "history summary rejected");
+    await chrome.storage.local.set({ colliePersonalHistoryLastSync: Date.now() });
+    return value;
+  } finally {
+    __historySyncing = false;
+  }
 }
 
 // The bridge leaves the token in this extension's own directory, which only this extension can read
@@ -2222,8 +3406,12 @@ async function pollOnce() {
           // A rotated token is the likely cause, so re-read the file once before giving up; only a
           // build with no file (or a genuinely wrong token) gets as far as the badge. Then stop
           // hammering — the alarm retries in 30s, by which time the user may have pasted one in.
+          // tokenFromDisk() also updates chrome.storage.local. Its onChanged
+          // listener can therefore update __token before this await resumes;
+          // compare with the credential that was actually rejected instead.
+          const rejected = __token;
           const fresh = await tokenFromDisk();
-          if (fresh && fresh !== __token) { __token = fresh; continue; }
+          if (fresh && fresh !== rejected) { __token = fresh; continue; }
           __authFailed = true;
           await noteAuthFailure(true);
           return;
@@ -2253,6 +3441,25 @@ async function pollOnce() {
 }
 
 chrome.alarms.create("colliePoll", { periodInMinutes: 0.5 });  // survive-suspension backstop
-chrome.alarms.onAlarm.addListener(function (a) { if (a.name === "colliePoll") pollOnce(); });
-chrome.runtime.onStartup.addListener(function () { pollOnce(); });  // restart when the SW revives
+chrome.alarms.create("colliePersonalHistory", { periodInMinutes: 30 });
+chrome.alarms.onAlarm.addListener(function (a) {
+  if (a.name === "colliePoll") pollOnce();
+  if (a.name === "colliePersonalHistory" || a.name === "colliePersonalHistorySoon")
+    syncPersonalHistory().catch(function () {});
+});
+// Do not reread two weeks of history on every page view. A visit only schedules one quiet,
+// coalesced pass five minutes later; startup and the 30-minute alarm remain bounded backstops.
+// syncPersonalHistory itself rechecks the one-time setting and optional history permission.
+if (chrome.history && chrome.history.onVisited) chrome.history.onVisited.addListener(function () {
+  chrome.storage.local.get("colliePersonalHistory").then(function (value) {
+    if (!value.colliePersonalHistory) return;
+    chrome.alarms.get("colliePersonalHistorySoon", function (alarm) {
+      if (!alarm) chrome.alarms.create("colliePersonalHistorySoon", { delayInMinutes: 5 });
+    });
+  }).catch(function () {});
+});
+chrome.runtime.onStartup.addListener(function () {
+  pollOnce();
+  syncPersonalHistory().catch(function () {});
+});  // restart when the SW revives
 pollOnce();

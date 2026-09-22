@@ -37,6 +37,14 @@ def run_jobs(action, text=""):
     return buf.getvalue()
 
 
+def run_argv(argv):
+    from harness import cli
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli.main(argv)
+    return buf.getvalue()
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="collie-jobs-")
     os.environ["COLLIE_STATE_DIR"] = tmp
@@ -88,6 +96,21 @@ def main():
     print("test_confirm_unknown_nonce")
     out = run_jobs("confirm", "deadbeef")
     check("unknown nonce" in out, "confirming an unknown nonce must say so")
+
+    print("test_run_rejects_nonstandard_or_nonobject_authority_json")
+    jobs3 = JobStore(os.path.join(tmp, "jobs.db"))
+    before = len(jobs3.list())
+    jobs3.close()
+    nan_out = run_argv(["jobs", "run", "test.noop", '{"amount":NaN}'])
+    list_out = run_argv(["jobs", "run", "test.noop", "[]"])
+    leash_out = run_argv([
+        "jobs", "run", "test.noop", "{}", "--leash", '{"may":"test.*"}'])
+    jobs3 = JobStore(os.path.join(tmp, "jobs.db"))
+    after = len(jobs3.list())
+    jobs3.close()
+    check("bad job JSON" in nan_out and "bad job JSON" in list_out and
+          "invalid job" in leash_out and before == after,
+          "bad CLI JSON must be explained and must not create a Job")
 
     print("test_argparse_wires_jobs_subcommand")
     from harness import cli

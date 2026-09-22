@@ -5,12 +5,27 @@ then the saved settings.json (what the web Settings panel writes), then the code
 GUI reads SCHEMA to render the panel and GET/POSTs the values; make_harness/_provider/_embedder read
 `get()` so a saved setting takes effect on the next run with zero env fiddling.
 """
+import hashlib
 import json
 import os
+import threading
 import time
+import unicodedata
+from dataclasses import dataclass, replace
+from functools import wraps
 
 _PATH = os.environ.get("COLLIE_SETTINGS_PATH") or os.path.expanduser("~/.collie/settings.json")
 _cache = {"mtime": -1.0, "data": {}}
+_state_lock = threading.RLock()
+
+
+def _serialized(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _state_lock:
+            return fn(*args, **kwargs)
+    return locked
+
 # env vars set BEFORE we ran are authoritative (a user's CLI `COLLIE_X=… collie …` must win over a
 # saved panel value); apply() never overwrites these.
 # Env vars the USER set, which outrank the Settings panel. Snapshotted at import — but a var this
@@ -27,6 +42,25 @@ _INJECTED_ENV = "COLLIE_APPLIED_KEYS"
 _inherited = {k.strip() for k in (os.environ.get(_INJECTED_ENV) or "").split(",") if k.strip()}
 _HARD_ENV = {k for k in os.environ if k.startswith("COLLIE_")} - _inherited - {_INJECTED_ENV}
 
+# What apply() put in os.environ, as env-var-name -> the exact value it wrote. Keys alone were
+# not enough. Runtime code legitimately REPLACES an injected value after import — a capability
+# granted for this session when the save failed (tools.py), the browser-bridge selection a
+# Mission browse run makes for itself (primitives.py) — and the old apply() popped or overwrote
+# every non-hard-set key it recognized, so any other surface calling apply() on its timer (Live
+# Copilot's ticker, the mission tick, every web request) silently revoked those grants mid-run.
+# Measured: COLLIE_SCREEN_CAPTURE='on' and COLLIE_BROWSER_BRIDGE='1' both became None across one
+# unrelated apply().
+#
+# So ownership is now a value, not a name: apply() writes or removes a variable only while what
+# is in the environment is still the thing it put there. A value somebody else wrote is somebody
+# else's, and is left exactly as found — the same rule _HARD_ENV already applies to a var the
+# user exported before we started, extended to one the running process set deliberately.
+#
+# A var inherited across a fork is seeded as ours at its inherited value, so the parent's panel
+# keeps working in the child: that is the whole point of _INJECTED_ENV, and dropping it would
+# re-open the bug where a spawned web server answered forever with the values it started with.
+_injected = {k: os.environ[k] for k in _inherited if k in os.environ}
+
 
 # Each knob: key (the settings.json field + the env var suffix COLLIE_<KEY>), label, type, default,
 # and (for select/bool) options. Grouped for the panel. ONLY user-facing knobs — debug/internal
@@ -35,6 +69,27 @@ _HARD_ENV = {k for k in os.environ if k.startswith("COLLIE_")} - _inherited - {_
 # suggestions), number (optional min/max/step), bool (rendered as a toggle; stored "on"/"off").
 # `hint` is the one-line help shown under the control — every knob gets one so nothing is a mystery.
 SCHEMA = [
+    {"group": "Identity", "key": "COMPANION_NAME", "label": "Companion name",
+     "label_zh": "伙伴名字", "type": "text", "default": "", "max": "32",
+     "placeholder": "Rowan", "placeholder_zh": "Rowan",
+     "hint": "The personal name shown for this Collie across Home, phone and ambient desktop. "
+             "This does not rename Slack apps, @handles or mail addresses. An explicit web "
+             "--name selects a kennel dog and stays authoritative for that server.",
+     "hint_zh": "这只 Collie 在主页、手机和动态桌面上显示的名字。不会改动 Slack 应用、@用户名或邮件地址；"
+                "显式的 web --name 用来选择犬舍成员，并始终以该名字为准。"},
+    {"group": "Identity", "key": "PROFILE_AGE_BAND", "label": "Age eligibility",
+     "label_zh": "年龄资格", "type": "select", "default": "unset",
+     "options": [
+         {"value": "unset", "label": "Not provided", "label_zh": "未提供"},
+         {"value": "16", "label": "I am 16 or older", "label_zh": "我已满 16 岁"},
+         {"value": "18", "label": "I am 18 or older", "label_zh": "我已满 18 岁"},
+         {"value": "21", "label": "I am 21 or older", "label_zh": "我已满 21 岁"}],
+     "hint": "A local eligibility claim, not your birth date. Collie may reuse it only when "
+             "automatic profile claims are enabled below and a form asks the same or a lower "
+             "threshold. CAPTCHA, biometric/KYC, signatures and person-required MFA never use it.",
+     "hint_zh": "仅保存在本机的年龄资格声明，不保存生日。只有下方开启自动使用个人事实时，Collie "
+                "才会在表单询问相同或更低年龄门槛时复用；CAPTCHA、生物识别/KYC、签名和明确要求本人"
+                "完成的 MFA 永远不会因此自动通过。"},
     # UI language: the web GUI chrome + this panel render in it. auto = follow the browser.
     # label_zh / hint_zh on any entry (and label_zh inside options) localize the panel — the GUI
     # picks them when the resolved language is zh; missing translations fall back to English.
@@ -44,24 +99,18 @@ SCHEMA = [
          {"value": "auto", "label": "Auto (follow browser)", "label_zh": "自动(跟随浏览器)"},
          {"value": "en", "label": "English"},
          {"value": "zh", "label": "简体中文"},
-         {"value": "zh-tw", "label": "繁體中文"},
-         {"value": "ja", "label": "日本語"},
-         {"value": "ko", "label": "한국어"},
-         {"value": "es", "label": "Español"},
-         {"value": "fr", "label": "Français"},
-         {"value": "de", "label": "Deutsch"},
-         {"value": "pt", "label": "Português"},
-         {"value": "ru", "label": "Русский"}],
-     "hint": "Language of the web GUI. auto follows your browser's language.",
-     "hint_zh": "Web 界面的显示语言。auto 跟随浏览器语言。"},
-    # API key is the default; anthropic-oauth (Claude-Code header impersonation) is OPT-IN — it is
-    # unsanctioned upstream (see CHANGELOG "BANNED"), so the user selects it deliberately, per run
-    # or via this panel, never by silent default.
+         {"value": "zh-tw", "label": "繁體中文"}],
+     "hint": "Language of every web surface. English and Chinese are currently complete; auto follows those browser languages and otherwise uses English.",
+     "hint_zh": "所有 Web 界面的显示语言。目前英文和中文已完整覆盖；auto 在其他浏览器语言下使用英文。"},
+    # API key is the default.  The official Agent SDK is the supported Claude-plan route for
+    # Collie's own harness; anthropic-oauth remains an experimental raw request and must never be
+    # described as guaranteed-free or silently selected.
     {"group": "Model", "key": "PROVIDER", "label": "Provider", "label_zh": "模型提供方", "type": "select", "default": "anthropic",
      "options": [
          {"value": "anthropic", "label": "Anthropic API (API key, metered)"},
-         {"value": "anthropic-oauth", "label": "Claude subscription (OAuth, $0/token)"},
-         {"value": "codex-oauth", "label": "ChatGPT Codex subscription (OAuth, $0/token)"},
+         {"value": "claude-agent-sdk", "label": "Claude Agent SDK (your Claude plan; Collie harness)"},
+         {"value": "anthropic-oauth", "label": "Claude direct (experimental; billing unverified)"},
+         {"value": "codex-oauth", "label": "ChatGPT Codex subscription (OAuth)"},
          {"value": "claude-cli", "label": "Claude CLI (your logged-in CLI)"},
          {"value": "gemini", "label": "Google Gemini (GEMINI_API_KEY) ☁"},
          {"value": "openai", "label": "OpenAI (OPENAI_API_KEY) ☁"},
@@ -74,13 +123,63 @@ SCHEMA = [
          {"value": "ollama", "label": "Ollama (local models — nothing leaves this machine)"},
          {"value": "openai-compat", "label": "OpenAI-compatible endpoint"},
          {"value": "mock", "label": "Mock (offline, canned — testing only)"}],
-     "hint": "Where completions come from. ☁ = third-party cloud: your prompt, code excerpts and tool output are sent to that vendor under its data policy (keys are read from the named env var, never stored by collie; secret redaction below keeps credentials out of what any vendor sees). The two Claude-subscription options draw your flat plan; Ollama/mock stay fully local."},
-    {"group": "Model", "key": "MODEL", "label": "Model", "type": "text", "default": "claude-opus-5",
+     "hint": "Where completions come from. ☁ = third-party cloud: your prompt, code excerpts and tool output are sent to that vendor under its data policy (keys are read from the named env var, never stored by collie; secret redaction below keeps credentials out of what any vendor sees). Claude Agent SDK uses your logged-in Claude plan with Collie's harness; plan limits and current provider policy still apply. Claude direct is experimental and its availability/billing are not guaranteed. Ollama/mock stay fully local."},
+    {"group": "Model", "key": "MODEL", "label": "Model", "type": "text", "default": "",
      "list": ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5",
               "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna",
               "gemini-2.5-pro", "gemini-2.5-flash", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner"],
-     "hint": "Model id for the chosen provider. Tip: click the model pill (top bar) or type /model in chat for a searchable picker with live model discovery, auth badges and prices. Leave empty for the provider's default.",
-     "hint_zh": "所选 provider 的模型 id。提示:点顶栏的模型标签、或在对话里输入 /model,可打开可搜索的选择器(实时发现模型 + 授权状态 + 价格)。留空用该 provider 的默认。"},
+     "hint": "Optional exact model pin. Leave empty for Auto: Collie stays inside the chosen provider and selects model + reasoning per task. The model pill opens a searchable picker.",
+     "hint_zh": "可选的精确模型锁定。留空即 Auto：Collie 不跨 provider，按任务选择模型和推理强度。点顶栏模型标签可搜索并锁定模型。"},
+    {"group": "Model", "key": "REASONING_EFFORT", "label": "Default reasoning effort",
+     "label_zh": "默认推理强度", "type": "select", "default": "auto",
+     "options": [
+         {"value": "auto", "label": "Auto by task", "label_zh": "按任务自动"},
+         {"value": "low", "label": "Low", "label_zh": "低"},
+         {"value": "medium", "label": "Medium", "label_zh": "中"},
+         {"value": "high", "label": "High", "label_zh": "高"}],
+     "hint": "Reasoning depth for providers that support it. Auto resolves per run; unsupported models use their provider default and the receipt says so.",
+     "hint_zh": "对支持该能力的模型设置推理深度。自动模式会逐任务决定；不支持时使用 provider 默认值，并在回执中说明。"},
+    {"group": "Model", "key": "INTERACTIVE_SPEED", "label": "Interactive response speed",
+     "label_zh": "交互响应速度", "type": "select", "default": "fast",
+     "options": [
+         {"value": "fast", "label": "Fast when available", "label_zh": "可用时使用快速模式"},
+         {"value": "standard", "label": "Standard", "label_zh": "标准"}],
+     "hint": "Default for foreground chat, Run and Live Copilot turns. Fast keeps the same "
+             "model at a higher-priced service tier; unsupported providers fall back to Standard. "
+             "Pack, Missions and other background work stay Standard unless you explicitly choose Fast.",
+     "hint_zh": "前台对话、Run 和 Live Copilot 默认使用的速度。快速模式保持同一模型，但使用价格更高的"
+                "服务档位；不支持的提供方会回退到标准。Pack、Mission 和其他后台任务默认仍为标准，除非你"
+                "明确选择快速模式。"},
+    # Worker (RUNNER) is a different axis from Brain (PROVIDER/MODEL): the provider decides which
+    # model thinks, the runner decides which harness actually carries out the task — whose tool
+    # loop, whose sandbox, whose approval model, and (for an external CLI) whose login and billing
+    # route. Default `collie` keeps today's behaviour bit-for-bit: nothing probes external CLIs and
+    # no other code path changes. `auto` never reaches outside RUNNER_POOL, so a task can never be
+    # silently moved onto a subscription the user did not put in the pool themselves.
+    # The option values here must stay in sync with runner_registry.SPECS (plus "auto", which is
+    # not a runner but a request to choose one) — tests/test_settings_runner.py pins the list.
+    {"group": "Model", "key": "RUNNER", "label": "Worker (who carries out the task)",
+     "type": "select", "default": "collie",
+     "options": [
+         {"value": "collie", "label": "Collie's own harness (default)"},
+         {"value": "auto", "label": "Auto — pick per task and usage, inside the consented pool"},
+         {"value": "codex-exec", "label": "OpenAI Codex CLI (codex exec)"},
+         {"value": "claude-code", "label": "Claude Code (claude -p)"},
+         {"value": "codex-sdk", "label": "OpenAI Codex Python SDK (background)"},
+         {"value": "codex-app-server", "label": "OpenAI Codex App Server (interactive stdio)"},
+         {"value": "pi-rpc", "label": "Pi RPC (no shell)"}],
+     "hint": "Which harness does the work — not which model thinks (that is Provider/Model above). "
+             "Collie's own harness is the default and the fallback; it is the only one with the "
+             "browser, desktop, MCP and per-action approval tools. An external worker runs its own "
+             "CLI under its own login and billing route. Auto only ever picks from the members "
+             "listed in Worker pool below; run `collie runners` to see what is installed."},
+    {"group": "Model", "key": "RUNNER_POOL", "label": "Worker pool (consent list for Auto)",
+     "type": "text", "default": "collie",
+     "hint": "Comma-separated workers Auto may choose from, best first (order is also the "
+             "tie-break preference). Writing an external worker here IS the explicit consent to "
+             "use its login and billing route for your tasks; a worker that is not in the pool is "
+             "never picked automatically, even when it is installed and logged in. An explicit "
+             "--runner still overrides this list."},
     {"group": "Model", "key": "TEMPERATURE", "label": "Temperature", "type": "number", "default": "", "min": "0", "max": "1", "step": "0.1",
      "hint": "Sampling randomness. 0 = deterministic & repeatable (best for code); ~1 = more creative/varied. Leave empty to use the provider default (Claude ≈ 1.0)."},
     {"group": "Model", "key": "MAX_TOKENS", "label": "Max output tokens / turn", "type": "number", "default": "", "min": "0",
@@ -94,14 +193,33 @@ SCHEMA = [
          {"value": "1", "label": "Always on"},
          {"value": "0", "label": "Off"}],
      "hint": "Drive your REAL logged-in Chrome through the browser extension, so pages you're signed into (search, docs) just work. Auto is recommended."},
+    {"group": "Tools", "key": "BROWSER_SITE_ACCESS", "label": "Browser site access",
+     "label_zh": "浏览器网站访问", "type": "select", "default": "all_except_sensitive",
+     "options": [
+         {"value": "all_except_sensitive", "label": "Allow normal sites forever; ask on sensitive sites",
+          "label_zh": "普通网站永久允许；敏感网站询问"},
+         {"value": "ask_every_site", "label": "Ask before every new site",
+          "label_zh": "每个新网站都询问"},
+         {"value": "all_sites", "label": "Allow every site forever",
+          "label_zh": "所有网站永久允许"}],
+     "hint": "Controls navigation only. Clicks, typing, uploads, payments, sends, publishing, deletion and permission changes keep their own action-time approvals.",
+     "hint_zh": "只控制是否允许进入网站。点击、输入、上传、付款、发送、发布、删除和权限变更仍保留各自动作时确认。"},
+    {"group": "Tools", "key": "BROWSER_SENSITIVE_HOSTS", "label": "Extra sensitive sites",
+     "label_zh": "额外敏感网站", "type": "text", "default": "",
+     "placeholder": "mybank.example, *.finance.example",
+     "hint": "Comma-separated domains or wildcards that must still ask under the recommended site-access policy.",
+     "hint_zh": "逗号分隔的域名或通配符；在推荐访问策略下，这些网站仍会询问。"},
     {"group": "Tools", "key": "PLAN_FIRST", "label": "Plan before multi-file edits", "type": "bool", "default": "off",
      "hint": "On larger SWE tasks, write and commit a scope/plan before touching files. Slower but steadier on sprawling changes."},
     {"group": "Tools", "key": "MCP_MANAGE", "label": "Let Collie manage MCP servers", "label_zh": "允许管理 MCP 服务器", "type": "bool", "default": "off",
      "hint": "Let Collie add, re-enable and delete MCP servers itself — which means it can grant itself whatever tools those servers expose, under your credentials for remote ones. Off by default: Collie asks first and only proceeds if you agree. Reading the list and switching a server OFF never need this."},
+    {"group": "Tools", "key": "MCP_DISCOVERY", "label": "Search the public MCP Registry",
+     "label_zh": "搜索公共 MCP Registry", "type": "bool", "default": "off",
+     "hint": "Let Collie look beyond its local reviewed catalog when a task needs a missing connection. The raw goal never leaves this computer: only generic allowlisted capability labels such as calendar, github, or music are sent. Public Registry results are unreviewed and never auto-installed."},
     {"group": "Desktop", "key": "WALLPAPER", "label": "Ambient desktop at login", "label_zh": "登录时启动动态桌面", "type": "bool", "default": "off",
      "hint": "Run Collie's live wallpaper (clock, weather, music, an app dock, and a command bar) behind your desktop icons, started automatically when you log in. Turn OFF to remove the autostart and keep your normal wallpaper — Windows only."},
     {"group": "Desktop", "key": "DESKTOP_CONTROL", "label": "Control desktop apps", "label_zh": "控制桌面应用", "type": "bool", "default": "off",
-     "hint": "Let Collie drive your native apps — click buttons, fill fields, launch apps, use menus — via Windows UI Automation or macOS System Events, in the background. Adds the desktop_* tools. Powerful, so off by default. Windows & macOS (macOS needs Accessibility permission)."},
+     "hint": "Let Collie drive native apps through semantic interfaces first (Windows UIA/MSAA/Win32 or macOS Accessibility), then keyboard and mouse fallbacks. Adds the desktop_* tools. Powerful, so off by default. Windows & macOS (macOS needs Accessibility permission)."},
     {"group": "Desktop", "key": "SCREEN_CAPTURE", "label": "Let Collie see the screen", "label_zh": "允许查看屏幕", "type": "bool", "default": "off",
      "hint": "Let Collie capture a window (even one behind others — no focus stealing) or the whole screen and actually LOOK at it, which is how it can judge whether a UI renders correctly. The image is sent to your configured model, along with anything else visible at the time, so this is separate from desktop control and off by default. Adds the screenshot tool. Windows & macOS (macOS needs Screen Recording permission)."},
 
@@ -128,8 +246,53 @@ SCHEMA = [
     {"group": "Retrieval", "key": "DISTILL", "label": "Distill turns into memories", "type": "bool", "default": "off",
      "hint": "Summarize long turns into compact facts as you go, so future recall stays cheap and on-point."},
 
-    {"group": "Limits", "key": "MAX_TURNS", "label": "Max turns", "type": "number", "default": "50", "min": "1", "max": "120",
-     "hint": "Hard cap on tool/response turns for one message before collie stops and reports back. Info-hunt + build tasks routinely need 20-30; on a flat subscription extra turns cost $0, so high is safe."},
+    {"group": "Autonomy", "key": "MISSION_APPROVAL_MODE", "label": "Mission autonomy",
+     "label_zh": "Mission 自主模式", "type": "select", "default": "smart",
+     "options": [
+         {"value": "smart", "label": "Hands-off — interrupt only when needed",
+          "label_zh": "放手执行 — 仅在确实需要我时打断"},
+         {"value": "review", "label": "Review every external action",
+          "label_zh": "逐项审阅外部操作"}],
+     "hint": "The default for plain /mission. Hands-off lets Collie execute available actions "
+             "inside the Mission leash without asking at every publish/send step. It still stops "
+             "for credentials or identity that have not been connected, CAPTCHA/MFA that requires "
+             "a person, new consent choices, new spending "
+             "authority, scope expansion, and uncertain duplicate risk when these are essential. "
+             "Optional routes with missing access are skipped and recorded while useful work continues. Use /mission --review "
+             "to override one Mission.",
+     "hint_zh": "普通 /mission 的默认模式。放手执行会让 Collie 在 Mission Leash 范围内直接执行"
+                "已有能力，不再每次发布/发送都询问；尚未连接的凭据或工作身份、必须由本人完成的"
+                " CAPTCHA/MFA、新的同意选择、新增支出权限、扩大范围，以及结果不确定可能重复时"
+                "涉及必要步骤时仍会停下来；缺少权限的可选路径会省略并记录，继续其余工作。已连接并授权的邮箱、号码、验证码收件箱和登录态可直接使用。单次任务可用 "
+                "/mission --review 覆盖。"},
+    {"group": "Autonomy", "key": "AUTO_APPLY_PROFILE_CLAIMS",
+     "label": "Use confirmed profile facts automatically", "label_zh": "自动使用已确认的个人事实",
+     "type": "bool", "default": "off",
+     "hint": "Let Hands-off Missions apply facts you explicitly saved (for example an age "
+             "threshold) to matching low/medium-risk forms. This does not authorize CAPTCHA, "
+             "person-required MFA, biometric/KYC, legal signatures, payments, or a different claim.",
+     "hint_zh": "允许放手执行的 Mission 把你明确保存的事实（例如年龄门槛）用于匹配的低/中风险表单。"
+                "这不会授权 CAPTCHA、明确要求本人的 MFA、生物识别/KYC、法律签名、付款或不同的声明。"},
+    {"group": "Autonomy", "key": "MAX_AUTO_AUTH_RISK",
+     "label": "Maximum automatic authorization risk", "label_zh": "自动授权最高风险",
+     "type": "select", "default": "medium",
+     "options": [
+         {"value": "low", "label": "Low only", "label_zh": "仅低风险"},
+         {"value": "medium", "label": "Low and medium", "label_zh": "低风险和中风险"}],
+     "hint": "The ceiling for delegable standing authorizations. High/critical identity, legal, "
+             "security and spending boundaries remain Needs You even in Hands-off mode.",
+     "hint_zh": "可委托长期授权的风险上限。即使在放手执行模式，高/严重级身份、法律、安全和支出边界"
+                "仍进入 Needs You。"},
+    {"group": "Autonomy", "key": "DEFER_MISSING_AUTHORIZATIONS",
+     "label": "Keep working while authorization waits", "label_zh": "等待授权时继续其他工作",
+     "type": "bool", "default": "on",
+     "hint": "Skip blocked optional routes with a record of the omission. Put a required missing authorization in Needs You and continue independent Mission work. "
+             "The whole Mission pauses only when every remaining path depends on it.",
+     "hint_zh": "受阻的可选路径会省略并保留说明；必要的缺失授权放入“需要你”，同时继续不依赖它的工作。只有所有剩余路径都依赖"
+                "该授权时，整个 Mission 才暂停。"},
+
+    {"group": "Limits", "key": "MAX_TURNS", "label": "Turn cap (optional)", "type": "number", "default": "0", "min": "0", "max": "120",
+     "hint": "Optional hard cap on tool/response turns for one message. 0 = unlimited; provider, token/cost budgets and the Stop button still apply."},
     {"group": "Limits", "key": "MAX_COST", "label": "Budget: stop past $", "type": "number", "default": "0", "min": "0", "step": "0.01",
      "hint": "Abort a run once metered spend crosses this many dollars. 0 = no budget cap. (Subscription providers cost $0 regardless.)"},
     {"group": "Limits", "key": "MAX_TOTAL_TOKENS", "label": "Budget: stop past tokens", "type": "number", "default": "0", "min": "0",
@@ -144,6 +307,18 @@ SCHEMA = [
      "hint": "Base seconds for exponential backoff between retries (2 → ~2s, 4s, 8s …)."},
     {"group": "Reliability", "key": "OVERFLOW_RECOVERY", "label": "Recover from context overflow", "type": "bool", "default": "on",
      "hint": "When the context window fills, auto-compact and retry the turn instead of erroring out. Recommended on."},
+    {"group": "Reliability", "key": "COMPACT_TOKENS", "label": "Summarize long context after tokens", "type": "number", "default": "48000", "min": "4000", "max": "1000000",
+     "label_zh": "长上下文摘要阈值（估算 tokens）",
+     "hint": "Summarize older conversation when estimated input reaches this size. Full history and the latest request are kept. Uses the current model and run budget; requires context recovery enabled.",
+     "hint_zh": "估算模型输入达到该值后，总结较早的会话；完整历史和当前请求保留。使用当前模型及任务预算，需要开启上下文自动恢复。"},
+    {"group": "Reliability", "key": "COMPACT_MIN_MESSAGES", "label": "Minimum messages before summarizing", "type": "number", "default": "24", "min": "6", "max": "10000",
+     "label_zh": "触发摘要的最少消息数",
+     "hint": "Avoid spending a summary request on short conversations. Tool calls and results also count as messages.",
+     "hint_zh": "短会话无需额外调用模型生成摘要。工具调用和结果也计入消息数。"},
+    {"group": "Reliability", "key": "COMPACT_KEEP_MESSAGES", "label": "Recent messages to keep in full", "type": "number", "default": "12", "min": "2", "max": "500",
+     "label_zh": "完整保留的最近消息数",
+     "hint": "Keep at least this many recent messages after summarizing, extending the boundary to preserve complete tool calls and results.",
+     "hint_zh": "摘要后至少完整保留这些最近消息；为保留完整的工具调用与结果，实际可能保留更多。"},
 
     {"group": "Skills", "key": "SKILL_DIRS", "label": "Extra skill dirs", "type": "text", "default": "",
      "hint": "Colon-separated folders of custom skills to load in addition to the built-ins (e.g. /home/me/skills:/team/skills)."},
@@ -158,14 +333,26 @@ SCHEMA = [
 # entry (e.g. LANG/PROVIDER above) wins over this table.
 _ZH = {
     "PROVIDER": {"label": "模型提供方",
-                 "hint": "补全来自哪里。☁ = 第三方云:你的提示词、代码片段和工具输出会按该厂商的数据政策发送给它(密钥只从对应环境变量读取,collie 不存储;下方的密钥脱敏会把凭据挡在任何厂商可见内容之外)。两个 Claude 订阅选项走包月;Ollama/mock 完全本地。",
+                 "hint": "补全来自哪里。☁ = 第三方云:你的提示词、代码片段和工具输出会按该厂商的数据政策发送给它(密钥只从对应环境变量读取,collie 不存储;下方的密钥脱敏会把凭据挡在任何厂商可见内容之外)。订阅路由仍受套餐限额和各自计费政策约束;Ollama/mock 完全本地。",
                  "options": {"anthropic": "Anthropic API(API key,按量计费)",
-                             "anthropic-oauth": "Claude 订阅(OAuth,$0/token)",
+                             "claude-agent-sdk": "Claude Agent SDK(你的 Claude 套餐,Collie harness)",
+                             "anthropic-oauth": "Claude 直连(实验性,计费未验证)",
                              "claude-cli": "Claude CLI(你已登录的 CLI)",
                              "ollama": "Ollama(本地模型 — 数据不出本机)",
                              "openai-compat": "OpenAI 兼容端点",
                              "mock": "Mock(离线示例 — 仅测试)"}},
-    "MODEL": {"label": "模型", "hint": "所选提供方的模型 id(如 claude-opus-4-8、gemini-2.5-flash、Ollama 标签)。留空用该提供方默认。"},
+    "MODEL": {"label": "模型", "hint": "可选的精确模型锁定。留空即 Auto:Collie 不跨 provider,按任务选择模型和推理强度。"},
+    "RUNNER": {"label": "Worker(由谁来干活)",
+               "hint": "由谁来干活 —— 不是由谁来思考(思考用哪个模型在上面的「模型提供方/模型」里选)。默认且兜底永远是 Collie 自己的 harness,也只有它带浏览器、桌面、MCP 和逐条审批这些工具;外部 worker 会用它自己的 CLI、自己的登录和计费路线。auto 只会在下面「Worker 同意池」列出的成员里挑;`collie runners` 可以看本机装了哪些。",
+               "options": {"collie": "Collie 自己的 harness(默认)",
+                           "auto": "自动 — 按任务与用量在同意池里选",
+                           "codex-exec": "OpenAI Codex CLI(codex exec)",
+                           "codex-sdk": "OpenAI Codex Python SDK(后台任务)",
+                           "codex-app-server": "OpenAI Codex App Server(交互式 stdio)",
+                           "pi-rpc": "Pi RPC(禁用 shell)",
+                           "claude-code": "Claude Code(claude -p)"}},
+    "RUNNER_POOL": {"label": "Worker 同意池(auto 的候选名单)",
+                    "hint": "逗号分隔的 worker 名单,auto 只从这里面挑,靠前的优先(平手时也按这个顺序)。把一个外部 worker 写进这里,就等于明确同意用它的登录与计费路线来跑你的任务;没写进池子的,哪怕装了、登录了也不会被自动选中。显式的 --runner 仍然优先于这份名单。"},
     "TEMPERATURE": {"label": "采样温度", "hint": "随机性。0 = 确定且可复现(适合代码);≈1 更发散。留空用提供方默认(Claude ≈ 1.0)。"},
     "MAX_TOKENS": {"label": "单轮最大输出 tokens", "hint": "模型单轮可生成的 token 上限。留空 = 提供方默认;长文件/大计划可调高。"},
     "WEBSEARCH": {"label": "网页搜索", "hint": "允许 collie 搜网(免密引擎/SearXNG)。若下方本地 Chrome 桥在线,则优先用真 Chrome。"},
@@ -174,8 +361,10 @@ _ZH = {
                        "options": {"auto": "自动 — 扩展在线就用", "1": "总是开", "0": "关"}},
     "PLAN_FIRST": {"label": "多文件编辑前先计划", "hint": "大型任务先写好范围/计划再动文件。更慢但在牵连面大的改动上更稳。"},
     "MCP_MANAGE": {"label": "允许管理 MCP 服务器", "hint": "让 Collie 自己增删、重新启用 MCP 服务器——也就是它能给自己接上这些服务器提供的工具,远程服务器还会用到你的凭据。默认关:Collie 会先问你,你同意了才动手。查看列表和把某个服务器关掉不需要这个权限。"},
+    "MCP_DISCOVERY": {"label": "搜索公共 MCP Registry",
+                      "hint": "当本机已审阅目录没有匹配连接时，允许 Collie 搜索公共 MCP Registry。原始需求、项目名、路径和对话不会上传；只发送 calendar、github、music 这类本机归纳的通用标签。公共结果未经 Collie 安全审查，也不会自动安装或连接。"},
     "WALLPAPER": {"label": "登录时启动动态桌面", "hint": "把 Collie 的动态壁纸(时钟、天气、音乐、应用坞、命令栏)贴在桌面图标背后,开机自动启动。关掉就移除自启、恢复你原来的壁纸——仅 Windows。"},
-    "DESKTOP_CONTROL": {"label": "控制桌面应用", "hint": "让 Collie 驱动你的原生应用——点按钮、填输入框、启动应用、用菜单——Windows 走 UI Automation,macOS 走 System Events,后台执行。会加上 desktop_* 工具。很强,默认关。Windows 和 macOS 都支持(macOS 需授予辅助功能权限)。"},
+    "DESKTOP_CONTROL": {"label": "控制桌面应用", "hint": "让 Collie 驱动你的原生应用——优先使用 UI Automation 精确操作控件，也可在 Windows 前台使用真实鼠标/键盘、坐标点击、拖动、滚轮、按键长按、窗口管理、剪贴板和批量脚本。很强，默认关闭；macOS 使用 System Events，能力较窄且需授予辅助功能权限。"},
     "EMBED": {"label": "语义模型",
               "hint": "记忆召回背后的语义模型。auto 用 granite(进程内 ONNX),依赖/模型不可用时降级为 BM25 关键词召回——绝不退回 hash(实测比 BM25 还差)。改动后需要 `collie mem reembed`。",
               "options": {"auto": "自动(granite 语义 → 不可用则 BM25)", "granite": "granite-107m(Apache,55MB,多语言 — 默认)",
@@ -184,7 +373,7 @@ _ZH = {
     "RECENCY_HALFLIFE": {"label": "时效半衰期(天)", "hint": "新记忆有轻度加权,每 N 天减半——端口会换、决定会翻,新事实用来破平。相关性仍占主导。0 = 关闭时间加权。"},
     "RERANK": {"label": "重排器(cross-encoder)", "hint": "召回候选与查询联合重打分,top-k 更准。更精确,每轮略慢。"},
     "DISTILL": {"label": "把对话蒸馏成记忆", "hint": "边跑边把长轮次总结为紧凑事实,未来召回更便宜更准。"},
-    "MAX_TURNS": {"label": "最大轮数", "hint": "单条消息的工具/回复轮数硬上限。信息搜寻+构建类任务常要 20-30;订阅计费下多轮 $0,调高是安全的。"},
+    "MAX_TURNS": {"label": "轮数上限(可选)", "hint": "单条消息的工具/回复轮数硬上限。0 = 不限轮数；模型提供方限制、token/费用预算和停止按钮仍然有效。"},
     "MAX_COST": {"label": "预算:超过 $ 即停", "hint": "按量计费花费越线即中止。0 = 不设上限。(订阅提供方恒为 $0。)"},
     "MAX_TOTAL_TOKENS": {"label": "预算:超过 tokens 即停", "hint": "总 tokens(入+出)越线即中止。0 = 不设上限。"},
     "REDACT_SECRETS": {"label": "向模型输入脱敏密钥", "hint": "工具输出中发现的 API key、token、私钥块在发给任何云厂商前替换为 {{SECRET:…}} 占位符;工具执行时替换回真值,部署/curl 鉴权等流程不受影响。仅当任务确实需要模型看到明文密钥时才关。"},
@@ -194,8 +383,8 @@ _ZH = {
     "SKILL_DIRS": {"label": "额外 skill 目录", "hint": "冒号分隔的自定义 skill 目录,在内置之外加载(如 /home/me/skills:/team/skills)。"},
 }
 # group headers, for the panel
-GROUPS_ZH = {"General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
-             "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
+GROUPS_ZH = {"Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
+             "Retrieval": "检索", "Autonomy": "自主", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
 for _s in SCHEMA:
     _t = _ZH.get(_s["key"])
     if not _t:
@@ -211,6 +400,32 @@ for _s in SCHEMA:
 _KEYS = {s["key"] for s in SCHEMA}
 
 
+def normalize_companion_name(value, allow_empty=True) -> str:
+    """Return one safe, human display name or raise ``ValueError``.
+
+    Names are data, never markup.  NFC makes the same visible Unicode spelling stable for avatar
+    hashing; whitespace is collapsed so a rename cannot create a visually different identity with
+    invisible padding.  Formatting/control characters (including bidi overrides) and angle
+    brackets are rejected instead of silently rewritten: accepting them would make audit rows and
+    device switchers ambiguous even when every HTML call site escapes correctly.
+    """
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError("companion name must be text")
+    name = " ".join(unicodedata.normalize("NFC", value).split())
+    if not name:
+        if allow_empty:
+            return ""
+        raise ValueError("companion name is required")
+    if len(name) > 32:
+        raise ValueError("companion name must be 32 characters or fewer")
+    if "<" in name or ">" in name or any(unicodedata.category(ch).startswith("C") for ch in name):
+        raise ValueError("companion name contains unsupported characters")
+    return name
+
+
+@_serialized
 def _load():
     """settings.json, mtime-cached so a Settings-panel save takes effect on the next get().
 
@@ -243,9 +458,19 @@ def get(key, default=None):
     """env COLLIE_<KEY>  >  settings.json[key]  >  default. Returns str or default."""
     env = os.environ.get("COLLIE_" + key)
     if env is not None and env != "":
+        if key == "COMPANION_NAME":
+            try:
+                return normalize_companion_name(env, allow_empty=False)
+            except ValueError:
+                return default
         return env
     v = _load().get(key)
     if v is not None and v != "":
+        if key == "COMPANION_NAME":
+            try:
+                return normalize_companion_name(v, allow_empty=False)
+            except ValueError:
+                return default
         return str(v)
     return default
 
@@ -267,34 +492,76 @@ def pinned(key):
     return ("COLLIE_" + key) in _HARD_ENV
 
 
+def owns(key) -> bool:
+    """Is COLLIE_<KEY> still the value apply() last put there (so apply() may change it)?
+
+    True for a variable apply() injected and nobody has touched since, and for one that is
+    absent (nothing to take from anyone). False for a user's hard-set env var and for a value
+    the running process replaced at runtime — those belong to whoever set them.
+    """
+    envk = key if key.startswith("COLLIE_") else "COLLIE_" + key
+    if envk in _HARD_ENV:
+        return False
+    current = os.environ.get(envk)
+    return current is None or current == _injected.get(envk)
+
+
+def injected_values() -> dict:
+    """A copy of what apply() has injected and still owns (env var name -> value)."""
+    return dict(_injected)
+
+
+@_serialized
 def apply():
     """Inject saved settings into os.environ (as COLLIE_<KEY>) for keys the user did NOT hard-set
     via a real env var — so every existing os.environ.get('COLLIE_X') read picks up the Settings
     panel with zero call-site changes, while an explicit env override stays authoritative. Re-reads
     settings.json (mtime-cached) so a panel save takes effect on the next call. Call per web request
-    / at CLI start."""
+    / at CLI start.
+
+    It only ever writes or removes a value it still owns (see ``owns``/``_injected``): a variable
+    the running process set for itself after import is a runtime override, and this function is
+    called on timers by surfaces that know nothing about it.
+    """
     data = _load()
     injected = []
     for s in SCHEMA:
         envk = "COLLIE_" + s["key"]
         if envk in _HARD_ENV:
             continue
+        if not owns(envk):
+            # Somebody replaced what we injected (or set it themselves after import). Leave both
+            # the value and our record of it alone: overwriting would revoke a runtime decision,
+            # and this is the periodic call of an unrelated surface, not a user's panel save.
+            continue
         v = data.get(s["key"])
         if v is not None and v != "":
-            os.environ[envk] = str(v)
+            value = str(v)
+            os.environ[envk] = value
+            _injected[envk] = value
             injected.append(envk)      # tell any child this came from the panel, not from the user
         else:
             # Clearing a setting in the panel must REVERT within a long-lived process, not linger until
             # restart — code that reads os.environ directly (COLLIE_MAX_TOKENS / _MAX_COST / force ratios)
             # kept a stale cap otherwise. Only drop env WE injected; a hard-set env stays (guarded above).
             os.environ.pop(envk, None)
+            _injected.pop(envk, None)
     # Carried across a fork so a child can tell panel-injected vars from a real user override.
     os.environ[_INJECTED_ENV] = ",".join(injected)
 
 
+@_serialized
 def save(values: dict) -> dict:
     """Persist only known keys (ignore junk); empty string clears a key back to its default."""
     clean = {k: v for k, v in (values or {}).items() if k in _KEYS and v not in (None, "")}
+    if "COMPANION_NAME" in clean:
+        clean["COMPANION_NAME"] = normalize_companion_name(clean["COMPANION_NAME"], allow_empty=False)
+    if "PROFILE_AGE_BAND" in clean and str(clean["PROFILE_AGE_BAND"]) not in {
+            "unset", "16", "18", "21"}:
+        raise ValueError("age eligibility must be unset, 16, 18, or 21")
+    if "MAX_AUTO_AUTH_RISK" in clean and str(clean["MAX_AUTO_AUTH_RISK"]) not in {
+            "low", "medium"}:
+        raise ValueError("automatic authorization risk must be low or medium")
     os.makedirs(os.path.dirname(_PATH), exist_ok=True)
     tmp = "%s.%d.%s.tmp" % (_PATH, os.getpid(), os.urandom(4).hex())   # unique per writer: a fixed
     with open(tmp, "w", encoding="utf-8") as f:                        # .tmp let concurrent panel saves
@@ -333,3 +600,225 @@ def update(partial: dict) -> dict:
         if k in _KEYS:
             data[k] = v
     return save(data)
+
+
+# ---------------------------------------------------------------- frozen run limits
+# A budget is authority, not a preference. The number that decides "stop here" has to be the one
+# the person authorized when the run started — not whatever the panel happens to say at the
+# moment a turn boundary is reached.
+#
+# Reading COLLIE_MAX_COST / COLLIE_MAX_TOTAL_TOKENS at every check made a Settings save
+# retroactive. Measured: a run had spent 5000 tokens, the user saved "Budget: stop past 1000
+# tokens" in another tab intending it for *future* work, and the answer they were waiting for
+# came back "_[stopped: budget ceiling reached]_". It goes wrong in the other direction too, and
+# more expensively: a durable request waits in the inbox, the cap is raised while it waits, and
+# the request runs past the ceiling it was accepted under.
+#
+# So the limits are SNAPSHOT once — at the start of a run, or at the moment a queued request is
+# accepted — and carried explicitly from there. Nothing in here writes os.environ: replaying a
+# snapshot by mutating process state would move every other run in this process with it, which
+# is the bug, not the fix.
+
+LIMIT_KEYS = ("MAX_COST", "MAX_TOTAL_TOKENS", "MAX_TURNS", "MAX_TOKENS", "TEMPERATURE")
+# Bumped when the meaning of a frozen field changes. A queued request whose payload names a
+# version this build cannot replay is refused and left waiting, never guessed at.
+LIMITS_VERSION = 1
+
+
+def _fmt_num(value) -> str:
+    """A float as short canonical text, so the same limit always digests the same."""
+    text = "%.10g" % float(value)
+    return "0" if text in ("-0", "-0.0") else text
+
+
+def _as_float(value, default=0.0) -> float:
+    try:
+        out = float(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return default if out != out or out in (float("inf"), float("-inf")) else out
+
+
+def _as_int(value, default=0) -> int:
+    text = str(value).strip()
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        pass
+    try:                       # "1000.0" from a JSON number round-trip is still a token count
+        return int(float(text))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _tighter(a, b):
+    """The stricter of two ceilings, where 0 means "no ceiling"."""
+    values = [v for v in (a, b) if v and v > 0]
+    return min(values) if values else 0
+
+
+@dataclass(frozen=True)
+class RunLimits:
+    """The budget and generation ceilings ONE run is authorized to spend.
+
+    ``max_cost`` / ``max_total_tokens`` / ``max_turns`` use 0 for "no ceiling", matching the
+    Settings panel. ``max_tokens`` / ``temperature`` use None for "not set — the provider's own
+    default", which is a different statement from "set to zero" and has to survive as one:
+    temperature 0 is a real, deliberate choice.
+    """
+
+    max_cost: float = 0.0
+    max_total_tokens: int = 0
+    max_turns: int = 0
+    max_tokens: int | None = None
+    temperature: float | None = None
+    # Where these came from, for receipts: "current" (read from the live settings at run start)
+    # or "frozen" (replayed from a durable request's acceptance snapshot).
+    source: str = "current"
+
+    @classmethod
+    def from_raw(cls, raw, *, source="current"):
+        """Parse the five knobs from their string form (missing/"" = unset)."""
+        raw = raw or {}
+        max_tokens = str(raw.get("MAX_TOKENS", "") or "").strip()
+        temperature = str(raw.get("TEMPERATURE", "") or "").strip()
+        return cls(
+            # A malformed ceiling reads as "no ceiling", which is what the loop has always done
+            # with junk in COLLIE_MAX_COST. Changing that to fail-closed is a separate decision.
+            max_cost=max(0.0, _as_float(raw.get("MAX_COST", ""), 0.0)),
+            max_total_tokens=max(0, _as_int(raw.get("MAX_TOTAL_TOKENS", ""), 0)),
+            max_turns=max(0, _as_int(raw.get("MAX_TURNS", ""), 0)),
+            # 0 output tokens is not a request anyone can serve, so it means "unset" here.
+            max_tokens=(lambda v: v if v > 0 else None)(_as_int(max_tokens, 0))
+                       if max_tokens else None,
+            temperature=_as_float(temperature, 0.0) if temperature else None,
+            source=str(source or "current"))
+
+    def values(self) -> dict:
+        """The canonical string form: what gets stored, compared and digested."""
+        return {"MAX_COST": _fmt_num(self.max_cost),
+                "MAX_TOTAL_TOKENS": str(int(self.max_total_tokens)),
+                "MAX_TURNS": str(int(self.max_turns)),
+                "MAX_TOKENS": "" if self.max_tokens is None else str(int(self.max_tokens)),
+                "TEMPERATURE": ("" if self.temperature is None
+                                else _fmt_num(self.temperature))}
+
+    def digest(self) -> str:
+        blob = json.dumps({"version": LIMITS_VERSION, "values": self.values()},
+                          sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+    def payload(self) -> dict:
+        """The durable form carried by an accepted request."""
+        return {"version": LIMITS_VERSION, "values": self.values(), "digest": self.digest()}
+
+    def differences(self, other) -> tuple:
+        """SCHEMA key names whose ceiling differs between two snapshots."""
+        if other is None:
+            return LIMIT_KEYS
+        mine, theirs = self.values(), other.values()
+        return tuple(k for k in LIMIT_KEYS if mine[k] != theirs[k])
+
+    def describe(self, keys=None) -> str:
+        """``MAX_TOTAL_TOKENS=1000, MAX_COST=0.5`` — for a refusal a person has to act on."""
+        values = self.values()
+        return ", ".join("%s=%s" % (k, values[k] or "unset")
+                         for k in (keys or LIMIT_KEYS))
+
+    def ceiling_text(self) -> str:
+        """The spend ceilings in words, for the line that says a run stopped at one."""
+        parts = []
+        if self.max_total_tokens > 0:
+            parts.append("%d total tokens" % self.max_total_tokens)
+        if self.max_cost > 0:
+            parts.append("$%s" % _fmt_num(self.max_cost))
+        return " / ".join(parts)
+
+
+@_serialized
+def _raw_limits() -> dict:
+    """Read one settings revision, outside any half-applied environment update."""
+    data = _load()
+    env = dict(os.environ)
+    values = {}
+    for key in LIMIT_KEYS:
+        value = env.get("COLLIE_" + key)
+        if value in (None, ""):
+            value = data.get(key)
+        values[key] = "" if value is None else str(value).strip()
+    return values
+
+
+def current_limits() -> RunLimits:
+    """One snapshot of the configured ceilings, taken now. Env > settings.json > default."""
+    return RunLimits.from_raw(_raw_limits(), source="current")
+
+
+def freeze_limits() -> dict:
+    """The durable snapshot to store with a request at the moment it is accepted."""
+    return current_limits().payload()
+
+
+def limits_from_payload(payload, *, source="frozen") -> RunLimits:
+    """Replay a stored snapshot, or raise ``ValueError`` saying exactly why it cannot be.
+
+    ``None`` is the legacy entry: it was accepted before limits were frozen, so it carries no
+    claim about them and runs under the current ones. That absence is explicit — an entry whose
+    payload is present but unreadable is refused instead, because a request that *did* record a
+    ceiling must never be run under a different one.
+    """
+    if payload is None:
+        return current_limits()
+    if not isinstance(payload, dict):
+        raise ValueError("the frozen run limits are not an object")
+    version = payload.get("version")
+    if version != LIMITS_VERSION:
+        raise ValueError(
+            "this request froze its limits in format version %r; this build reads version %d"
+            % (version, LIMITS_VERSION))
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        raise ValueError("the frozen run limits carry no values")
+    unknown = sorted(set(values) - set(LIMIT_KEYS))
+    if unknown:
+        raise ValueError("the frozen run limits name unknown setting(s): %s"
+                         % ", ".join(unknown))
+    missing = sorted(set(LIMIT_KEYS) - set(values))
+    if missing:
+        raise ValueError("the frozen run limits are missing setting(s): %s" % ", ".join(missing))
+    if any(not isinstance(value, str) for value in values.values()):
+        raise ValueError("the frozen run limits require canonical string values")
+    limits = RunLimits.from_raw(values, source=source)
+    stored = payload.get("digest")
+    if not isinstance(stored, str) or stored != limits.digest():
+        raise ValueError("the frozen run limits do not match their own digest")
+    if values != limits.values():
+        raise ValueError("the frozen run limits contain malformed or noncanonical values")
+    return limits
+
+
+def enforce_pinned(limits: RunLimits) -> RunLimits:
+    """Never let a snapshot loosen a ceiling the user hard-set in this process's environment.
+
+    An explicit ``COLLIE_MAX_COST=...`` outranks the panel everywhere else, and it has to
+    outrank a snapshot too — including one frozen by a *different* process, which is the only
+    way the two can disagree. For the three spend ceilings the stricter of the two wins, so a
+    snapshot that asked for less still gets less. The two generation knobs are not ceilings, so
+    the user's explicit value simply wins.
+    """
+    if limits is None:
+        return current_limits()
+    live = current_limits()
+    changes = {}
+    if pinned("MAX_COST"):
+        changes["max_cost"] = float(_tighter(limits.max_cost, live.max_cost))
+    if pinned("MAX_TOTAL_TOKENS"):
+        changes["max_total_tokens"] = int(_tighter(limits.max_total_tokens,
+                                                   live.max_total_tokens))
+    if pinned("MAX_TURNS"):
+        changes["max_turns"] = int(_tighter(limits.max_turns, live.max_turns))
+    if pinned("MAX_TOKENS"):
+        changes["max_tokens"] = live.max_tokens
+    if pinned("TEMPERATURE"):
+        changes["temperature"] = live.temperature
+    return replace(limits, **changes) if changes else limits

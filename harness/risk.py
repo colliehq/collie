@@ -61,6 +61,13 @@ _BASE: dict[str, RiskClass] = {
     "load_tools": RiskClass.READ,
     "plan": RiskClass.READ,
     "mcpctl_status": RiskClass.READ,
+    "mcpctl_refresh": RiskClass.READ,
+    # Recommendation is local catalog matching, with an optional read-only public Registry query.
+    # It never persists a server or starts OAuth; connecting is a separate external action below.
+    "mcpctl_recommend": RiskClass.READ,
+    # Mixed by action in classify(): status is read, notes/plans are local writes, and Mission
+    # handoff or surface writes can act outside the current response. Malformed calls fail closed.
+    "live_copilot": RiskClass.EXTERNAL,
     # web_fetch/web_search leave the machine, but only to READ a public URL: no
     # session, no cookies, nothing mutated. Gating them would stop ordinary
     # research and buy nothing — the injection risk they DO carry is already
@@ -79,6 +86,7 @@ _BASE: dict[str, RiskClass] = {
     "desktop_apps": RiskClass.READ,
     "desktop_inspect": RiskClass.READ,
     "desktop_read": RiskClass.READ,
+    "desktop_wait": RiskClass.READ,
     # -- write_local --------------------------------------------------------
     "write_file": RiskClass.WRITE_LOCAL,
     "edit_file": RiskClass.WRITE_LOCAL,
@@ -92,6 +100,9 @@ _BASE: dict[str, RiskClass] = {
     # Browser writes. Every one of these acts inside the user's logged-in session.
     "browser_open": RiskClass.EXTERNAL,
     "browser_click": RiskClass.EXTERNAL,
+    # Narrower than browser_click and extension-enforced, but it still acts in
+    # the user's real authenticated session, so the global policy stays strict.
+    "browser_advance": RiskClass.EXTERNAL,
     "browser_type": RiskClass.EXTERNAL,
     "browser_press": RiskClass.EXTERNAL,
     "browser_hover": RiskClass.EXTERNAL,
@@ -104,18 +115,28 @@ _BASE: dict[str, RiskClass] = {
     # Desktop writes: driving someone's real applications.
     "desktop_click": RiskClass.EXTERNAL,
     "desktop_type": RiskClass.EXTERNAL,
+    "desktop_range": RiskClass.EXTERNAL,
+    "desktop_uia": RiskClass.EXTERNAL,
+    "desktop_win32": RiskClass.EXTERNAL,
+    "desktop_mouse": RiskClass.EXTERNAL,
+    "desktop_drag": RiskClass.EXTERNAL,
+    "desktop_key": RiskClass.EXTERNAL,
+    "desktop_window": RiskClass.EXTERNAL,
+    "desktop_clipboard": RiskClass.EXTERNAL,
+    "desktop_script": RiskClass.EXTERNAL,
     "desktop_launch": RiskClass.EXTERNAL,
     "desktop_focus": RiskClass.EXTERNAL,
     "desktop_menu": RiskClass.EXTERNAL,
     # Changing what collie itself can do next.
     "enable_capability": RiskClass.EXTERNAL,
-    "delegate": RiskClass.EXTERNAL,
+    "delegate": RiskClass.READ,  # host-owned child has only local inspection tools
     "mcpctl_add": RiskClass.EXTERNAL,
     # Opens the user's browser to authorize a service and registers whatever tools it
     # exposes into THIS session — the single widest-reaching call collie has. Its own
     # description already says it "requires their explicit agreement first"; now that is
     # enforced rather than asked of the model.
     "mcpctl_connect": RiskClass.EXTERNAL,
+    "mcpctl_connect_candidate": RiskClass.EXTERNAL,
     "mcpctl_remove": RiskClass.EXTERNAL,
     # Asymmetry worth naming: tools.py's capability layer deliberately leaves turning a
     # server OFF ungated ("being able to disable a misbehaving server should never need a
@@ -153,7 +174,7 @@ RiskOverrides = Callable[[str], Optional["RiskClass"]]
 
 
 def classify(tool_name: str, tool: Any = None,
-             overrides: Optional[RiskOverrides] = None) -> RiskClass:
+             overrides: Optional[RiskOverrides] = None, args: Optional[dict] = None) -> RiskClass:
     """The effective risk of a call.
 
     Order: user-local override > the table above > a glob rule > the tool's own
@@ -166,9 +187,28 @@ def classify(tool_name: str, tool: Any = None,
         ov = overrides(tool_name)
         if ov is not None:
             return ov
+    if tool_name == "live_copilot":
+        action = str((args or {}).get("action") or "").strip().casefold()
+        if action == "status":
+            return RiskClass.READ
+        if action in {"stop", "note", "diagram_preview"}:
+            return RiskClass.WRITE_LOCAL
+        return RiskClass.EXTERNAL
     base = _BASE.get(tool_name)
     if base is not None:
         return base
+    # MCP annotations are advisory and an arbitrary server must not classify itself down from the
+    # fail-closed mcp__* rule. MCPTool accepts readOnlyHint only after pinning the connection to a
+    # catalogued first-party endpoint (currently Comfy Cloud); no plugin/self-declared `.risk` gets
+    # this path.
+    try:
+        from .mcpclient import MCPTool
+        if isinstance(tool, MCPTool):
+            trusted = tool._trusted_risk(args)
+            if trusted is not None:
+                return RiskClass(trusted)
+    except (ImportError, TypeError, ValueError):
+        pass
     best, best_score = None, -1
     for pattern, risk in _PATTERNS:
         if fnmatch.fnmatchcase(tool_name, pattern):
@@ -251,6 +291,30 @@ def target_for(tool_name: str, args: dict, origin_lookup=None) -> Optional[str]:
         except Exception:
             return None
     if tool_name.startswith("desktop_"):
-        app = str(args.get("app") or args.get("process") or args.get("window") or "").strip()
-        return app.lower() or None
+        # These are the ACTUAL schemas used by native.py on Windows/macOS. Keeping
+        # only the old hypothetical `app` field made every real desktop action
+        # targetless, so "always allow WeChat this run" silently degraded to an
+        # allow-once prompt at every click/type.
+        if tool_name == "desktop_clipboard":
+            return "windows-clipboard"
+        if tool_name == "desktop_launch":
+            target = str(args.get("target") or "").strip()
+            return target.lower() or None
+        app = str(args.get("app") or args.get("process") or args.get("window")
+                  or args.get("match") or "").strip()
+        if not app and tool_name in ("desktop_focus", "desktop_menu"):
+            app = str(args.get("name") or "").strip()
+        if app:
+            return app.lower()
+        try:
+            hwnd = int(args.get("hwnd") or 0)
+        except (TypeError, ValueError):
+            hwnd = 0
+        if hwnd:
+            return "hwnd:%d" % hwnd
+        try:
+            pid = int(args.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        return ("pid:%d" % pid) if pid else None
     return None

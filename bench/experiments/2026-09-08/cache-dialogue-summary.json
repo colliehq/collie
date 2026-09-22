@@ -1,0 +1,28 @@
+{
+  "summary": [
+    {
+      "mode": "flat",
+      "repetitions": 3,
+      "followup_calls": 15,
+      "completed_calls_including_initial": 18,
+      "followup_cache_hit_calls": 0,
+      "followup_cache_write_total": 175835,
+      "followup_cache_read_total": 0,
+      "followup_cache_write_median": 11826,
+      "wall_seconds_median_including_initial": 94.625
+    },
+    {
+      "mode": "session",
+      "repetitions": 3,
+      "followup_calls": 15,
+      "completed_calls_including_initial": 18,
+      "followup_cache_hit_calls": 15,
+      "followup_cache_write_total": 17543,
+      "followup_cache_read_total": 175241,
+      "followup_cache_write_median": 1180,
+      "wall_seconds_median_including_initial": 79.726
+    }
+  ],
+  "followup_cache_write_reduction": 0.9002303295703358,
+  "claim": "Supplied public-code review, not tool execution or task correctness. First calls excluded from cache comparison because some were already warm. Modes have the same first prompt but naturally different subsequent model output."
+}

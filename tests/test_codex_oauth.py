@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # fake CODEX_HOME so construction doesn't require a real login
@@ -70,6 +71,15 @@ check("tool_call -> function_call w/ call_id", items[2]["type"] == "function_cal
 check("tool result -> function_call_output", items[3] == {
     "type": "function_call_output", "call_id": "call_1", "output": "line1\nline2"})
 check("final assistant -> output_text", items[4]["content"][0]["type"] == "output_text")
+vision = p._to_input([{"role": "user", "content": [
+    {"type": "text", "text": "inspect this frame"},
+    {"type": "image", "media_type": "image/png", "data": "cG5n"},
+]}])[0]
+check("canonical image -> Responses input_image",
+      vision["content"] == [
+          {"type": "input_text", "text": "inspect this frame"},
+          {"type": "input_image", "image_url": "data:image/png;base64,cG5n"},
+      ])
 
 # ---- 3. request body: tools flat, store false, reasoning ------------------------------
 body = p._body("SYS", msgs, [{"name": "read_file", "description": "d",
@@ -137,6 +147,31 @@ print("\n%s" % ("ALL PASS" if ok else "SOME FAILED"))
 def test_codex_oauth_checks_pass():
     """Gate for a bare `pytest` run — see the note in test_catalog.py."""
     assert ok, "see the FAIL lines in captured stdout"
+
+
+def test_fast_account_rejection_retries_same_model_on_standard(monkeypatch):
+    import harness.codex_oauth as codex_oauth
+
+    provider = CodexOAuthProvider(model="gpt-5.6-sol", effort="low", speed="fast")
+    bodies = []
+
+    def open_request(request, timeout=None):
+        bodies.append(json.loads(request.data.decode()))
+        if len(bodies) == 1:
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "bad request", {},
+                io.BytesIO(b'{"detail":"Unsupported service_tier: fast"}'))
+        return sse(
+            {"type": "response.output_text.delta", "delta": "ok"},
+            {"type": "response.completed", "response": {"usage": {}}},
+        )
+
+    monkeypatch.setattr(codex_oauth.urllib.request, "urlopen", open_request)
+    result = provider.complete("system", [{"role": "user", "content": "hi"}], [])
+    assert result.text == "ok"
+    assert bodies[0]["service_tier"] == "fast"
+    assert "service_tier" not in bodies[1]
+    assert provider.actual_speed == "standard"
 
 
 if __name__ == "__main__":                 # script mode; a bare SystemExit here aborts collection

@@ -94,6 +94,36 @@ def test_irreversible_parks_not_autofires():
     sched.close(); acts.close(); jobs.close()
 
 
+def test_schedule_binds_exact_pending_action_and_is_idempotent():
+    print("test_schedule_binds_exact_pending_action_and_is_idempotent")
+    clear_registry(); caps.register_builtins()
+    ap, jp = _paths()
+    acts, jobs = ActionStore(ap), JobStore(jp)
+    jobs.create("one", "first", leash={"may": ["note.*"]})
+    jobs.create("two", "second", leash={"may": ["note.*"]})
+    nonce = acts.propose(
+        "note.append", {"file": "bounded.txt", "text": "once"}, job_id="one")
+    sched = Scheduler(acts, jobs, db_path=jp)
+
+    first = sched.schedule("one", nonce, fire_at=100, now=90)
+    replay = sched.schedule("one", nonce, fire_at=100, now=91)
+    check(first == replay and len(sched.pending_waits()) == 1,
+          "an exact schedule replay must not create a second timer")
+    try:
+        sched.schedule("two", nonce, fire_at=100, now=91)
+        check(False, "a wait must not bind another Job's action")
+    except ValueError:
+        pass
+    try:
+        sched.schedule("one", nonce, fire_at=True, now=91)
+        check(False, "JSON true must not become timestamp 1")
+    except ValueError:
+        pass
+    check(jobs.get("two").state != WAITING,
+          "a rejected cross-Job schedule must not mutate the other Job")
+    sched.close(); acts.close(); jobs.close()
+
+
 def test_daemon_loop_runs_the_mission_tick_on_catchup():
     print("test_daemon_loop_runs_the_mission_tick_on_catchup")
     clear_registry(); caps.register_builtins()

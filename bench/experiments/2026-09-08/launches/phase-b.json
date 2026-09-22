@@ -1,0 +1,24 @@
+{
+  "phase": "b",
+  "results": [
+    {
+      "name": "normalized-session2",
+      "exit": 1,
+      "started_at": "2026-09-08T05:39:38.949654+00:00",
+      "seconds": 5.385
+    },
+    {
+      "name": "native-session2-session-full-history",
+      "exit": 0,
+      "started_at": "2026-09-08T05:39:38.949990+00:00",
+      "seconds": 333.471
+    },
+    {
+      "name": "native-session2-stateless-full-history",
+      "exit": 0,
+      "started_at": "2026-09-08T05:39:38.950026+00:00",
+      "seconds": 475.921
+    }
+  ],
+  "finished_at": "2026-09-08T05:47:34.871970+00:00"
+}

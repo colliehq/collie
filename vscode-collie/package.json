@@ -1,10 +1,15 @@
 {
   "name": "collie",
   "displayName": "Collie",
-  "description": "Collie coding agent, docked in a VS Code sidebar — chat, the verification gate, live diffs, and the code map. Runs on your workspace.",
-  "version": "0.1.0",
+  "description": "A local-first coding agent beside your editor: attach code context, run independent agents, review native diffs, and choose any Collie worker.",
+  "version": "0.4.0",
   "publisher": "collie",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/colliehq/collie.git",
+    "directory": "vscode-collie"
+  },
   "engines": { "vscode": "^1.84.0" },
   "categories": ["AI", "Chat", "Other"],
   "keywords": ["collie", "agent", "coding-agent", "acp"],
@@ -14,20 +19,51 @@
   "contributes": {
     "viewsContainers": {
       "activitybar": [
-        { "id": "collie", "title": "Collie", "icon": "media/galaxy.svg" }
+        { "id": "collie", "title": "Collie", "icon": "media/galaxy.svg", "when": "collie.doesNotSupportSecondarySidebar" }
+      ],
+      "secondarySidebar": [
+        { "id": "collieSecondary", "title": "Collie", "icon": "media/galaxy.svg", "when": "!collie.doesNotSupportSecondarySidebar" }
       ]
     },
     "views": {
       "collie": [
-        { "type": "webview", "id": "collie.panel", "name": "Collie", "icon": "media/galaxy.svg" }
+        { "type": "webview", "id": "collie.panel", "name": "Collie", "icon": "media/galaxy.svg", "when": "collie.doesNotSupportSecondarySidebar" }
+      ],
+      "collieSecondary": [
+        { "type": "webview", "id": "collie.panel.secondary", "name": "Collie", "icon": "media/galaxy.svg", "when": "!collie.doesNotSupportSecondarySidebar" }
       ]
     },
     "commands": [
+      { "command": "collie.openSidebar", "title": "Collie: Open Sidebar", "icon": "$(comment-discussion)" },
+      { "command": "collie.newAgent", "title": "Collie: New Background Agent", "icon": "$(new-window)" },
+      { "command": "collie.addSelectionToThread", "title": "Collie: Add Selection to Thread" },
+      { "command": "collie.addFileToThread", "title": "Collie: Add File to Thread" },
+      { "command": "collie.addProblemsToThread", "title": "Collie: Add File Problems to Thread" },
+      { "command": "collie.implementTodo", "title": "Collie: Implement TODO" },
+      { "command": "collie.reviewChanges", "title": "Collie: Review Changes in Native Diff", "icon": "$(diff)" },
       { "command": "collie.reload", "title": "Collie: Reload Panel" },
+      { "command": "collie.openMap", "title": "Collie: Open Project Map", "icon": "$(map)" },
       { "command": "collie.restart", "title": "Collie: Restart Server" },
       { "command": "collie.openInBrowser", "title": "Collie: Open in Browser" },
       { "command": "collie.showLog", "title": "Collie: Show Server Log" }
     ],
+    "menus": {
+      "editor/title": [
+        { "command": "collie.openSidebar", "group": "navigation@20" }
+      ],
+      "editor/context": [
+        { "command": "collie.addSelectionToThread", "group": "collie@1", "when": "resourceScheme == file" },
+        { "command": "collie.addProblemsToThread", "group": "collie@2", "when": "resourceScheme == file" }
+      ],
+      "editor/title/context": [
+        { "command": "collie.addFileToThread", "group": "2_chat@20", "when": "resourceScheme == file" },
+        { "command": "collie.reviewChanges", "group": "3_compare@20", "when": "resourceScheme == file" }
+      ],
+      "view/title": [
+        { "command": "collie.newAgent", "when": "view == collie.panel || view == collie.panel.secondary", "group": "navigation@1" },
+        { "command": "collie.openMap", "when": "view == collie.panel || view == collie.panel.secondary", "group": "navigation@2" }
+      ]
+    },
     "configuration": {
       "title": "Collie",
       "properties": {
@@ -54,6 +90,43 @@
           "default": [],
           "scope": "machine",
           "description": "Extra arguments appended to `collie web`. Machine-scoped so an untrusted workspace cannot inject args into the spawned command (RCE guard)."
+        },
+        "collie.openOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Focus the Collie sidebar after VS Code starts. Off by default so Collie never steals editor focus."
+        },
+        "collie.revealOnContextAdd": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reveal and focus Collie after adding a selection, file, TODO, or diagnostics. Off keeps the context queued silently."
+        },
+        "collie.newAgentPreserveFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a new agent editor tab without moving focus away from your current code."
+        },
+        "collie.followUpQueueMode": {
+          "type": "string",
+          "enum": ["queue", "steer"],
+          "enumDescriptions": [
+            "Queue a follow-up until the current run finishes.",
+            "Steer the current run at its next supported turn boundary."
+          ],
+          "default": "queue",
+          "description": "How Enter behaves when a Collie run is already active. Ctrl/Cmd+Shift+Enter uses the opposite behavior once."
+        },
+        "collie.commentCodeLensEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an Implement with Collie CodeLens above TODO and FIXME comments."
+        },
+        "collie.maxSelectionChars": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Maximum selected characters included when code context is explicitly attached."
         }
       }
     }

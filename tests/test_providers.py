@@ -138,7 +138,47 @@ def test_classify_error_matrix():
     assert classify_error("request_too_large", 413) == "overflow"
     assert classify_error("ThrottlingException: Too many tokens, please wait", 0) == "retryable", "throttle != overflow"
     assert classify_error("timed out", 0) == "retryable"
+    assert classify_error("", 422, "response_contract_error") == "protocol"
+    assert classify_error("assistant response was not bridgeable", 422) == "protocol"
+    assert classify_error("response_contract_error while rate limited", 429) == "retryable"
+    assert classify_error("ordinary validation failure", 422) == "terminal", \
+        "an unrelated 422 must not spend a model-format repair"
     assert classify_error("something novel", 0) == "terminal", "unknown fails fast"
+
+
+def test_http_error_preserves_content_free_code_and_completed_usage():
+    import urllib.error
+    from harness.providers import _error_completion
+
+    body = json.dumps({
+        "error": {"type": "sidecar_error", "code": "response_contract_error",
+                  "message": "assistant response was not bridgeable"},
+        "usage": {"prompt_tokens": 13, "completion_tokens": 5, "total_tokens": 18,
+                  "prompt_tokens_details": {"cached_tokens": 3},
+                  "cache_creation_input_tokens": 2},
+    }).encode()
+    error = urllib.error.HTTPError("http://inference", 422, "unprocessable", {}, io.BytesIO(body))
+
+    completion = _error_completion("normalized-subscription-sidecar", error)
+
+    assert completion.error_code == "response_contract_error"
+    assert completion.error_status == 422
+    assert completion.usage.input_tokens == 8
+    assert completion.usage.cache_read == 3
+    assert completion.usage.cache_creation == 2
+    assert completion.usage.output_tokens == 5
+
+
+def test_http_error_normalization_never_raises_on_malformed_usage():
+    import urllib.error
+    from harness.providers import _error_completion
+
+    for usage in ({"prompt_tokens_details": "not-an-object"},
+                  {"prompt_tokens": [], "completion_tokens": {}}, "not-an-object"):
+        body = json.dumps({"error": {"code": "bad_response"}, "usage": usage}).encode()
+        error = urllib.error.HTTPError("http://provider", 500, "error", {}, io.BytesIO(body))
+        completion = _error_completion("provider", error)
+        assert completion.stop_reason == "error" and completion.error_status == 500
 
 
 # The 429 a flat plan sends when it is spent, verbatim from a real ChatGPT-plan refusal.
@@ -191,6 +231,7 @@ def test_exhausted_message_answers_which_plan_and_when():
     assert "2026-" in msg, "the reset instant, not just resets_in_seconds"
     assert "429" in msg
 
+
 def test_provider_error_contract_matrix():
     """Every provider, every transport failure -> stop_reason=='error', text startswith 'ERROR(',
     never raises (point 4). 4 providers x 4 fault kinds."""
@@ -209,7 +250,8 @@ def test_provider_error_contract_matrix():
     provs = [an, ol, oc]
     # A real expired Claude Code credential on the developer's machine must not pre-empt this
     # transport-error matrix. Expiry has its own tests; this one owns the token state completely.
-    with patch("harness.providers._read_oauth_token", lambda: "tok"), \
+    # The stub keeps `**_kwargs` because callers pass `login_store_only=`.
+    with patch("harness.providers._read_oauth_token", lambda **_kwargs: "tok"), \
          patch("harness.providers.claude_oauth_expired", lambda *a, **k: False):
         provs.append(oa)
         for p in provs:
@@ -218,6 +260,429 @@ def test_provider_error_contract_matrix():
                     c = p.complete("s", [{"role": "user", "content": "hi"}], [])
                 assert c.stop_reason == "error", "%s did not return error for %r" % (p.name, f)
                 assert c.text.startswith("ERROR("), (p.name, c.text[:40])
+
+def test_claude_cli_provider_fails_closed_on_process_and_envelope_errors():
+    """A CLI launch/protocol failure must never become an empty successful end_turn."""
+    import subprocess
+    from unittest.mock import patch
+    from harness.providers import ClaudeCliProvider
+
+    failures = [
+        subprocess.CompletedProcess(["claude"], 7, "", "authentication failed"),
+        subprocess.CompletedProcess(["claude"], 0, "not JSON", ""),
+        subprocess.CompletedProcess(["claude"], 0, json.dumps({
+            "is_error": True, "result": "quota exhausted", "usage": {}}), ""),
+        subprocess.CompletedProcess(["claude"], 0, json.dumps({"usage": {}}), ""),
+    ]
+    for process in failures:
+        provider = ClaudeCliProvider("opus")
+        with patch("harness.providers.shutil.which", return_value="C:/bin/claude.cmd"), \
+             patch("harness.providers.subprocess.run", return_value=process):
+            completion = provider.complete(
+                "system", [{"role": "user", "content": "do the work"}], [])
+        assert completion.stop_reason == "error", process
+        assert completion.text.startswith("ERROR(claude-cli):"), completion.text
+
+
+def test_claude_cli_format_repair_reports_both_physical_requests(monkeypatch):
+    from harness.providers import ClaudeCliProvider, Usage
+
+    provider = ClaudeCliProvider("opus")
+    replies = iter([("plain prose", Usage(input_tokens=2)),
+                    ('{"answer":"done"}', Usage(input_tokens=3))])
+    monkeypatch.setattr(provider, "_call", lambda *_args: next(replies))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.text == "done"
+    assert completion.request_count == 2
+    assert completion.usage.input_tokens == 5
+
+
+def test_request_authority_is_bound_to_one_provider_instance():
+    from harness.providers import ClaudeCliProvider
+
+    first = ClaudeCliProvider("opus")
+    second = ClaudeCliProvider("opus")
+    gate = lambda _purpose: "request-1"
+    complete = lambda *_args: None
+
+    with first.request_authority(gate, complete, request_scope="mission-one"):
+        assert first.current_request_authority() == (gate, complete)
+        assert first.current_request_scope() == "mission-one"
+        assert second.current_request_authority() == (None, None)
+        assert second.current_request_scope() == ""
+    assert first.current_request_authority() == (None, None)
+    assert first.current_request_scope() == ""
+
+
+def test_claude_cli_subscription_only_requires_authority_before_subprocess(monkeypatch):
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing authority must stop before subprocess")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.error_detail == "claude CLI model request authority is missing"
+
+
+def test_claude_cli_reserves_and_completes_each_format_repair_process(monkeypatch):
+    import subprocess
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    replies = iter([
+        subprocess.CompletedProcess(
+            ["claude"], 0, json.dumps({"result": "plain prose", "usage": {}}), ""),
+        subprocess.CompletedProcess(
+            ["claude"], 0,
+            json.dumps({"result": '{"answer":"done"}', "usage": {}}), ""),
+    ])
+    launched = []
+    reserved = []
+    completed = []
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *args, **kwargs: launched.append((args, kwargs)) or next(replies))
+
+    def reserve(purpose):
+        reserved.append(purpose)
+        return "request-%d" % len(reserved)
+
+    with provider.request_authority(
+            reserve, lambda *args: completed.append(args)):
+        completion = provider.complete(
+            "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.text == "done"
+    assert completion.request_count == 2
+    assert len(launched) == 2
+    assert reserved == ["claude_cli", "claude_cli"]
+    assert completed == [
+        ("request-1", "completed"),
+        ("request-2", "completed"),
+    ]
+
+
+def test_claude_cli_second_reservation_failure_does_not_launch_repair(monkeypatch):
+    import subprocess
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    launched = []
+    completed = []
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *args, **kwargs: launched.append((args, kwargs)) or subprocess.CompletedProcess(
+            ["claude"], 0, json.dumps({"result": "plain prose", "usage": {}}), ""))
+    reservations = iter(["request-1", RuntimeError("budget exhausted")])
+
+    def reserve(_purpose):
+        result = next(reservations)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with provider.request_authority(
+            reserve, lambda *args: completed.append(args)):
+        completion = provider.complete(
+            "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.error_detail == "claude CLI model request reservation failed"
+    assert len(launched) == 1
+    assert completed == [("request-1", "completed")]
+
+
+def test_claude_cli_process_error_completes_reserved_request(monkeypatch):
+    from harness.providers import ClaudeCliProvider
+
+    provider = ClaudeCliProvider("opus", subscription_only=True)
+    completed = []
+    monkeypatch.setattr("harness.providers.shutil.which", lambda *_args, **_kwargs: "claude")
+    monkeypatch.setattr(
+        "harness.providers.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("launch failed")))
+
+    with provider.request_authority(
+            lambda _purpose: "request-1", lambda *args: completed.append(args)):
+        completion = provider.complete(
+            "system", [{"role": "user", "content": "do the work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completed == [("request-1", "error")]
+
+
+def test_make_provider_passes_subscription_only_to_claude_cli():
+    from harness.providers import make_provider
+
+    provider = make_provider("claude-cli", "opus", subscription_only=True)
+
+    assert provider.supports_request_gate is True
+    assert provider.subscription_only is True
+
+
+def _authorize_direct(provider):
+    provider.request_gate = lambda _purpose: "test-request-1"
+    provider.request_complete = lambda *_args: None
+    return provider
+
+
+def test_direct_oauth_overnight_uses_only_collie_system_and_official_proxy_free_route(
+        monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {}, "stop_reason": "end_turn",
+            }).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            seen["request"] = request
+            seen["timeout"] = timeout
+            return Response()
+
+    def build_opener(*handlers):
+        seen["handlers"] = handlers
+        return Opener()
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = True
+    _authorize_direct(provider)
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    monkeypatch.setattr("harness.providers.urllib.request.build_opener", build_opener)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("direct overnight must not use ambient-proxy urlopen")))
+
+    completion = provider.complete(
+        "COLLIE SYSTEM ONLY", [{"role": "user", "content": "work"}], [])
+
+    request = seen["request"]
+    body = json.loads(request.data)
+    assert completion.text == "ok"
+    assert body["system"] == [{
+        "type": "text", "text": "COLLIE SYSTEM ONLY",
+        "cache_control": {"type": "ephemeral"},
+    }]
+    assert "Claude Code" not in json.dumps(body)
+    assert request.full_url == provider.OFFICIAL_API
+    assert request.headers["User-agent"] == "collie/anthropic-oauth-experimental"
+    assert "X-app" not in request.headers
+    assert request.headers["Anthropic-beta"] == "oauth-2025-04-20"
+    assert "claude-code" not in request.headers["Anthropic-beta"]
+    assert len(seen["handlers"]) == 2
+    redirect = next(h for h in seen["handlers"]
+                    if type(h).__name__ == "_NoRedirectHandler")
+    assert redirect.redirect_request(
+        request, None, 302, "Found", {}, "https://redirect.invalid/steal") is None
+
+
+def test_direct_oauth_overnight_refuses_endpoint_or_fast_route_drift(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = "https://example.invalid/messages"
+    provider.subscription_only = True
+    _authorize_direct(provider)
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert "route is invalid" in completion.error_detail
+
+
+def test_direct_oauth_never_falls_back_to_ambient_oauth_token(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = True
+    _authorize_direct(provider)
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.build_opener",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("missing direct token must fail before HTTP")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert "login-store token is unavailable" in completion.error_detail
+
+
+def test_oauth_expiring_mid_run_returns_terminal_completion_instead_of_raising(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider, OAUTH_EXPIRED_HINT
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = False
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("expired token must stop before HTTP")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.text.startswith("ERROR(anthropic-oauth):")
+    assert completion.error_detail == OAUTH_EXPIRED_HINT
+
+
+def test_direct_oauth_request_reservation_failure_stops_before_http(monkeypatch):
+    from harness.providers import AnthropicOAuthProvider
+
+    provider = AnthropicOAuthProvider.__new__(AnthropicOAuthProvider)
+    provider.name = "anthropic-oauth"
+    provider.model = "claude-opus-4-8"
+    provider.max_tokens = 128
+    provider.effort = "default"
+    provider.speed = "standard"
+    provider.API = provider.OFFICIAL_API
+    provider.subscription_only = True
+    provider.request_gate = lambda _purpose: (_ for _ in ()).throw(
+        RuntimeError("sqlite unavailable and must not leak"))
+    monkeypatch.setattr(
+        "harness.providers._read_oauth_token", lambda **_kwargs: "private-token")
+    monkeypatch.setattr(
+        "harness.providers.claude_oauth_expired", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        "harness.providers.urllib.request.build_opener",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("failed reservation must stop before HTTP")))
+
+    completion = provider.complete(
+        "system", [{"role": "user", "content": "work"}], [])
+
+    assert completion.stop_reason == "error"
+    assert completion.error_detail == "model request reservation failed"
+
+
+def test_direct_oauth_constructor_cannot_be_admitted_by_ambient_token(monkeypatch):
+    import pytest
+    from harness.providers import AnthropicOAuthProvider
+
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ambient-token-must-be-ignored")
+    monkeypatch.setattr("harness.providers.claude_credentials", lambda: {})
+
+    with pytest.raises(RuntimeError, match="no Claude OAuth token"):
+        AnthropicOAuthProvider(subscription_only=True)
+
+def test_claude_cli_text_protocol_handles_braces_inside_json_strings():
+    from harness.providers import _parse_answer_json, _parse_tool_json
+
+    content = '}\nfunction f() { return {"nested": true}; }\n{'
+    encoded_tool = "prose before\n```json\n%s\n```" % json.dumps({
+        "tool": "write_file", "args": {"path": "x.js", "content": content}})
+    call = _parse_tool_json(encoded_tool)
+    assert call is not None and call.name == "write_file"
+    assert call.args == {"path": "x.js", "content": content}
+
+    answer = 'kept a closing brace } and an opening brace { inside the summary'
+    assert _parse_answer_json(json.dumps({"answer": answer})) == answer
+
+
+def test_text_response_envelope_rejects_ambiguous_or_unsafe_shapes():
+    from harness.providers import _parse_response_envelope
+
+    parsed = _parse_response_envelope(
+        'prose before {"tool":"read_file","args":{"path":"a.py"}}',
+        allowed_tools={"read_file"})
+    assert parsed and parsed[0] == "tool" and parsed[1].args == {"path": "a.py"}
+    assert _parse_response_envelope(
+        '{"answer":"one"} then {"answer":"two"}') is None
+    assert _parse_response_envelope('{"answer":"x","extra":true}') is None
+    assert _parse_response_envelope('{"tool":"read_file","args":[]}',
+                                    allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope('{"tool":"bash","args":{}}',
+                                    allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"answer":"nested"}} suffix') is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"tool":"read_file","args":{"path":"x"}}} suffix',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"answer":"nested"} suffix') is None
+    assert _parse_response_envelope(
+        'prefix {"wrapper":{"tool":"read_file","args":{"path":"x"}} suffix',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        '{broken {"answer":"nested"}') is None
+    assert _parse_response_envelope(
+        '[broken {"tool":"read_file","args":{"path":"x"}}',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        'prefix [{"answer":"nested in a list"}] suffix') is None
+    assert _parse_response_envelope(
+        '{"answer":"first","answer":"second"}') is None
+    assert _parse_response_envelope(
+        '{"tool":"read_file","args":{"value":NaN}}',
+        allowed_tools={"read_file"}) is None
+    assert _parse_response_envelope(
+        "[" * 1200 + '{"answer":"nested"}' + "]" * 1200) is None
+    nested_args = _parse_response_envelope(
+        'prefix {"tool":"write_file","args":{"path":"x","metadata":'
+        '{"answer":"data, not a final response"}}} suffix',
+        allowed_tools={"write_file"})
+    assert nested_args and nested_args[0] == "tool"
 
 def test_openai_compat_surfaces_finish_length():
     """AUDIT #7 second half: finish_reason='length' must surface as stop_reason='length' with the
@@ -258,6 +723,34 @@ def test_anthropic_max_tokens_default():
     finally:
         os.environ.pop("COLLIE_MAX_TOKENS", None)
         if old is not None: os.environ["COLLIE_MAX_TOKENS"] = old
+
+
+def test_anthropic_fast_uses_the_documented_beta_wire():
+    from unittest.mock import patch
+    from harness.providers import AnthropicProvider
+
+    seen = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def read(self):
+            return json.dumps({"content": [{"type": "text", "text": "ok"}],
+                               "usage": {}}).encode()
+
+    def open_request(request, **_kwargs):
+        seen["request"] = request
+        return Response()
+
+    provider = AnthropicProvider(
+        model="claude-opus-5", api_key="test-key", speed="fast")
+    with patch("urllib.request.urlopen", open_request):
+        result = provider.complete("system", [{"role": "user", "content": "hi"}], [])
+
+    request = seen["request"]
+    assert json.loads(request.data)["speed"] == "fast"
+    assert request.get_header("Anthropic-beta") == "fast-mode-2026-02-01"
+    assert result.text == "ok"
 
 def test_ollama_done_reason_length():
     from unittest.mock import patch

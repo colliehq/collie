@@ -1,0 +1,4379 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-15T07:57:42.819879+00:00",
+  "window": {
+    "started_at": "2026-09-15T03:57:19+00:00",
+    "deadline": "2026-09-15T07:57:19+00:00",
+    "source_head": "ceda3ca753e5f97dc5b820ddd58d75fc3610d8f8",
+    "native_concurrency": 4,
+    "provider": "Claude Code normal subscription",
+    "automatic_extra_usage": false,
+    "full_timeout_seconds": 3300
+  },
+  "latest_runtime": {
+    "product": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\ui-markup-contract\\product",
+    "snapshot_commit": "88cdda2cf7bd95e9ec137b6f9705eb653a4e0005",
+    "source_commit": "73001b5550ed1e41d6fc846920a852011da4bda8",
+    "full_test_snapshot_commit": "a761075ac5dd3e4ce7402324df8387f24be6630a",
+    "full_test_repo": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\final-test-snapshot\\product"
+  },
+  "scope": "Local four-hour product improvement and exploratory subscription-native comparison; not a publishable controlled-model leaderboard.",
+  "accepted": [
+    {
+      "lane": "mode-prompt",
+      "integration": {
+        "source_commit": "900b56bfe76a066b854f03de4c94899f84d6579b",
+        "tested_snapshot_commit": "88559f8e803a219141f39ae193e6fe164df6b6a7",
+        "paths": [
+          "harness/context.py",
+          "harness/providers.py",
+          "tests/test_mode_prompt_contract.py"
+        ],
+        "patch_sha256": "1b720575cc9609c83cc4ca2246a97084c612ddf9e3aec8bae651f7c4e8741d04",
+        "source_patch_sha256": "fb7109b664f3bfd9109bbf7a9b86a210ff95be9ed44933cee821cc4874e7e5a8",
+        "preserved_unrelated_files": 73,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 18.029,
+        "finished_at": "2026-09-15T04:19:37.283166+00:00",
+        "tests": [
+          "tests/test_mode_prompt_contract.py",
+          "tests/test_context.py",
+          "tests/test_claude_cli_response_contract.py",
+          "tests/test_claude_agent_sdk.py",
+          "tests/test_claude_agent_sdk_structured.py",
+          "tests/test_claude_agent_sdk_formatter_refusal.py",
+          "tests/test_protocol_recovery_progress.py",
+          "tests/test_accepted_run_policy.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "13b043c32ba55fa4ed0f2d9265c752de2dcc38b3",
+        "diff_sha256": "1b720575cc9609c83cc4ca2246a97084c612ddf9e3aec8bae651f7c4e8741d04"
+      },
+      "patch": {
+        "path": "manual/mode-prompt/verification/candidate.patch",
+        "sha256": "1b720575cc9609c83cc4ca2246a97084c612ddf9e3aec8bae651f7c4e8741d04"
+      },
+      "review_acceptance": {
+        "path": "manual/mode-prompt/verification/verified.json",
+        "sha256": "1b786ac043347274fcff58b87b3c85d9c8d72fdfcf31bb411f55a2a922226435"
+      }
+    },
+    {
+      "lane": "verification-evidence",
+      "integration": {
+        "source_commit": "34660e064710e6aef83fac681568e855f9de2630",
+        "tested_snapshot_commit": "43bbef5fed429dd247db3ba29840ea2a1135ff92",
+        "paths": [
+          "harness/loop.py",
+          "harness/verification.py",
+          "tests/test_verification_evidence_context.py"
+        ],
+        "patch_sha256": "8d541269e0ee5b90d8cea3668bba4055996966083771d6e0ad18d7f9ce81786e",
+        "source_patch_sha256": "effbedfa00a07ff37e240f5d9338c8d9b4ea86bd0bab66539757822deb458ea7",
+        "preserved_unrelated_files": 75,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 54.068,
+        "finished_at": "2026-09-15T04:26:56.699398+00:00",
+        "tests": [
+          "tests/test_verification_evidence_context.py",
+          "tests/test_verify_nudge_selection.py",
+          "tests/test_auto_verification.py",
+          "tests/test_verifier.py",
+          "tests/test_loop.py",
+          "tests/test_protocol_recovery_progress.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "13b043c32ba55fa4ed0f2d9265c752de2dcc38b3",
+        "diff_sha256": "8d541269e0ee5b90d8cea3668bba4055996966083771d6e0ad18d7f9ce81786e"
+      },
+      "patch": {
+        "path": "manual/verification-evidence/verification/candidate.patch",
+        "sha256": "8d541269e0ee5b90d8cea3668bba4055996966083771d6e0ad18d7f9ce81786e"
+      },
+      "review_acceptance": {
+        "path": "manual/verification-evidence/verification/verified.json",
+        "sha256": "b2dd4d110b2eb14ff1d79d7404bac8dac0211968ab880b9a06ad69d3186e9a33"
+      }
+    },
+    {
+      "lane": "read-batch",
+      "integration": {
+        "source_commit": "47196aa9af704d526e1e81fb3ab9c859a6b3b8e8",
+        "tested_snapshot_commit": "02435ac9e44230e1a9a9801628b342b34dad9ff5",
+        "paths": [
+          "harness/claude_agent_sdk.py",
+          "harness/claude_agent_worker.py",
+          "harness/loop.py",
+          "harness/providers.py",
+          "tests/test_read_batch_envelope.py",
+          "tests/test_read_batch_execution.py"
+        ],
+        "patch_sha256": "657c9480b3167c85416bfcbc733e71664c0eece03c6153c0fe5eb1b23ce74735",
+        "source_patch_sha256": "d68e2b6bf72384b0fbd959914ccb24a1ae6f88fc618f83765ae8a34a6c58b839",
+        "preserved_unrelated_files": 75,
+        "automatic_branch_updated": false,
+        "resumed": "Working tree had exact reviewed patch; fixed combined-state equality check before staging"
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 4.022,
+        "finished_at": "2026-09-15T04:52:29.276589+00:00",
+        "tests": [
+          "tests/test_read_batch_envelope.py",
+          "tests/test_read_batch_execution.py",
+          "tests/test_claude_agent_sdk.py",
+          "tests/test_claude_agent_sdk_structured.py",
+          "tests/test_claude_agent_sdk_formatter_refusal.py",
+          "tests/test_claude_cli_response_contract.py",
+          "tests/test_protocol_recovery_progress.py",
+          "tests/test_provider_cancellation.py",
+          "tests/test_claude_sdk_images.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "ef49f5468de31c472c4bb4227605bf50b993b5b2",
+        "diff_sha256": "657c9480b3167c85416bfcbc733e71664c0eece03c6153c0fe5eb1b23ce74735"
+      },
+      "patch": {
+        "path": "manual/read-batch/verification/candidate.patch",
+        "sha256": "657c9480b3167c85416bfcbc733e71664c0eece03c6153c0fe5eb1b23ce74735"
+      },
+      "review_acceptance": {
+        "path": "manual/read-batch/verification/verified.json",
+        "sha256": "3cc79fb1b39dac42fe94d7ca75aa37f7b9f32583e06988f372f757ab32b31d63"
+      }
+    },
+    {
+      "lane": "python-check-flags",
+      "integration": {
+        "source_commit": "e315cd36d8e1b642b2b75665215d843f6f88e929",
+        "tested_snapshot_commit": "ce00c0cbf2edb51869217dfee41e1c1f4882eb32",
+        "paths": [
+          "harness/loop.py",
+          "tests/test_python_verification_flags.py"
+        ],
+        "patch_sha256": "7a176fbcc4cbb5a3a04faf9151c785e1c63add12b179322704b2737ea1c546f5",
+        "source_patch_sha256": "16f0fc5808b022b81651ae04896318a86dcfe2189a2c08a252c656dcc62ca4ff",
+        "preserved_unrelated_files": 76,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 50.063,
+        "finished_at": "2026-09-15T04:57:20.880147+00:00",
+        "tests": [
+          "tests/test_python_verification_flags.py",
+          "tests/test_auto_verification.py",
+          "tests/test_verifier.py",
+          "tests/test_verification_evidence_context.py",
+          "tests/test_verify_nudge_selection.py",
+          "tests/test_loop.py",
+          "tests/test_completion_contract.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {
+          "tests/test_python_verification_flags.py": "cbc9247af84fc1f58771a47960f86278de5d8aa2d11d76f59c2715b538a175af"
+        },
+        "source_commit": "3a6bfceaa5efa9fdb5f34f5445a7a0a24958c7c8",
+        "diff_sha256": "f3da0a01aea8e9d5bd22ef12693c347c41081f92839fb24a4d81ebadc858d5de"
+      },
+      "patch": {
+        "path": "manual/python-check-flags/verification/candidate.patch",
+        "sha256": "7a176fbcc4cbb5a3a04faf9151c785e1c63add12b179322704b2737ea1c546f5"
+      },
+      "review_acceptance": {
+        "path": "manual/python-check-flags/verification/verified.json",
+        "sha256": "6bf0039fb596c7e8419cfb03c27e2c2aaaad1990a748f6fce318cdfa64cad9c9"
+      }
+    },
+    {
+      "lane": "finish-preflight-r3",
+      "integration": {
+        "source_commit": "c63c2217c942defaa2787e33a0c940f2428f38ea",
+        "tested_snapshot_commit": "547142d6c00a83bac222419248042278a2583d31",
+        "paths": [
+          "harness/claude_agent_sdk.py",
+          "harness/loop.py",
+          "harness/preflight.py",
+          "tests/test_claude_sdk_images.py",
+          "tests/test_finish_preflight.py"
+        ],
+        "patch_sha256": "a7de986e0c9d0a605a60045eeba1723e5f6605a1d353df80b57b963703265d16",
+        "source_patch_sha256": "a5f3527da8c9d4773e7706687f1e6926f9ec84b6b5d074f9f96561eb0fd42573",
+        "preserved_unrelated_files": 75,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 64.081,
+        "finished_at": "2026-09-15T05:15:19.877409+00:00",
+        "tests": [
+          "tests/test_finish_preflight.py",
+          "tests/test_claude_sdk_images.py",
+          "tests/test_claude_agent_sdk.py",
+          "tests/test_claude_agent_sdk_structured.py",
+          "tests/test_claude_agent_sdk_formatter_refusal.py",
+          "tests/test_verify_nudge_selection.py",
+          "tests/test_auto_verification.py",
+          "tests/test_verifier.py",
+          "tests/test_host_verification_contract.py",
+          "tests/test_verification_evidence_context.py",
+          "tests/test_loop.py",
+          "tests/test_loop_gate.py",
+          "tests/test_python_verification_flags.py",
+          "tests/test_read_batch_execution.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "56fe430970b854d1ef688d31f6ec081dc1c83ab9",
+        "diff_sha256": "a7de986e0c9d0a605a60045eeba1723e5f6605a1d353df80b57b963703265d16"
+      },
+      "patch": {
+        "path": "manual/finish-preflight-r3/verification/candidate.patch",
+        "sha256": "a7de986e0c9d0a605a60045eeba1723e5f6605a1d353df80b57b963703265d16"
+      },
+      "review_acceptance": {
+        "path": "manual/finish-preflight-r3/verification/verified.json",
+        "sha256": "3056dae3318380f468841278b35f0e06acc34e1a3909fda9537deaa6035e1f3d"
+      }
+    },
+    {
+      "lane": "prompt-provenance",
+      "integration": {
+        "source_commit": "9ea8c50af7baa694ca50f79c2e9ebef3820a8299",
+        "tested_snapshot_commit": "0a0f3a93228f758f564ba705086000b93647715e",
+        "paths": [
+          "harness/claude_agent_sdk.py",
+          "harness/context.py",
+          "harness/providers.py",
+          "tests/test_prompt_provenance.py"
+        ],
+        "patch_sha256": "b3e8383b0d8efdda0437b4a090dc9ed880912b9e0081b68c5c5f133fb20a31ad",
+        "source_patch_sha256": "092d8fb206a3ba274d4c8eb36eb55839b5118e87619081fb680acec2b65bb455",
+        "preserved_unrelated_files": 76,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 24.042,
+        "finished_at": "2026-09-15T05:36:26.035727+00:00",
+        "tests": [
+          "tests/test_prompt_provenance.py",
+          "tests/test_mode_prompt_contract.py",
+          "tests/test_claude_sdk_images.py",
+          "tests/test_read_batch_envelope.py",
+          "tests/test_read_batch_execution.py",
+          "tests/test_claude_cli_response_contract.py",
+          "tests/test_sdk_structured_repair_turn.py",
+          "tests/test_response_contract_diagnosis.py",
+          "tests/test_claude_agent_sdk.py",
+          "tests/test_providers.py",
+          "tests/test_protocol_recovery_progress.py",
+          "tests/test_context.py",
+          "tests/test_finish_preflight.py",
+          "tests/test_sdk_tool_result_context.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "547142d6c00a83bac222419248042278a2583d31",
+        "diff_sha256": "b3e8383b0d8efdda0437b4a090dc9ed880912b9e0081b68c5c5f133fb20a31ad"
+      },
+      "patch": {
+        "path": "manual/prompt-provenance/verification/candidate.patch",
+        "sha256": "b3e8383b0d8efdda0437b4a090dc9ed880912b9e0081b68c5c5f133fb20a31ad"
+      },
+      "review_acceptance": {
+        "path": "manual/prompt-provenance/verification/verified.json",
+        "sha256": "c0f0aff1db558c249f31ad7488fb5ba0be491ce2194293230c5e041d1ac41e97"
+      }
+    },
+    {
+      "lane": "provider-wait-state-r5",
+      "integration": {
+        "source_commit": "124219a0fba532bf1a51b62f749dc9fbb88ce07f",
+        "tested_snapshot_commit": "83d658fc521398e96da8d62051bb724fb8ee02f2",
+        "paths": [
+          "harness/acp_agent.py",
+          "harness/cli.py",
+          "harness/recorder.py",
+          "harness/tui.py",
+          "harness/web_tasks.py",
+          "harness/webapp.py",
+          "harness/webui/index.html",
+          "tests/test_provider_wait_continuity.py",
+          "tests/test_web_ui_run_status.py"
+        ],
+        "patch_sha256": "5fd1fe05101b44dc79f008409f142797896881cb97aab447f08d359c65dbf7a4",
+        "source_patch_sha256": "2aa17d168fd5b593046f9112cba258e2da9310e02cd9628a77cfb6a5aaf9ea25",
+        "preserved_unrelated_files": 70,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 158.186,
+        "finished_at": "2026-09-15T05:51:24.581997+00:00",
+        "tests": [
+          "tests/test_provider_wait_continuity.py",
+          "tests/test_web_ui_run_status.py",
+          "tests/test_accepted_run_policy.py",
+          "tests/test_runner_slice.py",
+          "tests/test_runner_specs.py",
+          "tests/test_claude_quota_reset.py",
+          "tests/test_claude_code_quota.py",
+          "tests/test_interruption_lifecycle.py",
+          "tests/test_routing_receipts.py",
+          "tests/test_native_inbox.py",
+          "tests/test_turn_routing_surfaces.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "547142d6c00a83bac222419248042278a2583d31",
+        "diff_sha256": "5fd1fe05101b44dc79f008409f142797896881cb97aab447f08d359c65dbf7a4"
+      },
+      "patch": {
+        "path": "manual/provider-wait-state-r5/verification/candidate.patch",
+        "sha256": "5fd1fe05101b44dc79f008409f142797896881cb97aab447f08d359c65dbf7a4"
+      },
+      "review_acceptance": {
+        "path": "manual/provider-wait-state-r5/verification/verified.json",
+        "sha256": "ea61330b38ada27473c6a2bb41c9e1d9564276a34322b1911eccdfea8f403de0"
+      }
+    },
+    {
+      "lane": "quota-followup-resume-r7",
+      "integration": {
+        "source_commit": "48a48a450960874c37d49f0d194bb15174bc875e",
+        "tested_snapshot_commit": "eb6079d50afcc7355a961cd112b480fec624bb59",
+        "paths": [
+          "harness/quota_resume.py",
+          "harness/web_tasks.py",
+          "harness/webapp.py",
+          "harness/webui/index.html",
+          "tests/test_quota_followup_resume.py",
+          "tests/test_quota_wait_no_replay.py",
+          "tests/test_quota_wait_ui.py"
+        ],
+        "patch_sha256": "30c2298a80b54d5c4c0879a389f08ff26bb49f9d8b1e9135b2035a7b8e1888c1",
+        "source_patch_sha256": "40b11d5144edbd57a9d0d78ea369e0626f142bc2b6929e4f7c72586c22ae2910",
+        "preserved_unrelated_files": 75,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 172.197,
+        "finished_at": "2026-09-15T06:15:48.307858+00:00",
+        "tests": [
+          "tests/test_quota_followup_resume.py",
+          "tests/test_quota_wait_no_replay.py",
+          "tests/test_quota_wait_ui.py",
+          "tests/test_web_execution_manager.py",
+          "tests/test_provider_wait_continuity.py",
+          "tests/test_task_inbox.py",
+          "tests/test_web_task_inbox.py",
+          "tests/test_web_inbox_poll_race.py",
+          "tests/test_accepted_queue_capabilities.py",
+          "tests/test_web_queue_locale.py",
+          "tests/test_web_task_continuity_ui.py",
+          "tests/test_web_inbox_history_visibility.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "5d9b7dbf28df512dffa3fce4ee9c7ea4f26433b4",
+        "diff_sha256": "30c2298a80b54d5c4c0879a389f08ff26bb49f9d8b1e9135b2035a7b8e1888c1"
+      },
+      "patch": {
+        "path": "manual/quota-followup-resume-r7/verification/candidate.patch",
+        "sha256": "30c2298a80b54d5c4c0879a389f08ff26bb49f9d8b1e9135b2035a7b8e1888c1"
+      },
+      "review_acceptance": {
+        "path": "manual/quota-followup-resume-r7/verification/verified.json",
+        "sha256": "e04061f315cb4f0d949710432d8706cf4ebb09a951d4db8099ec17cbe03dfdd6"
+      }
+    },
+    {
+      "lane": "final-merge",
+      "integration": {
+        "source_commit": "80ed9f6e6766cdc09c7e224d2b702e4a6c18cb1d",
+        "tested_snapshot_commit": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+        "paths": [
+          "harness/cli.py",
+          "harness/webapp.py",
+          "harness/webui/index.html",
+          "tests/test_provider_wait_continuity.py",
+          "tests/test_web_ui_control_labels.py"
+        ],
+        "patch_sha256": "a213727e8a3a3f55175d7abceca11cf3da89accfe7689a30d87ea7d971364f91",
+        "source_patch_sha256": "6d7168aab42a309652653ddeabb2c0cc71bd8153f0e77b88ec9a684be69c65f0",
+        "preserved_unrelated_files": 75,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 186.204,
+        "finished_at": "2026-09-15T06:26:17.666327+00:00",
+        "tests": [
+          "tests/test_web_ui_control_labels.py",
+          "tests/test_provider_wait_continuity.py",
+          "tests/test_quota_wait_ui.py",
+          "tests/test_quota_followup_resume.py",
+          "tests/test_quota_wait_no_replay.py",
+          "tests/test_web_execution_manager.py",
+          "tests/test_web_queue_locale.py",
+          "tests/test_web_task_continuity_ui.py",
+          "tests/test_interruption_lifecycle.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "eb6079d50afcc7355a961cd112b480fec624bb59",
+        "diff_sha256": "a213727e8a3a3f55175d7abceca11cf3da89accfe7689a30d87ea7d971364f91"
+      },
+      "patch": {
+        "path": "manual/final-merge/verification/candidate.patch",
+        "sha256": "a213727e8a3a3f55175d7abceca11cf3da89accfe7689a30d87ea7d971364f91"
+      },
+      "review_acceptance": {
+        "path": "manual/final-merge/verification/verified.json",
+        "sha256": "f77a1195bed7458b54edc68927fb5ac0721ab762f8787109b20c90079e495ffc"
+      }
+    },
+    {
+      "lane": "shell-multiline",
+      "integration": {
+        "source_commit": "c1c92a92ca98eb581cae3f0e0c0885a2e4b18514",
+        "tested_snapshot_commit": "f1f691c3ba3b55cf85a6643cd948978da3be4312",
+        "paths": [
+          "harness/tools.py",
+          "tests/test_tools.py"
+        ],
+        "patch_sha256": "69b74b54f7bcb1b3ff6e8250e52cad77772d4c7871fa6212ae85466937ae3454",
+        "source_patch_sha256": "b63ed96000e66285be6072383653dd8806a02593010ac86b1acfd6c9d13eb489",
+        "preserved_unrelated_files": 78,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "experiment_reverted",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 28.045,
+        "finished_at": "2026-09-15T06:54:55.490274+00:00",
+        "tests": [
+          "tests/test_tools.py",
+          "tests/test_tool_output_bounds.py",
+          "tests/test_plat.py",
+          "tests/test_mode_prompt_contract.py",
+          "tests/test_prompt_provenance.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+        "diff_sha256": "69b74b54f7bcb1b3ff6e8250e52cad77772d4c7871fa6212ae85466937ae3454"
+      },
+      "patch": {
+        "path": "manual/shell-multiline/verification/candidate.patch",
+        "sha256": "69b74b54f7bcb1b3ff6e8250e52cad77772d4c7871fa6212ae85466937ae3454"
+      },
+      "review_acceptance": {
+        "path": "manual/shell-multiline/verification/verified.json",
+        "sha256": "a290c18408f9cf595a7c0da08880a2e20fdaacae652ed887cf488a5e2c08b5fe"
+      }
+    },
+    {
+      "lane": "shell-multiline-rollback",
+      "integration": {
+        "source_commit": "1ef6477915517675605906c1a201d1177eac8565",
+        "tested_snapshot_commit": "4569a23e4f64301e9e9771867453b22a1716eefe",
+        "paths": [
+          "harness/tools.py",
+          "tests/test_tools.py"
+        ],
+        "patch_sha256": "d90bb5c924c043c1cca4f13ae2ab209142a4f6eda03b80a4faa4d58fda435182",
+        "source_patch_sha256": "0ad850956436db9105e0229bfb79be3d3bec7c33fa1e19676de3a971e9bda2b8",
+        "preserved_unrelated_files": 78,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "restores_pre_experiment_tree",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 30.049,
+        "finished_at": "2026-09-15T07:04:26.754632+00:00",
+        "tests": [
+          "tests/test_tools.py",
+          "tests/test_tool_output_bounds.py",
+          "tests/test_plat.py",
+          "tests/test_mode_prompt_contract.py",
+          "tests/test_prompt_provenance.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "f1f691c3ba3b55cf85a6643cd948978da3be4312",
+        "diff_sha256": "d90bb5c924c043c1cca4f13ae2ab209142a4f6eda03b80a4faa4d58fda435182"
+      },
+      "patch": {
+        "path": "manual/shell-multiline-rollback/verification/candidate.patch",
+        "sha256": "d90bb5c924c043c1cca4f13ae2ab209142a4f6eda03b80a4faa4d58fda435182"
+      },
+      "review_acceptance": {
+        "path": "manual/shell-multiline-rollback/verification/verified.json",
+        "sha256": "5229f1897eade1f244895ebdd08a9b2426a6604aa6380bd40e4ccdd23a998f97"
+      }
+    },
+    {
+      "lane": "ui-markup-contract",
+      "integration": {
+        "source_commit": "73001b5550ed1e41d6fc846920a852011da4bda8",
+        "tested_snapshot_commit": "88cdda2cf7bd95e9ec137b6f9705eb653a4e0005",
+        "paths": [
+          "tests/test_ui_site_fixes.py"
+        ],
+        "patch_sha256": "330ca849c8785d1293a1e50a6106635bd17d6e33a27373a2baf29f3d7a0d2e02",
+        "source_patch_sha256": "540f9255788bb91f91c45f7664bc4b62f258b59af6d2d4903dd8c595ec292177",
+        "preserved_unrelated_files": 79,
+        "automatic_branch_updated": false
+      },
+      "change_disposition": "retained",
+      "approved": true,
+      "parent_tests": {
+        "exit": 0,
+        "seconds": 2.029,
+        "finished_at": "2026-09-15T07:24:58.842654+00:00",
+        "tests": [
+          "tests/test_ui_site_fixes.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "4569a23e4f64301e9e9771867453b22a1716eefe",
+        "diff_sha256": "330ca849c8785d1293a1e50a6106635bd17d6e33a27373a2baf29f3d7a0d2e02"
+      },
+      "patch": {
+        "path": "manual/ui-markup-contract/verification/candidate.patch",
+        "sha256": "330ca849c8785d1293a1e50a6106635bd17d6e33a27373a2baf29f3d7a0d2e02"
+      },
+      "review_acceptance": {
+        "path": "manual/ui-markup-contract/verification/verified.json",
+        "sha256": "40aed3900612ef42d417ae20415125cbd9b78de63ebfec435baf146d1b8fd42a"
+      }
+    }
+  ],
+  "baseline_full": {
+    "result": {
+      "exit": 0,
+      "seconds": 1881.661,
+      "finished_at": "2026-09-15T04:34:13.743359+00:00",
+      "tests": [],
+      "provider_mode": "mock",
+      "live_inference_requested": false,
+      "failing_tests": [],
+      "untracked_sha256": {},
+      "source_commit": "13b043c32ba55fa4ed0f2d9265c752de2dcc38b3",
+      "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pytest_summary_lines": [
+      "== CORE: 38/38 passed ==",
+      "== RENDERER: 29/29 passed == — ALL GREEN",
+      "== browser extension (page-side): 130/130 passed ==",
+      "== VS Code entrance: 12 passed ==",
+      "== GUI: 63/63 passed ==",
+      "4615 passed, 20 skipped in 1719.03s (0:28:39)",
+      "== SURFACES: 41/41 passed =="
+    ],
+    "stdout_last_write_epoch_seconds": 1789446852.1654043,
+    "result_evidence": {
+      "path": "baseline-full/checks/result.json",
+      "sha256": "22288e95191b628a23726041c32e943dc797ec1a26c1ec0d31754e08920bad2e"
+    },
+    "stdout_evidence": {
+      "path": "baseline-full/checks/stdout.log",
+      "sha256": "67b49b16eeee051e8f96561613bdc89e50b8a9fb054f448a5de4be658434e608"
+    }
+  },
+  "final_full": {
+    "result": {
+      "exit": 0,
+      "seconds": 2000.043,
+      "finished_at": "2026-09-15T07:57:14.632513+00:00",
+      "tests": [],
+      "provider_mode": "mock",
+      "live_inference_requested": false,
+      "failing_tests": [],
+      "untracked_sha256": {},
+      "source_commit": "a761075ac5dd3e4ce7402324df8387f24be6630a",
+      "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pytest_summary_lines": [
+      "== CORE: 38/38 passed ==",
+      "== RENDERER: 29/29 passed == — ALL GREEN",
+      "== browser extension (page-side): 130/130 passed ==",
+      "== VS Code entrance: 12 passed ==",
+      "== GUI: 63/63 passed ==",
+      "4920 passed, 22 skipped in 1831.00s (0:30:30)",
+      "== SURFACES: 41/41 passed =="
+    ],
+    "stdout_last_write_epoch_seconds": 1789459033.318374,
+    "result_evidence": {
+      "path": "final-full-r3/checks/result.json",
+      "sha256": "36eecf8136a40a0629849706214b0b1b75e1bfac6db1178a144821fe8dffc778"
+    },
+    "stdout_evidence": {
+      "path": "final-full-r3/checks/stdout.log",
+      "sha256": "5b26dae1603e2e9a753be7c420fff6f4eeb5d42b6c7792805d322f2689fbed2e"
+    }
+  },
+  "preservation": {
+    "at": "2026-09-15T07:53:24.910531+00:00",
+    "source_head": "73001b5550ed1e41d6fc846920a852011da4bda8",
+    "accepted_private_head": "88cdda2cf7bd95e9ec137b6f9705eb653a4e0005",
+    "compared_files": 1449,
+    "missing": [],
+    "different_content": [],
+    "line_endings_only": [
+      ".collie/personas/webwork.md",
+      ".github/workflows/ci.yml",
+      ".github/workflows/docs.yml",
+      ".github/workflows/release.yml",
+      "CHANGELOG.md",
+      "HANDOFF.md",
+      "LICENSE",
+      "README.md",
+      "assets/collie-logo.svg",
+      "assets/collie.svg",
+      "bench/bench_sync.py",
+      "bench/codesearch_eval.py",
+      "bench/exec_select.py",
+      "bench/locomo_e2e.py",
+      "bench/locomo_eval.py",
+      "bench/longmemeval_eval.py",
+      "bench/multirun_eval.py",
+      "bench/polyglot_eval.py",
+      "bench/results/claude-agent-sdk-overnight-e2e-2026-08-12.json",
+      "bench/results/graded.json",
+      "bench/session_storage_profile.py",
+      "bench/ultra_select.py",
+      "data/ids16.txt",
+      "data/ids50.txt",
+      "data/ids_contested3.txt",
+      "data/ids_django_contested.txt",
+      "data/ids_fresh12.txt",
+      "data/ids_holdout12.txt",
+      "data/ids_lite12.txt",
+      "data/ids_one.txt",
+      "data/retrieval_eval.json",
+      "docs/PLATFORMS.md",
+      "docs/cli.md",
+      "docs/evidence/product-evolution-2026-09-07.json",
+      "docs/index.md",
+      "docs/install.md",
+      "docs/mission.md",
+      "docs/product-workflows-2026-09-06.md",
+      "docs/runners.md",
+      "docs/task-workflows.md",
+      "harness/acp_agent.py",
+      "harness/adapters.py",
+      "harness/agent_runners.py",
+      "harness/apitap.py",
+      "harness/approve.py",
+      "harness/audit.py",
+      "harness/avatar.py",
+      "harness/browserapple.py",
+      "harness/capabilities.py",
+      "harness/catalog.py",
+      "harness/checkpoint.py",
+      "harness/checkpoints.py",
+      "harness/claude_agent_sdk.py",
+      "harness/claude_agent_worker.py",
+      "harness/claude_code_runner.py",
+      "harness/cli.py",
+      "harness/codeindex.py",
+      "harness/codemap.py",
+      "harness/codex_oauth.py",
+      "harness/compare.py",
+      "harness/context.py",
+      "harness/costs.py",
+      "harness/dashboard.py",
+      "harness/desktop_mac.py",
+      "harness/dogmail.py",
+      "harness/embeddings.py",
+      "harness/everyday.py",
+      "harness/judge.py",
+      "harness/lint.py",
+      "harness/loop.py",
+      "harness/mandate.py",
+      "harness/mcpclient.py",
+      "harness/menubar_mac.py",
+      "harness/mission.py",
+      "harness/missioncmd.py",
+      "harness/missionweb.py",
+      "harness/native_mac.py",
+      "harness/nowplaying_mac.py",
+      "harness/observe.py",
+      "harness/overrides.py",
+      "harness/pack.py",
+      "harness/pack_artifacts.py",
+      "harness/paircode.py",
+      "harness/personas.py",
+      "harness/primitives.py",
+      "harness/progtool.py",
+      "harness/providers.py",
+      "harness/qr.py",
+      "harness/recorder.py",
+      "harness/redact.py",
+      "harness/research.py",
+      "harness/reval.py",
+      "harness/router.py",
+      "harness/runner_registry.py",
+      "harness/runner_slice.py",
+      "harness/runner_specs.py",
+      "harness/scratch.py",
+      "harness/sessions.py",
+      "harness/settings.py",
+      "harness/skills.py",
+      "harness/slackexec.py",
+      "harness/slackguard.py",
+      "harness/swe.py",
+      "harness/swe_predict_one.py",
+      "harness/task_inbox.py",
+      "harness/terminal_queue.py",
+      "harness/tool_process.py",
+      "harness/tools.py",
+      "harness/trust.py",
+      "harness/tui.py",
+      "harness/update.py",
+      "harness/verification.py",
+      "harness/verifier.py",
+      "harness/wallpaper.py",
+      "harness/wallpaper/build.ps1",
+      "harness/wallpaper/stop-wallpaper.ps1",
+      "harness/web_tasks.py",
+      "harness/webact.py",
+      "harness/webapp.py",
+      "harness/webedit.py",
+      "harness/webfetch.py",
+      "harness/websearch.py",
+      "harness/webui/index.html",
+      "harness/webui/logo.svg",
+      "harness/webui/mobile.html",
+      "harness/webui/remote.html",
+      "harness/webui/three.min.js",
+      "harness/worktree.py",
+      "installer/DEVELOPER_ID.md",
+      "installer/README.md",
+      "installer/brew_release.sh",
+      "installer/build_mac.sh",
+      "installer/build_mac_payload.sh",
+      "installer/lang/Abkhazian.isl",
+      "installer/lang/Afrikaans.isl",
+      "installer/lang/Albanian.isl",
+      "installer/lang/Asturian.isl",
+      "installer/lang/Basque.isl",
+      "installer/lang/Belarusian.isl",
+      "installer/lang/Bengali.islu",
+      "installer/lang/Bosnian.isl",
+      "installer/lang/ChineseTraditional.isl",
+      "installer/lang/Croatian.isl",
+      "installer/lang/EnglishBritish.isl",
+      "installer/lang/Esperanto.isl",
+      "installer/lang/Estonian.isl",
+      "installer/lang/Ewe.isl",
+      "installer/lang/Farsi.isl",
+      "installer/lang/Galician.isl",
+      "installer/lang/Georgian.isl",
+      "installer/lang/Greek.isl",
+      "installer/lang/Hindi.islu",
+      "installer/lang/Indonesian.isl",
+      "installer/lang/Kazakh.islu",
+      "installer/lang/Kurdish.isl",
+      "installer/lang/Latvian.isl",
+      "installer/lang/Ligurian.isl",
+      "installer/lang/Luxemburgish.isl",
+      "installer/lang/Macedonian.isl",
+      "installer/lang/Malaysian.isl",
+      "installer/lang/Marathi.islu",
+      "installer/lang/Mongolian.isl",
+      "installer/lang/Montenegrin.isl",
+      "installer/lang/Nepali.islu",
+      "installer/lang/NorwegianNynorsk.isl",
+      "installer/lang/Occitan.isl",
+      "installer/lang/Romanian.isl",
+      "installer/lang/SerbianCyrillic.isl",
+      "installer/lang/SerbianLatin.isl",
+      "installer/lang/Sinhala.islu",
+      "installer/lang/Tatar.isl",
+      "installer/lang/Urdu.isl",
+      "installer/lang/Uyghur.islu",
+      "installer/lang/Uzbek.isl",
+      "installer/lang/Valencian.isl",
+      "installer/lang/Vietnamese.isl",
+      "installer/shell/Launcher.cs",
+      "installer/shell/fonts.css",
+      "installer/shell/installer.html",
+      "landing/avatar-tables.json",
+      "landing/index.html",
+      "mkdocs.yml",
+      "pytest.ini",
+      "relay/README.md",
+      "relay/mail.wrangler.toml",
+      "relay/mail_worker.js",
+      "relay/worker.js",
+      "relay/wrangler.toml",
+      "run_compare.py",
+      "run_compare4.py",
+      "run_parallel.py",
+      "swe_run.py",
+      "tests/browser_live_test.py",
+      "tests/browser_suite.py",
+      "tests/e2e_chain.py",
+      "tests/gui_test.py",
+      "tests/mail_crossimpl_test.js",
+      "tests/mail_names_test.js",
+      "tests/nowplaying_ui_check.py",
+      "tests/nowplaying_web_check.py",
+      "tests/parallel_ui_check.py",
+      "tests/relay_push_test.js",
+      "tests/render_test.js",
+      "tests/smoke_codex_oauth.py",
+      "tests/steer_ui_check.py",
+      "tests/test_accepted_queue_limits.py",
+      "tests/test_app_port.py",
+      "tests/test_audit.py",
+      "tests/test_avatar.py",
+      "tests/test_capabilities.py",
+      "tests/test_catalog.py",
+      "tests/test_claude_agent_sdk.py",
+      "tests/test_claude_agent_sdk_formatter_refusal.py",
+      "tests/test_claude_agent_sdk_provider_error.py",
+      "tests/test_claude_agent_sdk_structured.py",
+      "tests/test_claude_code_quota.py",
+      "tests/test_claude_code_runner.py",
+      "tests/test_claude_quota_reset.py",
+      "tests/test_claude_sdk_images.py",
+      "tests/test_codex_oauth.py",
+      "tests/test_compaction.py",
+      "tests/test_core.py",
+      "tests/test_core_fixes.py",
+      "tests/test_data_dir.py",
+      "tests/test_desktop.py",
+      "tests/test_desktopweb.py",
+      "tests/test_dogmail.py",
+      "tests/test_dogmail_wire.py",
+      "tests/test_e2e.py",
+      "tests/test_e2e_persist.py",
+      "tests/test_everyday.py",
+      "tests/test_gate_freshness.py",
+      "tests/test_generation_run_state.py",
+      "tests/test_interruption_lifecycle.py",
+      "tests/test_loop.py",
+      "tests/test_loop_gate.py",
+      "tests/test_mandate.py",
+      "tests/test_map_landing.py",
+      "tests/test_mcp_catalog.py",
+      "tests/test_mcp_confidential.py",
+      "tests/test_mirror_backlog.py",
+      "tests/test_mission_code_dispatch.py",
+      "tests/test_mission_human_notes.py",
+      "tests/test_mission_notes_api.py",
+      "tests/test_mission_runner.py",
+      "tests/test_missionweb.py",
+      "tests/test_multimodel.py",
+      "tests/test_no_console_flash.py",
+      "tests/test_notify.py",
+      "tests/test_observe.py",
+      "tests/test_output_encoding.py",
+      "tests/test_overnight_code.py",
+      "tests/test_overrides.py",
+      "tests/test_pack_artifacts.py",
+      "tests/test_pack_isolation.py",
+      "tests/test_packaging_facts.py",
+      "tests/test_paircode.py",
+      "tests/test_pairprompt.py",
+      "tests/test_personas.py",
+      "tests/test_plat.py",
+      "tests/test_platform_purity.py",
+      "tests/test_playhere.py",
+      "tests/test_primitives.py",
+      "tests/test_protocol_recovery_progress.py",
+      "tests/test_python_verification_flags.py",
+      "tests/test_qr.py",
+      "tests/test_quota_wait_ui.py",
+      "tests/test_read_batch_execution.py",
+      "tests/test_relay_keepalive.py",
+      "tests/test_repo_discovery.py",
+      "tests/test_repos_deadline.py",
+      "tests/test_request_accounting.py",
+      "tests/test_research.py",
+      "tests/test_router.py",
+      "tests/test_run_in_env_gate.py",
+      "tests/test_runner_slice.py",
+      "tests/test_runs_registry.py",
+      "tests/test_session_durable_write.py",
+      "tests/test_session_resume.py",
+      "tests/test_settings_fallback.py",
+      "tests/test_settings_isolation.py",
+      "tests/test_slack_answer.py",
+      "tests/test_slack_guard.py",
+      "tests/test_slack_setup.py",
+      "tests/test_slack_worker.py",
+      "tests/test_slackbot.py",
+      "tests/test_smart_routing.py",
+      "tests/test_tool_cancellation.py",
+      "tests/test_tools.py",
+      "tests/test_trust.py",
+      "tests/test_turn_routing_surfaces.py",
+      "tests/test_update.py",
+      "tests/test_verifier.py",
+      "tests/test_web_busy_send_ui.py",
+      "tests/test_web_continue_draft_ui.py",
+      "tests/test_web_execution_manager.py",
+      "tests/test_web_external_input.py",
+      "tests/test_web_lan.py",
+      "tests/test_web_mission_wait_ui.py",
+      "tests/test_web_task_inbox.py",
+      "tests/test_web_ui_run_status.py",
+      "tests/test_whoami.py",
+      "tests/test_worker_effort.py",
+      "tests/test_worktree.py",
+      "vscode-collie/.vscodeignore",
+      "vscode-collie/extension.js",
+      "vscode-collie/media/collie.svg",
+      "vscode-collie/package.json"
+    ],
+    "initial_user_files": 73,
+    "initial_user_files_still_byte_identical": 69,
+    "initial_user_files_with_reviewed_changes": [
+      "harness/cli.py",
+      "harness/webapp.py",
+      "harness/webui/index.html",
+      "tests/test_ui_site_fixes.py"
+    ],
+    "source_index_empty": true,
+    "all_source_content_matches_initial_user_snapshot_plus_reviewed_changes": true
+  },
+  "superseded_full_attempts": [
+    {
+      "directory": "final-full",
+      "result": {
+        "exit": "stopped",
+        "seconds": 668.679,
+        "finished_at": "2026-09-15T06:57:40.584259+00:00",
+        "tests": [],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "actual_child_log": {
+        "result": {
+          "exit": "stopped",
+          "seconds": 668.679,
+          "finished_at": "2026-09-15T06:57:40.584259+00:00",
+          "tests": [],
+          "provider_mode": "mock",
+          "live_inference_requested": false,
+          "failing_tests": [],
+          "untracked_sha256": {},
+          "source_commit": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+          "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "pytest_summary_lines": [
+          "== CORE: 38/38 passed ==",
+          "== RENDERER: 29/29 passed == — ALL GREEN",
+          "== browser extension (page-side): 130/130 passed ==",
+          "== VS Code entrance: 12 passed ==",
+          "== GUI: 63/63 passed ==",
+          "1 failed, 4919 passed, 22 skipped in 1826.82s (0:30:26)"
+        ],
+        "stdout_last_write_epoch_seconds": 1789456749.2854621,
+        "result_evidence": {
+          "path": "final-full/checks/result.json",
+          "sha256": "a3976923a71edb11f1319b06f5cc63162dc9624a389105ebf9c112e4e2f503fe"
+        },
+        "stdout_evidence": {
+          "path": "final-full/checks/stdout.log",
+          "sha256": "3dcb23b9aeaadfaf07a2ea30a7bc457d456f2760495644b79e11384c2db501c8"
+        }
+      },
+      "interpretation": "Parent stopped after668.679s but real Python escaped through python3 WindowsApps alias; child finished07:19UTC with1failed4919passed22skipped. Post-pytest gates did not complete; no full pass."
+    },
+    {
+      "directory": "final-full-r2",
+      "result": {
+        "exit": "stopped",
+        "seconds": 1237.275,
+        "finished_at": "2026-09-15T07:23:51.561520+00:00",
+        "tests": [],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "actual_child_log": {
+        "result": {
+          "exit": "stopped",
+          "seconds": 1237.275,
+          "finished_at": "2026-09-15T07:23:51.561520+00:00",
+          "tests": [],
+          "provider_mode": "mock",
+          "live_inference_requested": false,
+          "failing_tests": [],
+          "untracked_sha256": {},
+          "source_commit": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+          "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "pytest_summary_lines": [
+          "== CORE: 38/38 passed ==",
+          "== RENDERER: 29/29 passed == — ALL GREEN",
+          "== browser extension (page-side): 130/130 passed ==",
+          "== VS Code entrance: 12 passed ==",
+          "== GUI: 63/63 passed ==",
+          "1 failed, 4919 passed, 22 skipped in 1829.18s (0:30:29)"
+        ],
+        "stdout_last_write_epoch_seconds": 1789457754.4875848,
+        "result_evidence": {
+          "path": "final-full-r2/checks/result.json",
+          "sha256": "a1d4a730e99e15733314ce520e3575ed24847b7e2a90e68bf55b26571b383b61"
+        },
+        "stdout_evidence": {
+          "path": "final-full-r2/checks/stdout.log",
+          "sha256": "abd5ce894535c788e6344b41fdf33ad99c1364e0968751bb0748d32d57bc4544"
+        }
+      },
+      "interpretation": "Parent stopped after1237.275s but child continued until07:35UTC,1failed4919passed22skipped. Post-pytest gates did not complete. Empty wrapper failing_tests array is not evidence of zero failures.",
+      "independent_failure_reproduction": {
+        "exit": 1,
+        "seconds": 2.021,
+        "finished_at": "2026-09-15T07:21:35.073877+00:00",
+        "tests": [
+          "tests/test_ui_site_fixes.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [
+          "tests.test_ui_site_fixes::test_missions_pack_and_studio_stay_in_the_native_application_shell"
+        ],
+        "untracked_sha256": {},
+        "source_commit": "4569a23e4f64301e9e9771867453b22a1716eefe",
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "traceback_evidence": {
+        "path": "manual/ui-markup-contract/before/checks/stdout.log",
+        "sha256": "ea596b4785a7cd3d76b717cb56218a49ef8650fa211abc07af733863571bde1e"
+      },
+      "repair_checks": {
+        "exit": 0,
+        "seconds": 2.029,
+        "finished_at": "2026-09-15T07:24:58.842654+00:00",
+        "tests": [
+          "tests/test_ui_site_fixes.py"
+        ],
+        "provider_mode": "mock",
+        "live_inference_requested": false,
+        "failing_tests": [],
+        "untracked_sha256": {},
+        "source_commit": "4569a23e4f64301e9e9771867453b22a1716eefe",
+        "diff_sha256": "330ca849c8785d1293a1e50a6106635bd17d6e33a27373a2baf29f3d7a0d2e02"
+      },
+      "negative_markup_probes": {
+        "at": "2026-09-15T07:25:32.552838+00:00",
+        "scope": "In-memory HTML variants against the actual full contract test; no source mutations.",
+        "cases": [
+          {
+            "case": "accessible_current_button",
+            "expected_accept": true,
+            "actual_accept": true
+          },
+          {
+            "case": "different_attribute_order",
+            "expected_accept": true,
+            "actual_accept": true
+          },
+          {
+            "case": "anchor_instead_of_button",
+            "expected_accept": false,
+            "actual_accept": false
+          },
+          {
+            "case": "submit_button",
+            "expected_accept": false,
+            "actual_accept": false
+          },
+          {
+            "case": "missing_navigation_class",
+            "expected_accept": false,
+            "actual_accept": false
+          },
+          {
+            "case": "missing_id",
+            "expected_accept": false,
+            "actual_accept": false
+          },
+          {
+            "case": "duplicate_id",
+            "expected_accept": false,
+            "actual_accept": false
+          }
+        ]
+      }
+    }
+  ],
+  "primary": {
+    "plan": {
+      "created_at": "2026-09-15T06:33:28.154870+00:00",
+      "candidate_head": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+      "candidate_repo": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\final-merge\\product",
+      "baseline": "C:\\workspace\\collie-improvement-2026-09-14-4h\\automation-repo",
+      "cohort_deadline": "2026-09-15T06:55:00+00:00",
+      "minimum_seconds_before_arm": 500,
+      "order": [
+        {
+          "repetition": 1,
+          "task": "read_settings",
+          "arm": "baseline",
+          "name": "read_settings-r1-baseline"
+        },
+        {
+          "repetition": 1,
+          "task": "read_settings",
+          "arm": "candidate",
+          "name": "read_settings-r1-candidate"
+        },
+        {
+          "repetition": 1,
+          "task": "read_settings",
+          "arm": "native",
+          "name": "read_settings-r1-native"
+        },
+        {
+          "repetition": 1,
+          "task": "json_report",
+          "arm": "candidate",
+          "name": "json_report-r1-candidate"
+        },
+        {
+          "repetition": 1,
+          "task": "json_report",
+          "arm": "native",
+          "name": "json_report-r1-native"
+        },
+        {
+          "repetition": 1,
+          "task": "json_report",
+          "arm": "baseline",
+          "name": "json_report-r1-baseline"
+        },
+        {
+          "repetition": 1,
+          "task": "partition",
+          "arm": "native",
+          "name": "partition-r1-native"
+        },
+        {
+          "repetition": 1,
+          "task": "partition",
+          "arm": "baseline",
+          "name": "partition-r1-baseline"
+        },
+        {
+          "repetition": 1,
+          "task": "partition",
+          "arm": "candidate",
+          "name": "partition-r1-candidate"
+        },
+        {
+          "repetition": 2,
+          "task": "read_settings",
+          "arm": "native",
+          "name": "read_settings-r2-native"
+        },
+        {
+          "repetition": 2,
+          "task": "read_settings",
+          "arm": "candidate",
+          "name": "read_settings-r2-candidate"
+        },
+        {
+          "repetition": 2,
+          "task": "read_settings",
+          "arm": "baseline",
+          "name": "read_settings-r2-baseline"
+        },
+        {
+          "repetition": 2,
+          "task": "json_report",
+          "arm": "baseline",
+          "name": "json_report-r2-baseline"
+        },
+        {
+          "repetition": 2,
+          "task": "json_report",
+          "arm": "native",
+          "name": "json_report-r2-native"
+        },
+        {
+          "repetition": 2,
+          "task": "json_report",
+          "arm": "candidate",
+          "name": "json_report-r2-candidate"
+        },
+        {
+          "repetition": 2,
+          "task": "partition",
+          "arm": "candidate",
+          "name": "partition-r2-candidate"
+        },
+        {
+          "repetition": 2,
+          "task": "partition",
+          "arm": "baseline",
+          "name": "partition-r2-baseline"
+        },
+        {
+          "repetition": 2,
+          "task": "partition",
+          "arm": "native",
+          "name": "partition-r2-native"
+        }
+      ],
+      "driver_sha256": "dc1297eedbcce8ce124152921286f42eed075cab06619324d1be26d9ddc6476a",
+      "candidate_options": {
+        "read_batch": true,
+        "structured_output": false
+      },
+      "native_authors_and_reviewers_active_before_start": [],
+      "status": "finished",
+      "finished_at": "2026-09-15T06:46:20.198742+00:00"
+    },
+    "rows": [
+      {
+        "repetition": 1,
+        "task": "read_settings",
+        "arm": "baseline",
+        "name": "read_settings-r1-baseline",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 22.037,
+        "model_calls": 5,
+        "tool_calls": 4,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "read_settings",
+        "arm": "candidate",
+        "name": "read_settings-r1-candidate",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 10.027,
+        "model_calls": 2,
+        "tool_calls": 3,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "read_settings",
+        "arm": "native",
+        "name": "read_settings-r1-native",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 8.026,
+        "model_calls": null,
+        "tool_calls": null,
+        "verification_reminders": null,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "json_report",
+        "arm": "candidate",
+        "name": "json_report-r1-candidate",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 54.074,
+        "model_calls": 8,
+        "tool_calls": 6,
+        "verification_reminders": 1,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "json_report",
+        "arm": "native",
+        "name": "json_report-r1-native",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 20.04,
+        "model_calls": null,
+        "tool_calls": null,
+        "verification_reminders": null,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "json_report",
+        "arm": "baseline",
+        "name": "json_report-r1-baseline",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 30.046,
+        "model_calls": 5,
+        "tool_calls": 4,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "partition",
+        "arm": "native",
+        "name": "partition-r1-native",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 40.058,
+        "model_calls": null,
+        "tool_calls": null,
+        "verification_reminders": null,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "partition",
+        "arm": "baseline",
+        "name": "partition-r1-baseline",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 114.129,
+        "model_calls": 12,
+        "tool_calls": 9,
+        "verification_reminders": 1,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 1,
+        "task": "partition",
+        "arm": "candidate",
+        "name": "partition-r1-candidate",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 58.075,
+        "model_calls": 8,
+        "tool_calls": 9,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "read_settings",
+        "arm": "native",
+        "name": "read_settings-r2-native",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 8.026,
+        "model_calls": null,
+        "tool_calls": null,
+        "verification_reminders": null,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "read_settings",
+        "arm": "candidate",
+        "name": "read_settings-r2-candidate",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 10.027,
+        "model_calls": 2,
+        "tool_calls": 3,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "read_settings",
+        "arm": "baseline",
+        "name": "read_settings-r2-baseline",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 22.042,
+        "model_calls": 5,
+        "tool_calls": 4,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "json_report",
+        "arm": "baseline",
+        "name": "json_report-r2-baseline",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 54.069,
+        "model_calls": 8,
+        "tool_calls": 6,
+        "verification_reminders": 1,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "json_report",
+        "arm": "native",
+        "name": "json_report-r2-native",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 22.039,
+        "model_calls": null,
+        "tool_calls": null,
+        "verification_reminders": null,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "json_report",
+        "arm": "candidate",
+        "name": "json_report-r2-candidate",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 54.071,
+        "model_calls": 8,
+        "tool_calls": 6,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "partition",
+        "arm": "candidate",
+        "name": "partition-r2-candidate",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 52.071,
+        "model_calls": 7,
+        "tool_calls": 8,
+        "verification_reminders": 0,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "partition",
+        "arm": "baseline",
+        "name": "partition-r2-baseline",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 84.106,
+        "model_calls": 11,
+        "tool_calls": 9,
+        "verification_reminders": 1,
+        "artifact_passed": true
+      },
+      {
+        "repetition": 2,
+        "task": "partition",
+        "arm": "native",
+        "name": "partition-r2-native",
+        "controller_exit": 0,
+        "classification": "completed_and_passed",
+        "seconds": 34.053,
+        "model_calls": null,
+        "tool_calls": null,
+        "verification_reminders": null,
+        "artifact_passed": true
+      }
+    ],
+    "limits": "Three scenario families, two repeats per arm. Experimental candidate package; not a general harness ranking or per-change causal estimate.",
+    "aggregates": [
+      {
+        "task": "read_settings",
+        "arm": "baseline",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          22.037,
+          22.042
+        ],
+        "logical_model_calls": [
+          5,
+          5
+        ],
+        "verification_reminders": [
+          0,
+          0
+        ]
+      },
+      {
+        "task": "read_settings",
+        "arm": "candidate",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          10.027,
+          10.027
+        ],
+        "logical_model_calls": [
+          2,
+          2
+        ],
+        "verification_reminders": [
+          0,
+          0
+        ]
+      },
+      {
+        "task": "read_settings",
+        "arm": "native",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          8.026,
+          8.026
+        ],
+        "logical_model_calls": [
+          null,
+          null
+        ],
+        "verification_reminders": [
+          null,
+          null
+        ]
+      },
+      {
+        "task": "json_report",
+        "arm": "baseline",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          30.046,
+          54.069
+        ],
+        "logical_model_calls": [
+          5,
+          8
+        ],
+        "verification_reminders": [
+          0,
+          1
+        ]
+      },
+      {
+        "task": "json_report",
+        "arm": "candidate",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          54.074,
+          54.071
+        ],
+        "logical_model_calls": [
+          8,
+          8
+        ],
+        "verification_reminders": [
+          1,
+          0
+        ]
+      },
+      {
+        "task": "json_report",
+        "arm": "native",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          20.04,
+          22.039
+        ],
+        "logical_model_calls": [
+          null,
+          null
+        ],
+        "verification_reminders": [
+          null,
+          null
+        ]
+      },
+      {
+        "task": "partition",
+        "arm": "baseline",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          114.129,
+          84.106
+        ],
+        "logical_model_calls": [
+          12,
+          11
+        ],
+        "verification_reminders": [
+          1,
+          1
+        ]
+      },
+      {
+        "task": "partition",
+        "arm": "candidate",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          58.075,
+          52.071
+        ],
+        "logical_model_calls": [
+          8,
+          7
+        ],
+        "verification_reminders": [
+          0,
+          0
+        ]
+      },
+      {
+        "task": "partition",
+        "arm": "native",
+        "classifications": [
+          "completed_and_passed",
+          "completed_and_passed"
+        ],
+        "seconds": [
+          40.058,
+          34.053
+        ],
+        "logical_model_calls": [
+          null,
+          null
+        ],
+        "verification_reminders": [
+          null,
+          null
+        ]
+      }
+    ],
+    "posthoc_inspection": {
+      "all_18_final_answers_inspected": true,
+      "six_partition_answers_at_most_two_sentences_and_test_counts_match_output": true,
+      "six_json_answers_one_short_chinese_sentence": true,
+      "all_six_readonly_traces_no_commands_or_edits": true,
+      "all_six_partition_required_command_succeeded_after_all_observed_edits": true,
+      "all_six_json_final_check_outputs_match_delivered_data": true,
+      "no_optional_style_guide_questions_in_final_answers": true,
+      "scope": "Post-hoc inspection of the same 18 arms, separate from unchanged artifact grading. Tool traces are not physical API accounting; no universal instruction-following guarantee."
+    },
+    "summary_evidence": {
+      "path": "primary-cohort/summary.json",
+      "sha256": "8e9ef06925cb49e2f18ed4ec6454a125e4109622589d92f885665535bedf395f"
+    },
+    "analysis_evidence": {
+      "path": "primary-cohort/analysis.json",
+      "sha256": "39cc5be71f497f3e2dd918598728ba090c947762d49a86be95c1707ada1fd683"
+    },
+    "instruction_traces_evidence": {
+      "path": "primary-cohort/instruction-traces.json",
+      "sha256": "5c2428f51723099f89d55c617159926572e24cf604c8f9f3e6cdb9596b87354e"
+    }
+  },
+  "browser_evidence": {
+    "path": "manual/final-merge/visual-review/parent-observations.json",
+    "sha256": "8611f17141390a5e41f3f60a1ce6f8504b08fe1fc54012acef60e4666b760e7c"
+  },
+  "raw_evidence_root": "C:\\workspace\\collie-improvement-2026-09-14-4h",
+  "boundaries": [
+    "Read batches are an explicit experimental option, off at ordinary product entrypoints.",
+    "Shell-text supplemental latency overlaps escaped full1 pytest; timing is loaded observation, not clean causal comparison.",
+    "No physical API-request or observed billing total is inferred from logical host calls.",
+    "Real elapsed-time quota-reset continuation is not observed in this window.",
+    "Original user work remains uncommitted; accepted work is locally committed, not pushed."
+  ],
+  "shell-multiline-comparison/summary.json": {
+    "data": {
+      "plan": {
+        "started_at": "2026-09-15T06:57:45.265858+00:00",
+        "deadline": "2026-09-15T07:08:00+00:00",
+        "order": [
+          [
+            1,
+            "old"
+          ],
+          [
+            1,
+            "new"
+          ],
+          [
+            2,
+            "new"
+          ],
+          [
+            2,
+            "old"
+          ]
+        ],
+        "driver_outer_timeout_seconds": 120,
+        "minimum_before_admission_seconds": 150,
+        "benchmark_worker_inner_timeout_seconds": 420,
+        "old_head": "a9959bcdc0182d0af430eb590c2c0a48c177922f",
+        "new_head": "f1f691c3ba3b55cf85a6643cd948978da3be4312",
+        "task": "json_report",
+        "options": {
+          "read_batch": true,
+          "structured_output": false
+        },
+        "classification": "supplemental_prompt_ablation",
+        "limitations": "Reused task, two repeats per version, after observing primary failures. Not part of primary cohort or a general speed estimate. Outer controller cap applies equally; logical host calls are not physical API requests.",
+        "driver_sha256": "7195f4846985337679ba8689b625308b6683a803cb3cdbcebea004a32670c1fb",
+        "finished_at": "2026-09-15T07:02:20.119248+00:00"
+      },
+      "rows": [
+        {
+          "name": "json_report-r1-old",
+          "repetition": 1,
+          "version": "old",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 44.063,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 7,
+          "tool_calls": 6,
+          "verification_reminders": 0,
+          "shell_syntax_errors": 1
+        },
+        {
+          "name": "json_report-r1-new",
+          "repetition": 1,
+          "version": "new",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 92.112,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 9,
+          "tool_calls": 4,
+          "verification_reminders": 1,
+          "shell_syntax_errors": 0
+        },
+        {
+          "name": "json_report-r2-new",
+          "repetition": 2,
+          "version": "new",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 72.09,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 9,
+          "tool_calls": 5,
+          "verification_reminders": 1,
+          "shell_syntax_errors": 0
+        },
+        {
+          "name": "json_report-r2-old",
+          "repetition": 2,
+          "version": "old",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 52.067,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 8,
+          "tool_calls": 5,
+          "verification_reminders": 1,
+          "shell_syntax_errors": 0
+        }
+      ]
+    },
+    "evidence": {
+      "path": "shell-multiline-comparison/summary.json",
+      "sha256": "3c89c8fabef7a51d0b7d43ad5186a22ff84d4a1ed2660c08dad387564cb5060a"
+    }
+  },
+  "shell-multiline-comparison/analysis.json": {
+    "data": {
+      "at": "2026-09-15T07:10:25.879857+00:00",
+      "rows": [
+        {
+          "name": "json_report-r1-old",
+          "repetition": 1,
+          "version": "old",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 44.063,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 7,
+          "tool_calls": 6,
+          "verification_reminders": 0,
+          "shell_syntax_errors": 1,
+          "format_repairs": []
+        },
+        {
+          "name": "json_report-r1-new",
+          "repetition": 1,
+          "version": "new",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 92.112,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 9,
+          "tool_calls": 4,
+          "verification_reminders": 1,
+          "shell_syntax_errors": 0,
+          "format_repairs": [
+            "response_contract_error [extra_keys]; corrective request 1/1",
+            "response_contract_error [extra_keys]; corrective request 1/1",
+            "response_contract_error [extra_keys]; corrective request 1/1"
+          ]
+        },
+        {
+          "name": "json_report-r2-new",
+          "repetition": 2,
+          "version": "new",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 72.09,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 9,
+          "tool_calls": 5,
+          "verification_reminders": 1,
+          "shell_syntax_errors": 0,
+          "format_repairs": [
+            "response_contract_error [extra_keys]; corrective request 1/1",
+            "response_contract_error [extra_keys]; corrective request 1/1"
+          ]
+        },
+        {
+          "name": "json_report-r2-old",
+          "repetition": 2,
+          "version": "old",
+          "controller_exit": 0,
+          "classification": "completed_and_passed",
+          "seconds": 52.067,
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "artifact_passed": true,
+          "model_calls": 8,
+          "tool_calls": 5,
+          "verification_reminders": 1,
+          "shell_syntax_errors": 0,
+          "format_repairs": [
+            "response_contract_error [extra_keys]; corrective request 1/1"
+          ]
+        }
+      ],
+      "decision": "Revert experimental guidance and its two example tests; retain pre-experiment core nine changes. All artifacts passed, but the small adaptive comparison does not show an efficiency benefit. No general causal or speed claim is made.",
+      "source_trial": "c1c92a92ca98eb581cae3f0e0c0885a2e4b18514",
+      "source_revert": "1ef6477915517675605906c1a201d1177eac8565"
+    },
+    "evidence": {
+      "path": "shell-multiline-comparison/analysis.json",
+      "sha256": "116dace73a8d82ff1f9a002c9008e361fbb0b8848e53d255c8ac1ee7ceb6b86a"
+    }
+  },
+  "runtime-tree-equivalence.json": {
+    "data": {
+      "at": "2026-09-15T07:29:25.917486+00:00",
+      "reviewed_snapshot": "88cdda2cf7bd95e9ec137b6f9705eb653a4e0005",
+      "full_test_snapshot": "a761075ac5dd3e4ce7402324df8387f24be6630a",
+      "reviewed_tree": "ddb87af77545d5b8f46dcd04ccb27302d725837e",
+      "full_test_tree": "ddb87af77545d5b8f46dcd04ccb27302d725837e",
+      "all_tracked_bytes_identical": true,
+      "reviewed_worktree_clean": true,
+      "source_runtime_commit": "73001b5550ed1e41d6fc846920a852011da4bda8"
+    },
+    "evidence": {
+      "path": "runtime-tree-equivalence.json",
+      "sha256": "f628df65f16a24fae3927b257c8a3fb7dfe79bf553fb8dec3de93f3cbfe967cc"
+    }
+  },
+  "extra-smokes-deferred.json": {
+    "data": {
+      "at": "2026-09-15T07:27:00+00:00",
+      "scope": "Optional one-arm real long-chain check and twelve-arm four-concurrent default-transport smoke",
+      "status": "not_admitted",
+      "reason": "The required full regression exposed a static UI assertion incompatibility and must restart on its test-only repair within the authorized four-hour window. Prioritize completing that regression; skip optional live arms without asking the user.",
+      "planned_live_arms": 13,
+      "admitted_live_arms": 0,
+      "driver_review": "manual/extra-smoke-review/review/verdict.json",
+      "driver_review_verdict": "approve",
+      "offline_long_chain_oracle_cases_passed": 11,
+      "limits": "Prepared and reviewed drivers and synthetic oracle checks are not real-model results or evidence of crossing forty turns. Existing18 primary and11 earlier supplemental arms are separate."
+    },
+    "evidence": {
+      "path": "extra-smokes-deferred.json",
+      "sha256": "19e4aa270bd485ee459b14878ab72205179289e12642c15fe97381a56c512b96"
+    }
+  },
+  "final-quota.json": {
+    "data": {
+      "at": "2026-09-15T07:53:49.656460+00:00",
+      "ok": true,
+      "five_hour": {
+        "utilization": 43.0,
+        "resets_at": "2026-09-15T08:40:00.314514+00:00"
+      },
+      "seven_day": {
+        "utilization": 12.0,
+        "resets_at": "2026-09-21T20:00:00.314539+00:00"
+      },
+      "seven_day_opus": null,
+      "seven_day_sonnet": null,
+      "extra_usage": {
+        "utilization": null,
+        "is_enabled": false,
+        "used_credits": null,
+        "monthly_limit": null
+      }
+    },
+    "evidence": {
+      "path": "final-quota.json",
+      "sha256": "c8b363b7053f50ab7cd2f2710f367bec3a1e93cf48ce530d7f156ae2da7d88da"
+    }
+  },
+  "final-process-audit.json": {
+    "data": {
+      "at": "2026-09-15T07:57:34.655476+00:00",
+      "scope_root": "C:\\workspace\\collie-improvement-2026-09-14-4h",
+      "owned_records": 150,
+      "os_states": {
+        "absent": 150
+      },
+      "records_without_completion_receipt": [],
+      "scope_commandline_query_exit": 0,
+      "scope_commandline_matches": [],
+      "additional_pytest_query_exit": 0,
+      "additional_pytest_matches": [],
+      "all_recorded_owned_processes_exited": true,
+      "method": "OpenProcess/WaitForSingleObject plus process creation time to avoid PID-reuse confusion; Original Job receipts do not prove alias-brokered descendants exited. Additional read-only command-line scope, python -m pytest and post-pytest gate command searches cover the observed escaped-process gap; final escaped pytest separately has a creation-verified held handle and closing Job receipt. No unrelated PID is terminated.",
+      "controller_sha256": "476f4723f58678b5c0ed6d84a08219fa98d2f14dda44beb3afc0ba7830e05432",
+      "records": [
+        {
+          "path": "shell-multiline-comparison\\json_report-r2-old\\process\\process.json",
+          "pid": 44264,
+          "started_at": "2026-09-15T07:01:25.722611+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 52.067,
+            "finished_at": "2026-09-15T07:02:17.775581+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r2-old\\grading\\process\\process.json",
+          "pid": 27084,
+          "started_at": "2026-09-15T07:02:17.795109+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T07:02:19.800054+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r2-new\\process\\process.json",
+          "pid": 59620,
+          "started_at": "2026-09-15T07:00:10.050396+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 72.09,
+            "finished_at": "2026-09-15T07:01:22.125793+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r2-new\\grading\\process\\process.json",
+          "pid": 52716,
+          "started_at": "2026-09-15T07:01:22.145518+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T07:01:24.150260+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r1-old\\process\\process.json",
+          "pid": 32764,
+          "started_at": "2026-09-15T06:57:46.713140+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 44.063,
+            "finished_at": "2026-09-15T06:58:30.761169+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r1-old\\grading\\process\\process.json",
+          "pid": 40036,
+          "started_at": "2026-09-15T06:58:30.780586+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:58:32.785354+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r1-new\\process\\process.json",
+          "pid": 64188,
+          "started_at": "2026-09-15T06:58:34.335975+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 92.112,
+            "finished_at": "2026-09-15T07:00:06.432779+00:00"
+          }
+        },
+        {
+          "path": "shell-multiline-comparison\\json_report-r1-new\\grading\\process\\process.json",
+          "pid": 64956,
+          "started_at": "2026-09-15T07:00:06.452648+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T07:00:08.457304+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r2-native\\native\\process.json",
+          "pid": 49656,
+          "started_at": "2026-09-15T06:40:04.081895+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 8.026,
+            "finished_at": "2026-09-15T06:40:12.093009+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r2-native\\grading\\process\\process.json",
+          "pid": 66176,
+          "started_at": "2026-09-15T06:40:12.115033+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.016,
+            "finished_at": "2026-09-15T06:40:14.122558+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r2-candidate\\process\\process.json",
+          "pid": 40708,
+          "started_at": "2026-09-15T06:40:16.317243+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 10.027,
+            "finished_at": "2026-09-15T06:40:26.329633+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r2-candidate\\grading\\process\\process.json",
+          "pid": 73632,
+          "started_at": "2026-09-15T06:40:26.348475+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.017,
+            "finished_at": "2026-09-15T06:40:28.357339+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r2-baseline\\process\\process.json",
+          "pid": 29280,
+          "started_at": "2026-09-15T06:40:30.455811+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 22.042,
+            "finished_at": "2026-09-15T06:40:52.479373+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r2-baseline\\grading\\process\\process.json",
+          "pid": 48484,
+          "started_at": "2026-09-15T06:40:52.499011+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:40:54.503478+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r1-native\\native\\process.json",
+          "pid": 66124,
+          "started_at": "2026-09-15T06:34:10.839556+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 8.026,
+            "finished_at": "2026-09-15T06:34:18.849813+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r1-native\\grading\\process\\process.json",
+          "pid": 57392,
+          "started_at": "2026-09-15T06:34:18.871761+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:34:20.876123+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r1-candidate\\process\\process.json",
+          "pid": 66300,
+          "started_at": "2026-09-15T06:33:56.711673+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 10.027,
+            "finished_at": "2026-09-15T06:34:06.723871+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r1-candidate\\grading\\process\\process.json",
+          "pid": 64980,
+          "started_at": "2026-09-15T06:34:06.741939+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:34:08.746545+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r1-baseline\\process\\process.json",
+          "pid": 45780,
+          "started_at": "2026-09-15T06:33:30.499486+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 22.037,
+            "finished_at": "2026-09-15T06:33:52.522252+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\read_settings-r1-baseline\\grading\\process\\process.json",
+          "pid": 71548,
+          "started_at": "2026-09-15T06:33:52.541288+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:33:54.546437+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r2-native\\native\\process.json",
+          "pid": 33028,
+          "started_at": "2026-09-15T06:45:43.843832+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 34.053,
+            "finished_at": "2026-09-15T06:46:17.881291+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r2-native\\grading\\process\\process.json",
+          "pid": 71312,
+          "started_at": "2026-09-15T06:46:17.905456+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.017,
+            "finished_at": "2026-09-15T06:46:19.910375+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r2-candidate\\process\\process.json",
+          "pid": 44804,
+          "started_at": "2026-09-15T06:43:19.224250+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 52.071,
+            "finished_at": "2026-09-15T06:44:11.280273+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r2-candidate\\grading\\process\\process.json",
+          "pid": 50984,
+          "started_at": "2026-09-15T06:44:11.299457+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:44:13.304401+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r2-baseline\\process\\process.json",
+          "pid": 61700,
+          "started_at": "2026-09-15T06:44:15.513234+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 84.106,
+            "finished_at": "2026-09-15T06:45:39.600153+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r2-baseline\\grading\\process\\process.json",
+          "pid": 67040,
+          "started_at": "2026-09-15T06:45:39.618535+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.012,
+            "finished_at": "2026-09-15T06:45:41.622449+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r1-native\\native\\process.json",
+          "pid": 62144,
+          "started_at": "2026-09-15T06:36:19.442271+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 40.058,
+            "finished_at": "2026-09-15T06:36:59.485110+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r1-native\\grading\\process\\process.json",
+          "pid": 38416,
+          "started_at": "2026-09-15T06:36:59.506419+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:37:01.511003+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r1-candidate\\process\\process.json",
+          "pid": 71144,
+          "started_at": "2026-09-15T06:39:01.872469+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 58.075,
+            "finished_at": "2026-09-15T06:39:59.932855+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r1-candidate\\grading\\process\\process.json",
+          "pid": 50696,
+          "started_at": "2026-09-15T06:39:59.951698+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:40:01.956630+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r1-baseline\\process\\process.json",
+          "pid": 45836,
+          "started_at": "2026-09-15T06:37:03.572364+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 114.129,
+            "finished_at": "2026-09-15T06:38:57.686871+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\partition-r1-baseline\\grading\\process\\process.json",
+          "pid": 40020,
+          "started_at": "2026-09-15T06:38:57.707495+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.017,
+            "finished_at": "2026-09-15T06:38:59.715986+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r2-native\\native\\process.json",
+          "pid": 65968,
+          "started_at": "2026-09-15T06:41:54.873039+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 22.039,
+            "finished_at": "2026-09-15T06:42:16.896887+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r2-native\\grading\\process\\process.json",
+          "pid": 65400,
+          "started_at": "2026-09-15T06:42:16.920629+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.016,
+            "finished_at": "2026-09-15T06:42:18.925598+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r2-candidate\\process\\process.json",
+          "pid": 10708,
+          "started_at": "2026-09-15T06:42:20.962383+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 54.071,
+            "finished_at": "2026-09-15T06:43:15.017861+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r2-candidate\\grading\\process\\process.json",
+          "pid": 63848,
+          "started_at": "2026-09-15T06:43:15.035702+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:43:17.040577+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r2-baseline\\process\\process.json",
+          "pid": 52212,
+          "started_at": "2026-09-15T06:40:56.597331+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 54.069,
+            "finished_at": "2026-09-15T06:41:50.652451+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r2-baseline\\grading\\process\\process.json",
+          "pid": 66860,
+          "started_at": "2026-09-15T06:41:50.671569+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:41:52.675903+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r1-native\\native\\process.json",
+          "pid": 68172,
+          "started_at": "2026-09-15T06:35:21.216468+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 20.04,
+            "finished_at": "2026-09-15T06:35:41.240211+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r1-native\\grading\\process\\process.json",
+          "pid": 72864,
+          "started_at": "2026-09-15T06:35:41.262315+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.014,
+            "finished_at": "2026-09-15T06:35:43.267878+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r1-candidate\\process\\process.json",
+          "pid": 70600,
+          "started_at": "2026-09-15T06:34:22.965586+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 54.074,
+            "finished_at": "2026-09-15T06:35:17.024417+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r1-candidate\\grading\\process\\process.json",
+          "pid": 50368,
+          "started_at": "2026-09-15T06:35:17.045303+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T06:35:19.050071+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r1-baseline\\process\\process.json",
+          "pid": 48800,
+          "started_at": "2026-09-15T06:35:45.330920+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 30.046,
+            "finished_at": "2026-09-15T06:36:15.361868+00:00"
+          }
+        },
+        {
+          "path": "primary-cohort\\json_report-r1-baseline\\grading\\process\\process.json",
+          "pid": 40340,
+          "started_at": "2026-09-15T06:36:15.381929+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.014,
+            "finished_at": "2026-09-15T06:36:17.387217+00:00"
+          }
+        },
+        {
+          "path": "ownership-smoke\\normal\\process.json",
+          "pid": 22272,
+          "started_at": "2026-09-15T04:00:50.380628+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.034,
+            "finished_at": "2026-09-15T04:00:52.384505+00:00"
+          }
+        },
+        {
+          "path": "ownership-smoke\\timeout\\process.json",
+          "pid": 42548,
+          "started_at": "2026-09-15T04:00:52.397410+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "timeout",
+            "seconds": 2.012,
+            "finished_at": "2026-09-15T04:00:54.403069+00:00"
+          }
+        },
+        {
+          "path": "manual\\wait-unknown-state-r2\\review\\native\\process.json",
+          "pid": 54976,
+          "started_at": "2026-09-15T06:21:51.719195+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 150.173,
+            "finished_at": "2026-09-15T06:24:21.877739+00:00"
+          }
+        },
+        {
+          "path": "manual\\wait-unknown-state-r2\\parent-checks\\checks\\process.json",
+          "pid": 74236,
+          "started_at": "2026-09-15T06:19:03.108738+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 84.107,
+            "finished_at": "2026-09-15T06:20:27.200224+00:00"
+          }
+        },
+        {
+          "path": "manual\\wait-unknown-state\\implementation\\native\\process.json",
+          "pid": 25812,
+          "started_at": "2026-09-15T05:57:52.875510+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "timeout",
+            "seconds": 1201.268,
+            "finished_at": "2026-09-15T06:17:54.127509+00:00"
+          }
+        },
+        {
+          "path": "manual\\verification-evidence\\revision2-author\\native\\process.json",
+          "pid": 16780,
+          "started_at": "2026-09-15T04:15:43.454063+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 478.453,
+            "finished_at": "2026-09-15T04:23:41.893178+00:00"
+          }
+        },
+        {
+          "path": "manual\\verification-evidence\\review\\native\\process.json",
+          "pid": 38372,
+          "started_at": "2026-09-15T04:28:35.478740+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 242.329,
+            "finished_at": "2026-09-15T04:32:37.791017+00:00"
+          }
+        },
+        {
+          "path": "manual\\verification-evidence\\parent-checks\\checks\\process.json",
+          "pid": 32844,
+          "started_at": "2026-09-15T04:26:02.649795+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 54.068,
+            "finished_at": "2026-09-15T04:26:56.699398+00:00"
+          }
+        },
+        {
+          "path": "manual\\verification-evidence\\implementation\\native\\process.json",
+          "pid": 40256,
+          "started_at": "2026-09-15T04:01:08.259295+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 810.702,
+            "finished_at": "2026-09-15T04:14:38.947871+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-markup-contract\\review\\native\\process.json",
+          "pid": 68572,
+          "started_at": "2026-09-15T07:25:34.985481+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 80.102,
+            "finished_at": "2026-09-15T07:26:55.071784+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-markup-contract\\parent-checks-r2\\checks\\process.json",
+          "pid": 60652,
+          "started_at": "2026-09-15T07:24:56.835497+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.029,
+            "finished_at": "2026-09-15T07:24:58.842654+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-markup-contract\\parent-checks\\checks\\process.json",
+          "pid": 24780,
+          "started_at": "2026-09-15T07:22:35.705398+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 140.168,
+            "finished_at": "2026-09-15T07:24:55.858232+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-markup-contract\\before\\checks\\process.json",
+          "pid": 14216,
+          "started_at": "2026-09-15T07:21:33.069009+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 2.021,
+            "finished_at": "2026-09-15T07:21:35.073877+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels-r3\\review\\native\\process.json",
+          "pid": 69408,
+          "started_at": "2026-09-15T06:21:41.497298+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 206.232,
+            "finished_at": "2026-09-15T06:25:07.715229+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels-r3\\parent-checks\\checks\\process.json",
+          "pid": 48204,
+          "started_at": "2026-09-15T06:17:11.291560+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 208.24,
+            "finished_at": "2026-09-15T06:20:39.514841+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels-r3\\implementation\\native\\process.json",
+          "pid": 13264,
+          "started_at": "2026-09-15T05:57:42.654847+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 1131.221,
+            "finished_at": "2026-09-15T06:16:33.860556+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels-r2\\visual-review\\server\\process.json",
+          "pid": 41112,
+          "started_at": "2026-09-15T05:54:16.160530+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 104.136,
+            "finished_at": "2026-09-15T05:56:00.280148+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels-r2\\review\\native\\process.json",
+          "pid": 69184,
+          "started_at": "2026-09-15T05:53:44.124544+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 158.191,
+            "finished_at": "2026-09-15T05:56:22.299541+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels-r2\\parent-checks\\checks\\process.json",
+          "pid": 74104,
+          "started_at": "2026-09-15T05:51:08.871079+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 138.159,
+            "finished_at": "2026-09-15T05:53:27.014388+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels\\parent-checks\\checks\\process.json",
+          "pid": 62392,
+          "started_at": "2026-09-15T05:47:39.809879+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 168.197,
+            "finished_at": "2026-09-15T05:50:27.992361+00:00"
+          }
+        },
+        {
+          "path": "manual\\ui-control-labels\\implementation\\native\\process.json",
+          "pid": 69680,
+          "started_at": "2026-09-15T05:30:35.648781+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 850.988,
+            "finished_at": "2026-09-15T05:44:46.618479+00:00"
+          }
+        },
+        {
+          "path": "manual\\shell-multiline-rollback\\review\\native\\process.json",
+          "pid": 66916,
+          "started_at": "2026-09-15T07:05:30.915964+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 106.131,
+            "finished_at": "2026-09-15T07:07:17.030746+00:00"
+          }
+        },
+        {
+          "path": "manual\\shell-multiline-rollback\\parent-checks\\checks\\process.json",
+          "pid": 71284,
+          "started_at": "2026-09-15T07:03:56.721128+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 30.049,
+            "finished_at": "2026-09-15T07:04:26.754632+00:00"
+          }
+        },
+        {
+          "path": "manual\\shell-multiline\\review\\native\\process.json",
+          "pid": 30124,
+          "started_at": "2026-09-15T06:55:35.409920+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 104.128,
+            "finished_at": "2026-09-15T06:57:19.522140+00:00"
+          }
+        },
+        {
+          "path": "manual\\shell-multiline\\parent-checks\\checks\\process.json",
+          "pid": 52552,
+          "started_at": "2026-09-15T06:54:27.459546+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 28.045,
+            "finished_at": "2026-09-15T06:54:55.490274+00:00"
+          }
+        },
+        {
+          "path": "manual\\shell-multiline\\implementation\\native\\process.json",
+          "pid": 67624,
+          "started_at": "2026-09-15T06:48:15.275741+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 292.329,
+            "finished_at": "2026-09-15T06:53:07.589248+00:00"
+          }
+        },
+        {
+          "path": "manual\\report-review\\review\\native\\process.json",
+          "pid": 56172,
+          "started_at": "2026-09-15T07:31:21.889518+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 528.566,
+            "finished_at": "2026-09-15T07:40:10.440438+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r2-on\\process\\process.json",
+          "pid": 71744,
+          "started_at": "2026-09-15T05:15:37.834514+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 10.029,
+            "finished_at": "2026-09-15T05:15:47.847827+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r2-on\\grading\\process\\process.json",
+          "pid": 53648,
+          "started_at": "2026-09-15T05:15:47.868046+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.014,
+            "finished_at": "2026-09-15T05:15:49.873213+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r2-off\\process\\process.json",
+          "pid": 58344,
+          "started_at": "2026-09-15T05:16:39.157499+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 20.04,
+            "finished_at": "2026-09-15T05:16:59.179552+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r2-off\\grading\\process\\process.json",
+          "pid": 63964,
+          "started_at": "2026-09-15T05:16:59.198460+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T05:17:01.203447+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r1-on\\process\\process.json",
+          "pid": 52536,
+          "started_at": "2026-09-15T05:14:39.354508+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 18.036,
+            "finished_at": "2026-09-15T05:14:57.376467+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r1-on\\grading\\process\\process.json",
+          "pid": 62116,
+          "started_at": "2026-09-15T05:14:57.398692+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.015,
+            "finished_at": "2026-09-15T05:14:59.404112+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r1-off\\process\\process.json",
+          "pid": 39064,
+          "started_at": "2026-09-15T05:13:48.416951+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 22.037,
+            "finished_at": "2026-09-15T05:14:10.438985+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch-ablation\\r1-off\\grading\\process\\process.json",
+          "pid": 48024,
+          "started_at": "2026-09-15T05:14:10.457480+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.012,
+            "finished_at": "2026-09-15T05:14:12.462441+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch\\revision2-author\\native\\process.json",
+          "pid": 68600,
+          "started_at": "2026-09-15T04:43:01.528580+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 376.368,
+            "finished_at": "2026-09-15T04:49:17.880710+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch\\review\\native\\process.json",
+          "pid": 50292,
+          "started_at": "2026-09-15T04:56:21.310105+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 148.16,
+            "finished_at": "2026-09-15T04:58:49.453066+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch\\parent-checks\\checks\\process.json",
+          "pid": 55708,
+          "started_at": "2026-09-15T04:52:25.270528+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 4.022,
+            "finished_at": "2026-09-15T04:52:29.276589+00:00"
+          }
+        },
+        {
+          "path": "manual\\read-batch\\implementation\\native\\process.json",
+          "pid": 37428,
+          "started_at": "2026-09-15T04:20:18.462274+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "timeout",
+            "seconds": 1201.177,
+            "finished_at": "2026-09-15T04:40:19.625258+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r7\\review\\native\\process.json",
+          "pid": 63112,
+          "started_at": "2026-09-15T06:16:46.012062+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 174.199,
+            "finished_at": "2026-09-15T06:19:40.194950+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r7\\parent-checks\\checks\\process.json",
+          "pid": 64164,
+          "started_at": "2026-09-15T06:12:56.126176+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 172.197,
+            "finished_at": "2026-09-15T06:15:48.307858+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r6\\parent-checks\\checks\\process.json",
+          "pid": 71992,
+          "started_at": "2026-09-15T06:11:54.984628+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 58.088,
+            "finished_at": "2026-09-15T06:12:53.053621+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r6\\negative-before-fix\\checks\\process.json",
+          "pid": 49016,
+          "started_at": "2026-09-15T06:11:13.658695+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 4.022,
+            "finished_at": "2026-09-15T06:11:17.666283+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r5\\review\\native\\process.json",
+          "pid": 70600,
+          "started_at": "2026-09-15T06:05:44.757397+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 208.236,
+            "finished_at": "2026-09-15T06:09:12.977812+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r5\\parent-checks\\checks\\process.json",
+          "pid": 65968,
+          "started_at": "2026-09-15T06:02:27.612789+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 170.19,
+            "finished_at": "2026-09-15T06:05:17.786785+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r4\\parent-checks\\checks\\process.json",
+          "pid": 70952,
+          "started_at": "2026-09-15T06:01:09.452424+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 76.106,
+            "finished_at": "2026-09-15T06:02:25.541264+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r3\\parent-checks\\checks\\process.json",
+          "pid": 48956,
+          "started_at": "2026-09-15T05:58:45.021870+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 164.183,
+            "finished_at": "2026-09-15T06:01:29.188964+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r3\\implementation\\native\\process.json",
+          "pid": 67920,
+          "started_at": "2026-09-15T05:48:36.840931+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 482.536,
+            "finished_at": "2026-09-15T05:56:39.360997+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume-r2\\implementation\\native\\process.json",
+          "pid": 72316,
+          "started_at": "2026-09-15T05:23:37.861307+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "timeout",
+            "seconds": 1201.287,
+            "finished_at": "2026-09-15T05:43:39.132755+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume\\parent-checks\\checks\\process.json",
+          "pid": 73044,
+          "started_at": "2026-09-15T05:18:46.133468+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 46.062,
+            "finished_at": "2026-09-15T05:19:32.180401+00:00"
+          }
+        },
+        {
+          "path": "manual\\quota-followup-resume\\implementation\\native\\process.json",
+          "pid": 72088,
+          "started_at": "2026-09-15T05:09:25.549134+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 398.432,
+            "finished_at": "2026-09-15T05:16:03.964881+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\review\\native\\process.json",
+          "pid": 23560,
+          "started_at": "2026-09-15T04:58:00.283347+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 208.214,
+            "finished_at": "2026-09-15T05:01:28.482845+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\parent-checks-v4\\checks\\process.json",
+          "pid": 59360,
+          "started_at": "2026-09-15T04:56:30.832399+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 50.063,
+            "finished_at": "2026-09-15T04:57:20.880147+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\parent-checks-v3\\checks\\process.json",
+          "pid": 26740,
+          "started_at": "2026-09-15T04:49:51.067549+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 48.063,
+            "finished_at": "2026-09-15T04:50:39.114873+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\parent-checks-v2\\checks\\process.json",
+          "pid": 26984,
+          "started_at": "2026-09-15T04:47:25.880170+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 50.063,
+            "finished_at": "2026-09-15T04:48:15.928462+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\parent-checks\\checks\\process.json",
+          "pid": 64784,
+          "started_at": "2026-09-15T04:37:11.055626+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 6.024,
+            "finished_at": "2026-09-15T04:37:17.063802+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\before-checks-v3\\checks\\process.json",
+          "pid": 39608,
+          "started_at": "2026-09-15T04:56:30.832590+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 4.022,
+            "finished_at": "2026-09-15T04:56:34.838188+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\before-checks-v2\\checks\\process.json",
+          "pid": 55088,
+          "started_at": "2026-09-15T04:49:51.085141+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 4.022,
+            "finished_at": "2026-09-15T04:49:55.091071+00:00"
+          }
+        },
+        {
+          "path": "manual\\python-check-flags\\before-checks\\checks\\process.json",
+          "pid": 72980,
+          "started_at": "2026-09-15T04:48:24.085240+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 4.025,
+            "finished_at": "2026-09-15T04:48:28.093808+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r5\\review\\native\\process.json",
+          "pid": 708,
+          "started_at": "2026-09-15T05:51:57.398559+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 210.239,
+            "finished_at": "2026-09-15T05:55:27.616960+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r5\\parent-checks\\checks\\process.json",
+          "pid": 32688,
+          "started_at": "2026-09-15T05:48:46.411748+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 158.186,
+            "finished_at": "2026-09-15T05:51:24.581997+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r5\\implementation\\native\\process.json",
+          "pid": 57196,
+          "started_at": "2026-09-15T05:35:25.701420+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 672.714,
+            "finished_at": "2026-09-15T05:46:38.399842+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r4\\visual-review\\server\\process.json",
+          "pid": 40052,
+          "started_at": "2026-09-15T05:27:47.025064+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 122.143,
+            "finished_at": "2026-09-15T05:29:49.152196+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r4\\review\\native\\process.json",
+          "pid": 10308,
+          "started_at": "2026-09-15T05:29:38.632798+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 198.228,
+            "finished_at": "2026-09-15T05:32:56.844302+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r4\\parent-checks\\checks\\process.json",
+          "pid": 74104,
+          "started_at": "2026-09-15T05:26:26.267856+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 160.181,
+            "finished_at": "2026-09-15T05:29:06.433436+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r3\\parent-checks-v2\\checks\\process.json",
+          "pid": 59980,
+          "started_at": "2026-09-15T05:22:04.756772+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 1,
+            "seconds": 158.182,
+            "finished_at": "2026-09-15T05:24:42.923614+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r3\\parent-checks\\checks\\process.json",
+          "pid": 70712,
+          "started_at": "2026-09-15T05:20:54.060825+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 30.056,
+            "finished_at": "2026-09-15T05:21:24.101229+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r2\\parent-checks\\checks\\process.json",
+          "pid": 74164,
+          "started_at": "2026-09-15T05:17:20.042300+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 156.177,
+            "finished_at": "2026-09-15T05:19:56.204003+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state-r2\\implementation\\native\\process.json",
+          "pid": 69600,
+          "started_at": "2026-09-15T05:04:55.468392+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 694.648,
+            "finished_at": "2026-09-15T05:16:30.100907+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state\\visual-review\\server\\process.json",
+          "pid": 12692,
+          "started_at": "2026-09-15T05:01:14.317138+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 258.268,
+            "finished_at": "2026-09-15T05:05:32.560913+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state\\review\\native\\process.json",
+          "pid": 63968,
+          "started_at": "2026-09-15T05:01:40.041598+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 144.15,
+            "finished_at": "2026-09-15T05:04:04.176622+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state\\parent-checks\\checks\\process.json",
+          "pid": 44464,
+          "started_at": "2026-09-15T04:58:10.969099+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 138.146,
+            "finished_at": "2026-09-15T05:00:29.100068+00:00"
+          }
+        },
+        {
+          "path": "manual\\provider-wait-state\\implementation\\native\\process.json",
+          "pid": 1676,
+          "started_at": "2026-09-15T04:39:03.665045+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 1103.034,
+            "finished_at": "2026-09-15T04:57:26.683856+00:00"
+          }
+        },
+        {
+          "path": "manual\\prompt-provenance\\review\\native\\process.json",
+          "pid": 55304,
+          "started_at": "2026-09-15T05:37:02.221771+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 156.178,
+            "finished_at": "2026-09-15T05:39:38.383587+00:00"
+          }
+        },
+        {
+          "path": "manual\\prompt-provenance\\parent-checks\\checks\\process.json",
+          "pid": 57644,
+          "started_at": "2026-09-15T05:36:02.009297+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 24.042,
+            "finished_at": "2026-09-15T05:36:26.035727+00:00"
+          }
+        },
+        {
+          "path": "manual\\prompt-provenance\\implementation\\native\\process.json",
+          "pid": 71716,
+          "started_at": "2026-09-15T05:25:10.716537+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 402.436,
+            "finished_at": "2026-09-15T05:31:53.136639+00:00"
+          }
+        },
+        {
+          "path": "manual\\prompt-live-smoke\\json_report\\process\\process.json",
+          "pid": 54892,
+          "started_at": "2026-09-15T05:41:51.870345+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 38.058,
+            "finished_at": "2026-09-15T05:42:29.912074+00:00"
+          }
+        },
+        {
+          "path": "manual\\prompt-live-smoke\\json_report\\grading\\process\\process.json",
+          "pid": 63812,
+          "started_at": "2026-09-15T05:42:29.931369+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T05:42:31.936173+00:00"
+          }
+        },
+        {
+          "path": "manual\\mode-prompt\\review\\native\\process.json",
+          "pid": 48672,
+          "started_at": "2026-09-15T04:21:47.259616+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 132.137,
+            "finished_at": "2026-09-15T04:23:59.383220+00:00"
+          }
+        },
+        {
+          "path": "manual\\mode-prompt\\parent-checks\\checks\\process.json",
+          "pid": 65672,
+          "started_at": "2026-09-15T04:19:19.266970+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 18.029,
+            "finished_at": "2026-09-15T04:19:37.283166+00:00"
+          }
+        },
+        {
+          "path": "manual\\mode-prompt\\implementation\\native\\process.json",
+          "pid": 57800,
+          "started_at": "2026-09-15T04:01:08.276146+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 1020.862,
+            "finished_at": "2026-09-15T04:18:09.125854+00:00"
+          }
+        },
+        {
+          "path": "manual\\full-failure-triage\\collect\\process.json",
+          "pid": 72752,
+          "started_at": "2026-09-15T07:20:05.323015+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 6.033,
+            "finished_at": "2026-09-15T07:20:11.331298+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight-r3\\review\\native\\process.json",
+          "pid": 71092,
+          "started_at": "2026-09-15T05:16:13.876691+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 150.174,
+            "finished_at": "2026-09-15T05:18:44.034119+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight-r3\\parent-checks\\checks\\process.json",
+          "pid": 25104,
+          "started_at": "2026-09-15T05:14:15.811789+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 64.081,
+            "finished_at": "2026-09-15T05:15:19.877409+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight-r3\\implementation\\native\\process.json",
+          "pid": 68108,
+          "started_at": "2026-09-15T05:03:47.345000+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 582.551,
+            "finished_at": "2026-09-15T05:13:29.881330+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight-r2\\review\\native\\process.json",
+          "pid": 59164,
+          "started_at": "2026-09-15T04:58:53.494715+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 154.163,
+            "finished_at": "2026-09-15T05:01:27.640499+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight-r2\\parent-checks\\checks\\process.json",
+          "pid": 58028,
+          "started_at": "2026-09-15T04:57:09.448868+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 60.075,
+            "finished_at": "2026-09-15T04:58:09.506759+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight-r2\\implementation\\native\\process.json",
+          "pid": 69732,
+          "started_at": "2026-09-15T04:44:56.148614+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 448.429,
+            "finished_at": "2026-09-15T04:52:24.561303+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight\\parent-checks\\checks\\process.json",
+          "pid": 48680,
+          "started_at": "2026-09-15T04:42:11.047649+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 36.049,
+            "finished_at": "2026-09-15T04:42:47.081843+00:00"
+          }
+        },
+        {
+          "path": "manual\\finish-preflight\\implementation\\native\\process.json",
+          "pid": 44680,
+          "started_at": "2026-09-15T04:27:02.923765+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 566.542,
+            "finished_at": "2026-09-15T04:36:29.449359+00:00"
+          }
+        },
+        {
+          "path": "manual\\final-merge\\visual-review\\server\\process.json",
+          "pid": 51184,
+          "started_at": "2026-09-15T06:29:51.274898+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 86.111,
+            "finished_at": "2026-09-15T06:31:17.370211+00:00"
+          }
+        },
+        {
+          "path": "manual\\final-merge\\review\\native\\process.json",
+          "pid": 55340,
+          "started_at": "2026-09-15T06:27:15.650868+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 166.188,
+            "finished_at": "2026-09-15T06:30:01.823695+00:00"
+          }
+        },
+        {
+          "path": "manual\\final-merge\\parent-checks\\checks\\process.json",
+          "pid": 64568,
+          "started_at": "2026-09-15T06:23:11.477713+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 186.204,
+            "finished_at": "2026-09-15T06:26:17.666327+00:00"
+          }
+        },
+        {
+          "path": "manual\\extra-smoke-review\\review\\native\\process.json",
+          "pid": 68296,
+          "started_at": "2026-09-15T07:15:40.342221+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 400.443,
+            "finished_at": "2026-09-15T07:22:20.769845+00:00"
+          }
+        },
+        {
+          "path": "manual\\benchmark-review\\review3\\native\\process.json",
+          "pid": 72700,
+          "started_at": "2026-09-15T05:06:22.395455+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 168.192,
+            "finished_at": "2026-09-15T05:09:10.571929+00:00"
+          }
+        },
+        {
+          "path": "manual\\benchmark-review\\review2\\native\\process.json",
+          "pid": 73656,
+          "started_at": "2026-09-15T04:33:45.081752+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 274.277,
+            "finished_at": "2026-09-15T04:38:19.340951+00:00"
+          }
+        },
+        {
+          "path": "manual\\benchmark-review\\review\\native\\process.json",
+          "pid": 67412,
+          "started_at": "2026-09-15T04:14:19.249071+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 408.36,
+            "finished_at": "2026-09-15T04:21:07.595801+00:00"
+          }
+        },
+        {
+          "path": "manual\\batch-live-smoke\\structured\\process\\process.json",
+          "pid": 54676,
+          "started_at": "2026-09-15T05:10:58.304311+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 16.033,
+            "finished_at": "2026-09-15T05:11:14.322411+00:00"
+          }
+        },
+        {
+          "path": "manual\\batch-live-smoke\\structured\\grading\\process\\process.json",
+          "pid": 60408,
+          "started_at": "2026-09-15T05:11:14.342240+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.013,
+            "finished_at": "2026-09-15T05:11:16.346991+00:00"
+          }
+        },
+        {
+          "path": "manual\\batch-live-smoke\\plain\\process\\process.json",
+          "pid": 67692,
+          "started_at": "2026-09-15T05:10:03.426215+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 10.028,
+            "finished_at": "2026-09-15T05:10:13.439220+00:00"
+          }
+        },
+        {
+          "path": "manual\\batch-live-smoke\\plain\\grading\\process\\process.json",
+          "pid": 57948,
+          "started_at": "2026-09-15T05:10:13.458239+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2.012,
+            "finished_at": "2026-09-15T05:10:15.462959+00:00"
+          }
+        },
+        {
+          "path": "manual\\accepted-core-v2\\combined-checks\\checks\\process.json",
+          "pid": 23920,
+          "started_at": "2026-09-15T05:11:31.625311+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 8.027,
+            "finished_at": "2026-09-15T05:11:39.636455+00:00"
+          }
+        },
+        {
+          "path": "final-full-r3\\checks\\process.json",
+          "pid": 39820,
+          "started_at": "2026-09-15T07:23:54.605611+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 2000.043,
+            "finished_at": "2026-09-15T07:57:14.632513+00:00"
+          }
+        },
+        {
+          "path": "final-full-r2\\checks\\process.json",
+          "pid": 10708,
+          "started_at": "2026-09-15T07:03:14.303295+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 1237.275,
+            "finished_at": "2026-09-15T07:23:51.561520+00:00"
+          }
+        },
+        {
+          "path": "final-full\\checks\\process.json",
+          "pid": 46948,
+          "started_at": "2026-09-15T06:46:31.923286+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": "stopped",
+            "seconds": 668.679,
+            "finished_at": "2026-09-15T06:57:40.584259+00:00"
+          }
+        },
+        {
+          "path": "baseline-full\\checks\\process.json",
+          "pid": 67576,
+          "started_at": "2026-09-15T04:02:52.095928+00:00",
+          "os_observation": {
+            "state": "absent",
+            "error_code": 87
+          },
+          "process_result": {
+            "exit": 0,
+            "seconds": 1881.661,
+            "finished_at": "2026-09-15T04:34:13.743359+00:00"
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "path": "final-process-audit.json",
+      "sha256": "b96a0fa10e121a03397997f8b91199d047a03501bcb700d3cb2a59189f099589"
+    }
+  },
+  "escaped-pytest-guard.json": {
+    "data": {
+      "attached_at": "2026-09-15T07:51:50.016074+00:00",
+      "pid": 75680,
+      "creation_epoch_ms": 1789457172019.7773,
+      "basis": "Observed bootstrap39820 -> bash27568/69628/75040 -> python3 alias75740 -> real pytest75680 lineage; verified creation through held OS handle.",
+      "active_after_attach": 1,
+      "closed": true,
+      "natural_exit_before_close": true,
+      "closed_at": "2026-09-15T07:56:46.712095+00:00",
+      "active_after_close": 0
+    },
+    "evidence": {
+      "path": "escaped-pytest-guard.json",
+      "sha256": "8d6a0af4ba28fae5ca2206b650fd23b09ce521dcfe016d496149ab0a7ff42ad1"
+    }
+  },
+  "SUPPLEMENTAL-EVIDENCE.json": {
+    "data": {
+      "at": "2026-09-15T07:37:12.096623+00:00",
+      "rows": [
+        {
+          "name": "manual/batch-live-smoke/plain",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\batch-live-smoke\\plain\\result.json",
+          "result_sha256": "9096278a38af96283b0cd9092ce71da63a9f92fafd48834aee212e2c13b50cc8",
+          "classification": "completed_and_passed",
+          "seconds": 10.028,
+          "artifact": {
+            "artifact_passed": true,
+            "checks": 8,
+            "check_labels": [
+              "input preserved: defaults.json",
+              "input preserved: local.json",
+              "input preserved: runtime.py",
+              "allowed output: defaults.json",
+              "allowed output: local.json",
+              "allowed output: runtime.py",
+              "resolved values",
+              "integer types"
+            ]
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 2,
+          "tool_calls": 3,
+          "transport_options": {
+            "read_batch": true,
+            "structured_output": false
+          },
+          "product_head": "56fe430970b854d1ef688d31f6ec081dc1c83ab9"
+        },
+        {
+          "name": "manual/batch-live-smoke/structured",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\batch-live-smoke\\structured\\result.json",
+          "result_sha256": "2a0490c43631aff36cc659ea3ac96f7b1ab70a4515ab9fbdd89dfa8c07c5a5f9",
+          "classification": "completed_and_passed",
+          "seconds": 16.033,
+          "artifact": {
+            "artifact_passed": true,
+            "checks": 8,
+            "check_labels": [
+              "input preserved: defaults.json",
+              "input preserved: local.json",
+              "input preserved: runtime.py",
+              "allowed output: defaults.json",
+              "allowed output: local.json",
+              "allowed output: runtime.py",
+              "resolved values",
+              "integer types"
+            ]
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 3,
+          "tool_calls": 3,
+          "transport_options": {
+            "read_batch": true,
+            "structured_output": true
+          },
+          "product_head": "56fe430970b854d1ef688d31f6ec081dc1c83ab9"
+        },
+        {
+          "name": "manual/read-batch-ablation/r1-off",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\read-batch-ablation\\r1-off\\result.json",
+          "result_sha256": "a210008b916d1014735ed01133176e602736d0c336bf764df46ea45bb7304cea",
+          "classification": "completed_and_passed",
+          "seconds": 22.037,
+          "artifact": {
+            "artifact_passed": true,
+            "checks": 8,
+            "check_labels": [
+              "input preserved: defaults.json",
+              "input preserved: local.json",
+              "input preserved: runtime.py",
+              "allowed output: defaults.json",
+              "allowed output: local.json",
+              "allowed output: runtime.py",
+              "resolved values",
+              "integer types"
+            ]
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 5,
+          "tool_calls": 4,
+          "transport_options": {
+            "read_batch": false,
+            "structured_output": false
+          },
+          "product_head": "56fe430970b854d1ef688d31f6ec081dc1c83ab9"
+        },
+        {
+          "name": "manual/read-batch-ablation/r1-on",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\read-batch-ablation\\r1-on\\result.json",
+          "result_sha256": "cd6352a9c421d20540abfa1365625efc50c52e149d45c341bf875feb8e96a5eb",
+          "classification": "completed_and_passed",
+          "seconds": 18.036,
+          "artifact": {
+            "artifact_passed": true,
+            "checks": 8,
+            "check_labels": [
+              "input preserved: defaults.json",
+              "input preserved: local.json",
+              "input preserved: runtime.py",
+              "allowed output: defaults.json",
+              "allowed output: local.json",
+              "allowed output: runtime.py",
+              "resolved values",
+              "integer types"
+            ]
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 3,
+          "tool_calls": 3,
+          "transport_options": {
+            "read_batch": true,
+            "structured_output": false
+          },
+          "product_head": "56fe430970b854d1ef688d31f6ec081dc1c83ab9"
+        },
+        {
+          "name": "manual/read-batch-ablation/r2-on",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\read-batch-ablation\\r2-on\\result.json",
+          "result_sha256": "9ad3f9c4b8c40a25c6c80161b24386a610368a5f3c64068772db6d3ad66f0856",
+          "classification": "completed_and_passed",
+          "seconds": 10.029,
+          "artifact": {
+            "artifact_passed": true,
+            "checks": 8,
+            "check_labels": [
+              "input preserved: defaults.json",
+              "input preserved: local.json",
+              "input preserved: runtime.py",
+              "allowed output: defaults.json",
+              "allowed output: local.json",
+              "allowed output: runtime.py",
+              "resolved values",
+              "integer types"
+            ]
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 2,
+          "tool_calls": 3,
+          "transport_options": {
+            "read_batch": true,
+            "structured_output": false
+          },
+          "product_head": "56fe430970b854d1ef688d31f6ec081dc1c83ab9"
+        },
+        {
+          "name": "manual/read-batch-ablation/r2-off",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\read-batch-ablation\\r2-off\\result.json",
+          "result_sha256": "3bd6e1492072ceaa0029ae7ade51b97af9cd834cb3b989c8c5d06afdad4f9104",
+          "classification": "completed_and_passed",
+          "seconds": 20.04,
+          "artifact": {
+            "artifact_passed": true,
+            "checks": 8,
+            "check_labels": [
+              "input preserved: defaults.json",
+              "input preserved: local.json",
+              "input preserved: runtime.py",
+              "allowed output: defaults.json",
+              "allowed output: local.json",
+              "allowed output: runtime.py",
+              "resolved values",
+              "integer types"
+            ]
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 5,
+          "tool_calls": 4,
+          "transport_options": {
+            "read_batch": false,
+            "structured_output": false
+          },
+          "product_head": "56fe430970b854d1ef688d31f6ec081dc1c83ab9"
+        },
+        {
+          "name": "manual/prompt-live-smoke/json_report",
+          "result_path": "C:\\workspace\\collie-improvement-2026-09-14-4h\\manual\\prompt-live-smoke\\json_report\\result.json",
+          "result_sha256": "b78691e4db409640faeb1291b9d4be575b9c52b24898928c361a4995dd0526a9",
+          "classification": "artifact_failed",
+          "seconds": 38.058,
+          "artifact": {
+            "artifact_passed": false,
+            "error_type": "AssertionError",
+            "failure": "short Chinese reply"
+          },
+          "source_unchanged": true,
+          "experiment_unchanged": true,
+          "model_calls": 6,
+          "tool_calls": 5,
+          "transport_options": {
+            "read_batch": true,
+            "structured_output": false
+          },
+          "product_head": "0a0f3a93228f758f564ba705086000b93647715e"
+        }
+      ],
+      "limits": "Seven pre-primary supplemental arms. Several overlap native author work, so no timing comparison is claimed. Keep the original JSON artifact_failed due to an undisclosed100-character threshold; all primary prompts explicitly stated the same threshold before any primary admission.",
+      "length_amendment": "BENCHMARK-LENGTH-AMENDMENT.md",
+      "original_fixture": "benchmark_fixtures-before-explicit-length.py"
+    },
+    "evidence": {
+      "path": "SUPPLEMENTAL-EVIDENCE.json",
+      "sha256": "3cd116dd7647bd79061c85d1827eb00201822313337b17556dd29ace2941f50a"
+    }
+  },
+  "REPORT-CORRECTIONS.json": {
+    "data": {
+      "at": "2026-09-15T07:53:02.742970+00:00",
+      "independent_verdict": "reject",
+      "parent_corrections": [
+        "Actual late pytest summaries retained for both stopped wrappers",
+        "Python alias ownership gap disclosed; candidate repair not delivered",
+        "Shell supplemental loaded latency disclosed",
+        "Full3 separately guarded and requires actual completion",
+        "No assertion of second independent report approval"
+      ],
+      "native_review": "manual/report-review/review/verdict.json"
+    },
+    "evidence": {
+      "path": "REPORT-CORRECTIONS.json",
+      "sha256": "95d840831810edb12b671553f139d1a905c1e86dc84d52853951a5aa416eab03"
+    }
+  }
+}

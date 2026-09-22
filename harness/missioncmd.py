@@ -21,7 +21,8 @@ class MissionCommand:
     action: str
     goal: str = ""
     mission_id: str = ""
-    autonomous: bool = False
+    # None = use the user's saved Mission default; True/False are one-run overrides.
+    autonomous: bool | None = None
     error: str = ""
 
 
@@ -49,10 +50,11 @@ def parse(text: str):
         return MissionCommand("invalid", error="Mission control needs exactly one id")
     start = re.match(r"^start\s+(.+)$", raw, re.I | re.S)
     goal = (start.group(1) if start else raw).strip()
-    autonomous = bool(re.match(r"^--(?:auto|autonomous)(?:\s+|$)", goal, re.I))
-    if autonomous:
-        goal = re.sub(r"^--(?:auto|autonomous)(?:\s+|$)", "", goal,
-                      count=1, flags=re.I).strip()
+    autonomous = None
+    mode = re.match(r"^--(auto|autonomous|review|confirm)(?:\s+|$)", goal, re.I)
+    if mode:
+        autonomous = mode.group(1).lower() in ("auto", "autonomous")
+        goal = goal[mode.end():].strip()
     return MissionCommand("start" if goal else "invalid", goal=goal,
                           autonomous=autonomous,
                           error="Mission goal required" if not goal else "")

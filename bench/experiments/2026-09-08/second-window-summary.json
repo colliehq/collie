@@ -1,0 +1,923 @@
+{
+  "cohorts": {
+    "product-native": [
+      {
+        "suite": "native-session2-product",
+        "planned": 12,
+        "candidate_receipts": 12,
+        "controller_receipts": 12,
+        "controller_statuses": {
+          "resolved": 12
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "claude-code",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 146.985,
+            "median_cache_write": 29341,
+            "median_cache_read": 181870,
+            "median_output": 13282,
+            "session_evidence": []
+          },
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 183.839,
+            "median_cache_write": 264763,
+            "median_cache_read": 25398,
+            "median_output": 11993,
+            "session_evidence": []
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "claude-code",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 177.797,
+            "median_cache_write": 29875,
+            "median_cache_read": 231022,
+            "median_output": 15998,
+            "session_evidence": []
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 180.031,
+            "median_cache_write": 232114,
+            "median_cache_read": 23987,
+            "median_output": 13568,
+            "session_evidence": []
+          }
+        ]
+      }
+    ],
+    "session-default": [
+      {
+        "suite": "native-session2-session-default",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "invalid_infrastructure": 3,
+          "resolved": 3
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 2,
+            "clean": 2,
+            "failures": {
+              "response_protocol": 1
+            },
+            "median_seconds": 167.324,
+            "median_cache_write": 160790,
+            "median_cache_read": 213336,
+            "median_output": 12403,
+            "session_evidence": [
+              {
+                "sessions_opened": 3,
+                "session_turns": 10,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 6
+              },
+              {
+                "sessions_opened": 9,
+                "session_turns": 25,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              },
+              {
+                "sessions_opened": 10,
+                "session_turns": 24,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 8
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 1,
+            "clean": 1,
+            "failures": {
+              "response_protocol": 2
+            },
+            "median_seconds": 81.814,
+            "median_cache_write": 35431,
+            "median_cache_read": 77165,
+            "median_output": 6043,
+            "session_evidence": [
+              {
+                "sessions_opened": 9,
+                "session_turns": 19,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 6
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 10,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 5
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 10,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 5
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "suite": "native-session2-stateless-default",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "resolved": 6
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 223.217,
+            "median_cache_write": 359219,
+            "median_cache_read": 32545,
+            "median_output": 14510,
+            "session_evidence": [
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 21,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 24,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 27,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 235.029,
+            "median_cache_write": 273291,
+            "median_cache_read": 26885,
+            "median_output": 16572,
+            "session_evidence": [
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 17,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 20,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 20,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "session-full-history": [
+      {
+        "suite": "native-session2-session-full-history",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "invalid_infrastructure": 4,
+          "resolved": 2
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 0,
+            "failures": {
+              "response_protocol": 3
+            },
+            "median_seconds": 146.483,
+            "median_cache_write": 48750,
+            "median_cache_read": 245309,
+            "median_output": 11275,
+            "session_evidence": [
+              {
+                "sessions_opened": 3,
+                "session_turns": 19,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 10
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 14
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 19,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 10
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 2,
+            "clean": 2,
+            "failures": {
+              "response_protocol": 1
+            },
+            "median_seconds": 180.562,
+            "median_cache_write": 49900,
+            "median_cache_read": 186399,
+            "median_output": 14221,
+            "session_evidence": [
+              {
+                "sessions_opened": 3,
+                "session_turns": 16,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 8
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 11,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 7
+              },
+              {
+                "sessions_opened": 2,
+                "session_turns": 16,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 15
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "suite": "native-session2-stateless-full-history",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "resolved": 6
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 174.158,
+            "median_cache_write": 281002,
+            "median_cache_read": 25506,
+            "median_output": 11967,
+            "session_evidence": [
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 17,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 19,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 28,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 226.804,
+            "median_cache_write": 287483,
+            "median_cache_read": 25506,
+            "median_output": 15952,
+            "session_evidence": [
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 20,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 19,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 19,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "exploratory-recovery": [
+      {
+        "suite": "native-session2-recovery-baseline",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "invalid_infrastructure": 5,
+          "resolved": 1
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 1,
+            "clean": 0,
+            "failures": {
+              "response_protocol": 2,
+              "provider_server": 1
+            },
+            "median_seconds": 116.736,
+            "median_cache_write": 46408,
+            "median_cache_read": 135462,
+            "median_output": 10425,
+            "session_evidence": [
+              {
+                "sessions_opened": 3,
+                "session_turns": 14,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              },
+              {
+                "sessions_opened": 1,
+                "session_turns": 0,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 1
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 21,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 11
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 1,
+            "clean": 1,
+            "failures": {
+              "response_protocol": 2
+            },
+            "median_seconds": 70.63,
+            "median_cache_write": 34481,
+            "median_cache_read": 77287,
+            "median_output": 5226,
+            "session_evidence": [
+              {
+                "sessions_opened": 3,
+                "session_turns": 10,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 5
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 24,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 19
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 10,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 5
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "suite": "native-session2-recovery-recovered",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "resolved": 6
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 177.052,
+            "median_cache_write": 92271,
+            "median_cache_read": 295552,
+            "median_output": 13173,
+            "session_evidence": [
+              {
+                "sessions_opened": 4,
+                "session_turns": 22,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 12
+              },
+              {
+                "sessions_opened": 7,
+                "session_turns": 27,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              },
+              {
+                "sessions_opened": 5,
+                "session_turns": 18,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 8
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 266.18,
+            "median_cache_write": 110777,
+            "median_cache_read": 232665,
+            "median_output": 22003,
+            "session_evidence": [
+              {
+                "sessions_opened": 5,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              },
+              {
+                "sessions_opened": 6,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              },
+              {
+                "sessions_opened": 7,
+                "session_turns": 22,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "exploratory-reminder": [
+      {
+        "suite": "native-session2-reminder-stateless",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "resolved": 6
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 181.577,
+            "median_cache_write": 304409,
+            "median_cache_read": 26923,
+            "median_output": 11771,
+            "session_evidence": [
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 16,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 20,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 21,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 171.081,
+            "median_cache_write": 215901,
+            "median_cache_read": 21255,
+            "median_output": 12155,
+            "session_evidence": [
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 16,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 19,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              },
+              {
+                "sessions_opened": 0,
+                "session_turns": 0,
+                "stateless_turns": 16,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "suite": "native-session2-reminder-session",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "resolved": 6
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 149.101,
+            "median_cache_write": 62397,
+            "median_cache_read": 244746,
+            "median_output": 11448,
+            "session_evidence": [
+              {
+                "sessions_opened": 4,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 12
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 19,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 10
+              },
+              {
+                "sessions_opened": 7,
+                "session_turns": 18,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 6
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 238.147,
+            "median_cache_write": 88754,
+            "median_cache_read": 235405,
+            "median_output": 20158,
+            "session_evidence": [
+              {
+                "sessions_opened": 5,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 8
+              },
+              {
+                "sessions_opened": 6,
+                "session_turns": 19,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 7
+              },
+              {
+                "sessions_opened": 6,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 8
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "suite": "native-session2-reminder-reminded",
+        "planned": 6,
+        "candidate_receipts": 6,
+        "controller_receipts": 6,
+        "controller_statuses": {
+          "resolved": 6
+        },
+        "not_yet_represented": 0,
+        "metrics": [
+          {
+            "task": "capacity-ledger-reservation-audit",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 140.538,
+            "median_cache_write": 66925,
+            "median_cache_read": 326183,
+            "median_output": 11065,
+            "session_evidence": [
+              {
+                "sessions_opened": 1,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 20
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 20,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 12
+              },
+              {
+                "sessions_opened": 5,
+                "session_turns": 28,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 10
+              }
+            ]
+          },
+          {
+            "task": "ordered-pathrule-priority-engine",
+            "arm": "collie",
+            "n": 3,
+            "correct": 3,
+            "clean": 3,
+            "failures": {},
+            "median_seconds": 210.15,
+            "median_cache_write": 65183,
+            "median_cache_read": 181045,
+            "median_output": 19099,
+            "session_evidence": [
+              {
+                "sessions_opened": 4,
+                "session_turns": 14,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 7
+              },
+              {
+                "sessions_opened": 7,
+                "session_turns": 22,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 6
+              },
+              {
+                "sessions_opened": 3,
+                "session_turns": 14,
+                "stateless_turns": 0,
+                "unresolved_cleanups": 0,
+                "cleanup_retries_confirmed": 0,
+                "longest_session_turns": 9
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "planned_coding_attempts": 52,
+  "additional_exploratory_attempts": 30,
+  "claim": "Small, local, exploratory tasks. Keep source/context cells and native/adapted tracks separate.",
+  "normalized": {
+    "planned": 16,
+    "receipts": 16,
+    "statuses": {
+      "valid_resolved": 16
+    },
+    "not_yet_represented": 0,
+    "arms": [
+      {
+        "arm": "collie",
+        "n": 4,
+        "valid": 4,
+        "reported_correct": 4
+      },
+      {
+        "arm": "pi",
+        "n": 4,
+        "valid": 4,
+        "reported_correct": 4
+      },
+      {
+        "arm": "hermes",
+        "n": 4,
+        "valid": 4,
+        "reported_correct": 4
+      },
+      {
+        "arm": "prime",
+        "n": 4,
+        "valid": 4,
+        "reported_correct": 4
+      }
+    ]
+  }
+}

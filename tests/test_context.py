@@ -119,13 +119,14 @@ def _isolated_home():
     """Point HOME at an empty tmp so ~/.claude/skills and ~/.collie/skills resolve to nothing —
     makes the skill tests hermetic regardless of the dev machine's real skill library."""
     hp = tempfile.mkdtemp()
-    old = os.environ.get("HOME")
-    os.environ["HOME"] = hp
+    old = {key: os.environ.get(key) for key in ("HOME", "USERPROFILE", "COLLIE_SKILL_DIRS")}
+    os.environ.update(HOME=hp, USERPROFILE=hp, COLLIE_SKILL_DIRS="")
     try:
         yield hp
     finally:
-        if old is not None: os.environ["HOME"] = old
-        else: os.environ.pop("HOME", None)
+        for key, value in old.items():
+            if value is not None: os.environ[key] = value
+            else: os.environ.pop(key, None)
 
 def _write_skill(base, name, desc, extra=""):
     d = os.path.join(base, ".collie", "skills", name)
@@ -371,12 +372,15 @@ def test_recorder_cache_migration():
     rid = rec.start_run("t", "collie", "deepseek-chat", "deepseek")
     rec.log_turn(rid, 0, "tool_use", "d", 10, 5, 700, 12, cache_read=600, cache_miss=1200, miss_cause="schema")
     r = RunResult(run_id=rid, cache_miss_tokens=1200, cache_waste_usd=0.0024, prefix_measured=812,
-                  cache_creation=50)
+                  cache_creation=50, verified=True, contract_repairs=1)
     rec.finish_run(r)
-    row = rec.db.execute("SELECT cache_miss_tokens, cache_waste_usd, prefix_measured, cache_creation "
+    row = rec.db.execute("SELECT cache_miss_tokens, cache_waste_usd, prefix_measured, cache_creation, "
+                         "verified, contract_repairs "
                          "FROM runs WHERE run_id=?", (rid,)).fetchone()
     assert row["cache_miss_tokens"] == 1200 and abs(row["cache_waste_usd"] - 0.0024) < 1e-9
     assert row["prefix_measured"] == 812 and row["cache_creation"] == 50
+    assert row["verified"] == 1
+    assert row["contract_repairs"] == 1
     trow = rec.db.execute("SELECT cache_miss, miss_cause FROM turns WHERE run_id=?", (rid,)).fetchone()
     assert trow["cache_miss"] == 1200 and trow["miss_cause"] == "schema"
     rec.close()

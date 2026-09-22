@@ -15,6 +15,8 @@ call site. Bounded (MAX_FILES) so a huge monorepo can't stall the request.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import os
 import re
 
@@ -47,6 +49,98 @@ _HOME_SKIP = {"Library", "Applications", "Music", "Movies", "Pictures",
 _EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".html", ".css", ".md", ".toml")
 MAX_FILES = 600            # a request must stay snappy; bigger repos are sampled by size
 _DEF_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|class|func|fn)\s+([A-Za-z_$][\w$]*)")
+_CACHE_VERSION = 1
+_CACHE_LIMIT = 32
+
+
+def tree_fingerprint(cwd: str) -> str:
+    """Cheap, content-sensitive-enough identity for one source tree.
+
+    Directory mtimes do not change when an existing nested file is edited, which made the old
+    web-layer cache remain stale until the server restarted.  Walking names + file stat metadata is
+    much cheaper than reopening and parsing every source file, survives nested edits, and also
+    catches creates, deletes and renames.
+    """
+    cwd = os.path.realpath(os.path.abspath(cwd))
+    digest = hashlib.sha256()
+    digest.update(cwd.encode("utf-8", "surrogatepass"))
+    for dp, dn, fn in os.walk(cwd):
+        dn[:] = sorted(d for d in dn if d not in _SKIP and not d.startswith("."))
+        for name in sorted(fn):
+            if not name.endswith(_EXT):
+                continue
+            full = os.path.join(dp, name)
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, cwd).replace(os.sep, "/")
+            digest.update(rel.encode("utf-8", "surrogatepass"))
+            digest.update(b"\0%d\0%d\0" % (stat.st_size, stat.st_mtime_ns))
+    return digest.hexdigest()
+
+
+def _tree_cache_path(cwd: str) -> str:
+    state = os.path.abspath(os.path.expanduser(
+        os.environ.get("COLLIE_STATE_DIR") or "~/.collie"))
+    root = os.path.join(state, "cache", "codemap-v1")
+    key = hashlib.sha256(os.path.normcase(os.path.realpath(cwd)).encode(
+        "utf-8", "surrogatepass")).hexdigest()
+    return os.path.join(root, key + ".json")
+
+
+def _read_tree_cache(cwd: str, fingerprint: str):
+    try:
+        with open(_tree_cache_path(cwd), encoding="utf-8") as fh:
+            value = json.load(fh)
+        if (value.get("version") == _CACHE_VERSION and
+                value.get("root") == os.path.realpath(os.path.abspath(cwd)) and
+                value.get("fingerprint") == fingerprint and
+                isinstance(value.get("files"), list)):
+            return value["files"]
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def _write_tree_cache(cwd: str, fingerprint: str, files: list[dict]) -> None:
+    target = _tree_cache_path(cwd)
+    root = os.path.dirname(target)
+    temp = target + ".%d.tmp" % os.getpid()
+    try:
+        os.makedirs(root, exist_ok=True)
+        with open(temp, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"version": _CACHE_VERSION,
+                       "root": os.path.realpath(os.path.abspath(cwd)),
+                       "fingerprint": fingerprint, "files": files},
+                      fh, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temp, target)
+        # One stable file per repo, with a small global bound for repos no longer used.
+        entries = sorted((os.path.join(root, name) for name in os.listdir(root)
+                          if name.endswith(".json")),
+                         key=lambda p: os.path.getmtime(p), reverse=True)
+        for old in entries[_CACHE_LIMIT:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    except OSError:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+
+
+def cached_tree(cwd: str, fingerprint: str | None = None):
+    """Return ``(files, source, fingerprint)`` using a restart-safe local cache."""
+    cwd = os.path.realpath(os.path.abspath(cwd))
+    fingerprint = fingerprint or tree_fingerprint(cwd)
+    files = _read_tree_cache(cwd, fingerprint)
+    if files is not None:
+        return files, "disk", fingerprint
+    files = build_tree(cwd)
+    _write_tree_cache(cwd, fingerprint, files)
+    return files, "rebuilt", fingerprint
 
 
 def _group(path: str) -> str:
@@ -372,13 +466,21 @@ def read_source(cwd: str, rel: str, max_lines: int = 1200) -> str | None:
     return "\n".join(txt.split("\n")[:max_lines])
 
 
-def read_abs(abs_path: str, max_lines: int = 1200) -> str | None:
-    """Source of an absolute path for the code sidebar when the Map spans many repos. Guarded: the
-    real path must stay under the user's home and be a known source ext (this is a local, 127.0.0.1
-    tool reading the user's own files; the guard just blocks /etc, symlink escapes and binaries)."""
-    home = os.path.realpath(os.path.expanduser("~"))
+def read_abs(abs_path: str, max_lines: int = 1200,
+             allowed_roots: list[str] | set[str] | tuple[str, ...] | None = None) -> str | None:
+    """Source of an absolute Map path, confined to an explicitly mapped project.
+
+    Older builds used the user's home as the authority boundary.  That rejected ordinary projects
+    on ``C:\\workspace`` or ``/srv`` while allowing every source file anywhere under HOME.  The web
+    layer now grants only roots it actually returned in a Map response; direct callers retain the
+    conservative home-only default for compatibility.
+    """
+    roots = allowed_roots if allowed_roots is not None else [os.path.expanduser("~")]
+    roots = [os.path.realpath(os.path.abspath(os.path.expanduser(root)))
+             for root in roots if isinstance(root, str) and root]
     full = os.path.realpath(os.path.expanduser(abs_path))
-    if not full.startswith(home + os.sep) or not full.endswith(_EXT):
+    if (not full.endswith(_EXT) or
+            not any(full == root or full.startswith(root + os.sep) for root in roots)):
         return None
     try:
         txt = open(full, encoding="utf-8", errors="ignore").read()

@@ -39,7 +39,8 @@ EXEMPT = {"e2e.py", "compare.py", "swe.py", "swe_predict_one.py", "reval.py"}
 
 SPAWN = re.compile(r"subprocess\.(Popen|run|call|check_output)\(")   # no \s*: "Popen (unlike…" is prose
 # Ways a call can already be carrying the flag without naming it here.
-CARRIES = ("no_window_kwargs", "creationflags", "_NOWIN", "**kw", "_quiet()")
+CARRIES = ("no_window_kwargs", "creationflags", "_NOWIN", "**kw", "_quiet()",
+           "**popen_kw", "**spawn_kw")
 
 
 def check(ok, what):

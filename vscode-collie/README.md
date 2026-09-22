@@ -1,57 +1,80 @@
 # Collie for VS Code
 
-Collie — the from-scratch coding-agent harness — docked in a VS Code sidebar. It's the full
-`collie web` GUI (chat, the executed **verification gate**, live diffs, the code **map**, mid-run
-steering, image upload) embedded in a Webview panel. The extension manages the server for you:
-one `collie web` process, your workspace folder as its working directory, on a free port, reachable
-through the webview even over WSL / Remote-SSH / Codespaces (via `asExternalUri`).
+Collie is a local-first coding workbench beside the editor. It can use the active file or selection,
+accept explicit files and diagnostics, run more than one agent, and open edits in VS Code's native
+diff view. The selected Collie worker remains the execution engine; the extension does not require a
+cloud model.
 
-## Requirements
+## Interaction model
 
-- The `collie` CLI on your `PATH` (or set `collie.command` to an absolute path).
-- VS Code 1.84+.
+- **No focus stealing by default.** Activation only registers lightweight editor integrations. The
+  local runtime starts lazily when a Collie surface is opened. `openOnStartup` is off.
+- **Editor context without switching panels.** Use the editor context menu to add a selection,
+  file, or current diagnostics. The item appears as a removable chip in Collie and does not reveal
+  the sidebar unless `revealOnContextAdd` is enabled.
+- **Automatic active context.** The active file, selected lines, and a bounded recent-tab list are
+  observed through VS Code APIs. Source text is uploaded to the authenticated loopback runtime as a
+  bounded, one-shot attachment—not placed in a URL.
+- **Independent agents.** `Collie: New Background Agent` creates another retained editor panel and,
+  by default, preserves focus on the current code.
+- **Predictable follow-ups.** Enter during a run queues a new turn by default. Set
+  `followUpQueueMode` to `steer` to alter the active run when the worker supports it.
+  Ctrl/Cmd+Shift+Enter uses the opposite behavior once.
+- **Native review.** Diff cards in the workbench and `Collie: Review Changes in Native Diff` open
+  VS Code's diff editor. Every requested path is resolved to a real file inside the open workspace.
+- **Project map.** The code galaxy opens in a wide editor tab; selecting a star opens the real file.
 
-## Use it
+On VS Code 1.106+ Collie lives in the secondary (right) sidebar. Older supported versions retain an
+Activity Bar entrance. The webview keeps its state when hidden.
 
-1. Open your project folder in VS Code.
-2. Click the **Collie** icon in the Activity Bar (left rail). The panel starts the server and loads
-   the GUI. First open takes a second while the server warms up.
-3. Ask Collie to fix, build, or explain. It operates on the open workspace.
+## Install and use
 
-Commands (⇧⌘P / Ctrl+Shift+P):
+1. Install the Collie desktop app, put `collie` on `PATH`, or set an absolute `collie.command`.
+2. Install `Collie-VSCode.vsix` with **Extensions: Install from VSIX…**.
+3. Open a trusted project folder and run **Collie: Open Sidebar**.
 
-- **Collie: Reload Panel** — reload the webview.
-- **Collie: Restart Server** — kill and respawn `collie web`.
-- **Collie: Open in Browser** — open the same GUI in an external browser.
-- **Collie: Show Server Log** — the server's stdout/stderr (troubleshooting).
+Useful commands:
+
+- **Collie: Add Selection to Thread**
+- **Collie: Add File to Thread**
+- **Collie: Add File Problems to Thread**
+- **Collie: New Background Agent**
+- **Collie: Review Changes in Native Diff**
+- **Collie: Open Project Map**
+- **Collie: Restart Server**
+- **Collie: Show Server Log**
+
+TODO/FIXME comments also receive an optional **Implement with Collie** CodeLens.
 
 ## Settings
 
 | Setting | Default | Meaning |
-|---|---|---|
-| `collie.command` | `collie` | Path to the collie CLI. |
-| `collie.port` | `0` | Server port; `0` auto-picks a free one. |
-| `collie.provider` | `""` | Override `COLLIE_PROVIDER` (blank = collie's default). |
-| `collie.extraArgs` | `[]` | Extra args appended to `collie web`. |
+|---|---:|---|
+| `collie.command` | `collie` | CLI name or absolute path; machine scoped. |
+| `collie.port` | `0` | Managed local server port; `0` chooses a free port. |
+| `collie.provider` | `""` | Optional provider override; machine scoped. |
+| `collie.extraArgs` | `[]` | Additional safe `collie web` args; machine scoped. |
+| `collie.openOnStartup` | `false` | Explicitly focus Collie after startup. |
+| `collie.revealOnContextAdd` | `false` | Reveal Collie after adding editor context. |
+| `collie.newAgentPreserveFocus` | `true` | Open an agent without leaving the editor. |
+| `collie.followUpQueueMode` | `queue` | Queue a follow-up or steer the active run. |
+| `collie.commentCodeLensEnabled` | `true` | Show TODO/FIXME CodeLens actions. |
+| `collie.maxSelectionChars` | `12000` | Bound for explicitly attached selections. |
 
-## Run from source (no packaging)
+Settings capable of changing the spawned command are machine scoped, managed network-exposure
+flags are rejected, and no process starts for an untrusted workspace.
+
+## Develop and package
 
 ```bash
 code path/to/collie/vscode-collie
-# then press F5 → an "Extension Development Host" window opens with Collie loaded
-```
+# Press F5 in that window to start an Extension Development Host.
 
-## Package a .vsix
-
-```bash
 cd path/to/collie/vscode-collie
-npx --yes @vscode/vsce package        # -> collie-0.1.0.vsix
-code --install-extension collie-0.1.0.vsix
+npx --yes @vscode/vsce package
+code --install-extension collie-0.4.0.vsix --force
 ```
 
-## What this is (and isn't)
-
-This embeds collie's **web GUI** in a panel — you get everything the browser GUI has, docked in the
-editor. It is **not** the native ACP tool-call/diff rendering; for that (rendered by the editor
-itself) use an ACP-native editor like Zed with `collie acp`. This extension is the "Claude-Code-style
-panel" experience for VS Code specifically.
+The framed workbench accepts messages only from its exact forwarded origin. The host bridge exposes
+a small allowlist (open workspace file/map/diff and status); camera, microphone, clipboard-read, and
+filesystem webview roots are not granted.

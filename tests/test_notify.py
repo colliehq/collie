@@ -140,17 +140,16 @@ def main():
           "the client reports it sent")
     msg = ws.sent[0] if ws.sent else {}
     check(msg.get("t") == "notify", "the socket message is a `notify`")
-    check(msg.get("title") == "Run finished" and msg.get("body") == "all green",
-          "carrying the title and body the desktop chose")
+    check("title" not in msg and "body" not in msg,
+          "caller-supplied run content does not leave the desktop outside E2E")
     check(msg.get("session") == "s9", "and the session id")
 
-    # Long text must be cut here, not at the phone: an alert silently truncates and the useful part
-    # is at the start.
+    # Even large/sensitive content is omitted entirely; the Worker supplies one fixed generic alert.
     ws = FakeWS()
     client._ws = ws
     client.notify("t" * 500, "b" * 900)
-    check(ws.sent and len(ws.sent[0]["title"]) <= 120 and len(ws.sent[0]["body"]) <= 300,
-          "title and body are bounded before they leave the machine")
+    check(ws.sent and "title" not in ws.sent[0] and "body" not in ws.sent[0],
+          "large notification content is not exposed to the relay")
 
     # Not connected, and a socket that dies mid-send: both are a quiet false, never an exception.
     client._ws = None

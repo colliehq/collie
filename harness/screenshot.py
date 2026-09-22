@@ -92,8 +92,10 @@ public class CollieCap {
   public static string Needle = "";
   public static string Seen = "";
 
-  // Substring match on the visible title, skipping tool windows and minimised ones. Same "match by
-  // title" contract the desktop_* tools use, so a title from desktop_apps works here unchanged.
+  // Substring match on the visible title, skipping tool windows and minimised ones. Keep the first
+  // partial match as a fallback but continue enumerating so an exact title wins. Without that,
+  // asking for "Collie" can capture "Jane - Collie - Slack" instead of the Collie app itself.
+  // This keeps the desktop_* title contract while making a precise request actually precise.
   public static bool Visit(IntPtr h, IntPtr p) {
     if (!IsWindowVisible(h) || IsIconic(h)) return true;
     int n = GetWindowTextLength(h); if (n < 1) return true;
@@ -104,7 +106,10 @@ public class CollieCap {
     if ((r.R - r.L) < 48 || (r.B - r.T) < 48) return true;
     if (Seen.Length < 900) Seen += t + "\n";
     if (Needle.Length > 0 && t.IndexOf(Needle, StringComparison.OrdinalIgnoreCase) >= 0) {
-      Found = h; FoundTitle = t; return false;
+      if (String.Equals(t, Needle, StringComparison.OrdinalIgnoreCase)) {
+        Found = h; FoundTitle = t; return false;
+      }
+      if (Found == IntPtr.Zero) { Found = h; FoundTitle = t; }
     }
     return true;
   }
@@ -311,10 +316,9 @@ def _b64(path: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-def _enabled() -> bool:
-    """Read live at call time (COLLIE_SCREEN_CAPTURE), so enable_capability takes effect mid-session
-    without re-registering anything — same contract as native.py's desktop gate."""
-    return os.environ.get("COLLIE_SCREEN_CAPTURE", "").lower() in ("1", "on", "true")
+def _enabled(ctx=None) -> bool:
+    from .capability_policy import allowed
+    return allowed("SCREEN_CAPTURE", ctx)
 
 
 # Screen capture is gated SEPARATELY from desktop control, not folded into it. They are different
@@ -340,14 +344,17 @@ class ScreenshotTool(Tool):
         "whole screen), max_dim (longest edge in px, default 1568). Prefer a title over full screen: "
         "one window is a clearer image and far fewer tokens. For reading or clicking structure "
         "(buttons, fields, links) prefer desktop_inspect / browser_snapshot — a tree is exact where "
-        "an image is a guess; use this to judge appearance, or when there is no tree to read.")
+        "an image is a guess; use this to judge appearance, or when there is no tree to read. For a "
+        "custom-rendered native app with no tree, pass coordinates read from this image to "
+        "desktop_mouse with the same window title plus image_width/image_height; it scales the "
+        "downsampled image point back to the real window.")
     schema = {"type": "object", "properties": {
         "title": {"type": "string", "description": "substring of the target window's title; omit for full screen"},
         "max_dim": {"type": "integer", "description": "longest edge in pixels (default 1568)"},
     }}
 
     def run(self, args, ctx):
-        if not _enabled():
+        if not _enabled(ctx):
             return _CONSENT
         args = args or {}
         title = str(args.get("title") or "").strip()
@@ -381,9 +388,13 @@ class ScreenshotTool(Tool):
         src = ""
         if res.get("source_width") and res["source_width"] != res.get("width"):
             src = " (downscaled from %sx%s)" % (res["source_width"], res["source_height"])
-        return ("Captured %s at %sx%s%s via %s.%s The image is attached — look at it.\nSaved: %s"
+        coordinate_note = ("\nFor window-relative pixel input: desktop_mouse(match=%r, x=…, y=…, "
+                           "image_width=%s, image_height=%s)." %
+                           (res.get("title") or title, res.get("width", "?"), res.get("height", "?"))) \
+                          if title else ""
+        return ("Captured %s at %sx%s%s via %s.%s The image is attached — look at it.%s\nSaved: %s"
                 % (what, res.get("width", "?"), res.get("height", "?"), src,
-                   res.get("how", "?"), note, path))
+                   res.get("how", "?"), note, coordinate_note, path))
 
 
 def register_screenshot(registry) -> None:

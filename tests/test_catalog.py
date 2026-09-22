@@ -21,12 +21,18 @@ def check(name, cond):
 # ---- static catalog + shape ----------------------------------------------------------
 ents = catalog.list_entries(discover_live=False)
 by_id = {e["id"]: e for e in ents}
+static_ids = {e.id for e in catalog._static()}
+# Unauthenticated providers deliberately collapse to one representative row, so the visible
+# count is a fact about the runner's logins.  Assert the floor, not the full static size.
 check("static catalog has one representative for each unavailable provider", len(ents) >= 8)
 check("every entry has provider+model+auth+price", all(
     e.get("provider") and e.get("model") and e.get("auth") and "price_in" in e for e in ents))
 check("codex-oauth terra present", "codex-oauth:gpt-5.6-terra" in by_id)
 check("anthropic-oauth representative present", any(
     e["provider"] == "anthropic-oauth" for e in ents))
+# The curated route itself is machine-independent, so it is checked against the static catalog
+# rather than against what a clean, logged-out runner happens to show.
+check("anthropic-oauth opus present", "anthropic-oauth:claude-opus-4-8" in static_ids)
 
 # ---- dedup: no duplicate ids ---------------------------------------------------------
 ids = [e["id"] for e in ents]
@@ -45,7 +51,7 @@ check("mock ok", catalog.probe_auth("mock") == "ok")
 # ---- price registration into costs ---------------------------------------------------
 check("terra priced", costs.price_for("gpt-5.6-terra") == (2.5, 0.25, 15.0))
 check("luna priced", costs.price_for("gpt-5.6-luna") == (1.0, 0.10, 6.0))
-check("opus still matches via substring", costs.price_for("claude-opus-4-8") == (15.0, 1.5, 75.0))
+check("opus exact price beats generic family", costs.price_for("claude-opus-4-8") == (5.0, 0.5, 25.0))
 check("deepseek-reasoner beats deepseek", costs.price_for("deepseek-reasoner") == (0.55, 0.14, 2.19))
 
 # ---- ordering: within a rank, authed-ok before un-authed; subscription kind ranks first ----

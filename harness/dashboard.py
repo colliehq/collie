@@ -19,7 +19,8 @@ def _q(db, sql, args=()):
 def build(runs_db: str, out_html: str, standalone: bool = True) -> str:
     db = sqlite3.connect(runs_db)
     db.row_factory = sqlite3.Row
-    runs = _q(db, "SELECT * FROM runs ORDER BY run_id")
+    from .recorder import root_run_filter
+    runs = _q(db, "SELECT * FROM runs WHERE " + root_run_filter(db) + " ORDER BY run_id")
     AGENT = "collie"          # this harness's recorded id
 
     def avg(rows, col):

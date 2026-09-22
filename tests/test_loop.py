@@ -13,6 +13,19 @@ from _util import _ctx, _Skip, _RecordingMemory, _ScriptProvider, run_module  # 
 import contextlib
 import inspect, io, json, os, re, sys, tempfile, time, types, warnings
 
+
+@contextlib.contextmanager
+def _loop_backoff(side_effect=None):
+    """Observe only the run's retry waits, leaving service threads' clocks alone."""
+    from unittest.mock import Mock, patch
+    from harness import loop
+
+    clock = types.SimpleNamespace(**vars(time))
+    clock.sleep = Mock(side_effect=side_effect)
+    with patch.object(loop, "time", clock):
+        yield clock.sleep
+
+
 # ------------------------------------------------------------------ loop repro-gate
 def test_is_repro_cmd():
     from harness.loop import _is_repro_cmd as R
@@ -20,9 +33,11 @@ def test_is_repro_cmd():
            # heredoc / stdin repros — the common self-contained form; unrecognized before, a passing
            # one couldn't reset a stale failure flag so the gate nagged about a phantom failure
            "python 2>&1 <<'EOF'\nimport traceback\nprint('ok')\nEOF", "python3 - <<EOF\nprint(1)\nEOF",
-           "cd /x && python <<'PY'\nassert 1==1\nPY"]
-    no = ["python -m pytest", "python -m unittest", "python setup.py test", "python -m nose",
-          'ln -sf "$(command -v python3)" /usr/bin/py', "echo python is great"]
+           "cd /x && python <<'PY'\nassert 1==1\nPY",
+           "python -m pytest -q", "python -m unittest", "python -m nose",
+           "npm test", "go test ./...", "cargo test"]
+    no = ["python setup.py test", "pytest --collect-only",
+           'ln -sf "$(command -v python3)" /usr/bin/py', "echo python is great"]
     for c in yes: assert R("bash", {"command": c}), "should be repro: %r" % c
     for c in no: assert not R("bash", {"command": c}), "should NOT be repro: %r" % c
 
@@ -51,6 +66,331 @@ def test_loop_error_not_answer_not_memory():
     assert res.error and "ERROR(" not in (res.answer or ""), "error must not leak into answer: %r" % res.answer
     assert not any("ERROR(" in m for m in h.memory.remembered), "error must never be consolidated to memory"
 
+
+def test_zero_turn_cap_means_unlimited_not_zero_turns():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="unlimited_turns", embed="hash")
+    h.max_turns = 0
+    h.turn_target = 40
+    h.provider = _ScriptProvider([Completion(text="finished", stop_reason="end_turn")])
+
+    res = h.run("unlimited_turns", "do it", consolidate=False)
+
+    assert res.answer == "finished" and res.turns == 1
+    assert not res.turns_exhausted
+
+
+def test_invalid_turn_cap_and_target_fail_to_safe_defaults():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="invalid_turn_limits", embed="hash")
+    h.max_turns = "not-an-integer"
+    h.turn_target = "also-not-an-integer"
+    h.provider = _ScriptProvider([Completion(text="finished", stop_reason="end_turn")])
+
+    res = h.run("invalid_turn_limits", "do it", consolidate=False)
+
+    assert res.answer == "finished" and res.turns == 1
+    assert not res.turns_exhausted
+
+
+def test_tool_images_keep_their_source_label_in_the_next_model_turn():
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+    from harness.risk import RiskClass
+    from harness.tools import Tool
+
+    class ImageTool(Tool):
+        name, tier, risk = "test_image_source", "always", RiskClass.READ
+
+        def run(self, _args, ctx):
+            ctx.images.append({
+                "media_type": "image/png", "data": "AAAA",
+                "label": "render", "source": "MCP image",
+            })
+            return "rendered"
+
+    seen = {}
+
+    def finish(messages):
+        # Inspect the canonical blocks exactly as the provider receives them;
+        # opaque multimodal payloads need not be JSON-round-trippable here.
+        seen["messages"] = list(messages)
+        return Completion(text="done", stop_reason="end_turn")
+
+    h = make_harness(os.getcwd(), provider="mock", project="image_source", embed="hash")
+    h.max_turns = 3
+    h.force_edit = False
+    h.self_verify = False
+    h.registry.register(ImageTool())
+    h.provider = _ScriptProvider([
+        Completion(tool_calls=[ToolCall("img1", "test_image_source", {})],
+                   stop_reason="tool_use"),
+        finish,
+    ])
+
+    res = h.run("image_source", "render", consolidate=False)
+
+    assert "messages" in seen, (res.error, res.answer, res.messages, h.provider.calls)
+    image_turns = [m["content"] for m in seen["messages"]
+                   if m.get("role") == "user" and isinstance(m.get("content"), list)]
+    assert res.answer == "done"
+    assert any(turn[0].get("text") == "[MCP image: render]" for turn in image_turns)
+
+
+def test_unlimited_run_honours_three_stop_hook_repairs_then_fails_closed():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    class Hooks:
+        pending = ()
+
+        def dispatch(self, event, _payload, subject=""):
+            denied = event == "Stop"
+            return types.SimpleNamespace(
+                allowed=not denied,
+                reason="release evidence missing" if denied else "",
+                receipts=(), additional_context=())
+
+    h = make_harness(os.getcwd(), provider="mock", project="stop_hook", embed="hash")
+    h.max_turns = 0
+    h.turn_target = 4
+    h.force_edit = False
+    h.self_verify = False
+    h.hooks = Hooks()
+    h.provider = _ScriptProvider([
+        Completion(text="premature finish", stop_reason="end_turn"),
+    ])
+
+    res = h.run("stop_hook", "finish safely", consolidate=False)
+
+    assert h.provider.calls == 4
+    assert "completion blocked by lifecycle hook" in res.error
+    assert "release evidence missing" in res.error
+
+
+def test_force_edit_nudge_stops_at_a_real_finite_last_turn():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="force_edit_cap", embed="hash")
+    h.max_turns = 2
+    h.turn_target = 2
+    h.force_edit = True
+    h.self_verify = False
+    h.provider = _ScriptProvider([
+        Completion(text="done without editing", stop_reason="end_turn"),
+    ])
+
+    res = h.run("force_edit_cap", "make the requested edit", consolidate=False)
+
+    assert h.provider.calls == 2
+    assert res.answer == "done without editing" and res.turns == 2
+
+
+def test_critic_is_not_started_after_an_edit_on_the_finite_last_turn():
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+
+    with tempfile.TemporaryDirectory(prefix="critic_last_turn_") as cwd:
+        path = os.path.join(cwd, "result.txt")
+        h = make_harness(cwd, provider="mock", project="critic_last_turn", embed="hash")
+        h.max_turns = 2
+        h.turn_target = 2
+        h.force_edit = False
+        h.self_verify = False
+        h.critic = True
+        h.critic_fn = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("critic must not start without a next repair turn"))
+        h.provider = _ScriptProvider([
+            Completion(tool_calls=[ToolCall(
+                "write1", "write_file", {"path": path, "content": "done\n"})],
+                stop_reason="tool_use"),
+            Completion(text="finished", stop_reason="end_turn"),
+        ])
+
+        res = h.run("critic_last_turn", "write the result", consolidate=False)
+
+        assert h.provider.calls == 2 and res.answer == "finished"
+        assert os.path.exists(path)
+
+
+def test_critic_limit_zero_skips_review_when_a_repair_turn_is_available():
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+
+    with tempfile.TemporaryDirectory(prefix="critic_limit_zero_") as cwd:
+        path = os.path.join(cwd, "result.txt")
+        h = make_harness(cwd, provider="mock", project="critic_limit_zero", embed="hash")
+        h.max_turns = 3
+        h.turn_target = 3
+        h.force_edit = False
+        h.self_verify = False
+        h.critic = True
+        h.critic_max = 0
+        h.critic_fn = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("critic must respect a zero-round limit"))
+        h.provider = _ScriptProvider([
+            Completion(tool_calls=[ToolCall(
+                "write1", "write_file", {"path": path, "content": "done\n"})],
+                stop_reason="tool_use"),
+            Completion(text="finished", stop_reason="end_turn"),
+        ])
+
+        res = h.run("critic_limit_zero", "write the result", consolidate=False)
+
+        assert h.provider.calls == 2 and res.answer == "finished"
+        assert os.path.exists(path)
+
+
+def test_successful_critic_review_allows_completion(monkeypatch):
+    from harness import loop
+    from harness.cli import make_harness
+    from harness.providers import Completion, ToolCall
+
+    reviews = []
+    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd: "diff --git a/result.txt b/result.txt\n")
+    with tempfile.TemporaryDirectory(prefix="critic_success_") as cwd:
+        path = os.path.join(cwd, "result.txt")
+        h = make_harness(cwd, provider="mock", project="critic_success", embed="hash")
+        h.max_turns = 3
+        h.turn_target = 3
+        h.force_edit = False
+        h.self_verify = False
+        h.critic = True
+        h.critic_max = 1
+        h.critic_fn = lambda issue, diff, review_cwd: (
+            reviews.append((issue, diff, review_cwd)) or (True, "looks good"))
+        h.provider = _ScriptProvider([
+            Completion(tool_calls=[ToolCall(
+                "write1", "write_file", {"path": path, "content": "done\n"})],
+                stop_reason="tool_use"),
+            Completion(text="finished", stop_reason="end_turn"),
+        ])
+
+        res = h.run("critic_success", "write the result", consolidate=False)
+
+        assert h.provider.calls == 2 and res.answer == "finished"
+        assert reviews == [(h.critic_issue, "diff --git a/result.txt b/result.txt\n", cwd)]
+
+
+def test_user_prompt_and_resumed_history_are_redacted_before_model_and_checkpoint(monkeypatch):
+    from harness import loop
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    secret = "sk-" + "a" * 32
+    seen = {}
+
+    def answer(messages):
+        seen["messages"] = json.loads(json.dumps(messages))
+        return Completion(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(
+        loop._settings, "get",
+        lambda key, default=None: "on" if key == "REDACT_SECRETS" else default)
+    h = make_harness(os.getcwd(), provider="mock", project="prompt_redact", embed="hash")
+    h.max_turns = 1
+    h.provider = _ScriptProvider([answer])
+
+    res = h.run(
+        "prompt_redact", "use api_key=" + secret, consolidate=False,
+        history=[{"role": "user", "content": "old token " + secret}])
+
+    model_blob = json.dumps(seen["messages"])
+    durable_blob = json.dumps(res.messages)
+    assert secret not in model_blob and secret not in durable_blob
+    assert "{{SECRET:" in model_blob and "{{SECRET:" in durable_blob
+
+
+def test_multimodal_prompt_redaction_preserves_blocks_and_image_payload(monkeypatch):
+    from harness import loop
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    secret = "sk-" + "m" * 32
+    image = "iVBORw0KGgo="
+    seen = {}
+
+    def answer(messages):
+        seen["messages"] = json.loads(json.dumps(messages))
+        return Completion(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(
+        loop._settings, "get",
+        lambda key, default=None: "on" if key == "REDACT_SECRETS" else default)
+    h = make_harness(os.getcwd(), provider="mock", project="mm_prompt_redact", embed="hash")
+    h.max_turns = 1
+    h.provider = _ScriptProvider([answer])
+    prompt = [
+        {"type": "text", "text": "inspect api_key=" + secret},
+        {"type": "image", "media_type": "image/png", "data": image},
+    ]
+
+    res = h.run("mm_prompt_redact", prompt, consolidate=False)
+
+    sent = seen["messages"][-1]["content"]
+    stored = [m for m in res.messages if m.get("role") == "user"][-1]["content"]
+    assert isinstance(sent, list) and isinstance(stored, list)
+    assert sent[1]["data"] == image and stored[1]["data"] == image
+    assert secret not in json.dumps(sent) and secret not in json.dumps(stored)
+    assert "{{SECRET:" in sent[0]["text"] and "{{SECRET:" in stored[0]["text"]
+
+
+def test_provider_error_completion_redacts_credentials_before_retry_or_receipt():
+    from harness.providers import _error_completion
+
+    secret = "sk-" + "b" * 32
+    completion = _error_completion("provider", RuntimeError("failed api_key=" + secret))
+
+    assert secret not in completion.text
+    assert secret not in completion.error_detail
+    assert "{{SECRET:" in completion.text
+    assert "{{SECRET:" in completion.error_detail
+
+
+def test_structural_event_boundary_redacts_nested_exception_payloads():
+    from harness.cli import make_harness
+
+    secret = "sk-" + "c" * 32
+    h = make_harness(os.getcwd(), provider="mock", project="event_redact", embed="hash")
+    seen = []
+    h.emit = lambda kind, data: seen.append((kind, data))
+
+    h._emit("diagnostic", nested={"error": "api_key=" + secret})
+
+    blob = json.dumps(seen)
+    assert secret not in blob
+    assert "{{SECRET:" in blob
+
+
+def test_checkpoint_success_event_is_not_rewritten_as_failure(monkeypatch):
+    """A captured checkpoint stays successful all the way to the surface."""
+    from harness import checkpoints
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    monkeypatch.setattr(checkpoints, "available", lambda _cwd: (True, ""))
+    monkeypatch.setattr(
+        checkpoints, "capture",
+        lambda *_args, **_kwargs: types.SimpleNamespace(ref="a" * 40, kind="stash"))
+    h = make_harness(tempfile.mkdtemp(prefix="checkpoint-event-"),
+                     provider="mock", project="checkpoint_event", embed="hash")
+    h.provider = _ScriptProvider([Completion(text="done", stop_reason="end_turn")])
+    events = []
+    h.emit = lambda event, data: events.append((event, data))
+
+    res = h.run("checkpoint_event", "finish", consolidate=False)
+
+    checkpoint_events = [data for event, data in events if event == "checkpoint"]
+    assert res.checkpoint_ref == "a" * 40
+    assert checkpoint_events == [{
+        "ok": True, "ref": "a" * 12, "checkpoint_kind": "stash",
+    }], checkpoint_events
+
 def test_loop_retry_transient_then_success():
     """#5 regression lock: a retryable transport error retries (bounded) and recovers — no error,
     answer set, kind='retry' rows logged, nothing appended to the thread on the failed attempts."""
@@ -63,11 +403,226 @@ def test_loop_retry_transient_then_success():
     ok = Completion(text="all good", stop_reason="end_turn", usage=Usage(input_tokens=5))
     h.provider = _ScriptProvider([err, err, ok])
     slept = []
-    with patch("time.sleep", lambda s: slept.append(s)):
+    with _loop_backoff(lambda s: slept.append(s)):
         res = h.run("retry_ok", "go")
     assert res.error == "" and res.answer == "all good", (res.error, res.answer)
+    assert res.model_calls == 3, "physical retry attempts must be budget-visible"
     assert len(slept) == 2, "two retries -> two backoff sleeps: %s" % slept
     assert not any("ERROR(" in m.get("content", "") for m in res.messages if isinstance(m.get("content"), str))
+
+
+def _contract_error(input_tokens=7, output_tokens=2):
+    from harness.providers import Completion, Usage
+    return Completion(
+        text="ERROR(sidecar): rejected assistant text is intentionally absent",
+        stop_reason="error", error_status=422,
+        error_code="response_contract_error",
+        error_detail=("{\"error\":{\"code\":\"response_contract_error\","
+                      "\"message\":\"assistant response was not bridgeable\"}}"),
+        usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens))
+
+
+def test_loop_repairs_one_response_contract_error_without_backoff():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion, Usage
+
+    seen = {}
+    def corrected(messages):
+        # A service thread can wait while this reply is finalized. That wait is
+        # unrelated to model backoff and must not make this assertion fail.
+        import threading
+        service = threading.Thread(target=lambda: time.sleep(.001))
+        service.start()
+        service.join(timeout=3)
+        assert not service.is_alive()
+        seen["messages"] = messages
+        return Completion(text="fixed", stop_reason="end_turn",
+                          usage=Usage(input_tokens=5, output_tokens=1))
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_ok", embed="hash")
+    h.max_turns = 1
+    h.max_retries = 0
+    h.max_contract_repairs = 1
+    h.memory = _RecordingMemory()
+    p = _ScriptProvider([_contract_error(), corrected])
+    h.provider = p
+
+    with _loop_backoff() as sleep:
+        res = h.run("contract_ok", "go")
+
+    assert res.error == "" and res.answer == "fixed"
+    assert p.calls == 2 and res.model_calls == 2
+    assert res.contract_repairs == 1
+    assert res.input_tokens == 12 and res.output_tokens == 3
+    assert "previous response could not be parsed" in seen["messages"][-1]["content"]
+    durable = json.dumps(res.messages)
+    assert "previous response could not be parsed" not in durable
+    assert "rejected assistant text" not in durable
+    assert not any("response_contract_error" in item for item in h.memory.remembered)
+    row = h.recorder.db.execute(
+        "SELECT COUNT(*) n FROM turns WHERE run_id=? AND kind='format_repair'",
+        (res.run_id,)).fetchone()
+    assert row["n"] == 1
+    sleep.assert_not_called()
+
+
+def test_loop_response_contract_repair_is_bounded_and_content_free():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_bounded", embed="hash")
+    h.max_turns = 3
+    h.max_retries = 3
+    h.max_contract_repairs = 1
+    p = _ScriptProvider([_contract_error(), _contract_error(),
+                         lambda _messages: (_ for _ in ()).throw(
+                             AssertionError("third request must not be sent"))])
+    h.provider = p
+
+    with _loop_backoff() as sleep:
+        res = h.run("contract_bounded", "go")
+
+    assert p.calls == 2 and res.model_calls == 2
+    assert res.contract_repairs == 1
+    assert res.error.startswith("protocol:")
+    assert "rejected assistant text" not in res.error
+    assert not res.answer
+    sleep.assert_not_called()
+
+
+def test_loop_contract_repair_respects_model_call_cap():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_cap", embed="hash")
+    h.max_turns = 5
+    h.max_model_calls = 1
+    h.max_contract_repairs = 1
+    p = _ScriptProvider([_contract_error(),
+                         lambda _messages: (_ for _ in ()).throw(
+                             AssertionError("request beyond cap"))])
+    h.provider = p
+
+    with _loop_backoff() as sleep:
+        res = h.run("contract_cap", "go")
+
+    assert p.calls == 1 and res.model_calls == 1
+    assert res.contract_repairs == 0
+    assert res.error.startswith("protocol:")
+    assert not res.answer
+    sleep.assert_not_called()
+
+
+def test_loop_contract_repair_respects_local_token_budget():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_token_cap", embed="hash")
+    h.max_turns = 3
+    p = _ScriptProvider([_contract_error(input_tokens=7, output_tokens=2)])
+    h.provider = p
+
+    with patch.dict(os.environ, {"COLLIE_MAX_TOTAL_TOKENS": "9"}), _loop_backoff() as sleep:
+        res = h.run("contract_token_cap", "go")
+
+    assert p.calls == 1 and res.model_calls == 1
+    assert res.contract_repairs == 0 and res.error.startswith("protocol:")
+    sleep.assert_not_called()
+
+
+def test_loop_contract_repair_respects_shared_budget():
+    from harness.cli import make_harness
+
+    class SharedBudget:
+        def __init__(self):
+            self.spent = 0
+        def account(self, _model, usage):
+            self.spent += usage.input_tokens + usage.output_tokens
+        def exceeded(self):
+            return self.spent >= 9
+
+    h = make_harness(os.getcwd(), provider="mock", project="contract_shared_cap", embed="hash")
+    h.max_turns = 3
+    h.shared_budget = SharedBudget()
+    p = _ScriptProvider([_contract_error(input_tokens=7, output_tokens=2)])
+    h.provider = p
+
+    res = h.run("contract_shared_cap", "go")
+
+    assert p.calls == 1 and res.model_calls == 1
+    assert res.contract_repairs == 0 and res.error.startswith("protocol:")
+
+
+def test_loop_does_not_repair_an_unrelated_http_422():
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    h = make_harness(os.getcwd(), provider="mock", project="generic_422", embed="hash")
+    h.max_turns = 3
+    p = _ScriptProvider([Completion(
+        text="validation failed", stop_reason="error", error_status=422,
+        error_detail="ordinary validation failure")])
+    h.provider = p
+
+    res = h.run("generic_422", "go")
+
+    assert p.calls == 1 and res.contract_repairs == 0
+    assert res.error.startswith("terminal:")
+
+
+def test_transport_retry_and_contract_repair_use_separate_bounded_policies():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+
+    overloaded = Completion(text="overloaded", stop_reason="error", error_status=529,
+                            error_detail="overloaded_error")
+    h = make_harness(os.getcwd(), provider="mock", project="retry_then_contract", embed="hash")
+    h.max_turns = 1
+    h.max_retries = 1
+    h.retry_base = 1
+    h.max_contract_repairs = 1
+    p = _ScriptProvider([overloaded, _contract_error(), Completion(text="done")])
+    h.provider = p
+
+    slept = []
+    with _loop_backoff(lambda seconds: slept.append(seconds)):
+        res = h.run("retry_then_contract", "go")
+
+    assert res.answer == "done" and not res.error
+    assert p.calls == 3 and res.model_calls == 3
+    assert res.contract_repairs == 1 and slept == [1]
+    rows = h.recorder.db.execute(
+        "SELECT kind, COUNT(*) n FROM turns WHERE run_id=? "
+        "AND kind IN ('retry','format_repair') GROUP BY kind", (res.run_id,)).fetchall()
+    assert {row["kind"]: row["n"] for row in rows} == {"retry": 1, "format_repair": 1}
+
+
+def test_loop_model_call_cap_stops_before_retry_or_synthesis():
+    """A nested overnight slice must never send request N+1 after N was reserved."""
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    h = make_harness(os.getcwd(), provider="mock", project="call_cap", embed="hash")
+    h.max_turns = 5
+    h.max_model_calls = 1
+    h.max_retries = 3
+    h.retry_base = 1
+    p = _ScriptProvider([
+        Completion(text="overloaded", stop_reason="error", error_status=529,
+                   error_detail="overloaded_error"),
+        Completion(text="must not be sent", stop_reason="end_turn"),
+    ])
+    h.provider = p
+
+    with _loop_backoff() as sleep:
+        res = h.run("call_cap", "go")
+
+    assert p.calls == 1
+    assert res.model_calls == 1
+    assert not res.answer
+    sleep.assert_not_called()
 
 def test_loop_terminal_fails_fast():
     from harness.cli import make_harness
@@ -274,8 +829,15 @@ def test_loop_truncation_escalates_max_tokens():
     prov = _ScriptProvider([trunc, trunc, trunc, Completion(text="ok", stop_reason="end_turn", usage=Usage(input_tokens=3))])
     assert prov.max_tokens == 4096
     h.provider = prov
+    seen = []
+    original_complete = prov.complete
+    def record_limit(*args, **kwargs):
+        seen.append(prov.max_tokens)
+        return original_complete(*args, **kwargs)
+    prov.complete = record_limit
     h.run("esc", "fix")
-    assert prov.max_tokens > 4096, "each length-stop must escalate the output ceiling, got %d" % prov.max_tokens
+    assert seen == [4096, 8192, 16384]
+    assert prov.max_tokens == 4096, "the next task must retain its configured output limit"
 
 def test_judge_error_completion_neutral():
     from harness.judge import judge_quality
@@ -506,6 +1068,24 @@ def test_budget_off_by_default():
         input_tokens = 10**9; output_tokens = 10**9
     assert L._budget_exceeded("claude-opus-4-8", T()) is False, "no ceiling set -> never exceeded"
 
+def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap():
+    from unittest.mock import patch
+    from harness import loop as L
+
+    class T:
+        input_tokens = 1_000_000
+        output_tokens = 0
+        cache_read = 0
+        cache_creation = 0
+
+    with patch.dict(os.environ, {"COLLIE_MAX_COST": "0.01"}):
+        os.environ.pop("COLLIE_MAX_TOTAL_TOKENS", None)
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=False) is True
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is False
+
+        os.environ["COLLIE_MAX_TOTAL_TOKENS"] = "100"
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is True
+
 def test_loop_whiteflag_rescue_and_restore():
     """sphinx-10435 regression lock: a model that edits, REVERTS itself, then insists on
     finishing must (a) get one ROLLBACK_NUDGE rescue turn, and (b) when it still finishes with
@@ -558,20 +1138,27 @@ def test_verify_gate_is_not_python_only():
     even COMPILE. Necessary but not sufficient: a build must count as evidence, and must NOT count
     as a correctness assertion.
     """
-    from harness.loop import _is_repro_cmd, _ASSERTED_RE
+    from harness.loop import _is_repro_cmd, _is_asserting_cmd
     for cmd in ("go build ./...", "go vet ./...", "cargo check",
                 "npx tsc --noEmit", "node --check src/a.js",
                 "go test -run '^TestXxVerify$' ./internal/config"):
         assert _is_repro_cmd("bash", {"command": cmd}), "not counted as evidence: %s" % cmd
-    # a whole-suite run is still not the focused evidence the gate keys on
-    for cmd in ("go test ./...", "npm test", "pytest -q"):
-        assert not _is_repro_cmd("bash", {"command": cmd}), "suite run counted: %s" % cmd
+    # A real suite run is stronger executable evidence and is exactly what the default nudge asks
+    # for. Discovery-only modes must not claim a pass.
+    for cmd in ("go test ./...", "npm test", "pytest -q", "cargo test"):
+        assert _is_repro_cmd("bash", {"command": cmd}), "suite run missed: %s" % cmd
+        assert _is_asserting_cmd(cmd), "suite not counted as asserting: %s" % cmd
+    assert not _is_repro_cmd("bash", {"command": "pytest --collect-only"})
     # building proves it compiles, never that it is correct
-    assert not _ASSERTED_RE.search("go build ./...")
-    assert not _ASSERTED_RE.search("npx tsc --noEmit")
+    assert not _is_asserting_cmd("go build ./...")
+    assert not _is_asserting_cmd("npx tsc --noEmit")
+    assert not _is_asserting_cmd("python -c \"print('assert')\"")
+    assert not _is_asserting_cmd("python -c \"print('&& pytest')\"")
+    assert _is_repro_cmd("bash", {"command": "python -c \"print('&& pytest')\""})
+    assert not _is_asserting_cmd("echo pytest")
     for cmd in ("go test -run '^TestX$' ./p", "python3 -c 'assert a == b'",
-                "npx jest test/foo.test.ts"):
-        assert _ASSERTED_RE.search(cmd), "assertion not recognised: %s" % cmd
+                 "npx jest test/foo.test.ts"):
+        assert _is_asserting_cmd(cmd), "assertion not recognised: %s" % cmd
 
 def test_verify_nudge_names_the_repos_own_toolchain():
     """A Go agent told to run `python3 -c` is being told to verify nothing."""
@@ -591,72 +1178,54 @@ def test_verify_nudge_names_the_repos_own_toolchain():
     # an unknown language must not silently fall back to python
     assert "python3" not in swe._swe_assert_verify_nudge("")
 
-if __name__ == "__main__":                 # LAST, always: a guard with definitions after it
-    sys.exit(run_module(globals(), "LOOP"))  # silently skips every one of them.
-
-
-def test_a_busy_model_steps_down_a_rung_and_says_so():
-    """An overloaded frontier model must not cost the answer, and must not hide the swap.
-
-    Spending the whole retry budget on a model that is overloaded and then handing back an error
-    throws away an answer that was available one rung down the entire time. Quietly answering from
-    that lesser model is the only outcome worse: a reply has to say when it did not come from the
-    model the person picked.
-    """
-    from unittest.mock import patch
-    from harness.cli import make_harness
-    from harness.providers import Completion, Usage
-    from _util import _ScriptProvider
-    h = make_harness(os.getcwd(), provider="mock", project="stepdown", embed="hash")
-    h.max_turns = 2; h.max_retries = 1; h.retry_base = 0
-    busy = Completion(text="", stop_reason="error", error_status=529,
-                      error_detail='{"type":"overloaded_error","message":"Overloaded"}')
-    ok = Completion(text="all good", stop_reason="end_turn", usage=Usage(input_tokens=5))
-    h.provider = _ScriptProvider([busy, busy, ok], name="anthropic-relay", model="claude-opus-5")
-    with patch("harness.catalog.fallback_model", lambda p, m: "claude-sonnet-5"), \
-         patch("time.sleep", lambda s: None):
-        res = h.run("stepdown", "go")
-    assert res.error == "", res.error
-    assert "all good" in res.answer, res.answer
-    assert "claude-opus-5" in res.answer and "claude-sonnet-5" in res.answer, \
-        "the answer must name what was asked for and what actually answered: %r" % res.answer
-    assert h.provider.model == "claude-sonnet-5"
-    assert res.model == "claude-opus-5", "the record keeps the model that was CHOSEN, not the one capacity allowed"
-
-
-def test_the_step_down_happens_at_most_once():
-    """A cascade would slide down the whole ladder on one bad minute, with nobody deciding to."""
+def test_overload_keeps_the_selected_model_with_bounded_retries():
     from unittest.mock import patch
     from harness.cli import make_harness
     from harness.providers import Completion
-    from _util import _ScriptProvider
-    h = make_harness(os.getcwd(), provider="mock", project="stepdown_once", embed="hash")
+    h = make_harness(os.getcwd(), provider="mock", project="selected_model", embed="hash")
     h.max_turns = 2; h.max_retries = 1; h.retry_base = 0
-    busy = Completion(text="", stop_reason="error", error_status=529, error_detail="overloaded_error")
+    busy = Completion(stop_reason="error", error_status=529, error_detail="overloaded_error")
     h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-opus-5")
-    calls = []
-
-    def _fallback(provider, model):
-        calls.append(model)
-        return {"claude-opus-5": "claude-sonnet-5", "claude-sonnet-5": "claude-haiku-4-5"}.get(model, "")
-
-    with patch("harness.catalog.fallback_model", _fallback), patch("time.sleep", lambda s: None):
-        h.run("stepdown_once", "go")
-    assert calls == ["claude-opus-5"], "asked for a rung more than once: %s" % calls
-    assert h.provider.model == "claude-sonnet-5"
+    with patch("harness.catalog.fallback_model", return_value="claude-sonnet-5") as fallback:
+        res = h.run("selected_model", "go")
+    assert res.error.startswith("retryable:"), res.error
+    assert h.provider.calls == 2
+    assert h.provider.model == res.model == "claude-opus-5"
+    fallback.assert_not_called()
 
 
-def test_no_rung_below_means_the_error_still_surfaces():
-    """With nothing to fall back to, the original failure must reach the caller unchanged."""
+def test_request_cap_does_not_allow_an_extra_model_fallback():
     from unittest.mock import patch
     from harness.cli import make_harness
     from harness.providers import Completion
-    from _util import _ScriptProvider
-    h = make_harness(os.getcwd(), provider="mock", project="stepdown_none", embed="hash")
-    h.max_turns = 1; h.max_retries = 0; h.retry_base = 0
-    busy = Completion(text="", stop_reason="error", error_status=529, error_detail="overloaded_error")
-    h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-haiku-4-5")
-    with patch("harness.catalog.fallback_model", lambda p, m: ""), patch("time.sleep", lambda s: None):
-        res = h.run("stepdown_none", "go")
-    assert "overloaded" in ((res.error or "") + (res.answer or "")).lower(), (res.error, res.answer)
-    assert h.provider.model == "claude-haiku-4-5", "nothing to switch to means nothing switched"
+    h = make_harness(os.getcwd(), provider="mock", project="selected_cap", embed="hash")
+    h.max_turns = 2; h.max_retries = 3; h.retry_base = 0; h.max_model_calls = 1
+    busy = Completion(stop_reason="error", error_status=529, error_detail="overloaded_error")
+    h.provider = _ScriptProvider([busy], name="anthropic-relay", model="claude-opus-5")
+    with patch("harness.catalog.fallback_model", return_value="claude-sonnet-5") as fallback:
+        res = h.run("selected_cap", "go")
+    assert h.provider.calls == 1
+    assert h.provider.model == res.model == "claude-opus-5"
+    fallback.assert_not_called()
+
+
+def test_exhausted_plan_waits_for_its_reset_without_changing_model():
+    from unittest.mock import patch
+    from harness.cli import make_harness
+    from harness.providers import Completion
+    h = make_harness(os.getcwd(), provider="mock", project="selected_reset", embed="hash")
+    h.max_turns = 2; h.max_retries = 3; h.retry_base = 0
+    reset = int(time.time()) + 3600
+    spent = Completion(stop_reason="error", error_status=429,
+                       error_detail="usage_limit_reached", retry_at=reset)
+    h.provider = _ScriptProvider([spent], name="anthropic-relay", model="claude-opus-5")
+    with patch("harness.catalog.fallback_model", return_value="claude-sonnet-5") as fallback:
+        res = h.run("selected_reset", "go")
+    assert res.retry_at == reset
+    assert h.provider.calls == 1
+    assert h.provider.model == res.model == "claude-opus-5"
+    fallback.assert_not_called()
+
+
+if __name__ == "__main__":
+    sys.exit(run_module(globals(), "LOOP"))

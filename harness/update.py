@@ -13,6 +13,7 @@ Nothing here downloads anything unless asked: `collie update` reports, `collie u
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -20,15 +21,130 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.request
 
 from . import plat
 from . import __version__
 
 REPO = os.environ.get("COLLIE_UPDATE_REPO", "colliehq/collie")
-API = "https://api.github.com/repos/%s/releases/latest" % REPO
+API_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
+API_RELEASES = "https://api.github.com/repos/%s/releases?per_page=30" % REPO
+# Backwards-compatible name used by older embedders/tests.
+API = API_LATEST
 TEAM_ID = "58Y98W3QQK"          # the Developer ID the macOS builds are signed with
+WINDOWS_PUBLISHER_CN = "Daming Wu"  # Azure Artifact Signing identity used by release.yml
 APP_PATH = "/Applications/Collie.app"
+UPDATE_JOURNAL_SCHEMA = 1
+
+
+def update_journal_path(path=None):
+    return os.path.abspath(path or os.environ.get("COLLIE_UPDATE_JOURNAL")
+                           or os.path.expanduser("~/.collie/update-journal.json"))
+
+
+def _read_update_journal(path=None):
+    try:
+        with open(update_journal_path(path), encoding="utf-8") as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_update_journal(value, path=None, *, _replace=None):
+    """Atomically persist non-secret update/recovery metadata."""
+    path = update_journal_path(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.tmp-%d-%d" % (path, os.getpid(), threading.get_ident())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        (_replace or os.replace)(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def begin_update_journal(*, artifact, mode, parts=None, target_version="",
+                         artifact_sha256="", rollback=None, path=None, now=None):
+    """Begin a startup-health transaction before replacing runnable code.
+
+    ``rollback`` is an optional *declarative* plan (for example a previously verified installer),
+    never executed here. Automatic rollback is only safe when the installer/host explicitly
+    supplies such a trusted plan; otherwise the journal surfaces ``rollback_required`` for an
+    operator instead of downloading or executing guessed bytes.
+    """
+    now = float(time.time() if now is None else now)
+    value = {
+        "schema": UPDATE_JOURNAL_SCHEMA, "state": "installing",
+        "previous_version": __version__, "target_version": str(target_version or ""),
+        "artifact": os.path.basename(str(artifact or "")),
+        "artifact_sha256": str(artifact_sha256 or ""), "mode": str(mode or ""),
+        "parts": [str(x) for x in (parts or ())], "started_at": now,
+        "updated_at": now, "startup_failures": 0, "last_error": "",
+        "rollback": dict(rollback or {}),
+    }
+    _write_update_journal(value, path)
+    return value
+
+
+def record_update_handoff(*, ok=True, detail="", path=None, now=None):
+    now = float(time.time() if now is None else now)
+    value = _read_update_journal(path)
+    if not value:
+        return {"state": "none"}
+    value.update(state="pending_startup" if ok else "install_failed",
+                 last_error="" if ok else str(detail)[:1000], updated_at=now)
+    _write_update_journal(value, path)
+    return value
+
+
+def record_startup_health(ok, detail="", path=None, now=None, failure_threshold=3):
+    """Supervisor startup hook: bless a new build or request a declared rollback.
+
+    Repeated failed starts are counted durably. A successful full self-check clears the pending
+    transaction. Failure never launches a rollback by itself; :func:`rollback_status` returns the
+    trusted declarative plan for the installer/supervisor boundary to confirm and execute.
+    """
+    now = float(time.time() if now is None else now)
+    value = _read_update_journal(path)
+    if not value or value.get("state") not in ("installing", "pending_startup",
+                                                "startup_failed", "rollback_required"):
+        return value or {"state": "none"}
+    if ok:
+        value.update(state="healthy", healthy_at=now, updated_at=now,
+                     startup_failures=0, last_error="")
+    else:
+        failures = int(value.get("startup_failures") or 0) + 1
+        rollback = value.get("rollback") or {}
+        state = ("rollback_required" if failures >= max(1, int(failure_threshold))
+                 else "startup_failed")
+        value.update(state=state, startup_failures=failures, updated_at=now,
+                     last_error=str(detail or "startup self-check failed")[:1000],
+                     rollback_available=bool(rollback))
+    _write_update_journal(value, path)
+    return value
+
+
+def rollback_status(path=None):
+    """Return a non-executing rollback hook for an authenticated operator/supervisor surface."""
+    value = _read_update_journal(path)
+    if not value:
+        return {"required": False, "available": False, "state": "none", "plan": {}}
+    plan = value.get("rollback") if isinstance(value.get("rollback"), dict) else {}
+    return {"required": value.get("state") == "rollback_required",
+            "available": bool(plan), "state": value.get("state", "unknown"),
+            "previous_version": value.get("previous_version", ""), "plan": plan,
+            "startup_failures": int(value.get("startup_failures") or 0),
+            "last_error": value.get("last_error", "")}
 
 
 def _ver(s):
@@ -37,23 +153,77 @@ def _ver(s):
     return tuple(int(n) for n in nums[:3]) + (0,) * (3 - len(nums[:3]))
 
 
-def latest():
+def _channel(value=None):
+    channel = str(value or os.environ.get("COLLIE_UPDATE_CHANNEL") or "stable").lower()
+    if channel not in ("stable", "beta"):
+        raise ValueError("update channel must be stable or beta")
+    return channel
+
+
+def _release_version(value):
+    """SemVer precedence for stable and pre-release update tags."""
+    match = re.fullmatch(
+        r"[vV]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?",
+        str(value or "").strip())
+    if not match:
+        return ()
+    pre = match.group(4)
+    parts = []
+    for item in pre.split(".") if pre else ():
+        parts.append((0, int(item)) if item.isdigit() else (1, item.lower()))
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            1 if pre is None else 0, tuple(parts))
+
+
+def _release_payload(value, channel):
+    if not isinstance(value, dict):
+        raise ValueError("release feed returned a non-object release")
+    assets = value.get("assets") or []
+    if not isinstance(assets, list):
+        raise ValueError("release feed returned invalid assets")
+    return {"tag": value.get("tag_name") or "",
+            "notes": (value.get("body") or "").strip(),
+            "url": value.get("html_url") or "", "channel": channel,
+            "prerelease": value.get("prerelease") is True,
+            "assets": {a["name"]: a["browser_download_url"] for a in assets
+                       if isinstance(a, dict) and isinstance(a.get("name"), str)
+                       and isinstance(a.get("browser_download_url"), str)},
+            # GitHub reports "sha256:<hex>" per asset. Windows also verifies the installer's
+            # Authenticode chain and publisher before execution; the digest remains necessary because
+            # it binds those signed bytes to this specific release rather than merely to Collie's
+            # signing identity.
+            "digests": {a["name"]: (a.get("digest") or "") for a in assets
+                        if isinstance(a, dict) and isinstance(a.get("name"), str)}}
+
+
+def latest(channel=None):
     """The newest published release. Raises on network or API failure — a silent 'you are up to
-    date' after a failed check is how machines stay on an old build for months."""
-    req = urllib.request.Request(API, headers={"User-Agent": "collie-update/1.0",
+    date' after a failed check is how machines stay on an old build for months.
+
+    ``stable`` uses GitHub's latest-release endpoint, which excludes prereleases.
+    ``beta`` considers both prereleases and stable releases and picks the greatest
+    semantic version, so beta users still receive a later stable build.
+    """
+    channel = _channel(channel)
+    endpoint = API_LATEST if channel == "stable" else API_RELEASES
+    req = urllib.request.Request(endpoint, headers={"User-Agent": "collie-update/1.0",
                                                "X-GitHub-Api-Version": "2022-11-28"})
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:                                   # shared CI IPs hit the anonymous rate limit
         req.add_header("Authorization", "Bearer " + tok)
     with urllib.request.urlopen(req, timeout=20) as r:
         d = json.loads(r.read().decode("utf-8"))
-    return {"tag": d.get("tag_name") or "", "notes": (d.get("body") or "").strip(),
-            "url": d.get("html_url") or "",
-            "assets": {a["name"]: a["browser_download_url"] for a in (d.get("assets") or [])},
-            # GitHub reports "sha256:<hex>" per asset. It is what makes the Windows path safe at
-            # all: Collie-Setup.exe carries no Authenticode signature, so there is nothing in the
-            # file itself to check, and this digest is the only integrity claim available.
-            "digests": {a["name"]: (a.get("digest") or "") for a in (d.get("assets") or [])}}
+    if channel == "stable":
+        return _release_payload(d, channel)
+    if not isinstance(d, list):
+        raise ValueError("beta release feed returned a non-array response")
+    candidates = [row for row in d if isinstance(row, dict) and not row.get("draft")
+                  and _release_version(row.get("tag_name"))]
+    if not candidates:
+        return _release_payload({}, channel)
+    selected = max(candidates, key=lambda row: _release_version(row.get("tag_name")))
+    return _release_payload(selected, channel)
 
 
 def sha256_of(path):
@@ -66,9 +236,11 @@ def sha256_of(path):
 
 
 def verify_digest(path, claimed):
-    """(ok, detail) against GitHub's "sha256:<hex>". Weaker than a signature — it proves the bytes
-    are the ones the release lists, not who built them — but it is what Windows has until
-    Collie-Setup.exe is signed, and it does stop a truncated or swapped download."""
+    """(ok, detail) against GitHub's ``sha256:<hex>`` release-asset digest.
+
+    This binds bytes to a particular release but does not identify their publisher. Windows updates
+    therefore require this *and* :func:`verify_windows_authenticode` before executing the installer.
+    """
     want = (claimed or "").split(":")[-1].strip().lower()
     if not want:
         return False, "the release publishes no digest for this asset"
@@ -76,6 +248,91 @@ def verify_digest(path, claimed):
     if got != want:
         return False, "sha256 mismatch (got %s…, expected %s…)" % (got[:12], want[:12])
     return True, "sha256 matches the release listing"
+
+
+_AUTHENTICODE_CHECK = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$securityModule = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+Import-Module -Name $securityModule -Force -ErrorAction Stop
+$signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
+  -LiteralPath $env:COLLIE_AUTHENTICODE_PATH
+$publisher = ''
+$subject = ''
+if ($null -ne $signature.SignerCertificate) {
+  $publisher = $signature.SignerCertificate.GetNameInfo(
+    [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+  $subject = [string]$signature.SignerCertificate.Subject
+}
+[PSCustomObject]@{
+  status = [string]$signature.Status
+  publisher = [string]$publisher
+  subject = [string]$subject
+} | ConvertTo-Json -Compress
+"""
+
+
+def _system_powershell():
+    """Resolve in-box Windows PowerShell without trusting PATH or mutable environment variables."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        count = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))  # type: ignore[attr-defined]
+        if count <= 0 or count >= len(buf):
+            return ""
+        return os.path.join(buf.value, "WindowsPowerShell", "v1.0", "powershell.exe")
+    except Exception:
+        return ""
+
+
+def verify_windows_authenticode(path, expected_publisher=WINDOWS_PUBLISHER_CN):
+    """Return ``(ok, detail)`` for the Windows trust-chain and publisher boundary.
+
+    ``Get-AuthenticodeSignature`` asks Windows to validate the PE signature and its certificate
+    chain. The certificate's parsed SimpleName must also exactly match the Azure Artifact Signing
+    identity used by ``release.yml``; a merely valid executable from another publisher is refused.
+    The check is non-interactive and fail-closed on every execution or decoding error.
+    """
+    if not plat.is_windows():
+        return False, "Authenticode verification is only available on Windows"
+    artifact = os.path.abspath(path)
+    if not os.path.isfile(artifact):
+        return False, "installer is missing: %s" % artifact
+
+    # Use Windows' in-box, absolute PowerShell rather than PATH or SystemRoot environment resolution.
+    # An updater must not run a powershell.exe planted beside the installer or named by hostile env.
+    powershell = _system_powershell()
+    if not os.path.isfile(powershell):
+        return False, "Windows PowerShell is unavailable; cannot verify Authenticode"
+
+    encoded = base64.b64encode(_AUTHENTICODE_CHECK.encode("utf-16le")).decode("ascii")
+    env = os.environ.copy()
+    env["COLLIE_AUTHENTICODE_PATH"] = artifact
+    try:
+        result = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-EncodedCommand", encoded],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            env=env, **plat.no_window_kwargs())
+    except Exception as exc:
+        return False, "could not verify Authenticode: %s" % str(exc)[:160]
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "PowerShell verification failed").strip()
+        return False, "could not verify Authenticode: %s" % detail[:160]
+    try:
+        report = json.loads((result.stdout or "").strip().lstrip("\ufeff"))
+    except (TypeError, ValueError) as exc:
+        return False, "could not decode Authenticode result: %s" % str(exc)[:120]
+
+    status = str(report.get("status") or "") if isinstance(report, dict) else ""
+    publisher = str(report.get("publisher") or "") if isinstance(report, dict) else ""
+    subject = str(report.get("subject") or "") if isinstance(report, dict) else ""
+    if status != "Valid":
+        return False, "Authenticode signature is not valid (status=%s)" % (status or "unknown")
+    if publisher != expected_publisher:
+        return False, ("Authenticode publisher is not allowed (expected CN=%s, got %s)" %
+                       (expected_publisher, subject or publisher or "none"))
+    return True, "Authenticode chain is valid; publisher CN=%s" % expected_publisher
 
 
 def install_kind():
@@ -109,11 +366,14 @@ def install_kind():
     return "pip"
 
 
-def check():
+def check(channel=None):
     """{'current', 'latest', 'newer': bool, ...}. Does not download anything."""
-    rel = latest()
+    rel = latest(channel)
+    current = _release_version(__version__)
+    candidate = _release_version(rel["tag"])
     return {"current": __version__, "latest": rel["tag"].lstrip("vV"),
-            "newer": _ver(rel["tag"]) > _ver(__version__),
+            "newer": bool(candidate and (not current or candidate > current)),
+            "channel": rel["channel"], "prerelease": rel["prerelease"],
             "kind": install_kind(), "notes": rel["notes"], "url": rel["url"],
             "assets": rel["assets"], "digests": rel["digests"]}
 
@@ -324,6 +584,8 @@ def running_parts(root):
     kennel = os.path.join(os.path.expanduser("~"), ".collie")
     runtime = os.path.normcase(os.path.abspath(os.path.join(root, "python"))).replace("/", "\\")
     normalized = [os.path.normcase(line).replace("/", "\\") for line in lines]
+    if any("harness.supervisor" in line.lower() for line in lines):
+        parts.append("supervisor")
     try:
         launchers = sorted(name for name in os.listdir(kennel)
                            if re.fullmatch(r"slack-[A-Za-z0-9_-]+\.pyw", name))
@@ -369,6 +631,9 @@ Stop-Transcript | Out-Null
 '''
 
 _RESTART = {
+    "supervisor": '"[collie-update] restarting supervisor"\n'
+                  'Start-Process -FilePath "schtasks.exe" -ArgumentList "/Run","/TN","\\Collie\\Supervisor" '
+                  '-WindowStyle Hidden\nStart-Sleep -Seconds 2',
     "wallpaper": '"[collie-update] restarting wallpaper"\n'
                  'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\wallpaper-boot.pyw" '
                  '-WindowStyle Hidden\nStart-Sleep -Seconds 3',
@@ -419,6 +684,10 @@ def apply_windows(exe, digest, on_note=print):
     on_note("  verify: %s" % why)
     if not ok:
         return False, why
+    ok, why = verify_windows_authenticode(exe)
+    on_note("  verify: %s" % why)
+    if not ok:
+        return False, why
 
     # A Slack task is deliberately inside a kill-on-close Job Object. The
     # PowerShell bootstrap must outlive this Python process, so launching it
@@ -433,15 +702,27 @@ def apply_windows(exe, digest, on_note=print):
     if not root:
         # Not inside the install tree (a pip-style layout): nothing will close us, so run it here
         # and report the real outcome.
+        try:
+            begin_update_journal(artifact=exe, mode="windows-direct",
+                                 artifact_sha256=sha256_of(exe))
+        except Exception as exc:
+            return False, "could not record the update recovery journal: %s" % exc
         r = subprocess.run([exe, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
                            capture_output=True, text=True, timeout=1800,
                            **plat.no_window_kwargs())
         if r.returncode != 0:
+            record_update_handoff(ok=False, detail="installer exited %d" % r.returncode)
             return False, "installer exited %d: %s" % (r.returncode,
                                                        (r.stdout or r.stderr or "").strip()[:160])
+        record_update_handoff(ok=True, detail="installer completed; awaiting startup self-check")
         return True, "reinstalled over the existing copy"
 
     parts = running_parts(root)
+    try:
+        begin_update_journal(artifact=exe, mode="windows-handoff", parts=parts,
+                             artifact_sha256=sha256_of(exe))
+    except Exception as exc:
+        return False, "could not record the update recovery journal: %s" % exc
     log = os.path.join(tempfile.gettempdir(), "collie-update.log")
     restarts = "\n".join(line for line in (_restart_script(p, root) for p in parts) if line) or \
         '"[collie-update] nothing was running; not starting anything"'
@@ -455,9 +736,15 @@ def apply_windows(exe, digest, on_note=print):
     # process object, so the handoff looks like it worked and nothing ever happens. Measured, both
     # ways round. A child is not killed by its parent exiting on Windows, so nothing more is needed
     # for the bootstrap to outlive us.
-    subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sp],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     cwd=tempfile.gettempdir(), **plat.no_window_kwargs())
+    try:
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sp],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=tempfile.gettempdir(), **plat.no_window_kwargs())
+    except Exception as exc:
+        record_update_handoff(ok=False, detail="bootstrap launch failed: %s" % exc)
+        return False, "could not launch the update bootstrap: %s" % exc
+    record_update_handoff(ok=True, detail="handed off; awaiting startup self-check")
     on_note("  the installer runs once Collie exits; it will bring back: %s"
             % (", ".join(parts) or "nothing (none of it was running)"))
     on_note("  log: %s" % log)

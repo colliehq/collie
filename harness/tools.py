@@ -6,7 +6,6 @@ fetched on demand (Claude Code's ToolSearch pattern). v1 keeps a lean always-on
 core; the seam for deferred/MCP tools exists but isn't heavily populated yet.
 """
 from __future__ import annotations
-import itertools
 import json
 import os
 import shutil
@@ -18,6 +17,8 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from . import plat
+from . import tool_process as _proc
+from . import capability_policy
 
 _SHIM_DIR = None
 
@@ -28,7 +29,7 @@ def _shim_env():
     reproductions fail 'python: not found', wasting a turn AND falsely failing the verification gate."""
     global _SHIM_DIR
     if shutil.which("python"):
-        return None                                    # already resolves — inherit os.environ
+        return plat.shell_environment()                # normalize Windows brokered app aliases
     py3 = shutil.which("python3")
     if not py3:
         return None
@@ -112,6 +113,90 @@ class ToolCtx:
     # in this session instead of asking for a restart — `mcpctl_add` registers the new server's tools
     # straight away, the same way enable_capability makes a gated capability usable immediately.
     registry: object = None
+    # Undo is more narrowly scoped than project memory. Web runs set this to their session id so
+    # two chats in the same repository cannot consume each other's journal.
+    checkpoint_scope: str = ""
+    # The provider-authored call id currently crossing the execution boundary. Cloud-routed
+    # tools derive their idempotency key from it, so a resumed/replayed turn cannot perform the
+    # same external action twice. It is set only around Tool.run() and is never model-controlled.
+    tool_call_id: str = ""
+    # Host-only callback. Child investigation prompts cannot create another
+    # execution context or obtain the parent's credentials through tool args.
+    delegate_runner: object = None
+    # Host-only cooperative cancellation: () -> bool, True once the surface's Stop has been
+    # pressed. Set by the loop from the embedding surface, never by a model argument — a tool
+    # can ask whether to stop, it can never decide that someone asked. Tools that own a
+    # subprocess poll it while waiting, so Stop ends the command instead of leaving it to run
+    # out its timeout. Default None (and read via getattr) so every simpler ToolCtx-shaped
+    # context — embedders, the small test doubles — keeps working unchanged.
+    cancelled: object = None
+    # Host-only, tool-SET (the only field here that flows outward): True once a tool has done
+    # something whose extent it cannot account for — an executed command whose process tree
+    # could not be proved stopped, or one whose deliberate background survivors could not be
+    # handed over cleanly. The tool's own text says so too, but text is only advice to the
+    # model; the loop needs a fact to fence the turn with, so that a run cannot be finalized
+    # as cleanly finished while a command it started may still be writing files. Never
+    # model-controlled: no tool argument can set or clear it.
+    tool_effect_uncertain: bool = False
+    capabilities: dict = field(default_factory=capability_policy.snapshot)
+
+
+@dataclass(frozen=True)
+class ExecReceipt:
+    """Host-minted, immutable record of what a tool ACTUALLY executed.
+
+    The exit codes here are read off ``subprocess.CompletedProcess`` inside the tool — they are
+    never parsed back out of the text the executed command printed. That distinction is the whole
+    point: ``run_in_env`` frames its two runs with ``--- ORIGINAL code [exit N] ---`` /
+    ``--- WITH YOUR EDITS [exit N] ---`` headers, and a command can print those exact bytes to its
+    own stdout, so a gate that reads the frame from the result text can be told any verdict the
+    command likes. It binds to ONE call (``tool`` + the provider's ``call_id`` + the exact
+    ``command`` string that was run) so a receipt cannot be replayed for a different call.
+
+    Frozen, and only tools construct it: no model argument and no caller-supplied dict can become
+    execution evidence.
+    """
+    tool: str
+    call_id: str
+    command: str
+    base_rc: int | None = None      # the run WITHOUT the model's edits, when one happened
+    edit_rc: int | None = None      # the run WITH the model's edits applied
+    dual: bool = False              # both halves above really executed, in that order
+
+
+class ToolResult(str):
+    """A tool's ordinary result string carrying one ``ExecReceipt``.
+
+    A ``str`` subclass because every consumer downstream — redaction, the transcript, hooks, the
+    result preview, JSON serialization — must keep seeing exactly the text the tool returned. The
+    Harness lifts the receipt off at the execution boundary (before redaction, which returns plain
+    ``str``) and hands it to accounting by value.
+    """
+    __slots__ = ("_receipt",)
+
+    def __new__(cls, text: str, receipt: ExecReceipt):
+        if not isinstance(receipt, ExecReceipt):
+            raise TypeError("ToolResult requires an ExecReceipt, got %s" % type(receipt).__name__)
+        obj = super().__new__(cls, text)
+        obj._receipt = receipt
+        return obj
+
+    @property
+    def receipt(self) -> ExecReceipt:
+        return self._receipt
+
+
+def exec_receipt(out) -> ExecReceipt | None:
+    """The execution receipt carried by a tool result, or None.
+
+    Deliberately narrow: only a real ``ExecReceipt`` on a real ``ToolResult`` counts, so an
+    arbitrary object with a ``.receipt`` attribute (or a dict a third-party tool returns) is not
+    evidence.
+    """
+    if isinstance(out, ToolResult):
+        r = out.receipt
+        return r if isinstance(r, ExecReceipt) else None
+    return None
 
 
 class Tool:
@@ -202,7 +287,8 @@ class WriteFileTool(Tool):
         if not isinstance(content, str):
             return "ERROR: arg 'content' must be a string, got %s" % type(content).__name__
         try:
-            _snapshot(ctx.project, p)          # checkpoint prior state so `undo` can restore it
+            _snapshot(getattr(ctx, "checkpoint_scope", "") or ctx.project,
+                      p, ctx.cwd) # checkpoint prior state so `undo` can restore it
             os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -233,11 +319,11 @@ def _touch_index(cwd):
         pass
 
 
-def _snapshot(project, abspath):
+def _snapshot(project, abspath, cwd=None):
     """Best-effort pre-mutation checkpoint so the `undo` tool can restore this file."""
     try:
         from .checkpoint import record
-        record(project, abspath)
+        record(project, abspath, cwd=cwd)
     except Exception:
         pass
 
@@ -376,7 +462,8 @@ class EditFileTool(Tool):
             except SyntaxError as e:
                 return ("ERROR: this edit would break Python syntax in %s — %s (line %s). The "
                         "file was NOT modified; fix new_string and retry." % (args["path"], e.msg, e.lineno))
-        _snapshot(ctx.project, p)  # checkpoint prior state so `undo` can restore it
+        _snapshot(getattr(ctx, "checkpoint_scope", "") or ctx.project,
+                  p, ctx.cwd)  # checkpoint prior state so `undo` can restore it
         # utf-8-sig re-emits the BOM the file started with (stdlib); newline=nl restores CRLF.
         with open(p, "w", encoding="utf-8-sig" if bom else "utf-8", newline=nl) as f:
             f.write(new_content)
@@ -388,7 +475,6 @@ class EditFileTool(Tool):
 # onto the same predictable path (which would let one pre-create/symlink the other's spill files).
 _SPILL_UID = getattr(os, "geteuid", lambda: 0)()
 _SPILL_DIR = os.path.join(tempfile.gettempdir(), "collie-spill-%d" % _SPILL_UID)
-_spill_seq = itertools.count(1)
 _spill_swept = False
 
 
@@ -418,7 +504,12 @@ def _spill_full_output(out):
                         os.unlink(fp)
                 except OSError:
                     pass
-        path = os.path.join(_SPILL_DIR, "bash-%d-%d.log" % (os.getpid(), next(_spill_seq)))
+        # PID + an in-process counter collided after a fast process restart on
+        # Windows, where the OS may reuse the PID while the previous spill file
+        # is intentionally still retained. A random creation nonce keeps O_EXCL
+        # meaningful across processes without making a legitimate spill flaky.
+        path = os.path.join(
+            _SPILL_DIR, "bash-%d-%s.log" % (os.getpid(), os.urandom(12).hex()))
         # O_EXCL|O_NOFOLLOW: fail if the target already exists or is a symlink, so a planted
         # symlink can't make us follow it and overwrite an arbitrary file the user can write.
         # (O_NOFOLLOW is added only where the platform has it — see plat.open_excl.)
@@ -434,7 +525,9 @@ class BashTool(Tool):
     name = "bash"
     description = ("Run a shell command in the working dir. Args: command, optional timeout_s "
                   "(seconds; default 120, max 600 — RAISE it for slow test suites / builds). For a "
-                  "command that never returns (a server, tail -f) background it with & instead.")
+                  "command that never returns (a server, tail -f) background it with & instead. "
+                  "Output is already bounded; run checks directly without head/tail pipes or "
+                  "echo suffixes so their real exit status remains visible.")
     # accept BOTH `timeout_s` and `timeout` (execute_code uses `timeout`) so an override never
     # silently falls back to the default just because the model picked the other name.
     schema = {"type": "object", "properties": {
@@ -448,48 +541,62 @@ class BashTool(Tool):
         # [1, 600] so a typo'd huge value can't wedge the loop. Either arg name works.
         _t = args.get("timeout_s", args.get("timeout"))
         timeout = 120 if _t in (None, "") else max(1, min(600, int(_t)))
-        # Popen + start_new_session (NOT subprocess.run) so a timeout kills the WHOLE process group.
-        # subprocess.run kills only the direct `sh`; a backgrounded grandchild that inherited the
-        # stdout pipe keeps its write end open, so the follow-up drain would block forever and wedge
-        # the whole agent loop — the same hazard GrepTool already guards against.
         try:
             # Route through plat.shell_argv so `;`, `&&`, pipes and heredocs mean the same on every
             # OS: POSIX uses /bin/sh; Windows uses Git Bash/MSYS2 if present (else cmd.exe, degraded).
             # Inside the try so a missing `command` key returns a graceful ERROR, never raises.
             _cmdargs, _use_shell = plat.shell_argv(args["command"])
-            # no_window: this is the single most-run subprocess in the codebase, and started from a
-            # windowless parent (pythonw — the Slack dog, the wallpaper, the desktop app) Windows
-            # gives each child its OWN console. A run doing twenty shell steps threw twenty black
-            # boxes across the screen of whoever happened to be using the machine. Harmless to the
-            # run and impossible to ignore. new_group_kwargs() is {} on Windows, so the two spread
-            # cleanly side by side rather than one overwriting the other's creationflags.
-            p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                 env=_shim_env(), **plat.new_group_kwargs(),
-                                 **plat.no_window_kwargs())
         except Exception as e:
             return "ERROR: %s" % e
-        timed_out = False
-        try:
-            stdout, stderr = p.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            plat.kill_tree(p)                                  # sh + every grandchild (cross-platform)
-            try:
-                stdout, stderr = p.communicate(timeout=5)      # drain what was buffered
-            except Exception:
-                stdout, stderr = "", ""
-        out = (stdout or "") + (("\n[stderr] " + stderr) if stderr else "")
+        # tool_process owns the whole tree (POSIX group / Windows Job), keeps the shell windowless,
+        # drains both pipes as they fill, and polls the host's Stop callback between sleeps — so a
+        # cancelled command dies now instead of running out a deadline of up to ten minutes, and
+        # whatever it had already printed comes back with it.
+        r = _proc.run_owned(_cmdargs, use_shell=_use_shell, cwd=ctx.cwd, env=_shim_env(),
+                            timeout_s=timeout, cancelled=_proc.cancel_check(ctx))
+        # An action whose extent nobody can account for is reported to the HOST as data, not
+        # only as prose in the model's transcript: the loop fences such a turn instead of
+        # finalizing it as clean. Prose alone is advice; a flag is a fact the loop can use.
+        if r.effect_uncertain:
+            _proc.mark_effect_uncertain(ctx)
+        if r.status == _proc.LAUNCH_ERROR:
+            return "ERROR: %s" % r.detail
+        if r.status == _proc.PRELAUNCH_CANCELED:
+            # The one case where "it did not run" is a fact: no process was ever created.
+            return ("ERROR: canceled before the command started — it was NOT executed. Nothing "
+                    "here says whether it would have succeeded, and no file it would have "
+                    "written was written.")
+        out = (r.stdout or "") + (("\n[stderr] " + r.stderr) if r.stderr else "")
         out = out.strip() or "(no output)"
-        if timed_out:
+        omitted = (getattr(r, "stdout_omitted_chars", 0) +
+                   getattr(r, "stderr_omitted_chars", 0))
+        if r.status == _proc.CANCELED:
+            return self._interrupted(
+                out, r, "canceled by the user after %.1fs" % r.elapsed_s,
+                "partial pre-cancel output",
+                stopped=" — the owned process tree was stopped.",
+                tail=" The command did NOT finish, so this output is PARTIAL and says nothing "
+                     "about whether it would have succeeded.")
+        if r.status == _proc.TIMEOUT:
             # highest-value spill: re-running a timed-out command costs another full timeout.
-            if len(out) > 4000:
-                sp = _spill_full_output(out)
-                if sp:
-                    return ("ERROR: command timed out after %ds (killed) — full pre-kill output "
-                            "saved to %s\n%s" % (timeout, sp, out[-4000:]))
-            return "ERROR: command timed out after %ds (killed)\n%s" % (timeout, out[-4000:])
-        head = "" if p.returncode == 0 else "[exit %d]\n" % p.returncode
+            return self._interrupted(out, r, "timed out after %ds (killed)" % timeout,
+                                     "captured pre-kill output" if omitted else "full pre-kill output")
+        if r.status == _proc.HANDOVER_ERROR:
+            # Released, then lost. This is NOT "it did not run": say what is actually unknown.
+            return self._interrupted(
+                out, r, "may have started but Collie lost control of it (%s)" % r.detail,
+                "partial output",
+                stopped=" — the owned process tree was stopped.",
+                tail=" Check whether it took effect before re-running it.")
+        head = "" if r.returncode == 0 else "[exit %d]\n" % r.returncode
+        if omitted:
+            head += ("[Output capture limit reached: %d characters omitted from the middle; "
+                     "the beginning and tail were retained.]\n" % omitted)
+        if r.effect_uncertain:
+            # The command itself finished; what it deliberately backgrounded could not be
+            # handed over cleanly. Never claim a background start we cannot stand behind.
+            head += ("[WARNING: this command finished, but %s. Verify that what you "
+                     "backgrounded is running before relying on it.]\n" % r.detail)
         # keep the TAIL on overflow: errors/tracebacks print last, and head-truncation
         # dropped exactly the part that says what went wrong. Spill the FULL output to a file so
         # the model can grep/read_file it instead of paying to re-run the command. The pointer is
@@ -497,13 +604,44 @@ class BashTool(Tool):
         if len(out) > 8000:
             sp = _spill_full_output(out)
             if sp:
-                marker = ("…[truncated %d chars — full output (%d lines) saved to %s; grep it or "
+                marker = ("…[truncated %d chars — %s output (%d lines) saved to %s; grep it or "
                           "read_file offset=1, do NOT re-run to see more]\n"
-                          % (len(out) - 8000, out.count("\n") + 1, sp))
+                          % (len(out) - 8000, "captured" if omitted else "full",
+                             out.count("\n") + 1, sp))
             else:
                 marker = "…[truncated %d chars]\n" % (len(out) - 8000)
             out = marker + out[-8000:]
         return head + out
+
+    @staticmethod
+    def _interrupted(out, r, what, spill_label, stopped="", tail=""):
+        """One shape for the two ways a command can end WITHOUT finishing: the deadline and Stop.
+
+        Both are ERROR-prefixed, which is not cosmetic — the finish gate reads that prefix as a
+        FAILED reproduction (loop._repro_failed), so an interrupted `pytest` can never be counted
+        as a check that passed. And whether the tree really stopped is stated, never assumed: a
+        kill the OS would not confirm gets the warning in the FIRST line, because the next thing
+        anyone does with "it stopped" is re-run the command on top of a tree still writing.
+        """
+        head = "ERROR: command %s" % what
+        if r.tree_terminated:
+            head += stopped
+        else:
+            head += (" — WARNING: the process tree could NOT be confirmed stopped (%s), so child "
+                     "processes may still be RUNNING and writing files; do not treat this as a "
+                     "clean stop and do not re-run the command until you have checked."
+                     % (r.detail or "no confirmation available"))
+        head += tail
+        omitted = (getattr(r, "stdout_omitted_chars", 0) +
+                   getattr(r, "stderr_omitted_chars", 0))
+        if omitted:
+            head += (" Output capture limit reached: %d characters omitted from the middle."
+                     % omitted)
+        if len(out) > 4000:
+            sp = _spill_full_output(out)
+            if sp:
+                return "%s — %s saved to %s\n%s" % (head, spill_label, sp, out[-4000:])
+        return "%s\n%s" % (head, out[-4000:])
 
 
 class RunInEnvTool(Tool):
@@ -591,14 +729,33 @@ class RunInEnvTool(Tool):
                 verdict = "✗ STILL FAILING with your fix — the bug is not resolved. Read the failure and iterate."
             else:
                 verdict = "✗ REGRESSION — passed on the original code but FAILS with your fix; your edit broke it."
-            return ("%s\n--- ORIGINAL code [exit %d] ---\n%s\n--- WITH YOUR EDITS [exit %d] ---\n%s"
+            text = ("%s\n--- ORIGINAL code [exit %d] ---\n%s\n--- WITH YOUR EDITS [exit %d] ---\n%s"
                     % (verdict, base_rc, _tail(base_out), edit_rc, _tail(edit_out)))
+            # The verdict and the framing above are for the MODEL to read; both are interleaved
+            # with command-controlled stdout and neither is evidence. The finish gate reads this
+            # receipt instead — the two exit codes as the host observed them.
+            return ToolResult(text, self._receipt(ctx, cmd, base_rc=base_rc, edit_rc=edit_rc,
+                                                  dual=True))
         # exploration (no assertion) or no edits yet: single run with whatever edits exist
-        rc, out = _exec(bool(diff.strip()))
+        applied = bool(diff.strip())
+        rc, out = _exec(applied)
         if len(out) > 8000:
             out = "…[truncated]\n" + out[-8000:]
         head = "" if rc == 0 else "[exit %d]\n" % rc
-        return head + out
+        # One execution, so the receipt says so (``dual=False``): there is no baseline to compare
+        # against, and the gate must not read a single run as red→green.
+        return ToolResult(head + out, self._receipt(
+            ctx, cmd, edit_rc=rc if applied else None, base_rc=None if applied else rc))
+
+    def _receipt(self, ctx, command, *, base_rc=None, edit_rc=None, dual=False):
+        """Bind this call's observed exit codes to the call that is executing right now.
+
+        The Harness sets ``ctx.tool_call_id`` to the current call's ID around ``run()``.
+        The execution boundary validates that ID, tool name and command before using the receipt.
+        """
+        return ExecReceipt(tool=self.name,
+                           call_id=str(getattr(ctx, "tool_call_id", "") or ""),
+                           command=command, base_rc=base_rc, edit_rc=edit_rc, dual=dual)
 
 
 class GrepTool(Tool):
@@ -632,39 +789,52 @@ class GrepTool(Tool):
         gr = "grep -rnIE %s -e %s %s" % (excl_gr, _sh(pat), _sh(path))
         grf = "grep -rnIF %s -e %s %s" % (excl_gr, _sh(pat), _sh(path))
         cmd = rg + " || " + gr + " || " + grf
-        # Popen (not run) so a timeout still returns the matches found SO FAR — a huge tree should
-        # yield partial results, not nothing (the user's ask: even very large grep output must still
-        # be capturable). start_new_session so
-        # we can kill the WHOLE process group on timeout: p.kill() alone leaves the rg/grep children
-        # holding the stdout pipe and communicate() hangs forever.
-        import os as _os
-        import signal as _sig
+        # Owned + cancellable (not subprocess.run) for two reasons. A timeout still returns the
+        # matches found SO FAR — a huge tree should yield partial results, not nothing — and the
+        # kill reaches the WHOLE tree: p.kill() alone leaves the rg/grep children holding the
+        # stdout pipe and the drain hangs forever. Stop is honored the same way as in bash: a
+        # `grep pattern /` started by mistake ends when the user says so, not 25 seconds later.
         _cmdargs, _use_shell = plat.shell_argv(cmd)          # POSIX shell on every OS (Git Bash on Win)
-        p = subprocess.Popen(_cmdargs, shell=_use_shell, cwd=ctx.cwd, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, **plat.new_group_kwargs(),
-                             **plat.no_window_kwargs())
-        try:
-            out, _ = p.communicate(timeout=25)
-            return ((out or "").strip() or "(no matches)")[:6000]
-        except subprocess.TimeoutExpired:
-            plat.kill_tree(p)                                  # kill sh + rg + grep together
-            out = ""
-            try:
-                out, _ = p.communicate(timeout=5)
-            except Exception:
-                pass
-            out = (out or "").strip()
-            if out:
-                return out[:6000] + "\n… (hit 25s; PARTIAL results — pass a narrower `path` for the rest)"
-            # ERROR, not "(no match…)". A completed search that finds nothing returns "(no matches)"
-            # one branch up, and the two strings were near-identical — so a search that was KILLED
-            # read as proof the thing does not exist, and whatever was searched for got treated as
-            # absent. An inconclusive result must never wear the shape of a conclusive one.
-            return ("ERROR: the search was killed at 25s before it finished, so this says NOTHING "
-                    "about whether the pattern exists — it was not searched to the end. Narrow "
-                    "`path` (e.g. a subdirectory) or use a more specific pattern, then re-run.")
-        except Exception as e:
-            return "ERROR: %s" % e
+        r = _proc.run_owned(_cmdargs, use_shell=_use_shell, cwd=ctx.cwd, timeout_s=25,
+                            capture_stderr=False, cancelled=_proc.cancel_check(ctx))
+        if r.effect_uncertain:                   # host-visible fence, same rule as bash
+            _proc.mark_effect_uncertain(ctx)
+        if r.status == _proc.LAUNCH_ERROR:
+            return "ERROR: %s" % r.detail
+        out = (r.stdout or "").strip()
+        if r.status == _proc.OK:
+            # A search that finished is conclusive even if it left something behind it (it
+            # cannot: rg/grep background nothing). Status, not tree state, decides this.
+            visible = (out or "(no matches)")[:6000]
+            omitted = getattr(r, "stdout_omitted_chars", 0)
+            if len(out) > 6000 or omitted:
+                visible += ("\n[Search output truncated; narrow the pattern or path to inspect "
+                            "additional matches.]")
+            return visible
+        # Everything below is an UNFINISHED search. A completed search that finds nothing returns
+        # "(no matches)" above, and the two used to read almost identically — so a search that was
+        # KILLED was taken as proof the thing does not exist, and whatever was searched for got
+        # treated as absent. An inconclusive result must never wear the shape of a conclusive one,
+        # whichever way it was cut short.
+        if r.status == _proc.PRELAUNCH_CANCELED:
+            return ("ERROR: canceled before the search started — it was NOT run, so this says "
+                    "NOTHING about whether the pattern exists.")
+        if r.status == _proc.CANCELED:
+            why = "was CANCELED by the user after %.0fs" % r.elapsed_s
+        elif r.status == _proc.HANDOVER_ERROR:
+            why = "may have started but was lost by Collie (%s)" % r.detail
+        else:
+            why = "was killed at 25s before it finished"
+        warn = ("" if r.tree_terminated else
+                " (WARNING: the search process tree could not be confirmed stopped: %s)"
+                % (r.detail or "no confirmation available"))
+        if out:
+            return ("ERROR: the search %s, so the results below are PARTIAL and say NOTHING about "
+                    "whether the pattern exists elsewhere%s. Matches found so far:\n%s"
+                    % (why, warn, out[:6000]))
+        return ("ERROR: the search %s, so this says NOTHING about whether the pattern exists — it "
+                "was not searched to the end%s. Narrow `path` (e.g. a subdirectory) or use a more "
+                "specific pattern, then re-run." % (why, warn))
 
 
 class GlobTool(Tool):
@@ -709,7 +879,8 @@ class MemorySearchTool(Tool):
 
 class RememberTool(Tool):
     name = "remember"
-    description = "Store a durable fact in long-term memory. Args: text, optional keys."
+    description = ("Propose a fact for long-term memory review. It is not recalled until the "
+                   "host promotes it after attestation or verification. Args: text, optional keys.")
     schema = {"type": "object", "properties": {
         "text": {"type": "string"}, "keys": {"type": "string"}},
         "required": ["text"]}
@@ -719,8 +890,23 @@ class RememberTool(Tool):
         if _e:
             return _e
         keys = args.get("keys", "")
-        rid = ctx.memory.remember(text, keys=keys if isinstance(keys, str) else "", project=ctx.project)
-        return "remembered #%d" % rid
+        propose = getattr(ctx.memory, "propose", None)
+        if not callable(propose):
+            # Fail closed: falling back to an old ``remember`` implementation
+            # would turn an unreviewed model assertion straight into recallable
+            # durable memory.
+            return "ERROR: memory store does not support reviewable proposals; nothing stored"
+        kwargs = {
+            "keys": keys if isinstance(keys, str) else "",
+            "project": ctx.project,
+            "source": "agent_tool",
+            "provenance": getattr(ctx, "checkpoint_scope", "") or "",
+            "scope": ctx.project,
+        }
+        rid = propose(text, **kwargs)
+        if rid == -1:
+            return "memory proposal declined (not durable enough to store)"
+        return "memory proposal #%d created (pending review; not yet recallable)" % rid
 
 
 def _sh(s: str) -> str:
@@ -771,6 +957,18 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools.keys())
 
+    def retain(self, names) -> list[str]:
+        """Keep only an explicit tool subset and return the names that survived.
+
+        Evaluation presets use this to expose the same narrow contract to every coding arm.  It
+        is deliberately opt-in: normal Collie sessions keep the full registry.  Activated state is
+        intersected too, so a previously loaded deferred tool cannot leak back into the contract.
+        """
+        wanted = {str(name) for name in (names or [])}
+        self._tools = {name: tool for name, tool in self._tools.items() if name in wanted}
+        self._activated.intersection_update(self._tools)
+        return list(self._tools)
+
 
 class LoadToolsTool(Tool):
     """The deferred-tier seam: extra tools (MCP servers, opt-in extras) are advertised by NAME only
@@ -819,8 +1017,10 @@ class LoadToolsTool(Tool):
 _GATED_CAPS = {
     # capability key -> (settings key / COLLIE_<KEY> suffix, human label, what it grants)
     "desktop_control": ("DESKTOP_CONTROL", "Desktop control",
-                        "drive any native app window — click controls, type into fields, "
-                        "including system dialogs like file pickers"),
+                        "drive native app windows — prefer UIA/MSAA/Win32 semantic controls, then "
+                        "use keyboard/mouse fallbacks; click/drag/scroll, hold keys, manage windows and "
+                        "clipboard, and run bounded multi-step desktop scripts, including custom "
+                        "canvases and system dialogs like file pickers"),
     # Separate from desktop_control on purpose: acting and SEEING carry different risks. A capture
     # can read anything on screen — a password manager, a bank tab, a private message — and the
     # image then travels to whatever model is configured, so it gets its own consent.
@@ -835,14 +1035,18 @@ _GATED_CAPS = {
     "mcp_manage": ("MCP_MANAGE", "MCP server management",
                    "add, re-enable and delete MCP servers — which means granting collie whatever "
                    "tools those servers expose, under your credentials for remote ones"),
+    "mcp_discovery": ("MCP_DISCOVERY", "Public MCP discovery",
+                      "search the public MCP Registry using only locally-derived, allowlisted "
+                      "capability labels; the raw goal, project names, files and conversation are "
+                      "never included in that request"),
 }
 
 
 class EnableCapabilityTool(Tool):
     """Turn ON a gated-off capability — AFTER the user has agreed. collie's just-in-time consent seam:
     when a gated tool (e.g. desktop_*) is needed but off, collie asks the user in plain language and,
-    only on a yes, calls this. The setting is applied to os.environ immediately, so the capability
-    works for the rest of this session, and saved so it stays on next time."""
+    only on a yes, calls this. The requesting tool context gains the capability;
+    saved settings allow future requests, without arming other in-flight runs."""
     name, tier = "enable_capability", "always"
     description = ("Turn ON a capability that is currently gated off — ONLY after the user has "
                    "explicitly agreed in the conversation. Never enable silently: ask first, and say "
@@ -860,9 +1064,9 @@ class EnableCapabilityTool(Tool):
             from . import settings as _settings
             _settings.update({skey: "on"})
             _settings.apply()
+            capability_policy.grant(skey, ctx)
         except Exception as e:
-            os.environ["COLLIE_" + skey] = "on"       # at least make it live for this session
-            return "%s enabled for this session (couldn't persist: %s). Retry your action." % (label, e)
+            return "ERROR: %s was not enabled for this run: %s. Check the settings before retrying." % (label, e)
         return ("✓ %s enabled — %s. On now for the rest of this session and saved for next "
                 "time (the user can turn it off in settings). Retry what you were doing." % (label, grants))
 
@@ -874,8 +1078,16 @@ def default_registry(code_search: bool = False,
     from .plantool import PlanTool          # multi-step task tracking (CC TodoWrite / Hermes todo)
     from .checkpoint import UndoTool         # roll back file edits made this session
     for t in (ReadFileTool(), WriteFileTool(), EditFileTool(), BashTool(), GrepTool(),
-              GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool()):
+              GlobTool(), MemorySearchTool(), RememberTool(), PlanTool(), UndoTool(),
+              EnableCapabilityTool()):
         r.register(t)
+    # Live Copilot is a top-level Collie mode: session context is locally bounded, while durable
+    # work and optional external surfaces retain their ordinary independent permission gates.
+    try:
+        from .live_copilot import register_live_copilot
+        register_live_copilot(r)
+    except Exception:
+        pass
     if code_search:                              # semantic repo navigation (embedding)
         from .codeindex import register_code_search
         register_code_search(r)
@@ -909,7 +1121,6 @@ def default_registry(code_search: bool = False,
         from .native import register_native, backend as _native_backend
         if _native_backend() is not None:          # Windows (UIA) or macOS (System Events); None on Linux
             register_native(r)
-            r.register(EnableCapabilityTool())     # just-in-time consent seam for gated capabilities
     except Exception:
         pass
     # Eyes. Registered alongside the desktop hand and gated the same way (always visible, refuses
@@ -926,6 +1137,13 @@ def default_registry(code_search: bool = False,
         from .mcpclient import register_mcp_management, register_mcp_servers
         register_mcp_management(r)      # always — mcpctl_add matters most when nothing is set up yet
         register_mcp_servers(r)
+    except Exception:
+        pass
+    # Reviewed Collie Online connections are cached as public metadata only. Their credentials
+    # remain in the cloud Vault; registering these tools never reads or copies a token locally.
+    try:
+        from .mcpbroker import register_broker_connections
+        register_broker_connections(r)
     except Exception:
         pass
     # the load-on-demand seam only earns its always-on slot when there's something deferred to load

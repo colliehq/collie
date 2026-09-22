@@ -1,0 +1,66 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+____ test_attachment_only_submission_survives_navigation_and_reload[False] ____
+
+ui = <test_web_ui_run_status.Page object at 0x000001AB8F861A90>
+existing_thread = False
+
+    @pytest.mark.parametrize("existing_thread", [False, True])
+    def test_attachment_only_submission_survives_navigation_and_reload(ui, existing_thread):
+        page = ui.page
+        _Fixture.upload_delay = 1.0
+        if existing_thread:
+            open_read_thread(page)
+        attach(page)
+        page.press("#input", "Enter")
+        page.wait_for_timeout(100)
+        open_cap_thread(page)
+        page.wait_for_timeout(1200)
+        if existing_thread:
+            open_read_thread(page)
+        else:
+            page.locator("#newChat").click()
+>       expect(retained_rows(page)).to_have_count(1)
+E       AssertionError: Locator expected to have count '1'
+E       Actual value: 0 
+E       Call log:
+E         - Expect "to_have_count" with timeout 5000ms
+E         - waiting for locator(".task-queue-row.retained")
+E           9 × locator resolved to 0 elements
+E             - unexpected value "0"
+
+tests\test_web_busy_send_ui.py:544: AssertionError
+____ test_attachment_only_submission_survives_navigation_and_reload[True] _____
+
+ui = <test_web_ui_run_status.Page object at 0x000001AB8F82B610>
+existing_thread = True
+
+    @pytest.mark.parametrize("existing_thread", [False, True])
+    def test_attachment_only_submission_survives_navigation_and_reload(ui, existing_thread):
+        page = ui.page
+        _Fixture.upload_delay = 1.0
+        if existing_thread:
+            open_read_thread(page)
+        attach(page)
+        page.press("#input", "Enter")
+        page.wait_for_timeout(100)
+        open_cap_thread(page)
+        page.wait_for_timeout(1200)
+        if existing_thread:
+            open_read_thread(page)
+        else:
+            page.locator("#newChat").click()
+>       expect(retained_rows(page)).to_have_count(1)
+E       AssertionError: Locator expected to have count '1'
+E       Actual value: 0 
+E       Call log:
+E         - Expect "to_have_count" with timeout 5000ms
+E         - waiting for locator(".task-queue-row.retained")
+E           9 × locator resolved to 0 elements
+E             - unexpected value "0"
+
+tests\test_web_busy_send_ui.py:544: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_web_busy_send_ui.py::test_attachment_only_submission_survives_navigation_and_reload[False]
+FAILED tests/test_web_busy_send_ui.py::test_attachment_only_submission_survives_navigation_and_reload[True]
+2 failed in 16.35s

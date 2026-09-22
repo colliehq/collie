@@ -9,10 +9,13 @@ cannot mistake for success.
     python tests/test_browserbridge.py
 """
 import json
+import io
 import os
 import sys
 import threading
 import types
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,6 +30,7 @@ def check(cond, msg):
     _ran.append(msg)
     if not cond:
         _fails.append(msg)
+        raise AssertionError(msg)
 
 
 class Stub:
@@ -53,6 +57,125 @@ def ok(data):
 
 
 CTX = types.SimpleNamespace(cwd=".", project="t", images=[])
+
+
+def test_extension_folder_is_revealed_only_for_an_interactive_manual_start():
+    class TTY:
+        def isatty(self):
+            return True
+
+    old_stdin = bb.sys.stdin
+    old_supervised = os.environ.get("COLLIE_SUPERVISED")
+    try:
+        bb.sys.stdin = TTY()
+        os.environ.pop("COLLIE_SUPERVISED", None)
+        check(bb._interactive_extension_setup(),
+              "a manual terminal start may reveal the extension folder")
+        os.environ["COLLIE_SUPERVISED"] = "1"
+        check(not bb._interactive_extension_setup(),
+              "a supervised restart never reveals the extension folder")
+        os.environ.pop("COLLIE_SUPERVISED", None)
+        bb.sys.stdin = io.StringIO()
+        check(not bb._interactive_extension_setup(),
+              "a hidden/non-interactive start never reveals the extension folder")
+        class BrokenTTY:
+            def isatty(self):
+                raise OSError("detached stdin")
+        bb.sys.stdin = BrokenTTY()
+        check(not bb._interactive_extension_setup(),
+              "a detached stdin fails closed instead of opening a file-manager window")
+    finally:
+        bb.sys.stdin = old_stdin
+        if old_supervised is None:
+            os.environ.pop("COLLIE_SUPERVISED", None)
+        else:
+            os.environ["COLLIE_SUPERVISED"] = old_supervised
+
+
+def test_background_serve_does_not_open_the_extension_folder():
+    """Exercise the real startup branch, not only its TTY predicate.
+
+    A supervised/on-demand bridge still has to bind and begin waiting for the
+    extension; the only behavior suppressed is the unsolicited Explorer/Finder
+    window.  Keep every long-lived component fake so this runs in both the
+    script gate and pytest without leaving a port or thread behind.
+    """
+    from harness import plat
+
+    saved = {
+        "auth_off": bb.auth_off,
+        "server": bb.ThreadingHTTPServer,
+        "thread": bb.threading.Thread,
+        "await": bb._await_extension,
+        "interactive": bb._interactive_extension_setup,
+        "open_extensions": bb._open_extensions_page,
+        "translocated": plat.translocated,
+        "is_macos": plat.is_macos,
+        "reveal": plat.reveal_in_file_manager,
+    }
+    calls = []
+
+    class Server:
+        def __init__(self, address, handler):
+            self.address, self.handler = address, handler
+
+        def serve_forever(self):
+            calls.append("serve")
+
+    class Thread:
+        def __init__(self, *, target, daemon):
+            self.target, self.daemon = target, daemon
+
+        def start(self):
+            self.target()
+
+    try:
+        bb.auth_off = lambda: True
+        bb.ThreadingHTTPServer = Server
+        bb.threading.Thread = Thread
+        bb._await_extension = lambda bridge: calls.append("await")
+        bb._interactive_extension_setup = lambda: False
+        plat.translocated = lambda: False
+        plat.is_macos = lambda: False
+        plat.reveal_in_file_manager = lambda path: calls.append(("reveal", path)) or True
+
+        bb.serve(port=8765, managed_browser=False)
+
+        check(calls[:2] == ["serve", "await"],
+              "a hidden bridge still starts and waits for its extension")
+        check(not any(isinstance(item, tuple) and item[0] == "reveal" for item in calls),
+              "a hidden bridge does not open Explorer/Finder during startup")
+
+        bb._interactive_extension_setup = lambda: True
+        bb.serve(port=8766, managed_browser=False)
+        check(any(isinstance(item, tuple) and item[0] == "reveal" for item in calls),
+              "an explicit terminal start retains the extension-folder install affordance")
+
+        # macOS has two more visible side effects: opening Chrome and replacing
+        # the clipboard. Neither belongs to a supervised service restart.
+        from unittest.mock import patch
+        calls.clear()
+        plat.is_macos = lambda: True
+        bb._open_extensions_page = lambda: calls.append("chrome") or True
+        bb._interactive_extension_setup = lambda: False
+        with patch("subprocess.run", side_effect=lambda *a, **kw: calls.append("clipboard")):
+            bb.serve(port=8767, managed_browser=False)
+            check(calls == ["serve", "await"],
+                  "a hidden macOS bridge preserves Chrome, Finder and the clipboard")
+            bb._interactive_extension_setup = lambda: True
+            bb.serve(port=8768, managed_browser=False)
+            check("chrome" in calls and "clipboard" in calls,
+                  "interactive macOS setup still opens Chrome and copies its install path")
+    finally:
+        bb.auth_off = saved["auth_off"]
+        bb.ThreadingHTTPServer = saved["server"]
+        bb.threading.Thread = saved["thread"]
+        bb._await_extension = saved["await"]
+        bb._interactive_extension_setup = saved["interactive"]
+        bb._open_extensions_page = saved["open_extensions"]
+        plat.translocated = saved["translocated"]
+        plat.is_macos = saved["is_macos"]
+        plat.reveal_in_file_manager = saved["reveal"]
 
 
 # --- spaces: two runs, two tabs -------------------------------------------------------------------
@@ -154,6 +277,16 @@ def test_tabs_tool_lists_and_routes():
         bb.BrowserTabs().run({"action": "release", "close": True}, CTX)
         check(stub.sent[0]["action"] == "release" and stub.sent[0]["close"] is True,
               "release passes close through")
+
+        for action in ("pause", "resume", "status"):
+            stub = with_stub(ok({action + "d": True}))
+            bb.BrowserTabs().run({"action": action}, CTX)
+            check(stub.sent[0]["action"] == action, action + " routes to the hard-control action")
+
+        stub = with_stub(ok({"finalized": True, "closed": True}))
+        bb.BrowserTabs().run({"action": "finalize", "close": True}, CTX)
+        check(stub.sent[0]["action"] == "finalize" and stub.sent[0]["close_owned"] is True,
+              "finalize can close only a Collie-owned tab")
     finally:
         bb._CURRENT_SPACE[0] = None
         bb._call = real
@@ -175,6 +308,24 @@ def test_script_rejects_nonsense_before_touching_the_browser():
         check(not stub.sent, "none of those reached the browser")
     finally:
         bb._call = real
+
+
+def test_live_tab_context_strips_url_and_untrusted_fields():
+    real_call, real_live = bb._call, bb._bridge_live
+    try:
+        bb._bridge_live = lambda **_kwargs: True
+        stub = with_stub(ok({"app": "chrome", "host": "MAKER.TAVUS.IO",
+                             "title": "System design\x00 rehearsal",
+                             "url": "https://maker.tavus.io/pal/pf14?token=secret",
+                             "page_text": "private page body"}))
+        value = bb.live_tab_context(timeout=.2)
+        check(value == {"app": "chrome", "host": "maker.tavus.io",
+                        "title": "System design rehearsal"},
+              "live tab context preserves only hostname and bounded title")
+        check(stub.sent[0]["action"] == "live_context" and "url" not in value and
+              "page_text" not in value, "live context never forwards URL or page content")
+    finally:
+        bb._call, bb._bridge_live = real_call, real_live
 
 
 def test_script_reports_a_clean_run():
@@ -306,6 +457,50 @@ def test_ambiguous_click_still_warns():
         bb._call = real
 
 
+def test_browser_space_releases_control_after_a_used_run():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"ok": True}))
+        with bb.browser_space("web-session", release=True):
+            # A real tool call marks the lane used; status probes alone do not.
+            activity = bb._SPACE_ACTIVITY.get()
+            activity["used"] = True
+        check(stub.sent[-1]["action"] == "finalize", "used Web browser lanes finalize in finally")
+        check(stub.sent[-1]["close_owned"] is False, "automatic finalization leaves the handoff tab open")
+    finally:
+        bb._call = real
+
+
+def test_reversible_advance_uses_only_an_exact_ref_and_surfaces_refusal():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"advance": {"allowed": True, "clicked": "Company"}}))
+        out = bb.BrowserAdvance().run({"ref": "e16"}, CTX)
+        check(stub.sent[0]["action"] == "advance" and stub.sent[0]["ref"] == "e16",
+              "reversible advance sends only the exact snapshotted ref")
+        check("Company" in out, "an allowed reversible step is reported")
+        with_stub(ok({"advance": {"error": "consequential control requires the outer Mission gate"}}))
+        refused = bb.BrowserAdvance().run({"ref": "e9"}, CTX)
+        check(refused.startswith("ERROR(browser)"),
+              "an extension-side consequential-target refusal remains a hard error")
+    finally:
+        bb._call = real
+
+
+def test_browser_click_resolves_snapshot_ref_intent_before_gate():
+    real = bb._call
+    try:
+        stub = with_stub(ok({"intent": {"effect": "commit", "action": "send",
+                                         "label": "Send", "reversible": False}}))
+        intent = bb.BrowserClick()._collie_intent({"ref": "e22"})
+        check(stub.sent[0] == {"action": "intent", "ref": "e22", "_timeout": 8},
+              "opaque ref is classified by the live extension")
+        check(intent.action == "send" and intent.effect.value == "commit",
+              "the host receives a structured commit rather than a bare ref")
+    finally:
+        bb._call = real
+
+
 # --- the rest of a hand: keys, hover, drag, a bare point ----------------------------------------------
 def test_press_passes_key_and_modifiers_through():
     real = bb._call
@@ -427,6 +622,68 @@ def test_auth_can_be_switched_off_only_loudly():
             os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
         check("dangerously" in "COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH".lower(),
               "and it is named so nobody turns it on by accident")
+    _isolated_home(body)
+
+
+def test_http_boundary_rejects_nonfinite_json_before_delivery():
+    old = os.environ.get("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH")
+    os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = "1"
+    bridge = bb._Bridge()
+    server = bb.ThreadingHTTPServer(("127.0.0.1", 0), bb._handler(bridge))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d/result" % server.server_address[1],
+            data=b'{"id":"c1","data":{"value":NaN}}', method="POST",
+            headers={"X-Collie-Bridge": "1", "Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            status = 200
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            json.loads(exc.read())
+        check(status == 400, "bridge rejects NaN JSON instead of delivering it")
+        check(not bridge.results, "rejected bridge input cannot populate a pending result")
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+        if old is None:
+            os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        else:
+            os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = old
+
+
+def test_sidepanel_can_start_web_only_through_authenticated_bridge():
+    def body(_home):
+        old_env = os.environ.pop("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", None)
+        good = bb.token()
+        bridge = bb._Bridge()
+        server = bb.ThreadingHTTPServer(("127.0.0.1", 0), bb._handler(bridge))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        old_start = bb.start_web_background
+        bb.start_web_background = lambda: {"ok": True, "started": True, "port": 8787}
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d/web/start" % server.server_address[1]
+            def post(secret):
+                req = urllib.request.Request(url, data=b"{}", method="POST", headers={
+                    "X-Collie-Bridge": "1", "Authorization": "Bearer " + secret,
+                    "Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        return response.status, json.loads(response.read())
+                except urllib.error.HTTPError as exc:
+                    return exc.code, json.loads(exc.read())
+            status, result = post(good)
+            check(status == 200 and result.get("started") is True,
+                  "the authenticated extension can lazily start side-chat Web")
+            status, _ = post("wrong")
+            check(status == 401, "an untrusted local caller cannot start the Web agent")
+        finally:
+            bb.start_web_background = old_start
+            server.shutdown(); server.server_close(); thread.join(timeout=3)
+            if old_env is not None:
+                os.environ["COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH"] = old_env
     _isolated_home(body)
 
 

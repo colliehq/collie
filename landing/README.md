@@ -1,33 +1,60 @@
 # collie.run
 
-What Cloudflare Pages serves at collie.run — the deployed page itself, not a draft of one.
+The canonical source for the static landing page and its Cloudflare Pages Function. Do not deploy
+the archived `C:\workspace\collie-web` copy.
 
-The Pages project (`collie`) is a **direct upload** with no git connection, so for a while the only
-copy of this file lived on Cloudflare and nothing in the repo matched what visitors saw. That is how
-the macOS panel went on offering `pip install -e ".[local]"` under "a one-click `.dmg` app is on the
-way" for eight releases after the dmg started shipping, and how the version label stayed at v0.20.0.
-Whatever used to be in this directory was a different, older page that had not been deployed since
-before v0.20.0 — it has been replaced by the real thing.
+## Product and homepage versioning
 
-## One directory, because two cost us the chat box
+The homepage belongs in this product repository because its promises are part of the product
+contract. It should not be copied into one repository per release or duplicated in the private
+Online service repository:
 
-There were two working copies of this site and they were each half of it. This one had the newer
-page — GA4, the signed `.dmg` for macOS, a live version label, and the Windows tab icon that had
-been rendering as a solid white block. `collie-web/` had the Pages *function*: `/api/chat`, the
-"Ask Collie" box, with its Workers AI and KV bindings.
+- every product release tag freezes `landing/`, including the exact homepage and privacy notice;
+- `site-version.json` records the source product version, positioning/content version, privacy
+  notice version, and the public availability stage of each product layer;
+- the root `collie.run` deployment represents the current stable public release; feature branches
+  use Cloudflare preview deployments until their availability labels are ready for stable;
+- a private Online repository may own service code, operations pages, and authenticated account
+  screens, but the public Collie/Online promise remains here so it cannot drift from the client;
+- historical copy is recovered from the matching Git tag or release artifact instead of being
+  manually maintained as another homepage.
 
-Whichever was deployed last wiped the other half. The last deploy came from here, so `/api/chat`
-stopped existing while the page that calls it stayed — a POST to it returned 405 and any GET fell
-through to the homepage HTML. The box was on the page, and broken, and nothing said so.
+`build.mjs` fails when the manifest, package version, homepage version, or privacy-notice version
+disagree. Update those values deliberately whenever positioning or data behavior changes.
 
-So the function, `_redirects` and `wrangler.toml` now live here too. **This directory is the whole
-site.** If you find yourself editing a second copy, you are re-creating the bug.
+## Safe build boundary
 
-## Deploy
+Run `npm run build` in this directory. The build script recreates `dist/` from an explicit allowlist,
+so drafts, internal identity notes, deployment configuration, and source files cannot be published by
+an accidental directory upload. `wrangler.toml` points Pages at `dist`.
 
-    set -a; . ~/.cloudflare-collie.env; set +a          # Pages:Edit; the scoped relay token lacks it
-    npx wrangler pages deploy landing --project-name collie
-    # then purge the zone cache, or collie.run keeps serving the old bytes from the edge
+## Bindings
 
-One file plus the logo. Analytics is Cloudflare Web Analytics — no cookies, no cross-site
-identifiers; its beacon token is public by design, identifying the site rather than a visitor.
+| Binding | Type | Purpose |
+|---|---|---|
+| `AI` | Workers AI | Powers the prompt-scoped `/api/chat` website demo |
+| `RATE_LIMITER` | External Durable Object | Atomic 20-request per-address/day abuse limit |
+| `RATE_LIMIT_SALT` | Encrypted Pages secret | HMAC key for pseudonymous daily limiter buckets |
+
+The rate limiter intentionally lives in `rate-limiter-worker/`: Cloudflare Pages can bind to a
+Durable Object hosted by a Worker, but cannot define the object class inside a Pages project.
+
+## Release order
+
+No command below is run automatically.
+
+```powershell
+cd landing\rate-limiter-worker
+npx wrangler deploy
+
+cd ..
+npx wrangler pages secret put RATE_LIMIT_SALT --project-name collie
+npm run build
+npx wrangler pages deploy dist --project-name collie --branch main
+```
+
+Deploy the Durable Object worker first on its initial release, then deploy Pages. The website endpoint
+fails closed with `503` if the atomic limiter, a `RATE_LIMIT_SALT` secret of at least 32 random bytes,
+or Workers AI binding is absent. The raw network address is processed to select the daily bucket but
+is never used as a Durable Object name; the object stores only a counter and expiry. The site has no
+analytics beacon; the optional Ask Collie form explains its Cloudflare data flow before submission.

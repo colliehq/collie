@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,12 +7,19 @@ name = "collie-harness"
 # single source of truth: harness/__init__.py __version__ (read via [tool.setuptools.dynamic] below).
 # the installer reads the same value at build time (iscc /DAppVer=...), so a version lives in one place.
 dynamic = ["version"]
-description = "A memory-first, context-lean coding-agent harness with a built-in benchmark lab."
+description = "A private, local-first personal intelligence system for workflows across models, apps, and devices."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Daming Wu" }]
 dependencies = []                       # core is stdlib-only
+
+[project.urls]
+Homepage = "https://collie.run"
+Documentation = "https://colliehq.github.io/collie/"
+Repository = "https://github.com/colliehq/collie"
+Issues = "https://github.com/colliehq/collie/issues"
 
 [project.optional-dependencies]
 # semantic memory: granite / bge-m3 / e5 + the bge reranker, all run via onnxruntime (no torch).
@@ -20,21 +27,28 @@ dependencies = []                       # core is stdlib-only
 local = ["onnxruntime", "tokenizers", "huggingface-hub", "numpy"]
 fastembed = ["fastembed"]               # opt-in: jina-v3 / other fastembed models (jina is CC-BY-NC)
 browser = ["playwright"]
+claude = ["claude-agent-sdk==0.2.157"]    # verified SDK; installer also stages its native Windows CLI
+codex = ["openai-codex==0.155.1"]         # official SDK + matching verified Codex runtime
 remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
+online = ["cryptography"]               # device signing + sealed connected-mode envelopes
+extensions = ["cryptography"]           # Ed25519 publisher signatures and local publisher trust roots
 desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
            "pyobjc-framework-WebKit; sys_platform == 'darwin'",     # desktop on macOS (window
            "pyobjc-framework-Quartz; sys_platform == 'darwin'"]     # levels + WKWebView, no Xcode)
 tui = ["rich"]                          # the full-experience terminal chat (collie tui)
 acp = ["agent-client-protocol"]         # editor integration (collie acp)
 search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)
-dev = ["pytest"]
+speech = ["sherpa-onnx>=1.13,<1.14", "soundfile"] # local SenseVoice Live transcription; model stays user-local
+dev = ["pytest", "pyyaml", "numpy", "Pillow>=10", "aiohttp"]
 docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / build); see mkdocs.yml
 
 [project.scripts]
 collie = "harness.cli:main"             # `collie -p "task"` one-liner
 
 [tool.setuptools]
-packages = ["harness"]
+# These three data-only directories are explicit packages so setuptools never has to guess whether
+# their shipped HTML/JS/native assets are accidental namespace packages.
+packages = ["harness", "harness.browser_ext", "harness.wallpaper", "harness.webui"]
 
 [tool.setuptools.dynamic]
 version = { attr = "harness.__version__" }
@@ -45,11 +59,13 @@ version = { attr = "harness.__version__" }
 # ship the web GUI, the browser extension, AND the desktop wallpaper engine (C# source + WebView2
 # DLLs + build/stop scripts) so `pip install collie-harness` gives `collie wallpaper` everything it
 # needs — it builds the .exe on first use via the in-box csc (no .NET SDK). Windows-only feature.
-harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png", "browser_ext/*",
+harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png",
+           # Keep this list explicit: browser_ext/token.txt is per-device authentication state and
+           # must never enter a wheel/installer merely because a maintainer built from a live tree.
+           "browser_ext/*.html", "browser_ext/*.js", "browser_ext/*.json", "browser_ext/*.png",
            "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]
 
 [tool.setuptools.exclude-package-data]
-# browser-bridge writes this per-machine bearer beside the unpacked extension.  An old egg-info
-# SOURCES cache can remember the ignored file, so package-data's broad browser_ext/* needs an
-# explicit deny-list too: a wheel must never become a copy of the builder's local credential.
-harness = ["browser_ext/token.txt"]
+# Defence in depth if a future package-data pattern is broadened again. auth.js is the legacy
+# generated credential shim seen in older live installs; it is not a source asset either.
+harness = ["browser_ext/token.txt", "browser_ext/auth.js", "browser_ext/*.txt"]

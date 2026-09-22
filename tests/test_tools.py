@@ -217,6 +217,20 @@ def test_bash_no_spill_under_cap():
     r = BashTool().run({"command": "echo hi", "timeout_s": 10}, _ctx(tempfile.gettempdir()))
     assert "saved to" not in r and r.strip() == "hi", "small output must not spill: %r" % r
 
+
+def test_spill_name_survives_pid_reuse_and_legacy_counter_collision(tmp_path, monkeypatch):
+    from harness import tools as T
+    monkeypatch.setattr(T, "_SPILL_DIR", str(tmp_path))
+    monkeypatch.setattr(T, "_spill_swept", True)
+    legacy = tmp_path / ("bash-%d-1.log" % os.getpid())
+    legacy.write_text("previous process", encoding="utf-8")
+
+    path = T._spill_full_output("new process output")
+
+    assert path and path != str(legacy)
+    assert open(path, encoding="utf-8").read() == "new process output"
+    assert legacy.read_text(encoding="utf-8") == "previous process"
+
 def test_spill_sweep():
     from harness import tools as T
     os.makedirs(T._SPILL_DIR, mode=0o700, exist_ok=True)
@@ -276,26 +290,30 @@ def test_grep_timeout_is_not_reported_as_no_match():
     tree was NOT searched to the end, so it says nothing about whether the pattern exists. Anything
     reading results would conclude the thing is absent. The timeout path is an ERROR now.
     """
-    import ast, textwrap
+    # Asserted on the RESULT, not on the shape of the code that produces it: grep now waits
+    # through the cancellable owned-process helper (harness/tool_process.py), so the timeout is a
+    # returned outcome rather than a caught TimeoutExpired. The guarantee is unchanged, and this
+    # form also holds it for the second way a search can end early — the user pressing Stop.
+    from harness import tool_process as P
     import harness.tools as T
-    fn = ast.parse(textwrap.dedent(inspect.getsource(T.GrepTool.run))).body[0]
-    # the TimeoutExpired handler ONLY — a looser slice picks up the generic `except Exception:
-    # return "ERROR: %s"` below it and passes no matter what this branch does.
-    handlers = [h for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)
-                and "TimeoutExpired" in ast.dump(h.type or ast.Pass())]
-    assert len(handlers) == 1, "expected exactly one timeout handler in grep, found %d" % len(handlers)
-    rets = []
-    for n in ast.walk(handlers[0]):
-        if isinstance(n, ast.Return):
-            for c in ast.walk(n):
-                if isinstance(c, ast.Constant) and isinstance(c.value, str):
-                    rets.append(c.value)
-    assert rets, "the timeout handler returns nothing constant to inspect"
-    empty = [r for r in rets if "25s" in r and "PARTIAL" not in r]
-    assert empty, "could not find the no-results-on-timeout message"
-    for r in empty:
-        assert r.lstrip().upper().startswith("ERROR"), \
-            "a killed search must announce itself, not return a no-match-shaped string: %r" % r[:60]
+    ctx = _ctx(tempfile.gettempdir())
+    for status in (P.TIMEOUT, P.CANCELED):
+        for partial in ("", "src/a.py:1:hit"):
+            orig = T._proc.run_owned
+            T._proc.run_owned = lambda *a, **k: P.Outcome(
+                status, stdout=partial, elapsed_s=25.0, tree_terminated=True)
+            try:
+                r = T.GrepTool().run({"pattern": "x", "path": "."}, ctx)
+            finally:
+                T._proc.run_owned = orig
+            assert r.lstrip().upper().startswith("ERROR"), \
+                "a killed search must announce itself, not return a no-match-shaped string: %r" % r[:80]
+            assert "no matches" not in r, \
+                "an unfinished search must not read like a completed empty one: %r" % r[:80]
+            assert "NOTHING" in r, "it must say what it does NOT establish: %r" % r[:120]
+            if partial:
+                assert partial in r and "PARTIAL" in r, \
+                    "partial matches are kept, but only as partial: %r" % r[:120]
 
 # ------------------------------------------------------------------ reserved tool names
 def test_no_tool_name_reserved_by_the_api():
@@ -319,17 +337,53 @@ def test_no_tool_name_reserved_by_the_api():
     assert not bad, "tool names the API refuses (rename off the mcp_ prefix): %s" % bad
 
 # ------------------------------------------------------------------ execute_code RPC (progtool)
-def test_execute_code_recursion_guard():
+def test_execute_code_routes_recursion_guard_through_broker():
     from harness.tools import default_registry
     from harness.progtool import register_execute_code
     reg = default_registry(web_search=False)
     register_execute_code(reg)
     ec = reg.get("execute_code")
     ctx = _ctx(os.getcwd())
+    brokered = []
+    ctx.tool_broker = lambda name, args: (
+        brokered.append((name, args)) or
+        "DENIED: %s cannot be called from inside execute_code" % name)
     out = ec.run({"code": 'print("EC:", tool("execute_code", code="print(1)")[:60])\n'
                           'print("DG:", tool("delegate", task="x")[:60])', "timeout": 20}, ctx)
     assert "cannot be called" in out.split("DG:")[0], "execute_code reentrancy must be refused"
     assert "cannot be called" in out.split("DG:")[1], "delegate-via-RPC must be refused"
+    assert [name for name, _args in brokered] == ["execute_code", "delegate"], (
+        "nested amplification denials must traverse the auditable host broker")
+
+def test_execute_code_rpc_rejects_nonfinite_arguments_before_broker():
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    ctx = _ctx(os.getcwd())
+    brokered = []
+    ctx.tool_broker = lambda name, args: brokered.append((name, args)) or "unexpected"
+
+    out = reg.get("execute_code").run(
+        {"code": 'print(tool("read_file", value=float("nan")))', "timeout": 20}, ctx)
+
+    assert "non-finite JSON number is forbidden" in out
+    assert brokered == [], "invalid RPC JSON reached the privileged tool broker"
+
+def test_execute_code_inner_calls_fail_closed_without_harness_broker():
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_") as work:
+        open(os.path.join(work, "visible.txt"), "w").write(
+            "must not be read by registry bypass")
+        reg = default_registry(web_search=False)
+        register_execute_code(reg)
+
+        out = reg.get("execute_code").run(
+            {"code": 'print(read_file("visible.txt"))', "timeout": 20}, _ctx(work))
+
+        assert "inner tool broker is unavailable" in out, out
+        assert "must not be read by registry bypass" not in out, out
 
 def test_execute_code_no_fd_leak():
     from harness.tools import default_registry
@@ -344,6 +398,144 @@ def test_execute_code_no_fd_leak():
     for i in range(12):
         ec.run({"code": "print(%d)" % i, "timeout": 10}, ctx)
     assert fds() - before <= 2, "execute_code leaks listen sockets (server_close missing): +%d fds" % (fds() - before)
+
+def _execute_code_for_test(work, code, timeout=20):
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    return reg.get("execute_code").run({"code": code, "timeout": timeout}, _ctx(work))
+
+def test_execute_code_reaps_descendants_after_normal_exit_and_exception():
+    """A returned/failed parent must not leave a delayed child to mutate the repo afterwards."""
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_tree_") as work:
+        for name, ending in (("normal", 'print("parent done")'),
+                             ("exception", 'raise RuntimeError("parent failed")')):
+            marker = os.path.join(work, name + ".late")
+            delayed = ("import time; time.sleep(1.0); "
+                       "open(%r, 'w').write('late')" % marker)
+            code = ("import subprocess, sys\n"
+                    "flags = (getattr(subprocess, 'DETACHED_PROCESS', 0) | "
+                    "getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))\n"
+                    "subprocess.Popen([sys.executable, '-c', %r], stdin=subprocess.DEVNULL, "
+                    "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+                    "creationflags=flags)\n%s"
+                    % (delayed, ending))
+            out = _execute_code_for_test(work, code)
+            assert "parent done" in out if name == "normal" else "RuntimeError" in out, out
+        time.sleep(1.4)
+        assert not os.path.exists(os.path.join(work, "normal.late")), (
+            "normal execute_code return leaked a late-writing descendant")
+        assert not os.path.exists(os.path.join(work, "exception.late")), (
+            "failed execute_code leaked a late-writing descendant")
+
+def test_execute_code_reports_why_termination_was_not_confirmed(monkeypatch):
+    """An unconfirmed tree is a recovery job; the reason is what makes it actionable."""
+    from harness import progtool
+
+    class _Unconfirmed(progtool._ProcessTree):
+        def terminate_and_wait(self):
+            self.detail = "process group still had members 5s after SIGKILL"
+            return False
+
+    monkeypatch.setattr(progtool, "_ProcessTree", _Unconfirmed)
+    out = _execute_code_for_test(tempfile.gettempdir(), 'print("ran")')
+    assert "could not be confirmed" in out
+    assert "process group still had members 5s after SIGKILL" in out, out
+
+
+def test_execute_code_timeout_reaps_descendants_before_return():
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_timeout_") as work:
+        marker = os.path.join(work, "timeout.late")
+        delayed = ("import time; time.sleep(1.5); "
+                   "open(%r, 'w').write('late')" % marker)
+        code = ("import subprocess, sys, time\n"
+                "flags = (getattr(subprocess, 'DETACHED_PROCESS', 0) | "
+                "getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))\n"
+                "subprocess.Popen([sys.executable, '-c', %r], stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+                "creationflags=flags)\n"
+                "time.sleep(30)" % delayed)
+        out = _execute_code_for_test(work, code, timeout=1)
+        assert "timed out after 1s" in out, out
+        time.sleep(1.0)
+        assert not os.path.exists(marker), "timed-out execute_code leaked a delayed descendant"
+
+def test_execute_code_windows_job_refuses_explicit_breakaway():
+    if os.name != "nt":
+        return
+    out = _execute_code_for_test(
+        tempfile.gettempdir(),
+        "import subprocess, sys\n"
+        "try:\n"
+        " subprocess.Popen([sys.executable, '-c', 'print(1)'], "
+        "creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB)\n"
+        " print('BREAKAWAY_ALLOWED')\n"
+        "except OSError as e:\n"
+        " print('BREAKAWAY_BLOCKED', getattr(e, 'winerror', None))")
+    assert "BREAKAWAY_BLOCKED 5" in out and "BREAKAWAY_ALLOWED" not in out, out
+
+
+def test_execute_code_windows_bypasses_the_venv_redirector(monkeypatch):
+    """The redirector can spawn the real interpreter before Job assignment."""
+    if os.name != "nt":
+        return
+    from harness import progtool
+
+    monkeypatch.setattr(progtool.sys, "executable", r"C:\venv\Scripts\python.exe")
+    monkeypatch.setattr(progtool.sys, "_base_executable", r"C:\Python312\python.exe")
+
+    assert progtool._isolated_python_executable() == r"C:\Python312\python.exe"
+
+    monkeypatch.setattr(progtool.sys, "_base_executable", None)
+    assert progtool._isolated_python_executable() == r"C:\venv\Scripts\python.exe"
+
+    with monkeypatch.context() as local:
+        local.setattr(progtool.os, "name", "posix")
+        assert progtool._isolated_python_executable() == r"C:\venv\Scripts\python.exe"
+
+def test_execute_code_isolated_imports_and_repo_local_imports():
+    """PYTHON* cannot inject startup code, while an ordinary local module remains importable."""
+    with tempfile.TemporaryDirectory(prefix="collie_progtool_imports_") as work, \
+            tempfile.TemporaryDirectory(prefix="collie_progtool_poison_") as poison:
+        marker = os.path.join(work, "injected")
+        open(os.path.join(poison, "sitecustomize.py"), "w").write(
+            "open(%r, 'w').write('PYTHONPATH executed')\n" % marker)
+        open(os.path.join(work, "json.py"), "w").write(
+            "open(%r, 'w').write('cwd shadowed stdlib')\n" % marker)
+        open(os.path.join(work, "local_for_execute_code.py"), "w").write("VALUE = 73\n")
+        prior = {key: os.environ.get(key) for key in
+                 ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT")}
+        os.environ.update({"PYTHONPATH": poison, "PYTHONHOME": poison,
+                           "PYTHONSTARTUP": os.path.join(poison, "sitecustomize.py"),
+                           "PYTHONINSPECT": "1"})
+        try:
+            out = _execute_code_for_test(
+                work, "import json, local_for_execute_code\n"
+                      "print('LOCAL', local_for_execute_code.VALUE, json.__name__)")
+        finally:
+            for key, value in prior.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        assert "LOCAL 73 json" in out, out
+        assert not os.path.exists(marker), "ambient/cwd import injection executed before stdlib"
+
+def test_execute_code_capture_is_bounded_while_both_pipes_are_drained():
+    out = _execute_code_for_test(
+        tempfile.gettempdir(),
+        "import sys\n"
+        "sys.stdout.write('O' * 2_000_000)\n"
+        "sys.stderr.write('E' * 2_000_000)\n"
+        "raise RuntimeError('bounded-tail')")
+    assert len(out) < 8000, "execute_code returned/stored unbounded output: %d chars" % len(out)
+    assert out.startswith("O" * 100) and "bounded-tail" in out[-1500:], out[-2000:]
+    import inspect as _inspect
+    from harness import progtool as _progtool
+    source = _inspect.getsource(_progtool.ExecuteCodeTool.run)
+    assert "capture_output=True" not in source and "_BoundedCapture" in source, (
+        "execute_code must stream into bounded collectors, not subprocess.run capture_output")
 
 _MOCK_MCP = r'''
 import json, sys
@@ -421,10 +613,16 @@ def _mock_http_mcp():
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
         def do_POST(self):
-            if self.headers.get("X-Test") != "ok":
-                self.send_response(401); self.end_headers(); return
+            # Drain this fixture's request before closing a rejected connection.
+            # Closing with unread POST bytes can reset the socket on Windows and
+            # hide the 401 that the client test is intended to exercise.
             n = int(self.headers.get("content-length") or 0)
-            m = json.loads(self.rfile.read(n) or b"{}"); mid = m.get("id"); meth = m.get("method")
+            body = self.rfile.read(n)
+            if self.headers.get("X-Test") != "ok":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers(); return
+            m = json.loads(body or b"{}"); mid = m.get("id"); meth = m.get("method")
             def reply(result, sse=False):
                 msg = {"jsonrpc": "2.0", "id": mid, "result": result}
                 if sse:
@@ -615,10 +813,20 @@ def test_web_fetch_ssrf_and_registration():
     assert "web_fetch" not in off.registry.names(), "web_fetch must be off when web tools are off"
 
 # ------------------------------------------------------------------ every tool graceful on bad args
-def test_all_tools_graceful_on_bad_args():
+def test_all_tools_graceful_on_bad_args(tmp_path, monkeypatch):
     from harness.cli import make_harness
+    from harness import mcpclient, native
     from harness.progtool import register_execute_code
-    h = make_harness(tempfile.mkdtemp(), provider="mock", project="fuzz", embed="hash", web_search=True)
+    # This is a bad-argument unit test, not permission to exercise the developer's live browser,
+    # desktop session, MCP servers, or the network.  Keep its registry hermetic on machines where
+    # those integrations happen to be configured.
+    missing_mcp = str(tmp_path / "no-mcp.json")
+    monkeypatch.setenv("COLLIE_MCP_CONFIG", missing_mcp)
+    monkeypatch.setenv("COLLIE_BROWSER_BRIDGE", "0")
+    monkeypatch.setattr(mcpclient, "_CONFIG", missing_mcp)
+    monkeypatch.setattr(native, "backend", lambda: None)
+    h = make_harness(tempfile.mkdtemp(), provider="mock", project="fuzz", embed="hash",
+                     web_search=False)
     try: register_execute_code(h.registry)
     except Exception: pass
     ctx = types.SimpleNamespace(cwd=h.cwd, project="fuzz", memory=h.memory)

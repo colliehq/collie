@@ -1,0 +1,7 @@
+{
+  "candidate_identities_patch_hashes_and_grades_match": true,
+  "candidates": 166,
+  "linux_stage": "reviewed-evidence-stage4",
+  "linux_source_manifest_sha256": "080a93bbf895ef0c8501add4615c0ee620b84e3220130ac5a4314c192dce07bf",
+  "claim": "Same candidate set; later product validation files were not part of the Linux stage."
+}

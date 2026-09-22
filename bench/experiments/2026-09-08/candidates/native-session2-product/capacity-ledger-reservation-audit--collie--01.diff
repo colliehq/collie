@@ -1,0 +1,675 @@
+diff --git a/ledger_capacity.py b/ledger_capacity.py
+index 00c7bf0..c3b9fe8 100644
+--- a/ledger_capacity.py
++++ b/ledger_capacity.py
+@@ -1,34 +1,55 @@
+-"""Registry of per-resource capacity limits.
+-
+-TODO: isolation from the caller's mapping and the lookup errors are missing.
+-"""
+-
+-from ledger_errors import UnknownResourceError, ValidationError
+-from ledger_ids import normalize_capacity, normalize_resource_id
+-
+-
+-class CapacityTable:
+-    """A map of resource id -> capacity limit."""
+-
+-    def __init__(self, limits=None):
+-        if limits is None:
+-            limits = {}
+-        self._limits = limits
+-
+-    def set_limit(self, resource_id, capacity):
+-        self._limits[normalize_resource_id(resource_id)] = normalize_capacity(capacity)
+-
+-    def limit_of(self, resource_id):
+-        return self._limits[normalize_resource_id(resource_id)]
+-
+-    def has(self, resource_id):
+-        return resource_id in self._limits
+-
+-    def remove(self, resource_id):
+-        self._limits.pop(normalize_resource_id(resource_id), None)
+-
+-    def resource_ids(self):
+-        return list(self._limits)
+-
+-    def as_dict(self):
+-        return self._limits
++"""Registry of per-resource capacity limits."""
++
++from collections.abc import Mapping
++
++from ledger_errors import UnknownResourceError, ValidationError
++from ledger_ids import normalize_capacity, normalize_resource_id
++
++
++class CapacityTable:
++    """A map of resource id -> capacity limit."""
++
++    def __init__(self, limits=None):
++        built = {}
++        if limits is not None:
++            if not isinstance(limits, Mapping):
++                raise ValidationError("limits must be a mapping or None")
++            for key, value in limits.items():
++                resource_id = normalize_resource_id(key)
++                capacity = normalize_capacity(value)
++                if resource_id in built:
++                    raise ValidationError(
++                        "duplicate resource id after normalization: %r" % (resource_id,))
++                built[resource_id] = capacity
++        self._limits = built
++
++    def set_limit(self, resource_id, capacity):
++        key = normalize_resource_id(resource_id)
++        value = normalize_capacity(capacity)
++        self._limits[key] = value
++        return None
++
++    def limit_of(self, resource_id):
++        key = normalize_resource_id(resource_id)
++        if key not in self._limits:
++            raise UnknownResourceError("unknown resource: %r" % (key,))
++        return self._limits[key]
++
++    def has(self, resource_id):
++        return normalize_resource_id(resource_id) in self._limits
++
++    def remove(self, resource_id):
++        key = normalize_resource_id(resource_id)
++        if key not in self._limits:
++            raise UnknownResourceError("unknown resource: %r" % (key,))
++        del self._limits[key]
++        return None
++
++    def resource_ids(self):
++        return tuple(sorted(self._limits))
++
++    def as_dict(self):
++        return dict(self._limits)
++
++    def __len__(self):
++        return len(self._limits)
+diff --git a/ledger_core.py b/ledger_core.py
+index 0d0afe3..fcd93b4 100644
+--- a/ledger_core.py
++++ b/ledger_core.py
+@@ -1,104 +1,277 @@
+-"""The capacity reservation ledger.
+-
+-TODO: idempotency, batch atomicity, snapshots/rollback and several read helpers
+-are unfinished.
+-"""
+-
+-from ledger_capacity import CapacityTable
+-from ledger_errors import ConflictError, UnknownReservationError, ValidationError
+-from ledger_ids import normalize_request_id, normalize_resource_id, normalize_units
+-
+-
+-class CapacityLedger:
+-    """Reservation ledger with snapshots and rollback."""
+-
+-    def __init__(self, clock, limits=None):
+-        self._table = CapacityTable(limits)
+-        self._clock = clock
+-        self._records = {}
+-        self._snapshots = []
+-
+-    def _allocated(self, resource_id):
+-        return sum(record["units"] for record in self._records.values()
+-                   if record["resource_id"] == resource_id)
+-
+-    def reserve(self, request_id, resource_id, units):
+-        key = normalize_request_id(request_id)
+-        target = normalize_resource_id(resource_id)
+-        amount = normalize_units(units)
+-        tick = self._clock()
+-        record = {
+-            "request_id": key,
+-            "resource_id": target,
+-            "units": amount,
+-            "created_at": tick,
+-            "updated_at": tick,
+-            "status": "active",
+-        }
+-        self._records[key] = record
+-        return record
+-
+-    def reserve_many(self, entries):
+-        created = []
+-        for entry in entries:
+-            created.append(self.reserve(entry["request_id"], entry["resource_id"],
+-                                        entry["units"]))
+-        return created
+-
+-    def update(self, request_id, units):
+-        key = normalize_request_id(request_id)
+-        amount = normalize_units(units)
+-        record = self._records[key]
+-        record["units"] = amount
+-        record["updated_at"] = self._clock()
+-        return record
+-
+-    def release(self, request_id):
+-        key = normalize_request_id(request_id)
+-        if key not in self._records:
+-            raise UnknownReservationError("unknown request: %r" % (key,))
+-        record = self._records.pop(key)
+-        record["status"] = "released"
+-        return record
+-
+-    def set_limit(self, resource_id, capacity):
+-        self._table.set_limit(resource_id, capacity)
+-
+-    def get(self, request_id):
+-        return self._records[normalize_request_id(request_id)]
+-
+-    def has_request(self, request_id):
+-        return request_id in self._records
+-
+-    def allocated(self, resource_id):
+-        return self._allocated(normalize_resource_id(resource_id))
+-
+-    def totals(self):
+-        totals = {}
+-        for record in self._records.values():
+-            totals[record["resource_id"]] = (
+-                totals.get(record["resource_id"], 0) + record["units"])
+-        return totals
+-
+-    def limits(self):
+-        return self._table.as_dict()
+-
+-    def resource_ids(self):
+-        return self._table.resource_ids()
+-
+-    def list_reservations(self, resource_id=None, include_released=False):
+-        records = []
+-        for record in self._records.values():
+-            if resource_id is not None and record["resource_id"] != resource_id:
+-                continue
+-            records.append(record)
+-        return records
+-
+-    def snapshot(self):
+-        self._snapshots.append(dict(self._records))
+-        return len(self._snapshots)
+-
+-    def rollback(self, token):
+-        if not self._snapshots:
+-            raise ValidationError("no snapshot to roll back to")
+-        self._records = self._snapshots.pop()
++"""The capacity reservation ledger."""
++
++from collections.abc import Mapping
++
++from ledger_capacity import CapacityTable
++from ledger_errors import (
++    CapacityError,
++    ConflictError,
++    UnknownReservationError,
++    UnknownResourceError,
++    ValidationError,
++)
++from ledger_ids import normalize_capacity, normalize_request_id, normalize_resource_id, normalize_units
++
++_ENTRY_KEYS = frozenset(("request_id", "resource_id", "units"))
++
++
++class CapacityLedger:
++    """Reservation ledger with snapshots and rollback."""
++
++    def __init__(self, clock, limits=None):
++        if not callable(clock):
++            raise ValidationError("clock must be callable")
++        self._table = CapacityTable(limits)
++        self._clock = clock
++        self._records = {}
++        self._snapshots = {}
++        self._snapshot_count = 0
++
++    # -- internal helpers -------------------------------------------------
++
++    def _tick(self):
++        value = self._clock()
++        if isinstance(value, bool) or not isinstance(value, int):
++            raise ValidationError("clock must return an int")
++        return int(value)
++
++    def _allocated(self, resource_id):
++        return sum(record["units"] for record in self._records.values()
++                   if record["resource_id"] == resource_id
++                   and record["status"] == "active")
++
++    @staticmethod
++    def _copy(record):
++        return dict(record)
++
++    # -- reservations -----------------------------------------------------
++
++    def reserve(self, request_id, resource_id, units):
++        key = normalize_request_id(request_id)
++        target = normalize_resource_id(resource_id)
++        amount = normalize_units(units)
++
++        if not self._table.has(target):
++            raise UnknownResourceError("unknown resource: %r" % (target,))
++
++        existing = self._records.get(key)
++        if existing is not None:
++            if (existing["status"] == "active"
++                    and existing["resource_id"] == target
++                    and existing["units"] == amount):
++                return self._copy(existing)
++            raise ConflictError("conflicting reservation for request: %r" % (key,))
++
++        if self._allocated(target) + amount > self._table.limit_of(target):
++            raise CapacityError("capacity exceeded for resource: %r" % (target,))
++
++        tick = self._tick()
++        record = {
++            "request_id": key,
++            "resource_id": target,
++            "units": amount,
++            "created_at": tick,
++            "updated_at": tick,
++            "status": "active",
++        }
++        self._records[key] = record
++        return self._copy(record)
++
++    def reserve_many(self, entries):
++        if not isinstance(entries, (list, tuple)):
++            raise ValidationError("entries must be a list or tuple")
++
++        normalized = []
++        for entry in entries:
++            if not isinstance(entry, Mapping):
++                raise ValidationError("each entry must be a mapping")
++            if set(entry.keys()) != set(_ENTRY_KEYS):
++                raise ValidationError("entry keys must be exactly %s"
++                                      % (sorted(_ENTRY_KEYS),))
++            key = normalize_request_id(entry["request_id"])
++            target = normalize_resource_id(entry["resource_id"])
++            amount = normalize_units(entry["units"])
++            normalized.append((key, target, amount))
++
++        seen = set()
++        for key, _target, _amount in normalized:
++            if key in seen:
++                raise ValidationError("duplicate request id in batch: %r" % (key,))
++            seen.add(key)
++
++        replays = {}
++        new_entries = []
++        for index, (key, target, amount) in enumerate(normalized):
++            if not self._table.has(target):
++                raise UnknownResourceError("unknown resource: %r" % (target,))
++            existing = self._records.get(key)
++            if existing is not None:
++                if (existing["status"] == "active"
++                        and existing["resource_id"] == target
++                        and existing["units"] == amount):
++                    replays[index] = existing
++                    continue
++                raise ConflictError(
++                    "conflicting reservation for request: %r" % (key,))
++            new_entries.append((index, key, target, amount))
++
++        wanted = {}
++        for _index, _key, target, amount in new_entries:
++            wanted[target] = wanted.get(target, 0) + amount
++        for target, amount in wanted.items():
++            if self._allocated(target) + amount > self._table.limit_of(target):
++                raise CapacityError("capacity exceeded for resource: %r" % (target,))
++
++        created = {}
++        if new_entries:
++            tick = self._tick()
++            for index, key, target, amount in new_entries:
++                created[index] = {
++                    "request_id": key,
++                    "resource_id": target,
++                    "units": amount,
++                    "created_at": tick,
++                    "updated_at": tick,
++                    "status": "active",
++                }
++            for index, record in created.items():
++                self._records[record["request_id"]] = record
++
++        result = []
++        for index in range(len(normalized)):
++            if index in created:
++                result.append(self._copy(created[index]))
++            else:
++                result.append(self._copy(replays[index]))
++        return tuple(result)
++
++    def update(self, request_id, units):
++        key = normalize_request_id(request_id)
++        amount = normalize_units(units)
++
++        record = self._records.get(key)
++        if record is None:
++            raise UnknownReservationError("unknown request: %r" % (key,))
++        if record["status"] == "released":
++            raise ConflictError("reservation already released: %r" % (key,))
++        if record["units"] == amount:
++            return self._copy(record)
++
++        target = record["resource_id"]
++        projected = self._allocated(target) - record["units"] + amount
++        if projected > self._table.limit_of(target):
++            raise CapacityError("capacity exceeded for resource: %r" % (target,))
++
++        tick = self._tick()
++        record["units"] = amount
++        record["updated_at"] = tick
++        return self._copy(record)
++
++    def release(self, request_id):
++        key = normalize_request_id(request_id)
++        record = self._records.get(key)
++        if record is None:
++            raise UnknownReservationError("unknown request: %r" % (key,))
++        if record["status"] == "released":
++            raise ConflictError("reservation already released: %r" % (key,))
++        tick = self._tick()
++        record["status"] = "released"
++        record["updated_at"] = tick
++        return self._copy(record)
++
++    # -- resources --------------------------------------------------------
++
++    def set_limit(self, resource_id, capacity):
++        target = normalize_resource_id(resource_id)
++        value = normalize_capacity(capacity)
++        if self._table.has(target) and value < self._allocated(target):
++            raise CapacityError(
++                "new capacity below allocated amount for %r" % (target,))
++        self._table.set_limit(target, value)
++        return None
++
++    def remove_resource(self, resource_id):
++        target = normalize_resource_id(resource_id)
++        if not self._table.has(target):
++            raise UnknownResourceError("unknown resource: %r" % (target,))
++        if self._allocated(target) != 0:
++            raise ConflictError("resource still has allocations: %r" % (target,))
++        self._table.remove(target)
++        return None
++
++    # -- reads ------------------------------------------------------------
++
++    def get(self, request_id):
++        key = normalize_request_id(request_id)
++        record = self._records.get(key)
++        if record is None:
++            raise UnknownReservationError("unknown request: %r" % (key,))
++        return self._copy(record)
++
++    def has_request(self, request_id):
++        return normalize_request_id(request_id) in self._records
++
++    def allocated(self, resource_id):
++        target = normalize_resource_id(resource_id)
++        if not self._table.has(target):
++            raise UnknownResourceError("unknown resource: %r" % (target,))
++        return self._allocated(target)
++
++    def available(self, resource_id):
++        target = normalize_resource_id(resource_id)
++        if not self._table.has(target):
++            raise UnknownResourceError("unknown resource: %r" % (target,))
++        return self._table.limit_of(target) - self._allocated(target)
++
++    def totals(self):
++        return dict((resource_id, self._allocated(resource_id))
++                    for resource_id in self._table.resource_ids())
++
++    def limits(self):
++        return self._table.as_dict()
++
++    def resource_ids(self):
++        return self._table.resource_ids()
++
++    def request_ids(self):
++        return tuple(sorted(self._records))
++
++    def list_reservations(self, resource_id=None, include_released=False):
++        target = None
++        if resource_id is not None:
++            target = normalize_resource_id(resource_id)
++        if not isinstance(include_released, bool):
++            raise ValidationError("include_released must be a bool")
++        if target is not None and not self._table.has(target):
++            raise UnknownResourceError("unknown resource: %r" % (target,))
++
++        selected = []
++        for record in self._records.values():
++            if target is not None and record["resource_id"] != target:
++                continue
++            if not include_released and record["status"] != "active":
++                continue
++            selected.append(record)
++        selected.sort(key=lambda item: (item["created_at"], item["request_id"]))
++        return tuple(self._copy(record) for record in selected)
++
++    # -- snapshots --------------------------------------------------------
++
++    def snapshot(self):
++        self._snapshot_count += 1
++        token = self._snapshot_count
++        self._snapshots[token] = (
++            dict((key, dict(record)) for key, record in self._records.items()),
++            self._table.as_dict(),
++        )
++        return token
++
++    def rollback(self, token):
++        if isinstance(token, bool) or not isinstance(token, int):
++            raise ValidationError("token must be an int")
++        if not 1 <= token <= self._snapshot_count:
++            raise ValidationError("unknown snapshot token: %r" % (token,))
++        records, limits = self._snapshots[token]
++        self._records = dict((key, dict(record)) for key, record in records.items())
++        self._table = CapacityTable(dict(limits))
++        return None
+diff --git a/ledger_errors.py b/ledger_errors.py
+index 6e07a4a..63262df 100644
+--- a/ledger_errors.py
++++ b/ledger_errors.py
+@@ -1,24 +1,25 @@
+-"""Exception hierarchy for the capacity reservation ledger.
+-
+-TODO: the hierarchy below is incomplete and partly wrong.
+-"""
+-
+-
+-class LedgerError(Exception):
+-    """Base class for every error raised by the ledger package."""
+-
+-
+-class ValidationError(LedgerError):
+-    """Raised when an argument is malformed or out of range."""
+-
+-
+-class UnknownResourceError(LedgerError):
+-    """Raised when a well formed resource id is not registered."""
+-
+-
+-class UnknownReservationError(UnknownResourceError):
+-    """Raised when a well formed request id is not known to the ledger."""
+-
+-
+-class ConflictError(LedgerError):
+-    """Raised when an operation contradicts the recorded state."""
++"""Exception hierarchy for the capacity reservation ledger."""
++
++
++class LedgerError(Exception):
++    """Base class for every error raised by the ledger package."""
++
++
++class ValidationError(LedgerError):
++    """Raised when an argument is malformed or out of range."""
++
++
++class UnknownResourceError(LedgerError):
++    """Raised when a well formed resource id is not registered."""
++
++
++class UnknownReservationError(LedgerError):
++    """Raised when a well formed request id is not known to the ledger."""
++
++
++class ConflictError(LedgerError):
++    """Raised when an operation contradicts the recorded state."""
++
++
++class CapacityError(LedgerError):
++    """Raised when an operation would exceed a resource's capacity limit."""
+diff --git a/ledger_ids.py b/ledger_ids.py
+index 0feb60b..8abce39 100644
+--- a/ledger_ids.py
++++ b/ledger_ids.py
+@@ -1,46 +1,51 @@
+-"""Validation and normalization helpers shared by the ledger modules.
+-
+-TODO: normalization and the range checks are not finished.
+-"""
+-
+-import re
+-
+-from ledger_errors import ValidationError
+-
+-MAX_UNITS = 1000000
+-
+-_RESOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+-
+-
+-def normalize_resource_id(value):
+-    """Return the canonical form of a resource id."""
+-    if not isinstance(value, str):
+-        raise ValidationError("resource id must be a str")
+-    if _RESOURCE_RE.match(value) is None:
+-        raise ValidationError("malformed resource id: %r" % (value,))
+-    return value
+-
+-
+-def normalize_request_id(value):
+-    """Return the canonical (case sensitive) form of a request id."""
+-    if not isinstance(value, str):
+-        raise ValidationError("request id must be a str")
+-    if not value:
+-        raise ValidationError("request id must not be empty")
+-    return value
+-
+-
+-def normalize_units(value):
+-    """Return a validated reservation size in whole units."""
+-    if not isinstance(value, int):
+-        raise ValidationError("units must be an int")
+-    if value < 0:
+-        raise ValidationError("units must not be negative")
+-    return value
+-
+-
+-def normalize_capacity(value):
+-    """Return a validated capacity limit in whole units."""
+-    if not isinstance(value, int):
+-        raise ValidationError("capacity must be an int")
+-    return value
++"""Validation and normalization helpers shared by the ledger modules."""
++
++import re
++
++from ledger_errors import ValidationError
++
++MAX_UNITS = 1000000
++MAX_CAPACITY = 1000000000
++
++_STRIP_CHARS = " \t\n\r\f\v"
++
++_RESOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
++_REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
++
++
++def normalize_resource_id(value):
++    """Return the canonical form of a resource id."""
++    if not isinstance(value, str):
++        raise ValidationError("resource id must be a str")
++    text = str(value).strip(_STRIP_CHARS).lower()
++    if _RESOURCE_RE.match(text) is None:
++        raise ValidationError("malformed resource id: %r" % (value,))
++    return str(text)
++
++
++def normalize_request_id(value):
++    """Return the canonical (case sensitive) form of a request id."""
++    if not isinstance(value, str):
++        raise ValidationError("request id must be a str")
++    text = str(value).strip(_STRIP_CHARS)
++    if _REQUEST_RE.match(text) is None:
++        raise ValidationError("malformed request id: %r" % (value,))
++    return str(text)
++
++
++def normalize_units(value):
++    """Return a validated reservation size in whole units."""
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise ValidationError("units must be an int")
++    if not 1 <= value <= MAX_UNITS:
++        raise ValidationError("units out of range: %r" % (value,))
++    return int(value)
++
++
++def normalize_capacity(value):
++    """Return a validated capacity limit in whole units."""
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise ValidationError("capacity must be an int")
++    if not 0 <= value <= MAX_CAPACITY:
++        raise ValidationError("capacity out of range: %r" % (value,))
++    return int(value)
+diff --git a/ledger_report.py b/ledger_report.py
+new file mode 100644
+index 0000000..882fd73
+--- /dev/null
++++ b/ledger_report.py
+@@ -0,0 +1,33 @@
++"""Plain text rendering helpers for the capacity reservation ledger."""
++
++from ledger_core import CapacityLedger
++from ledger_errors import ValidationError
++
++
++def _check_ledger(ledger):
++    if not isinstance(ledger, CapacityLedger):
++        raise ValidationError("ledger must be a CapacityLedger instance")
++
++
++def render_totals(ledger):
++    """Render one "{resource_id} {allocated}/{limit}" line per resource."""
++    _check_ledger(ledger)
++    totals = ledger.totals()
++    limits = ledger.limits()
++    lines = []
++    for resource_id in ledger.resource_ids():
++        lines.append("%s %d/%d" % (resource_id, totals[resource_id],
++                                   limits[resource_id]))
++    return "\n".join(lines)
++
++
++def render_reservations(ledger, include_released=False):
++    """Render one "{request_id} {resource_id} {units} {status}" line per record."""
++    _check_ledger(ledger)
++    if not isinstance(include_released, bool):
++        raise ValidationError("include_released must be a bool")
++    lines = []
++    for record in ledger.list_reservations(include_released=include_released):
++        lines.append("%s %s %d %s" % (record["request_id"], record["resource_id"],
++                                      record["units"], record["status"]))
++    return "\n".join(lines)

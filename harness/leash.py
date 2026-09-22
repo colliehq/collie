@@ -17,6 +17,7 @@ once a real allowlist is declared. A declared-but-empty `may` denies everything
 from __future__ import annotations
 
 import fnmatch
+import math
 from dataclasses import dataclass
 
 ALLOW = "allow"
@@ -25,6 +26,7 @@ DENY = "deny"
 
 # capability risk tiers that require confirm/pre-auth
 _IRREVERSIBLE = {"irreversible", "send", "publish", "pay", "delete"}
+_IRREVERSIBLE_MODES = {"allow", "confirm", "deny"}
 
 
 @dataclass
@@ -35,6 +37,36 @@ class Decision:
     @property
     def denied(self) -> bool:
         return self.decision == DENY
+
+
+def validate(leash: dict | None) -> dict:
+    """Validate the fields that grant Job action authority.
+
+    Unknown domain-specific bounds are retained, but the generic authority
+    fields must have exact JSON types.  In particular, JSON booleans are not
+    numbers and a non-finite spend cap can never mean "unlimited".
+    """
+    if leash is None:
+        return {}
+    if not isinstance(leash, dict):
+        raise ValueError("leash must be a JSON object")
+    if "may" in leash:
+        may = leash["may"]
+        if not isinstance(may, list) or any(
+                not isinstance(item, str) or not item for item in may):
+            raise ValueError("leash.may must be a list of non-empty strings")
+    if "irreversible" in leash:
+        mode = leash["irreversible"]
+        if not isinstance(mode, str) or mode not in _IRREVERSIBLE_MODES:
+            raise ValueError("leash.irreversible must be allow, confirm, or deny")
+    if "spend_max_usd" in leash and leash["spend_max_usd"] is not None:
+        cap = leash["spend_max_usd"]
+        if (isinstance(cap, bool) or not isinstance(cap, (int, float)) or
+                not math.isfinite(cap) or cap < 0):
+            raise ValueError("leash.spend_max_usd must be a finite non-negative number")
+    if "expires" in leash and not isinstance(leash["expires"], str):
+        raise ValueError("leash.expires must be a string")
+    return dict(leash)
 
 
 def evaluate(leash: dict, capability: str, cap_risk: str = "irreversible",
@@ -48,6 +80,15 @@ def evaluate(leash: dict, capability: str, cap_risk: str = "irreversible",
     - irreversible risk                -> DENY / ALLOW / ASK per leash.irreversible
     - otherwise                        -> ALLOW
     """
+    try:
+        leash = validate(leash)
+    except (TypeError, ValueError) as exc:
+        return Decision(DENY, "invalid leash authority: %s" % exc)
+    if (isinstance(spend_usd, bool) or not isinstance(spend_usd, (int, float)) or
+            not math.isfinite(spend_usd) or spend_usd < 0):
+        return Decision(DENY, "invalid requested spend")
+    if not isinstance(capability, str) or not capability:
+        return Decision(DENY, "invalid capability")
     if not leash or "may" not in leash:
         return Decision(ALLOW, "no leash configured (unenforced)")
 
@@ -60,7 +101,7 @@ def evaluate(leash: dict, capability: str, cap_risk: str = "irreversible",
         return Decision(DENY, f"{capability!r} not permitted by leash.may")
 
     cap = leash.get("spend_max_usd")
-    if cap is not None and spend_usd > float(cap):
+    if cap is not None and spend_usd > cap:
         return Decision(DENY, f"spend ${spend_usd} exceeds leash cap ${cap}")
 
     if cap_risk in _IRREVERSIBLE:

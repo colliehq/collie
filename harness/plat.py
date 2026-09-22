@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import threading
+import time
 
 
 # ── detection ────────────────────────────────────────────────────────────────
@@ -91,12 +94,13 @@ def new_group_kwargs() -> dict:
     walks the PID tree directly, so no special flag is needed (and
     CREATE_NEW_PROCESS_GROUP would change Ctrl-C semantics), so return nothing.
 
-    A Slack executor is already a dedicated process group whose lifetime is
-    guarded externally.  Its descendants must inherit that group; starting a
-    second session here would let an ordinary shell tool survive cancellation.
-    A tool timeout in that mode intentionally ends the whole guarded task.
+    A Slack executor or Mission code worker is already a dedicated process group
+    whose lifetime is guarded externally. Its descendants must inherit that
+    group; starting a second session there would let a nested model/tool process
+    survive cancellation. A nested timeout intentionally ends the owned task.
     """
-    return {} if (is_windows() or os.environ.get("COLLIE_PROCESS_OWNER") == "slackexec") \
+    return {} if (is_windows() or os.environ.get("COLLIE_PROCESS_OWNER") in {
+        "slackexec", "mission-code-worker"}) \
         else {"start_new_session": True}
 
 
@@ -113,10 +117,423 @@ def no_window_kwargs() -> dict:
     return {"creationflags": 0x08000000} if is_windows() else {}
 
 
+class _KillOnCloseJob:
+    """Windows kernel owner for a process and every descendant it creates."""
+
+    def __init__(self, proc, name=None):
+        import ctypes
+        from ctypes import wintypes
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class BASIC_LIMITS(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class EXTENDED_LIMITS(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BASIC_LIMITS),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class BASIC_ACCOUNTING(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        kernel = ctypes.windll.kernel32
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.c_void_p]
+        kernel.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel.CreateJobObjectW(None, str(name) if name else None)
+        if not handle:
+            raise ctypes.WinError()
+        try:
+            info = EXTENDED_LIMITS()
+            # Closing the last job handle atomically terminates all processes still owned by it.
+            info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+            if not kernel.SetInformationJobObject(
+                    handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError()
+            if not kernel.AssignProcessToJobObject(
+                    handle, wintypes.HANDLE(int(proc._handle))):
+                raise ctypes.WinError()
+        except Exception:
+            kernel.CloseHandle(handle)
+            raise
+        self._kernel = kernel
+        self._handle = handle
+        self._accounting_type = BASIC_ACCOUNTING
+        self._limits_type = EXTENDED_LIMITS
+        self._name = str(name) if name else ""
+        self._lock = threading.RLock()
+        self._extinct = False
+
+    def _active_processes_locked(self) -> int:
+        import ctypes
+        handle = self._handle
+        if handle is None:
+            if self._extinct:
+                return 0
+            raise RuntimeError("Windows Job handle closed before extinction was confirmed")
+        info = self._accounting_type()
+        if not self._kernel.QueryInformationJobObject(
+                handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            raise ctypes.WinError()
+        active = max(0, int(info.ActiveProcesses))
+        if active == 0:
+            self._extinct = True
+        return active
+
+    def active_processes(self) -> int:
+        """Return the kernel's live-process count for this owned tree."""
+        with self._lock:
+            return self._active_processes_locked()
+
+    def wait_extinct(self, timeout_s: float = 5.0) -> bool:
+        """Poll until the kernel proves this Job has no active processes."""
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        with self._lock:
+            while True:
+                try:
+                    if self._active_processes_locked() == 0:
+                        return True
+                except Exception:
+                    return False
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(.01)
+
+    def terminate(self, exit_code: int = 1) -> bool:
+        with self._lock:
+            handle = self._handle
+            if handle is None:
+                return bool(self._extinct)
+            return bool(self._kernel.TerminateJobObject(
+                handle, max(1, int(exit_code))))
+
+    def terminate_and_wait(self, exit_code: int = 1,
+                           timeout_s: float = 5.0) -> bool:
+        """Terminate the Job and return True only after ActiveProcesses is zero."""
+        with self._lock:
+            try:
+                if self._active_processes_locked() == 0:
+                    return True
+            except Exception:
+                return False
+            handle = self._handle
+            if handle is None or not self._kernel.TerminateJobObject(
+                    handle, max(1, int(exit_code))):
+                # Termination can race a natural final exit.  Query once more;
+                # only the accounting result, never API delivery, is evidence.
+                try:
+                    return self._active_processes_locked() == 0
+                except Exception:
+                    return False
+            deadline = time.monotonic() + max(0.0, float(timeout_s))
+            while True:
+                try:
+                    if self._active_processes_locked() == 0:
+                        return True
+                except Exception:
+                    return False
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(.01)
+
+    def close(self, timeout_s: float = 5.0) -> None:
+        # KILL_ON_JOB_CLOSE is a useful last resort, but CloseHandle succeeding
+        # says nothing about when descendants actually stop.  Preserve the query
+        # handle until extinction is observed, then close it.
+        with self._lock:
+            handle = self._handle
+            if handle is None:
+                if not self._extinct:
+                    raise RuntimeError(
+                        "Windows Job closed without confirmed process extinction")
+                return
+            if not self.terminate_and_wait(timeout_s=timeout_s):
+                raise RuntimeError(
+                    "Windows Job process-tree extinction could not be confirmed")
+            self._handle = None
+            if not self._kernel.CloseHandle(handle):
+                raise OSError("Windows Job handle could not be closed")
+
+    def release_without_terminating(self) -> None:
+        """Give up ownership of processes that are MEANT to keep running, and keep them.
+
+        This is the opposite of :meth:`close` and exists for exactly one caller shape: a
+        foreground command that finished normally after deliberately backgrounding something
+        (``server &``, the workflow the bash tool's own description recommends). Such a tree
+        must outlive both the tool call and the Collie process that started it — but the Job
+        was created with KILL_ON_JOB_CLOSE, so merely closing the handle would kill it, and
+        holding the handle open would kill it later when Collie exits. Clearing the limit
+        first is what makes closing safe.
+
+        Never reachable from a cancellation, a timeout or an error path: those must prove
+        extinction, and ``close``/``terminate_and_wait`` keep their strong semantics
+        unchanged for Mission and the Claude Agent SDK worker. A NAMED Job is refused
+        outright — those are durable Mission receipts whose whole purpose is that another
+        process can still terminate the tree through them.
+
+        Raises on any failure. The caller must NOT then close the handle (that would kill
+        the survivors); reporting the failure is the honest move.
+        """
+        import ctypes
+        with self._lock:
+            if self._name:
+                raise RuntimeError(
+                    "named Windows Jobs are durable cancellation receipts and must not be "
+                    "released while processes are still in them")
+            handle = self._handle
+            if handle is None:
+                raise RuntimeError("Windows Job handle is already closed")
+            info = self._limits_type()
+            info.BasicLimitInformation.LimitFlags = 0      # drop KILL_ON_JOB_CLOSE
+            if not self._kernel.SetInformationJobObject(
+                    handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError()
+            # Only now is CloseHandle a plain handle close rather than a kill. The Job itself
+            # lives on, unnamed and unreferenced, until its last process exits.
+            self._handle = None
+            if not self._kernel.CloseHandle(handle):
+                raise OSError("Windows Job handle could not be closed")
+
+
+_PYTHON_SHIMS = {}
+_PYTHON_SHIMS_LOCK = threading.Lock()
+
+
+def _python_alias_shims(targets):
+    """Private per-process launchers for aliases, for both Git Bash and cmd.exe."""
+    import shlex
+    import tempfile
+    key = tuple(sorted(targets.items()))
+    with _PYTHON_SHIMS_LOCK:
+        cached = _PYTHON_SHIMS.get(key)
+        if cached is not None and os.path.isdir(cached.name):
+            return cached.name
+        folder = tempfile.TemporaryDirectory(prefix="collie-python-")
+        try:
+            for name, target in key:
+                # sys.executable cannot contain quotes/newlines on Windows. Reject
+                # corrupt injected paths rather than producing executable syntax.
+                if any(c in target for c in ('"', '\r', '\n', '\x00')):
+                    raise ValueError("invalid Python executable path")
+                with open(os.path.join(folder.name, name), "w", encoding="utf-8", newline="\n") as f:
+                    f.write("#!/bin/sh\nexec " + shlex.quote(target.replace("\\", "/")) + ' "$@"\n')
+                with open(os.path.join(folder.name, name + ".cmd"), "w", encoding="ascii", newline="\r\n") as f:
+                    # Keep non-ASCII paths in the Unicode environment, not a
+                    # batch file decoded using the user's active OEM code page.
+                    f.write('@echo off\nsetlocal DisableDelayedExpansion\n"%COLLIE_PYTHON_ALIAS_TARGET%"'
+                            + ' %*\nexit /b %errorlevel%\n')
+            _PYTHON_SHIMS[key] = folder
+            return folder.name
+        except BaseException:
+            folder.cleanup()
+            raise
+
+
+def shell_environment(env=None):
+    """Keep ordinary Python commands inside the shell's owned process tree.
+
+    Windows App Execution Aliases can launch Python through the install manager,
+    outside the caller's Job. Route both python and python3 aliases to a real
+    interpreter. Prepending its directory alone does not shadow python3.exe when
+    it only contains python.exe. A selected venv or real command retains priority.
+    Explicit absolute commands are not rewritten; this is not an OS sandbox.
+    """
+    import sys
+    if not is_windows():
+        return env
+    values = dict(os.environ if env is None else env)
+    commands = {name: shutil.which(name, path=values.get("PATH", "")) or ""
+                for name in ("python", "python3")}
+    def is_alias(path):
+        return "/microsoft/windowsapps/" in path.replace("\\", "/").lower()
+    aliases = [name for name, path in commands.items() if is_alias(path)]
+    if not aliases:
+        return env
+    selected = commands["python"]
+    actual = (selected if selected.lower().endswith(".exe") and not is_alias(selected)
+              else sys.executable)
+    if not actual or not os.path.isfile(actual):
+        raise RuntimeError("Cannot resolve a real Python interpreter for Windows execution aliases")
+    directory = _python_alias_shims({name: os.path.abspath(actual) for name in aliases})
+    values["COLLIE_PYTHON_ALIAS_TARGET"] = os.path.abspath(actual)
+    values["PATH"] = directory + os.pathsep + values.get("PATH", "")
+    return values
+
+
+def attach_kill_on_close_job(proc, name=None):
+    """Immediately bind a new child to a kernel-owned process tree on Windows.
+
+    POSIX callers already own the complete tree through ``start_new_session`` and
+    ``killpg``, so this returns ``None`` there.  On Windows an assignment failure is
+    raised to the caller: continuing without the Job would be unsafe because MSYS
+    shells can re-parent native descendants before ``taskkill /T`` observes them.
+    The caller must kill the just-created process when that happens (fail closed).
+    """
+    if not is_windows():
+        return None
+    return _KillOnCloseJob(proc, name=name)
+
+
+def terminate_named_job(name: str, exit_code: int = 1) -> bool:
+    """Terminate a Windows Job Object from another Collie process.
+
+    This is the cross-process half of Mission cancellation: the Web process can
+    stop a code tree owned by ``colliejobd`` without trusting a reusable PID.
+    Other platforms use the process-group receipt maintained by codeworker.
+    """
+    if not is_windows() or not isinstance(name, str) or not name:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.windll.kernel32
+    kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenJobObjectW(0x0008, False, name)  # JOB_OBJECT_TERMINATE
+    if not handle:
+        return False
+    try:
+        return bool(kernel.TerminateJobObject(handle, max(1, int(exit_code))))
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def terminate_named_job_and_wait(name: str, exit_code: int = 1,
+                                 timeout_s: float = 5.0) -> bool:
+    """Terminate a named Windows Job and prove its process tree is extinct.
+
+    Durable Mission receipts outlive their owning daemon.  Delivery from
+    :func:`terminate_named_job` is therefore insufficient: a crashed owner
+    cannot later remove the receipt.  This cross-process helper opens the Job
+    with query authority and waits for ``ActiveProcesses == 0``.  A genuinely
+    absent generation-scoped Job is already extinct; access/query failures are
+    not and fail closed.
+    """
+    if not is_windows() or not isinstance(name, str) or not name:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class BASIC_ACCOUNTING(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    kernel = ctypes.windll.kernel32
+    kernel.SetLastError(0)
+    kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateJobObject.restype = wintypes.BOOL
+    kernel.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_void_p]
+    kernel.QueryInformationJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE
+    handle = kernel.OpenJobObjectW(0x0004 | 0x0008, False, name)
+    if not handle:
+        # ERROR_FILE_NOT_FOUND is proof that this unique named Job generation
+        # no longer exists. Any other error (especially access denied) is not.
+        return int(kernel.GetLastError()) == 2
+    try:
+        def active_processes():
+            info = BASIC_ACCOUNTING()
+            if not kernel.QueryInformationJobObject(
+                    handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+                raise ctypes.WinError()
+            return max(0, int(info.ActiveProcesses))
+
+        try:
+            if active_processes() == 0:
+                return True
+            delivered = bool(kernel.TerminateJobObject(
+                handle, max(1, int(exit_code))))
+            if not delivered and active_processes() != 0:
+                return False
+            deadline = time.monotonic() + max(0.0, float(timeout_s))
+            while True:
+                if active_processes() == 0:
+                    return True
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(.01)
+        except Exception:
+            return False
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def kill_tree(proc) -> None:
     """Kill a Popen AND every descendant. A backgrounded grandchild that inherited
     the stdout pipe would otherwise hold its write end open and wedge a follow-up
-    drain — the hazard the bash/grep tools guard against on a timeout."""
+    drain — the hazard the bash/grep tools guard against on a timeout.
+
+    The two platforms do not scope this the same way, and the difference is the
+    whole reason for the check below. ``taskkill /T`` walks the PID tree, so on
+    Windows it can only ever reach descendants of this child. POSIX has no such
+    call: ``killpg`` addresses a process GROUP, and a child started without
+    ``new_group_kwargs`` sits in Collie's own group — so signalling
+    ``getpgid(child)`` there would SIGKILL this very process and every sibling
+    beside it. A caller asking to end one command must never take Collie down
+    with it, so a group is only signalled when the child LEADS it, which is
+    exactly the group ``start_new_session`` created for this call. A shared
+    group leaves only the direct child as ours to kill; its descendants were
+    never in a tree this call owns, and the callers that need proof of
+    extinction already report that separately.
+    """
     try:
         if is_windows():
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -124,18 +541,44 @@ def kill_tree(proc) -> None:
                            **no_window_kwargs())
             return
         import signal
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)   # session leader + all grandchildren
+        pid = int(proc.pid)
+        if os.getpgid(pid) == pid:                        # a group made for this child
+            os.killpg(pid, signal.SIGKILL)                # leader + all grandchildren
+            return
     except Exception:
-        try:
-            proc.kill()                                   # last resort: the direct child only
-        except Exception:
-            pass
+        pass
+    try:
+        proc.kill()                                       # the direct child, and only it
+    except Exception:
+        pass
 
 
 # ── filesystem ───────────────────────────────────────────────────────────────
 def rmtree(path: str) -> None:
-    """Recursively remove a directory tree, cross-platform (replaces `rm -rf`)."""
-    shutil.rmtree(path, ignore_errors=True)
+    """Best-effort tree cleanup, including Windows read-only Git objects."""
+    if not is_windows():
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    root = os.path.normcase(os.path.realpath(path))
+
+    def retry_readonly(function, filename, exc_info):
+        # Keep busy files and genuine access failures. Never change attributes on
+        # a link or on an object outside the tree being cleaned.
+        if function not in (os.unlink, os.remove) or not isinstance(exc_info[1], PermissionError):
+            return
+        try:
+            info = os.lstat(filename)
+            resolved = os.path.normcase(os.path.realpath(filename))
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & stat.S_IWRITE
+                    or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    or os.path.commonpath([root, resolved]) != root):
+                return
+            os.chmod(filename, info.st_mode | stat.S_IWRITE)
+            function(filename)
+        except (OSError, ValueError):
+            pass
+
+    shutil.rmtree(path, onerror=retry_readonly)
 
 
 def open_with_default(path: str) -> bool:
@@ -323,13 +766,16 @@ def open_excl(path: str, mode: int = 0o600) -> int:
 
 
 def chmod_private(path: str) -> None:
-    """Restrict a file to its owner (for secrets/tokens). On Windows this is a no-op
+    """Restrict a file or directory to its owner. On Windows this is a no-op
     — the POSIX permission bits don't map to Windows ACLs — rather than an error."""
     if is_windows():
         return
     try:
         import stat
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        mode = stat.S_IRUSR | stat.S_IWUSR
+        if os.path.isdir(path):
+            mode |= stat.S_IXUSR  # directories need search permission to access their contents
+        os.chmod(path, mode)
     except OSError:
         pass
 

@@ -47,6 +47,10 @@ VIS_INBOX = "inbox"
 # Resolutions. Anything not recognised is a refusal — see `outcome_of`.
 R_ALLOW = "allow"
 R_ALWAYS = "always"
+R_MISSION = "mission"
+R_WORKFLOW = "workflow"
+R_PROJECT = "project"
+R_CONNECTION = "connection"
 R_DENY = "deny"
 R_NEVER = "never"
 R_ORPHANED = "orphaned"      # the run went away; nobody can meaningfully answer now
@@ -63,6 +67,10 @@ class InboxItem:
     target: str = ""
     risk: str = ""
     rule_offer: str = ""     # the standing rule "always" would create, "" if none can be
+    effect: str = ""
+    action: str = ""
+    authorization_basis: str = ""
+    grant_options: str = ""  # comma-separated scopes offered by the exact gate decision
     state: str = STATE_PENDING
     resolution: str = ""
     visibility: str = VIS_INBOX
@@ -100,6 +108,10 @@ def outcome_of(resolution: str):
     from .gate import Outcome
     return {R_ALLOW: Outcome.ALLOW_ONCE,
             R_ALWAYS: Outcome.ALLOW_ALWAYS,
+            R_MISSION: Outcome.ALLOW_MISSION,
+            R_WORKFLOW: Outcome.ALLOW_WORKFLOW,
+            R_PROJECT: Outcome.ALLOW_PROJECT,
+            R_CONNECTION: Outcome.ALLOW_CONNECTION,
             R_NEVER: Outcome.REJECT_ALWAYS}.get(resolution, Outcome.REJECT_ONCE)
 
 
@@ -130,7 +142,13 @@ class InboxStore:
             id TEXT PRIMARY KEY, session TEXT, kind TEXT, title TEXT, body TEXT,
             tool TEXT, target TEXT, risk TEXT, rule_offer TEXT, state TEXT,
             resolution TEXT, visibility TEXT, call_id TEXT,
-            created_at INTEGER, resolved_at INTEGER)""")
+            created_at INTEGER, resolved_at INTEGER, effect TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '', authorization_basis TEXT NOT NULL DEFAULT '',
+            grant_options TEXT NOT NULL DEFAULT '')""")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox_items)").fetchall()}
+        for name in ("effect", "action", "authorization_basis", "grant_options"):
+            if name not in columns:
+                self.db.execute("ALTER TABLE inbox_items ADD COLUMN %s TEXT NOT NULL DEFAULT ''" % name)
         # Idempotent by (session, call_id): a reconnecting surface, or a retry of the same
         # tool call, must find the SAME item rather than mint a second one that the user
         # would have to answer twice.
@@ -140,19 +158,27 @@ class InboxStore:
 
     # -- writing ------------------------------------------------------------
     def add(self, session, *, kind=KIND_APPROVAL, title="", body="", tool="", target="",
-            risk="", rule_offer="", visibility=VIS_INBOX, call_id="") -> InboxItem:
+            risk="", rule_offer="", effect="", action="", authorization_basis="",
+            grant_options="", visibility=VIS_INBOX, call_id="") -> InboxItem:
         now = int(time.time())
         item = InboxItem(id=uuid.uuid4().hex[:12], session=session, kind=kind, title=title,
                          body=body, tool=tool, target=target or "", risk=risk,
-                         rule_offer=rule_offer or "", visibility=visibility,
+                         rule_offer=rule_offer or "", effect=effect or "", action=action or "",
+                         authorization_basis=authorization_basis or "",
+                         grant_options=grant_options or "", visibility=visibility,
                          call_id=call_id or "", created_at=now)
         with self._lock:
             try:
                 self.db.execute(
-                    "INSERT INTO inbox_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    """INSERT INTO inbox_items(
+                       id,session,kind,title,body,tool,target,risk,rule_offer,state,
+                       resolution,visibility,call_id,created_at,resolved_at,effect,action,
+                       authorization_basis,grant_options)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (item.id, item.session, item.kind, item.title, item.body, item.tool,
-                     item.target, item.risk, item.rule_offer, item.state, item.resolution,
-                     item.visibility, item.call_id, item.created_at, item.resolved_at))
+                      item.target, item.risk, item.rule_offer, item.state, item.resolution,
+                     item.visibility, item.call_id, item.created_at, item.resolved_at,
+                     item.effect, item.action, item.authorization_basis, item.grant_options))
                 self.db.commit()
             except sqlite3.IntegrityError:
                 # Same (session, call_id) already parked — return the existing one, which
@@ -255,7 +281,11 @@ class InboxStore:
 
     @staticmethod
     def _row(r):
-        return InboxItem(**{k: r[k] for k in r.keys()}) if r is not None else None
+        # inbox.db is shared by installed builds and development worktrees.  A newer build may add
+        # durable approval metadata columns; an older reader must neither fail inserts because the
+        # table is wider nor pass unknown keys into this version's dataclass.
+        known = InboxItem.__dataclass_fields__
+        return InboxItem(**{k: r[k] for k in r.keys() if k in known}) if r is not None else None
 
     def close(self):
         try:
@@ -284,6 +314,10 @@ def inbox_approver(store: InboxStore, session: str, *, visibility=VIS_INBOX,
             target=getattr(decision, "target", "") or "",
             risk=getattr(decision, "risk", "") or "",
             rule_offer=getattr(decision, "rule_offer", "") or "",
+            effect=getattr(decision, "effect", "") or "",
+            action=getattr(decision, "action", "") or "",
+            authorization_basis=getattr(decision, "authorization_basis", "") or "",
+            grant_options=",".join(getattr(decision, "grant_options", ()) or ()),
             visibility=visibility,
             call_id=getattr(decision, "call_id", "") or "")
         if not item.pending:

@@ -104,6 +104,62 @@ def test_compose_real():
     check(cap.verify(_Rec({}), r).status == VERIFIED, "composed text verifies")
 
 
+def test_compose_instruction_produces_deliverable_instead_of_echoing_request():
+    print("test_compose_instruction_produces_deliverable_instead_of_echoing_request")
+
+    class CapturingProvider:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, system, messages, tools):
+            self.calls.append((system, messages, tools))
+            return type("C", (), {
+                "text": "VocalCode keeps voice input local. Try it at vocalcode.app.",
+                "stop_reason": "end_turn",
+            })()
+
+    provider = CapturingProvider()
+    clear_registry()
+    register_primitives(stub=False, provider=provider)
+    cap = get_capability("compose")
+    instruction = "Write a final short launch post with a link."
+    rec = _Rec({"facts": "VocalCode uses local speech recognition.",
+                "instruction": instruction})
+    result = cap.execute(rec)
+    check(len(provider.calls) == 1 and instruction in provider.calls[0][1][0]["content"],
+          "compose sends the explicit instruction to the writing model")
+    check(result.get("text", "").startswith("VocalCode keeps") and
+          result.get("text") != instruction,
+          "compose returns final copy rather than the writing instruction")
+    check(cap.verify(rec, result).status == VERIFIED,
+          "generated final copy verifies")
+
+    literal = "Already final copy — publish this exactly."
+    result2 = cap.execute(_Rec({"facts": "ignored", "text": literal}))
+    check(result2.get("text") == literal and len(provider.calls) == 1,
+          "an explicitly final literal is preserved without another model call")
+
+    echoed = {"text": instruction}
+    check(cap.verify(rec, echoed).status == FAILED,
+          "an echoed writing instruction cannot be recorded as composed copy")
+
+    # Mission planners are fallible: if they place a clear writing request in
+    # ``text`` despite the schema, recover at the primitive boundary instead of
+    # persisting the request itself as if it were the finished post.
+    misplaced = _Rec({"facts": "VocalCode uses local speech recognition.",
+                      "text": "Create final, publication-ready copy for an X post."})
+    recovered = cap.execute(misplaced)
+    check(len(provider.calls) == 2 and recovered.get("text", "").startswith("VocalCode keeps"),
+          "compose repairs a writing request misplaced in the final-literal field")
+    check(cap.verify(misplaced, {"text": misplaced.args["text"]}).status == FAILED,
+          "a misplaced writing-request echo cannot pass the compose gate")
+
+    literal = _Rec({"facts": "unused", "text": "Create faster with VocalCode."})
+    literal_result = cap.execute(literal)
+    check(len(provider.calls) == 2 and literal_result.get("text") == literal.args["text"],
+          "an imperative marketing slogan remains literal final copy")
+
+
 def test_observe_loggedout_real():
     print("test_observe_loggedout_real")
     httpd, port = _server()
@@ -189,6 +245,66 @@ def test_browse_and_submit_real():
     check(_browse_verify(_Rec({"expect": {"Make": "Toyota"}}), {"result": "done", "form": []}).status
           == FAILED, "'done' over an empty form is refuted, not trusted")
     check(_browse_verify(_Rec({}), res).status == VERIFIED, "no expect + substantially filled -> VERIFIED")
+    inspected = {"result": "Current public facts recorded", "form": [],
+                 "page": {"host": "vocalcode.app", "title": "VocalCode"}}
+    inspected_verdict = _browse_verify(_Rec({"read_only": True}), inspected)
+    check(inspected_verdict.status == VERIFIED and inspected_verdict.evidence and
+          inspected_verdict.evidence[0].channel == "browser-page-reread",
+          "explicit read-only browsing verifies against the independently reread live page")
+    semantic_inspection = _Rec({"read_only": True,
+                                "goal": "Inspect the account; do not create or edit anything.",
+                                "expect": {"account": "authenticated identity",
+                                           "company_page": "availability"}})
+    check(_browse_verify(semantic_inspection, inspected).status == VERIFIED,
+          "semantic read-only expectations are not misclassified as form fields")
+    check(_browse_verify(_Rec({}), inspected).status == INCONCLUSIVE,
+          "an empty-form fill cannot masquerade as read-only success without the explicit flag")
+    inferred = _Rec({"goal": "Inspect available signed-in sessions; do not register, change, or submit anything."})
+    check(_browse_verify(inferred, inspected).status == VERIFIED,
+          "an unmistakable inspect plus no-write goal survives a planner omitting read_only=true")
+    composite = _Rec({"goal": "Inspect the CURRENT page only, without navigating, reloading, "
+                                     "opening a URL, clicking, typing, or submitting."})
+    check(_browse_verify(composite, inspected).status == VERIFIED,
+          "a composite no-write clause remains read-only when the planner omits read_only=true")
+    ambiguous = _Rec({"goal": "Inspect the page and fill the promotion form."})
+    check(_browse_verify(ambiguous, inspected).status == INCONCLUSIVE,
+          "a read verb without an explicit no-write clause cannot weaken form verification")
+    explicit_write = _Rec({"read_only": False,
+                           "goal": "Fill a code-review post without submitting it."})
+    check(_browse_verify(explicit_write, inspected).status == INCONCLUSIVE,
+          "explicit read_only=false prevents write failures being verified by language fallback")
+    crossed = {"result": "OAuth stopped", "form": [{"label": "hidden", "value": "x"}],
+               "page": {"host": "linkedin.com", "title": "OAuth"},
+               "scope_error": "browse ended outside its single-action domain boundary"}
+    check(_browse_verify(_Rec({"read_only": False}), crossed).status == FAILED,
+          "an OAuth provider form cannot verify after leaving the browse domain boundary")
+    no_page = dict(inspected, page={})
+    check(_browse_verify(_Rec({"read_only": True}), no_page).status == INCONCLUSIVE,
+          "read-only browsing still fails closed without independent page identity")
+    social = {"result": "drafted", "page": {"host": "x.com", "title": "Compose / X"},
+              "form": [{"label": "tweetTextarea_0", "value": "Try VocalCode today"}]}
+    check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
+                                          "tweet_text": "Try VocalCode today"}}), social).status
+          == VERIFIED,
+          "platform uses live page identity and rich editor text does not require an invented label")
+    disabled_social = dict(social, form_actions=[{"label": "Post", "disabled": True}])
+    check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
+                         disabled_social).status == FAILED,
+          "a filled rich editor is not ready when its final Post action remains disabled")
+    enabled_social = dict(social, form_actions=[{"label": "Post", "disabled": False}])
+    check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
+                         enabled_social).status == VERIFIED,
+          "an enabled final Post action preserves the verified form verdict")
+    extended_social = dict(social,
+                           form=[{"label": "tweetTextarea_0",
+                                  "value": "Try VocalCode today at https://wrong.example"}])
+    check(_browse_verify(_Rec({"expect": {"post_text": "Try VocalCode today"}}),
+                         extended_social).status == FAILED,
+          "a matching prefix cannot verify an invented rich-text tail or link")
+    wrong_site = dict(social, page={"host": "facebook.com", "title": "Marketplace"})
+    check(_browse_verify(_Rec({"expect": {"platform": "Twitter/X",
+                                          "tweet_text": "Try VocalCode today"}}), wrong_site).status
+          == FAILED, "semantic expectations still refute a draft on the wrong platform")
 
     sub = get_capability("browse.submit")
     check(sub.reversible is False and sub.risk == "publish", "browse.submit is irreversible (gated)")
@@ -211,6 +327,42 @@ def test_browse_and_submit_real():
           usub.verify(_Rec({}), ur).status == INCONCLUSIVE,
           "a click without a permalink/toast/state change is not called published")
 
+    class DelayedRedirect(FakeActuator):
+        def __init__(self):
+            super().__init__(result_url="https://www.producthunt.com/my/welcome?code=private")
+            self._url = "https://github.test/login/oauth/authorize?state=private"
+            self.clicked = False
+
+        def click_ref(self, ref):
+            self.calls.append(("click_ref", ref)); self.clicked = True
+            return self._url
+
+        def wait(self, seconds):
+            self.calls.append(("wait", seconds))
+            if self.clicked:
+                self._url = self.result_url
+            return True
+
+        def snapshot(self):
+            self.calls.append(("snapshot",))
+            body = "Welcome" if self._url.startswith("https://www.producthunt.com/") \
+                else '[e7] button "Authorize producthunt"'
+            return {"url": self._url, "snapshot": body}
+
+    delayed_redirect = DelayedRedirect()
+    clear_registry(); register_primitives(stub=False, actuator=delayed_redirect,
+                                           browse_runner=lambda _g: "prepared")
+    oauth = get_capability("browse.submit")
+    oauth_args = {"button": "Authorize producthunt",
+                  "success_url_contains": "producthunt.com"}
+    oauth_snap = oauth.snapshot(oauth_args, "m-oauth")
+    oauth_result = oauth.execute(_Rec(oauth_args, job_id="m-oauth", snapshot=oauth_snap))
+    check(oauth_result.get("confirmed") and any(c[0] == "wait" for c in delayed_redirect.calls),
+          "submit re-observes a delayed OAuth redirect without firing a second click")
+    check("?" not in oauth_snap.get("url", "") and "private" not in repr(oauth_snap) and
+          "?" not in oauth_result.get("target", "") and "private" not in repr(oauth_result),
+          "OAuth query credentials never persist in target snapshots or postconditions")
+
 
 def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     print("test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target")
@@ -218,15 +370,61 @@ def test_browser_snapshot_redacts_secrets_and_rejects_ambiguous_target():
     raw = [{"label": "Email", "value": "owner@example.test"},
            {"label": "Password", "value": "hunter2"},
            {"label": "Card number", "value": "4111111111111111"},
+           {"label": "g-recaptcha-response", "value": "0cAF-secret-token"},
+           {"label": "csrfToken", "value": "csrf-secret"},
+           {"label": "session_redirect", "value": "/oauth?state=private"},
            {"label": "Description", "value": "A safe listing"}]
     safe = _sanitize_form(raw)
     encoded = repr(safe)
     check("owner@example.test" not in encoded and "hunter2" not in encoded and
-          "4111111111111111" not in encoded and encoded.count("[redacted]") == 3,
-          "credentials and signup/payment PII never enter durable form snapshots")
+          "4111111111111111" not in encoded and "0cAF-secret" not in encoded and
+          "csrf-secret" not in encoded and "state=private" not in encoded and
+          encoded.count("[redacted]") == 6,
+          "credentials, OAuth state, and signup/payment PII never enter durable form snapshots")
     collapsed = {"snapshot": '[e1] button "Publish" ×2 (identical siblings: e1–e2)'}
     check(_find_button(collapsed, "Publish") is None,
           "a collapsed row with two identical Publish buttons is ambiguous")
+    social_post = {"snapshot": '[e1] link "Post"\n[e2] button "Post"'}
+    check(_find_button(social_post, "Post")["ref"] == "e2",
+          "a final Post button wins over an identically named navigation link")
+    disabled_post = {"snapshot": '[e1] link "Post"\n[e2] button "Post" (disabled)'}
+    check(_find_button(disabled_post, "Post") is None,
+          "a disabled final Post button never falls back to the navigation link")
+    check(_find_button(disabled_post, "Post", include_disabled=True)["disabled"],
+          "snapshot preparation can distinguish one delayed disabled target from absence")
+    localized_save = {"snapshot": '[e1] button "保存"'}
+    check(_find_button(localized_save, "Save")["ref"] == "e1" and
+          _find_button(localized_save, "保存 / Save")["ref"] == "e1",
+          "a unique localized final button matches an English or bilingual planner label")
+    ambiguous_locales = {"snapshot": '[e1] button "Save"\n[e2] button "保存"'}
+    check(_find_button(ambiguous_locales, "保存 / Save") is None,
+          "a bilingual label never guesses between two localized final buttons")
+    disabled_localized = {"snapshot": '[e1] button "保存" (disabled)'}
+    check(_find_button(disabled_localized, "Save") is None,
+          "localized matching never turns a disabled final button into an enabled target")
+
+    class DelayedConsent(FakeActuator):
+        def __init__(self):
+            super().__init__(); self._url = "https://github.test/oauth"; self.reads = 0
+
+        def snapshot(self):
+            self.reads += 1
+            disabled = " (disabled)" if self.reads < 3 else ""
+            return {"url": self._url,
+                    "snapshot": '[e7] button "Authorize producthunt"' + disabled}
+
+    from unittest.mock import patch
+    delayed = DelayedConsent()
+    clear_registry()
+    register_primitives(stub=False, actuator=delayed,
+                        browse_runner=lambda _goal: "prepared")
+    consent = get_capability("browse.submit")
+    with patch("harness.primitives.time.sleep") as sleep:
+        prepared = consent.snapshot({"button": "Authorize producthunt"}, "m-delay")
+    check(prepared.get("ref") == "e7" and delayed.reads == 3 and sleep.call_count == 2,
+          "final target preparation briefly rereads one exact disabled consent button until enabled")
+    check(delayed.calls and delayed.calls[0] == ("show",),
+          "final target preparation activates its already-bound tab before checking consent state")
 
 
 def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():
@@ -250,6 +448,19 @@ def test_bridge_propagates_nested_click_error_and_forces_exact_node_click():
         check(True, "nested extension click errors reach the verifier")
     check(bb.cmd.get("trusted") is False and bb.cmd.get("ref") == "e1",
           "final Mission click targets the exact live node, never stale screen coordinates")
+
+    class TrustedBB:
+        def __init__(self): self.cmd = None
+        def _call(self, cmd):
+            self.cmd = cmd
+            return {"ok": True, "data": {"click": {"clicked": "Save", "trusted": True}}}
+
+    tbb = TrustedBB()
+    tact = BridgeActuator.__new__(BridgeActuator)
+    tact._bb, tact._space = tbb, "mission-one"
+    tact.trusted_click_ref("e34")
+    check(tbb.cmd.get("ref") == "e34" and tbb.cmd.get("trusted") is True,
+          "final browser writes can request a trusted click on the exact approved ref")
 
 
 def test_browse_domain_boundary_survives_redirects_and_blocks_action_gets():
@@ -337,19 +548,20 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
                 def run(self, args, _ctx): self.calls.append(dict(args)); return "ok"
             self._tools = {name: Tool(name) for name in (
                 "browser_open", "browser_read", "browser_fields", "browser_type",
-                "browser_pick", "browser_snapshot", "browser_links", "browser_click",
+                "browser_pick", "browser_snapshot", "browser_links", "browser_click", "browser_advance",
                 "browser_press", "browser_drag", "browser_upload", "browser_script",
                 "browser_eval", "bash", "desktop_click", "desktop_type",
                 "enable_capability", "mcpctl_add", "slack_send", "load_tools")}
 
     class FakeHarness:
-        def __init__(self):
+        def __init__(self, drift=None):
             self.registry, self.memory, self.recorder = Registry(), Obj(), Obj()
             self.answer = ""
+            self.drift = drift
 
         def run(self, _task_id, prompt):
             allowed = {"browser_open", "browser_read", "browser_snapshot", "browser_fields",
-                       "browser_links", "browser_type", "browser_pick"}
+                       "browser_links", "browser_type", "browser_pick", "browser_advance"}
             check(set(self.registry._tools) == allowed,
                   "reversible browse child is a positive browser-only authority list")
             wrapped = self.registry._tools["browser_type"]
@@ -363,10 +575,58 @@ def test_live_browse_cannot_bypass_the_outer_action_gate():
                   "unscoped browse is pinned to its first site against cross-site exfiltration")
             check("outer Mission can gate it" in prompt,
                   "child is told to hand consequential actions back to Mission")
+            check(self.max_turns == 18 and "If the same field fails twice" in prompt,
+                  "browser child has a bounded anti-loop budget and explicit stop condition")
+            if self.drift is not None:
+                self.drift["url"] = "https://oauth.test/login"
             return type("R", (), {"answer": "prepared", "error": ""})()
 
-    with patch("harness.cli.make_harness", return_value=FakeHarness()):
-        check(_live_browse("prepare the form") == "prepared", "safe browse child still runs")
+    with patch("harness.cli.make_harness", return_value=FakeHarness()) as make:
+        outcome = _live_browse("prepare the form")
+        check(outcome.get("_browse_answer") == "prepared" and not outcome.get("_scope_error"),
+              "safe browse child still runs and reports its final domain boundary")
+        check(make.call_args.kwargs.get("effort") == "medium",
+              "routine browser execution defaults to medium reasoning effort")
+    state = {"url": "https://social.test/start"}
+    with patch("harness.cli.make_harness", return_value=FakeHarness(state)), \
+         patch("harness.browserbridge.space_identity", side_effect=lambda _space: dict(state)):
+        crossed = _live_browse("prepare one site's form")
+        check("social.test -> oauth.test" in crossed.get("_scope_error", ""),
+              "the live child reports a final OAuth redirect outside its action boundary")
+
+    from harness.primitives import _real_browse, _browse_verify
+    called = []
+    execute = _real_browse(runner=lambda goal: called.append(goal) or "should not run",
+                           form_reader=lambda: [])
+    incomplete = _Rec({"read_only": False,
+                       "goal": "Fill Post text with the prepared copy from the case draft.",
+                       "expect": {"Post text": "Complete external copy"}})
+    rejected = execute(incomplete)
+    check(not called and rejected.get("contract_error") and
+          _browse_verify(incomplete, rejected).status == FAILED,
+          "a browser child cannot invent content referenced only from the outer case")
+
+    # Cross-domain pinning is not enough for OAuth: a child that was told to inspect
+    # the CURRENT page must not guess another authorize URL on the same host.
+    locked = {"url": "https://github.test/login/oauth/authorize?client_id=real&state=secret",
+              "title": "Authorize application"}
+
+    def drift_same_host(*_args, **_kwargs):
+        locked["url"] = "https://github.test/login/oauth/authorize?client_id=guessed"
+        return {"_browse_answer": "inspected", "_scope_error": ""}
+
+    with patch("harness.primitives._live_browse", side_effect=drift_same_host), \
+         patch("harness.browserbridge.space_identity", side_effect=lambda _space: dict(locked)), \
+         patch("harness.primitives._read_form_state", return_value=([], [])):
+        locked_execute = _real_browse()
+        locked_rec = _Rec({"read_only": True, "expect": {},
+                           "goal": "Inspect only the CURRENT GitHub OAuth page; do not navigate, reload, or open anything."},
+                          job_id="m-oauth-lock")
+        drifted = locked_execute(locked_rec)
+    check("locked URL" in drifted.get("scope_error", "") and
+          "state=secret" not in drifted.get("scope_error", "") and
+          _browse_verify(locked_rec, drifted).status == FAILED,
+          "an explicit current-page read fails closed on same-host URL drift without leaking OAuth state")
 
 
 def test_code_primitive():
@@ -399,6 +659,7 @@ def main():
     test_live_browse_cannot_bypass_the_outer_action_gate()
     test_code_primitive()
     test_compose_real()
+    test_compose_instruction_produces_deliverable_instead_of_echoing_request()
     test_observe_loggedout_real()
     test_web_submit_real_drives_and_verifies()
     test_web_submit_no_browser_degrades()

@@ -1,15 +1,13 @@
 name = "collie"
-compatibility_date = "2024-09-23"
-pages_build_output_dir = "."
-
-# NOTE: Pages config does not accept account_id — pass it via the CLOUDFLARE_ACCOUNT_ID env var
-# at deploy time (account da3139fb1e8139f18d38e46064840c02, wudaming00@gmail.com).
+compatibility_date = "2026-08-09"
+pages_build_output_dir = "dist"
 
 # Workers AI — powers /api/chat ("Ask Collie").
 [ai]
 binding = "AI"
 
-# KV namespace for the per-IP daily rate limit on /api/chat.
-[[kv_namespaces]]
-binding = "RL"
-id = "b4049321e2f845e9a54a618eac068e83"
+# Atomic per-IP/day counter. Deploy landing/rate-limiter-worker first; Pages binds to it by name.
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "ChatRateLimiter"
+script_name = "collie-chat-rate-limiter"

@@ -113,8 +113,12 @@ def test_multiple_plugin_modules_are_merged(plugin_dir, monkeypatch):
 
 
 def test_no_plugins_configured_is_silent(env_plugins_only, monkeypatch):
-    """The default path must not pay for, or complain about, a feature nobody is using."""
+    """The default path must not pay for, or complain about, a feature nobody is using.
+
+    The fixture keeps this hermetic even when the developer running it has plugins installed.
+    """
     monkeypatch.delenv("COLLIE_PROVIDER_PLUGINS", raising=False)
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kwargs: ())
     found, errors = providers._plugin_providers()
     assert found == {} and errors == []
 
