@@ -1068,7 +1068,8 @@ def test_budget_off_by_default():
         input_tokens = 10**9; output_tokens = 10**9
     assert L._budget_exceeded("claude-opus-4-8", T()) is False, "no ceiling set -> never exceeded"
 
-def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap(monkeypatch):
+def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap():
+    from unittest.mock import patch
     from harness import loop as L
 
     class T:
@@ -1077,13 +1078,13 @@ def test_subscription_loop_ignores_list_price_cost_cap_but_keeps_token_cap(monke
         cache_read = 0
         cache_creation = 0
 
-    monkeypatch.setenv("COLLIE_MAX_COST", "0.01")
-    monkeypatch.delenv("COLLIE_MAX_TOTAL_TOKENS", raising=False)
-    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=False) is True
-    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is False
+    with patch.dict(os.environ, {"COLLIE_MAX_COST": "0.01"}):
+        os.environ.pop("COLLIE_MAX_TOTAL_TOKENS", None)
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=False) is True
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is False
 
-    monkeypatch.setenv("COLLIE_MAX_TOTAL_TOKENS", "100")
-    assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is True
+        os.environ["COLLIE_MAX_TOTAL_TOKENS"] = "100"
+        assert L._budget_exceeded("claude-opus-4-8", T(), subscription_only=True) is True
 
 def test_loop_whiteflag_rescue_and_restore():
     """sphinx-10435 regression lock: a model that edits, REVERTS itself, then insists on
