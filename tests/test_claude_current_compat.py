@@ -233,8 +233,10 @@ def test_empty_skill_allowlist_never_injects_a_skill_rule():
 
 # --- Windows CLI discovery -------------------------------------------------
 
-def test_batch_launchers_are_refused_by_the_installed_transport():
+def test_batch_launchers_are_refused_by_the_installed_transport(monkeypatch):
     """npm's claude.cmd shim is not a supported CLI for this SDK generation."""
+    from claude_agent_sdk._internal.transport import subprocess_cli
+    monkeypatch.setattr(subprocess_cli.platform, "system", lambda: "Windows")
     for shim in (r"C:\\Users\\x\\AppData\\Roaming\\npm\\claude.CMD",
                  r"C:\\tools\\claude.bat",
                  r"C:\\tools\\claude.cmd\\..\\claude.exe"):
