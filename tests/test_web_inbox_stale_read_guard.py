@@ -1,6 +1,4 @@
 """Focused cases around the stale-listing guard: late failures, notices and re-reads."""
-import time
-
 import pytest
 from playwright.sync_api import expect
 
@@ -70,13 +68,32 @@ def test_a_failed_mutation_keeps_its_notice_and_its_row_against_a_late_listing(u
 
 
 def test_dropping_a_stale_read_is_followed_by_a_fresh_read_of_current_data(ui):
+    # Record interval handles before boot so periodic polling can be stopped
+    # after the held request starts. This proves the stale-response path itself
+    # refreshes the queue, independent of a shared runner's wall-clock speed.
+    ui.page.add_init_script('''(() => {
+      const schedule = window.setInterval.bind(window);
+      window.__queueTestIntervals = [];
+      window.setInterval = (...args) => {
+        const id = schedule(...args);
+        window.__queueTestIntervals.push(id);
+        return id;
+      };
+    })();''')
+    ui.page.reload()
     _hold_queue(ui)
     _queue(ui, 'Original pending request')
     reads = []
     ui.page.on('request', lambda request: request.url.find('/api/task-inbox?') > 0
-               and request.method == 'GET' and reads.append(time.monotonic()))
+               and request.method == 'GET' and reads.append(request.url))
     held = HeldListing(ui.page)
     held.wait()
+    stopped = ui.page.evaluate('''() => {
+      const ids = window.__queueTestIntervals;
+      ids.forEach(id => clearInterval(id));
+      return ids.length;
+    }''')
+    assert stopped > 0, 'no interval was captured before the held poll'
     _edit_to(ui, 'Updated pending request')
     expect(ui.page.locator('.task-queue-text')).to_have_text('Updated pending request')
     # Another window accepts a request while the old read is still in flight. Only a genuinely
@@ -85,15 +102,13 @@ def test_dropping_a_stale_read_is_followed_by_a_fresh_read_of_current_data(ui):
     _Fixture.queue_entries['other-window'] = {
         'session': 's-read', 'id': 'other-window', 'text': 'Queued from another window',
         'mode': 'follow_up', 'seq': 9, 'state': 'pending', 'digest': 'v1', 'metadata': {}}
-    posts, last = len(_Fixture.queue_posts), reads[-1]
-    released = time.monotonic()
+    posts, before_release = len(_Fixture.queue_posts), len(reads)
     held.release()
     expect(ui.page.locator('#taskQueueList .task-queue-text')).to_have_text(
         ['Updated pending request', 'Queued from another window'], timeout=2000)
-    followups = [at for at in reads if at > released]
-    assert followups, 'no read followed the dropped one'
-    # The 2.5s poll cannot account for this: the first follow-up read lands immediately after
-    # the release and well before the next tick could reach the network.
-    assert followups[0] - released < 0.4 and followups[0] - last < 2.0
+    # Python 3.12's Windows monotonic clock has 15.625ms ticks: a genuine
+    # immediate re-read can share the release's timestamp. Count events instead.
+    assert len(reads) > before_release, 'no read followed the dropped one'
+    # Periodic polling is stopped, so it cannot rescue a missing immediate re-read.
     assert len(_Fixture.queue_posts) == posts, 'nothing was re-sent'
     assert len(_Fixture.stream_requests) == 1 and not _Fixture.queue_starts
