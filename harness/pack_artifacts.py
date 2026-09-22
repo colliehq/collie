@@ -1054,10 +1054,19 @@ def summarize_artifact(record, *, preview=20):
 # --------------------------------------------------------------------------- apply
 
 def _probe(path):
-    """Live state of one path, in the same vocabulary the bundle stores."""
+    """Live state of one path, in the same vocabulary the bundle stores.
+
+    ``NotADirectoryError`` means a non-directory sits on an ancestor of this path, so nothing can
+    exist at it: that is "absent", not "unreadable".  POSIX reports ENOTDIR here while Windows
+    reports the same situation as a plain missing path, and a bundle that turns ``thing`` into a
+    directory (delete ``thing``, add ``thing/inner.txt``) probes exactly this state — treating it
+    as an error made that bundle a conflict on Linux and applied it on Windows.  Nothing is
+    assumed about the ancestor: an ancestor that must go is a delete step of its own, and the
+    write still re-resolves its path and re-checks the live state before it touches anything.
+    """
     try:
         st = os.lstat(path)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return {"type": "absent"}
     except OSError as exc:
         return {"type": "error", "error": _os_error("cannot stat", path, exc)}

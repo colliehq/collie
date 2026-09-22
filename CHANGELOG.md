@@ -21,6 +21,10 @@
 - Exclude generated browser credentials from both wheel and source-distribution artifacts.
 - Initialize shared typing support before background startup to prevent a cold-start race from
   leaving Live Copilot unavailable while the main UI appears healthy.
+- Reap the verifier's direct child while confirming POSIX process-group extinction. Cancelled or
+  timed-out checks no longer leave a false recovery fence because the parent retained a zombie.
+- Apply Pack file-to-directory changes consistently on POSIX and Windows while retaining conflict
+  checks and refusal of linked paths. Link-cleanup tests now use each platform's correct operation.
 
 See [the release review](docs/release-0.27.0.md) for versions, evidence and validation scope.
 

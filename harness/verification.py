@@ -571,7 +571,8 @@ def workspace_snapshot(cwd: str) -> dict:
         "snapshot_complete", "snapshot_kind")}
 
 
-def _terminate_owned_posix_group(pgid: int) -> tuple[bool, str]:
+def _terminate_owned_posix_group(pgid: int, *, proc=None,
+                                 timeout_s: float = 5.0) -> tuple[bool, str]:
     """End every process left in a verifier's dedicated POSIX process group.
 
     The direct shell may already have exited successfully, so ``plat.kill_tree``
@@ -586,8 +587,19 @@ def _terminate_owned_posix_group(pgid: int) -> tuple[bool, str]:
         # SIGKILL is required on POSIX.  The numeric fallback keeps the helper
         # unit-testable from a Windows host where ``signal.SIGKILL`` is absent.
         os.killpg(int(pgid), getattr(signal, "SIGKILL", 9))
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + min(5.0, max(0.0, float(timeout_s)))
         while time.monotonic() < deadline:
+            # A killed direct child remains a zombie until this parent reaps
+            # it. killpg(..., 0) still sees that zombie, so waiting for ESRCH
+            # before poll()/wait() would make our own child prevent the proof.
+            # Reap only the Popen child we own; group existence still decides
+            # whether any other member remains.
+            poll = getattr(proc, "poll", None)
+            if callable(poll):
+                try:
+                    poll()
+                except Exception as exc:
+                    return False, "%s: %s" % (type(exc).__name__, exc)
             try:
                 os.killpg(int(pgid), 0)
             except ProcessLookupError:
@@ -662,7 +674,8 @@ def cancel_verification_process(proc, timeout_s: float = 5.0, *,
             return confirmed
         pgid = int(getattr(proc, "_collie_verification_pgid", 0) or 0)
         if pgid > 1:
-            confirmed, error = _terminate_owned_posix_group(pgid)
+            confirmed, error = _terminate_owned_posix_group(
+                pgid, proc=proc, timeout_s=timeout_s)
             if error:
                 setattr(proc, "_collie_verification_tree_error", error)
             setattr(proc, "_collie_verification_tree_extinct", confirmed)

@@ -461,7 +461,10 @@ def test_file_becomes_a_directory_and_back_without_deleting_unexpected_work(stor
     _write(attempt / "thing" / "inner.txt", "i am a directory now")
     record = pa.save_artifact(_bundle(workspace, attempt, baseline))
 
-    assert pa.apply_artifact(record["id"], str(workspace))["applied"]
+    # The new child is probed while a FILE still sits on its parent: POSIX answers ENOTDIR there
+    # and Windows answers "missing", and both mean the same thing — nothing is at that path yet.
+    result = pa.apply_artifact(record["id"], str(workspace))
+    assert result["applied"], result["conflicts"] or result["error"]
     assert (workspace / "thing" / "inner.txt").read_text(encoding="utf-8") == "i am a directory now"
 
     # The reverse: directory -> file, but the user dropped an extra file inside meanwhile.
@@ -657,6 +660,31 @@ def _link_dir(link, target):
     return True
 
 
+def _is_link_dir(path):
+    """True for a POSIX symlink or a Windows junction (``os.path.islink`` misses junctions)."""
+    path = str(path)
+    if os.path.islink(path):
+        return True
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except (AttributeError, OSError):
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _unlink_dir(link):
+    """Remove a link made by :func:`_link_dir`, never its target.
+
+    A Windows junction is a directory entry and comes off with ``rmdir``; a POSIX symlink to a
+    directory is not a directory at all and ``rmdir`` raises ENOTDIR on it.  Both forms are
+    removed without following the link, so whatever is on the other side survives.
+    """
+    if os.path.islink(str(link)):
+        os.unlink(str(link))
+    else:
+        os.rmdir(str(link))
+
+
 def test_store_internals_cannot_redirect_through_a_link(store, tmp_path):
     """artifact.json / blobs are ours; if one has become a link, the bundle is corrupt."""
     workspace = tmp_path / "repo"
@@ -673,7 +701,7 @@ def test_store_internals_cannot_redirect_through_a_link(store, tmp_path):
         assert result["code"] == "corrupt" and "symlink or junction" in result["error"]
         assert (workspace / "a.txt").read_text(encoding="utf-8") == "before"
     finally:
-        os.rmdir(str(blobs))
+        _unlink_dir(blobs)
 
 
 def test_a_linked_backup_directory_stops_the_apply_before_it_writes(store, tmp_path):
@@ -690,7 +718,7 @@ def test_a_linked_backup_directory_stops_the_apply_before_it_writes(store, tmp_p
         assert (workspace / "a.txt").read_text(encoding="utf-8") == "before"
         assert not list(elsewhere.iterdir()), "no originals were written through the link"
     finally:
-        os.rmdir(str(store / record["id"] / "backups"))
+        _unlink_dir(store / record["id"] / "backups")
 
 
 def test_a_linked_artifact_directory_is_never_read(store, tmp_path):
@@ -706,7 +734,7 @@ def test_a_linked_artifact_directory_is_never_read(store, tmp_path):
         assert result["code"] == "corrupt" and "symlink or junction" in result["error"]
         assert pa.list_artifacts(workspace=str(workspace)) == []
     finally:
-        os.rmdir(str(victim))
+        _unlink_dir(victim)
 
 
 def test_corrupt_blob_is_detected_before_the_workspace_is_touched(store, tmp_path):
@@ -882,8 +910,8 @@ def test_a_parent_that_becomes_a_junction_mid_apply_is_refused_and_reported(stor
         assert backup and open(backup, encoding="utf-8").read() == "before-a"
         assert "PARTIALLY changed" in result["error"] and result["backup_dir"] in result["error"]
     finally:
-        if os.path.exists(str(workspace / "sub")):
-            os.rmdir(str(workspace / "sub"))
+        if _is_link_dir(workspace / "sub"):
+            _unlink_dir(workspace / "sub")
 
 
 def test_a_write_whose_parent_becomes_a_junction_mid_apply_is_refused(store, tmp_path,
@@ -921,8 +949,8 @@ def test_a_write_whose_parent_becomes_a_junction_mid_apply_is_refused(store, tmp
         assert not list(outside.iterdir()), "nothing was written through the link"
         assert not list(outside.glob(".collie-pack-*.tmp"))
     finally:
-        if os.path.exists(str(workspace / "sub")):
-            os.rmdir(str(workspace / "sub"))
+        if _is_link_dir(workspace / "sub"):
+            _unlink_dir(workspace / "sub")
 
 
 def test_a_leaf_that_becomes_a_link_mid_apply_is_never_replaced(store, tmp_path, monkeypatch):

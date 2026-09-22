@@ -58,6 +58,12 @@ second CLI on `PATH`; run admission still performs its authentication checks.
 - Web startup initializes Python's typing dependency before starting background
   services. This avoids a cold-start race in which a concurrent dataclass import
   sees a partially initialized `typing.ClassVar` and Live Copilot fails to start.
+- POSIX verification cleanup reaps its own killed child while checking group
+  extinction. Retaining that zombie previously made a completed stop look like
+  an unconfirmed process cleanup and left an unnecessary recovery fence.
+- Pack treats a child path beneath a regular file as absent on POSIX as well as
+  Windows, allowing a reviewed file-to-directory change. Parent-path checks,
+  conflict detection and link refusal still precede writes.
 
 The upstream automatic model downgrade is not enabled: changing models within
 one accepted run would invalidate its model attribution and aggregate pricing.
