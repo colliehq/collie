@@ -4,6 +4,7 @@
 
 - Update optional Codex and Claude Agent SDK runtimes to verified versions. Windows installers
   supply the missing native Claude CLI with a pinned archive checksum and executable startup check.
+  The embedded Python build supplies the SDK's source-build backend before installing it.
   The model picker recognizes a bundled SDK runtime without a separate CLI on PATH.
 - Accept Codex's new parent version metadata without misclassifying it as a billing override;
   strip it from child environments while preserving credential and endpoint protections.

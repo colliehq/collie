@@ -22,6 +22,9 @@ installer therefore stages the official Windows executable and license into
 the SDK's runtime directory, verifies the archive before copying files, and
 executes `--version` before accepting the payload. An import-only check would
 miss this installation failure.
+The embedded Windows build also stages the SDK's declared Hatchling backend
+before its isolation-free source install. A clean release rehearsal exposed the
+missing backend before signing; the corrected full payload build succeeds.
 The model picker also recognizes the SDK's bundled runtime without requiring a
 second CLI on `PATH`; run admission still performs its authentication checks.
 

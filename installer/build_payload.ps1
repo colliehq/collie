@@ -164,9 +164,17 @@ if (-not $hasPip) {
 }
 
 # 4) install collie + semantic-memory deps INTO the embeddable runtime --------------------------
-#    setuptools/wheel first (the [local] deps build from sdist on some platforms), then the repo.
-Step "pip install setuptools wheel"
-& (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location setuptools wheel
+#    Build backends first (the [local] deps build from sdist on some platforms), then the repo.
+#    The repo install below is --no-build-isolation, so pip never provisions a backend for us:
+#    every PEP 517 backend named by anything built from sdist here has to already be importable in
+#    this runtime. setuptools/wheel cover the repo itself; hatchling covers claude-agent-sdk, which
+#    publishes no win_amd64 wheel (only macOS/manylinux), so Windows always builds its sdist, and
+#    that sdist declares build-backend = "hatchling.build". Without hatchling staged, the payload
+#    build dies in metadata preparation with BackendUnavailable: Cannot import 'hatchling.build'.
+#    Isolation stays off deliberately: the embeddable runtime is driven by python312._pth, and an
+#    isolated build's injected sys.path entries are not honoured by that static path file.
+Step "pip install setuptools wheel hatchling"
+& (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location setuptools wheel hatchling
 Assert-NativeExit "install payload build dependencies" $LASTEXITCODE
 
 # An incremental payload build must be just as deterministic as -Clean. Remove only Collie's staged
