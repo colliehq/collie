@@ -327,6 +327,8 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
         except PermissionError as e:
             return False, "%s: %s" % (type(e).__name__, e)
         if time.monotonic() >= deadline:
+            listing = subprocess.run(['/bin/ps','-axo','pid=,ppid=,pgid=,state='], capture_output=True,text=True,timeout=5)
+            print('OWNED GROUP DIAGNOSTIC',pgid, listing.returncode,[r for r in listing.stdout.splitlines() if len(r.split())>=3 and r.split()[2]==str(pgid)],listing.stderr,flush=True)
             return False, "process group still had members %.0fs after SIGKILL" % timeout_s
         time.sleep(.01)
 

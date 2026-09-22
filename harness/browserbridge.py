@@ -594,7 +594,8 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
         # entirely — chrome://extensions accepts a dropped folder as an unpacked
         # load. The picker route stays as a footnote for people who prefer buttons.
         ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
-        opened = plat.is_macos() and _open_extensions_page()
+        interactive_setup = _interactive_extension_setup()
+        opened = interactive_setup and plat.is_macos() and _open_extensions_page()
         print("", flush=True)
         print("  To use your own Chrome, with your own logins, install the extension —", flush=True)
         print("  two steps, both of which only you can do:", flush=True)
@@ -608,7 +609,7 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
         print("", flush=True)
         print("       %s" % ext_dir, flush=True)
         hints = []
-        if plat.is_macos():
+        if interactive_setup and plat.is_macos():
             try:
                 # LC_ALL, because pbcopy transcodes to the locale's encoding and a
                 # process launched from Finder inherits no LANG — a home directory
@@ -620,7 +621,7 @@ def serve(port=DEFAULT_PORT, managed_browser=False, headed=False):
                 hints.append("on your clipboard")
             except Exception:
                 pass
-        if _interactive_extension_setup() and plat.reveal_in_file_manager(ext_dir):
+        if interactive_setup and plat.reveal_in_file_manager(ext_dir):
             hints.append("and showing in a file-manager window you can drag it straight from")
         if hints:
             print("       (%s)" % " ".join(hints), flush=True)

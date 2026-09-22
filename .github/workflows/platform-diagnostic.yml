@@ -21,4 +21,8 @@ jobs:
       - run: python -m playwright install chromium
       - run: python tests/test_qr.py
       - run: python tests/bridge_platform_probe.py
+      - run: |
+          for attempt in 1 2 3; do
+            python -m pytest -q -s tests/test_tools.py::test_execute_code_reaps_descendants_after_normal_exit_and_exception || true
+          done
       - run: python -m pytest -q tests/surfaces_test.py::test_browser_bridge_health tests/test_tools.py::test_execute_code_reaps_descendants_after_normal_exit_and_exception tests/test_web_mobile_capability_sync.py tests/test_web_task_inbox.py::test_deleting_a_conversation_withdraws_an_undelivered_claim

@@ -356,8 +356,14 @@ class ExecuteCodeTool(Tool):
                 if inner_results:
                     partial += "\nPartial tool results:\n" + json.dumps(inner_results, ensure_ascii=False)[:6000]
             if released and not tree_terminated:
+                # Say WHY. The owner knows whether the group answered a signal, outlived
+                # SIGKILL, or could not be signalled at all, and that distinction is the
+                # whole of what a recovery inspection has to start from; dropping it left
+                # the reader (and CI) with an unfalsifiable "could not be confirmed".
+                reason = getattr(owner, "detail", "") or ""
                 return ("ERROR: execute_code process-tree termination could not be confirmed; "
-                        "recovery inspection is required.\n" + partial)
+                        "recovery inspection is required." +
+                        (" (%s)" % reason if reason else "") + "\n" + partial)
             if stopped:
                 return ("ERROR: execute_code canceled by the user; " +
                         ("partial output:\n" + partial if released else
