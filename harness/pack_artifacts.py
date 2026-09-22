@@ -1114,6 +1114,7 @@ def _plan(record, workspace):
     steps, conflicts, satisfied = [], [], []
     delete_paths = {change["path"] for change in record.get("changes") or ()
                     if change["action"] == "delete"}
+    removing = {os.path.normcase(path) for path in delete_paths}
     for change in record.get("changes") or ():
         rel = change["path"]
         baseline = change["baseline"]
@@ -1137,6 +1138,15 @@ def _plan(record, workspace):
                 "reason": "%s changed since the pack attempt started (expected %s, found %s)" % (
                     rel, _describe(baseline), _describe(live))})
             continue
+        if change.get("action") != "delete":
+            blocker = _obstructing_ancestor(workspace, rel, removing)
+            if blocker:
+                conflicts.append({
+                    "path": rel, "kind": "changed",
+                    "expected": "dir", "found": "file",
+                    "reason": "%s cannot be created: %s is a file, not a directory, and this "
+                              "saved change does not remove it" % (rel, blocker)})
+                continue
         expect = baseline
         if baseline.get("type") == "dir":
             # A directory becoming a file. Only legal when the bundle also removes everything
@@ -1160,6 +1170,38 @@ def _plan(record, workspace):
                               -s["path"].count("/") if s["kind"] in ("delete", "rmdir")
                               else s["path"].count("/"), s["path"]))
     return {"steps": steps, "conflicts": conflicts, "satisfied": satisfied}
+
+
+def _obstructing_ancestor(workspace, rel, removing):
+    """The ancestor of ``rel`` that is a live non-directory, or ``""``.
+
+    Writing ``notes/summary.md`` needs ``notes`` to be a directory.  When the user spent the run
+    creating a plain file called ``notes``, nothing can go underneath it — and Collie will not
+    delete their file to make room.  ``_probe`` answers "absent" for the leaf in that situation
+    (a non-directory on the way is genuinely nothing at that path), so without this the bundle
+    looks ready in review and fails at ``mkdir``, halfway through the other entries.
+
+    An ancestor the SAME bundle deletes is not an obstruction: that is how a file becomes a
+    directory, and its delete step runs before any write.  Everything below such an ancestor is
+    created fresh, so the walk stops there rather than inspecting paths that cannot exist yet.
+    """
+    parts = rel.split("/")[:-1]
+    current = os.path.abspath(workspace)
+    ancestor = ""
+    for part in parts:
+        current = os.path.join(current, part)
+        ancestor = "%s/%s" % (ancestor, part) if ancestor else part
+        if os.path.normcase(ancestor) in removing:
+            return ""
+        try:
+            st = os.lstat(current)
+        except OSError:
+            # Absent, or unreadable: nothing is in the way here, and nothing deeper can exist.
+            # A write still re-checks and creates this component under the apply's own recheck.
+            return ""
+        if not stat.S_ISDIR(st.st_mode):
+            return ancestor
+    return ""
 
 
 def _directory_replacement(abs_path, rel, delete_paths):

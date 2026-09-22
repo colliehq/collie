@@ -4,6 +4,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import urllib.parse
+
+import pytest
 
 from harness import pack_artifacts, pack_review, sessions, session_owner
 from test_web_task_inbox import web, _post, _get
@@ -42,6 +46,7 @@ def test_http_review_apply_conflict_and_other_conversation_are_distinct(web):
     try:
         code, data = _post(base, token, "/api/pack-artifact/apply", body)
         assert code == 409 and "running" in data["error"]
+        assert lease.held, "a refused apply must not release the active run's lease"
     finally:
         lease.release()
     code, data = _get(base, token, query.replace("pack-review", "other-thread"))
@@ -69,6 +74,54 @@ def test_http_apply_refuses_an_unresolved_prior_tool_boundary(web):
                        {"session":"pack-review", "id":record["id"]})
     assert code == 409 and "interrupted" in data["error"]
     assert (workspace/"a.txt").read_text() == "before\n"
+
+
+@pytest.mark.parametrize("first_outcome", ["applied", "conflict"])
+def test_http_apply_reply_allows_an_immediate_follow_up(web, monkeypatch, first_outcome):
+    """A received result frees the next request even before its handler returns."""
+    from harness import webapp
+
+    base, token, state = web
+    workspace, record = saved_case(web)
+    if first_outcome == "conflict":
+        (workspace / "a.txt").write_text("human edit\n", encoding="utf-8")
+    body = {"session": "pack-review", "id": record["id"]}
+    path = "/api/pack-artifact/apply"
+    started, sent, finish, returned = (threading.Event() for _ in range(4))
+    released_in_time = []
+    original = webapp.Handler._send_json
+
+    def hold_first_reply(self, obj, code=200, **kwargs):
+        if urllib.parse.urlsplit(self.path).path != path or started.is_set():
+            return original(self, obj, code, **kwargs)
+        started.set()
+        original(self, obj, code, **kwargs)
+        sent.set()
+        try:
+            released_in_time.append(finish.wait(30))
+        finally:
+            returned.set()
+
+    monkeypatch.setattr(webapp.Handler, "_send_json", hold_first_reply)
+    try:
+        code, first = _post(base, token, path, body)
+        assert sent.wait(5), "the first response was not sent"
+        if first_outcome == "conflict":
+            assert code == 409 and first["code"] == "conflict"
+            assert (workspace / "a.txt").read_text() == "human edit\n"
+            # The user resolves the conflict and retries as soon as the reply arrives.
+            (workspace / "a.txt").write_text("before\n", encoding="utf-8")
+        else:
+            assert code == 200 and first["applied"]
+        code, second = _post(base, token, path, body)
+        assert code == 200 and second["applied"], second
+        assert not returned.is_set(), "the original handler must still be held"
+        assert bool(second["changed"]) == (first_outcome == "conflict")
+        assert (workspace / "a.txt").read_text() == "after\n"
+    finally:
+        finish.set()
+        assert returned.wait(10), "the held reply did not finish"
+    assert released_in_time == [True], "the test must not pass by waiting out the held reply"
 
 
 def test_saved_cli_works_in_a_fresh_process_without_model_calls(web):

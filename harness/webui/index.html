@@ -1341,7 +1341,7 @@
   .pack-summary code { font-family: var(--mono); font-size: 12px; }
   .pack-summary.fail { background: var(--coral-bg); border-color: color-mix(in srgb,var(--coral) 34%,transparent); }
   .pack-summary.warn { background: color-mix(in srgb,var(--amber) 12%,var(--surface-2)); border-color: color-mix(in srgb,var(--amber) 34%,transparent); }
-  .pack-saved { background:var(--surface); border-color:var(--line); }
+  .pack-saved { background:var(--surface); border-color:var(--line); overflow-wrap:anywhere; }
   .pack-saved[data-state="conflict"] { background:color-mix(in srgb,var(--amber) 10%,var(--surface)); }
   .pack-saved[data-state="applied"] { background:var(--accent-soft); }
   .pack-saved > [role="status"] { margin:5px 0 10px; }
@@ -9294,10 +9294,19 @@
       fetch("/api/pack-artifact/apply?token=" + encodeURIComponent(CT), {
         method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session:sid, id:ident})
       }).then(function (response) { return response.json().then(function (data) {
-        if (!response.ok || !data.applied) throw new Error(data.error || "HTTP " + response.status);
+        if (!response.ok || !data.applied) {
+          // Review can become stale, including after a failed write/rollback.
+          // Show the current details and require a refresh before another apply.
+          if (!data.ok && card.isConnected && currentSession === sid) display({check:data});
+          throw new Error(data.error || "HTTP " + response.status);
+        }
         return data;
       }); }).then(function () { return read(); })
-        .catch(function (error) { card.dataset.state = "conflict"; status.textContent = error.message || String(error); })
+        .catch(function (error) {
+          // A lost or malformed reply cannot tell us whether the write landed.
+          apply.hidden = true;
+          card.dataset.state = "conflict"; status.textContent = error.message || String(error);
+        })
         .finally(function () { apply.disabled = false; review.disabled = false; });
     };
     host.appendChild(card);

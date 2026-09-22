@@ -25,6 +25,7 @@ column is what the registry downgrades a capability for.
 """
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -184,6 +185,28 @@ def test_framing_reports_a_runner_error_for_every_chaotic_frame(key):
         assert "no_trailing_lf=error_event" in cell["detail"]
     else:
         assert "no_trailing_lf=settled" in cell["detail"]
+
+
+def test_rpc_framing_child_waits_for_process_ownership(monkeypatch):
+    """A slow parent cannot mistake an already-exited fixture for an ownership failure."""
+    from harness import plat
+
+    original = plat.attach_kill_on_close_job
+    waited = []
+
+    def slow_attach(proc, name=None):
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+        waited.append(proc.poll() is None)
+        return original(proc, name=name)
+
+    monkeypatch.setattr(plat, "attach_kill_on_close_job", slow_attach)
+    report = runner_compat.run_matrix(["pi-rpc"], checks=["framing"])
+    cell = _cells(report, "pi-rpc")["framing"]
+    assert cell["status"] == PASS, cell["detail"]
+    assert waited == [True] * 9, "every framing child must wait for its owned transport"
     assert "chunked=settled" in cell["detail"]
 
 

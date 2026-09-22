@@ -1018,6 +1018,7 @@ def _check_rpc_stdio_framing(ctx: CheckContext) -> str:
         split = max(1, len(payload) // 2) if name == "chunked" else len(payload)
         script = (
             "import base64,sys,time;"
+            "sys.stdin.buffer.readline();"
             "b=base64.b64decode(sys.argv[1]);n=int(sys.argv[2]);"
             "sys.stdout.buffer.write(b[:n]);sys.stdout.buffer.flush();"
             "time.sleep(0.03);sys.stdout.buffer.write(b[n:]);sys.stdout.buffer.flush()"
@@ -1027,6 +1028,10 @@ def _check_rpc_stdio_framing(ctx: CheckContext) -> str:
             cwd=workspace, env=env, max_wire_chars=65_536)
         passed = False
         try:
+            # Keep short-lived fixtures alive until Windows Job attachment and
+            # reader startup finish. EOF/error cases must test framing, not race
+            # process ownership on a busy host.
+            transport.send({"method": "fixture/start"})
             message = transport.receive(5.0)
             passed = isinstance(message, dict)
         except (runner_specs.RunnerProtocolError, EOFError):
