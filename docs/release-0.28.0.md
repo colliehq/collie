@@ -17,6 +17,11 @@ replayed. Execution history links directly to that conversation. A finished outc
 marked reviewed to clear its reminder while keeping its original state, error and history.
 That acknowledgement applies only to the selected execution, never to a later run.
 
+When the loop needs a final no-tools response, it explicitly asks for observed work and
+remaining steps. Tool requests returned on that turn are not executed or used as the final
+report; they receive a stopped-run fallback. This adds no request or retry beyond the existing
+budgeted summary attempt.
+
 Automation Studio exposes the tool-action budget and preserves accepted settings that its
 form does not show, including plan mode, continued context and tool permissions. Changing
 the trigger type intentionally replaces the trigger configuration. Background refreshes
