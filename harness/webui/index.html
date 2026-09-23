@@ -909,12 +909,19 @@
   .control-form input,.control-form textarea,.control-form select { width:100%; border:1px solid var(--line);
     border-radius:7px; background:var(--surface); color:var(--ink); padding:7px; font:12px var(--sans); }
   .control-form textarea { min-height:66px; resize:vertical; }
+  .control-note { grid-column:1/-1; margin:0; color:var(--muted); font-size:10.5px; line-height:1.45; }
   .control-checks { grid-column:1/-1; display:flex; gap:12px; flex-wrap:wrap; }
-  .control-checks label { flex-direction:row; align-items:center; }
+  .control-checks label { flex-direction:row; align-items:center; gap:6px; }
+  /* A checkbox is not a text field: the 100% above made the box claim the whole label and left
+     its name the leftovers, so "Permit external writes" broke over three lines with half the
+     row empty beside it. The label still wraps as a whole item on a narrow screen. */
+  .control-checks input[type="checkbox"] { width:auto; flex:0 0 auto; }
   .control-actions { grid-column:1/-1; display:flex; gap:7px; align-items:center; }
   .control-actions button { border:1px solid var(--line); border-radius:7px; padding:7px 10px;
     background:var(--surface); color:var(--ink); cursor:pointer; }
   .control-actions button.primary { background:var(--pine); color:var(--on-accent); border-color:var(--pine); }
+  .control-editor .control-actions { flex-wrap:wrap; }
+  .control-editor .control-actions button { white-space:nowrap; }
   .control-meter { width:100%; height:5px; border-radius:99px; background:var(--line); overflow:hidden; }
   .control-meter i { display:block; height:100%; background:var(--meadow); }
   .control-summary { color:var(--muted); font-size:11.5px; margin:-4px 0 10px; }
@@ -3250,6 +3257,16 @@
     return "en";
   }
   var ZH = {
+    "Collie keeps working until the task is done or one of these budgets runs out, including the tool-action ceiling.":
+      "Collie 会一直做到任务完成，或其中一项额度用尽为止，工具操作次数上限也在其中。",
+    "It also stops after": "它还会在", // followed by the turn count, then the clause below
+    "model turns, a cap set outside this panel and kept as it is on save.":
+      "个模型轮数后停止；该上限在此面板之外设置，保存时会原样保留。",
+    "No model-turn ceiling is set, so turns are not what ends this run.":
+      "没有设置模型轮数上限，因此结束这次运行的不会是轮数。",
+    "Max runs / day": "每天最多运行次数", "Max model tokens": "最多模型 token",
+    "Max cost USD": "最高费用（美元）", "Max wall seconds": "最长运行秒数",
+    "Max tool actions": "最多工具操作次数",
     "Starting now — already submitted": "已提交，正在启动",
     "Automatic start stopped — start it when you're ready": "自动启动已停止，可随时手动开始",
     "Already submitted — starts after": "已提交，将在此时间后开始",
@@ -3686,6 +3703,16 @@
   // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
+    "Collie keeps working until the task is done or one of these budgets runs out, including the tool-action ceiling.":
+      "Collie 會一直做到任務完成，或其中一項額度用盡為止，工具操作次數上限也在其中。",
+    "It also stops after": "它還會在", // followed by the turn count, then the clause below
+    "model turns, a cap set outside this panel and kept as it is on save.":
+      "個模型輪數後停止；該上限在此面板之外設定，儲存時會原樣保留。",
+    "No model-turn ceiling is set, so turns are not what ends this run.":
+      "沒有設定模型輪數上限，因此結束這次執行的不會是輪數。",
+    "Max runs / day": "每天最多執行次數", "Max model tokens": "最多模型 token",
+    "Max cost USD": "最高費用（美元）", "Max wall seconds": "最長執行秒數",
+    "Max tool actions": "最多工具操作次數",
     "Starting now — already submitted": "已提交，正在啟動",
     "Automatic start stopped — start it when you're ready": "自動啟動已停止，可隨時手動開始",
     "Already submitted — starts after": "已提交，將在此時間後開始",
@@ -4108,11 +4135,20 @@
     "Automatic task progress is temporarily blocked":"自动推进任务暂时受阻",
     "Saved tasks are kept. Open Settings to check the model connection.":"已保存任务仍然保留。可在设置中检查模型连接。",
     "{n} saved requests waiting":"{n} 条已保存要求待继续","Saved requests need inspection":"已保存要求需要检查",
+    "Automatic start is overdue — open to check":"自动启动已超时，请打开查看",
+    "Automatic start can't be confirmed — open to check":"无法确认自动启动状态，请打开查看",
+    "Waiting for automatic start — already submitted":"已提交，正在等待自动开始",
+    "Automatic work is scheduled. Nothing needs your decision.":"任务已安排自动处理，暂无需你决定。",
+    "Task progress":"任务进度",
+    "Open saved conversation":"打开已保存的对话","Mark reviewed":"标记为已查看",
     "Working folder":"工作目录","Isolated folder":"隔离目录","Folder on this computer":"这台电脑上的文件夹","Use folder":"使用此目录",
     "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
     "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
     "This conversation continues in its saved folder.":"这段对话会继续使用已保存的目录。","Select Use folder to check this location.":"请点击「使用此目录」检查位置。",
-    "not checked yet":"尚未检查","checking folder...":"正在检查目录…",
+    "not checked yet":"尚未检查","checking folder...":"正在检查目录…","folder not confirmed":"目录未确认",
+    "Could not check the working folder. Your draft is kept; Send checks again before it starts anything.":"无法检查工作目录。草稿已保留；发送前会再次检查，确认后才会开始。",
+    "The folder check did not answer in time.":"目录检查超时未响应。",
+    "The folder check did not answer with a folder.":"目录检查未返回任何目录。",
     "This draft is aimed here. Send checks this folder before it starts.":"这份草稿指向此目录。发送时会先检查该目录再开始。",
     "Checking folder...":"正在检查目录…","Applying changes...":"正在应用修改…","Changes applied. The isolated folder is kept.":"修改已应用，隔离目录已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已保存到隔离目录，可从「工作目录」应用修改。",
@@ -4301,7 +4337,35 @@
     "The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.":"服务商已达用量上限，并给出了预计恢复接受请求的时间。以上工作已保留，在此之前 Collie 不会调用服务商。",
     "The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.":"本次运行收到的可重试时间已到；这里尚未确认服务商当前是否可用。需要继续时，可以发送请求。",
     "What the provider returned":"服务商返回的原始信息",
-    "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
+    "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件",
+    // System activity · Recovery. The severities and resolutions below are what the row SAYS;
+    // what it posts stays the API's own value.
+    "Needs You & recovery":"需要你处理与恢复","needs_you":"需要你决定","warning":"警告",
+    "items":"项","need a decision":"需要决定","warnings":"警告","optional":"可选",
+    "completed":"已完成","not_fired":"未触发","Not fired":"未触发","cancel":"取消",
+    "Interrupted interactive action":"交互操作已中断","Mission recovery required":"任务需要恢复",
+    "Specialist needs attention":"专项任务需要处理","Automation outcome needs review":"自动化结果需要查看",
+    "Recovery required":"需要恢复","Notification delivery needs attention":"通知发送需要处理",
+    "I inspected the outside state and confirm:":"我已检查外部实际状态并确认：",
+    "Send test":"发送测试通知","Retry dead":"重试失败通知",
+    "Retry every dead notification from the beginning?":"从头重试所有失败的通知？",
+    "Open Mission":"打开任务","Open automation":"打开自动化","Mark reviewed":"标记为已查看",
+    // System activity · Automations, including the editor a person types a draft into.
+    "Build, dry-run and inspect bounded timer, file, page and webhook automations.":
+      "创建、试运行并查看受额度约束的定时、文件、页面和 Webhook 自动化。",
+    "configured":"项已配置","Recipes":"预置模板","Configured":"已配置","Execution history":"执行记录",
+    "template":"模板","Use":"使用","Preview":"预览","Run now":"立即运行","New automation":"新建自动化",
+    "Open saved conversation":"打开已保存的对话","Automation saved.":"自动化已保存。",
+    "Trigger matches now; nothing was queued.":"触发条件当前匹配；没有加入任何队列。",
+    "Trigger does not match now; nothing was queued.":"触发条件当前不匹配；没有加入任何队列。",
+    "Trigger does not match now.":"触发条件当前不匹配。",
+    "Automation editor":"自动化编辑器","Trigger":"触发方式",
+    "Schedule seconds, file path, or page URL":"间隔秒数、文件路径或页面网址",
+    "Isolated":"隔离目录","Current (explicit authority)":"当前工作区（需显式授权）",
+    "Readable roots (comma/newline)":"可读取目录（逗号或换行分隔）",
+    "Network hosts (comma/newline)":"可访问主机（逗号或换行分隔）",
+    "Enabled":"启用","Permit external writes":"允许对外写入",
+    "Dry run trigger":"试运行触发条件","Save automation":"保存自动化"
   });
   Object.assign(ZHTW, {
     "More models": "更多模型",
@@ -4309,11 +4373,20 @@
     "Automatic task progress is temporarily blocked":"自動推進任務暫時受阻",
     "Saved tasks are kept. Open Settings to check the model connection.":"已儲存任務仍然保留。可在設定中檢查模型連線。",
     "{n} saved requests waiting":"{n} 個已儲存要求待繼續","Saved requests need inspection":"已儲存要求需要檢查",
+    "Automatic start is overdue — open to check":"自動啟動已逾時，請開啟查看",
+    "Automatic start can't be confirmed — open to check":"無法確認自動啟動狀態，請開啟查看",
+    "Waiting for automatic start — already submitted":"已提交，正在等待自動開始",
+    "Automatic work is scheduled. Nothing needs your decision.":"任務已安排自動處理，暫無需你決定。",
+    "Task progress":"任務進度",
+    "Open saved conversation":"開啟已儲存的對話","Mark reviewed":"標記為已查看",
     "Working folder":"工作目錄","Isolated folder":"隔離目錄","Folder on this computer":"這台電腦上的資料夾","Use folder":"使用此目錄",
     "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
     "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
     "This conversation continues in its saved folder.":"這段對話會繼續使用已儲存的目錄。","Select Use folder to check this location.":"請點擊「使用此目錄」檢查位置。",
-    "not checked yet":"尚未檢查","checking folder...":"正在檢查目錄…",
+    "not checked yet":"尚未檢查","checking folder...":"正在檢查目錄…","folder not confirmed":"目錄未確認",
+    "Could not check the working folder. Your draft is kept; Send checks again before it starts anything.":"無法檢查工作目錄。草稿已保留；傳送前會再次檢查，確認後才會開始。",
+    "The folder check did not answer in time.":"目錄檢查逾時未回應。",
+    "The folder check did not answer with a folder.":"目錄檢查未回傳任何目錄。",
     "This draft is aimed here. Send checks this folder before it starts.":"這份草稿指向此目錄。傳送時會先檢查該目錄再開始。",
     "Checking folder...":"正在檢查目錄…","Applying changes...":"正在套用修改…","Changes applied. The isolated folder is kept.":"修改已套用，隔離目錄已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已儲存到隔離目錄，可從「工作目錄」套用修改。",
@@ -4502,7 +4575,35 @@
     "The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.":"服務商已達用量上限，並給出了預計恢復接受請求的時間。以上工作已保留，在此之前 Collie 不會呼叫服務商。",
     "The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.":"本次執行收到的可重試時間已到；這裡尚未確認服務商目前是否可用。需要繼續時，可以傳送請求。",
     "What the provider returned":"服務商傳回的原始訊息",
-    "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件"
+    "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件",
+    // System activity · Recovery. The severities and resolutions below are what the row SAYS;
+    // what it posts stays the API's own value.
+    "Needs You & recovery":"需要你處理與復原","needs_you":"需要你決定","warning":"警告",
+    "items":"項","need a decision":"需要決定","warnings":"警告","optional":"選用",
+    "completed":"已完成","not_fired":"未觸發","Not fired":"未觸發","cancel":"取消",
+    "Interrupted interactive action":"互動操作已中斷","Mission recovery required":"任務需要復原",
+    "Specialist needs attention":"專項任務需要處理","Automation outcome needs review":"自動化結果需要查看",
+    "Recovery required":"需要復原","Notification delivery needs attention":"通知傳送需要處理",
+    "I inspected the outside state and confirm:":"我已檢查外部實際狀態並確認：",
+    "Send test":"傳送測試通知","Retry dead":"重試失敗通知",
+    "Retry every dead notification from the beginning?":"從頭重試所有失敗的通知？",
+    "Open Mission":"開啟任務","Open automation":"開啟自動化","Mark reviewed":"標記為已查看",
+    // System activity · Automations, including the editor a person types a draft into.
+    "Build, dry-run and inspect bounded timer, file, page and webhook automations.":
+      "建立、試執行並查看受額度限制的定時、檔案、頁面和 Webhook 自動化。",
+    "configured":"項已設定","Recipes":"預置範本","Configured":"已設定","Execution history":"執行記錄",
+    "template":"範本","Use":"使用","Preview":"預覽","Run now":"立即執行","New automation":"新增自動化",
+    "Open saved conversation":"開啟已儲存的對話","Automation saved.":"自動化已儲存。",
+    "Trigger matches now; nothing was queued.":"觸發條件目前符合；沒有排入任何佇列。",
+    "Trigger does not match now; nothing was queued.":"觸發條件目前不符合；沒有排入任何佇列。",
+    "Trigger does not match now.":"觸發條件目前不符合。",
+    "Automation editor":"自動化編輯器","Trigger":"觸發方式",
+    "Schedule seconds, file path, or page URL":"間隔秒數、檔案路徑或頁面網址",
+    "Isolated":"隔離目錄","Current (explicit authority)":"目前工作區（需明確授權）",
+    "Readable roots (comma/newline)":"可讀取目錄（逗號或換行分隔）",
+    "Network hosts (comma/newline)":"可連線主機（逗號或換行分隔）",
+    "Enabled":"啟用","Permit external writes":"允許對外寫入",
+    "Dry run trigger":"試執行觸發條件","Save automation":"儲存自動化"
   });
   var I18N = {
     zh: ZH,
@@ -6072,8 +6173,31 @@
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
   var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, MISSION_NEEDS = [], QUEUED_SESSIONS = [], PERMISSION_EPOCH = 0;
+  // A queued conversation the server has already scheduled to start after a provider
+  // reset is progress a person arranged, not a question waiting on them — counting it
+  // as one produces a badge that no decision can clear. The server owns that timer
+  // and the verdict on it (`scheduled_wait.progress`, decided from its own clock,
+  // backoff and liveness evidence); this reads that verdict and never re-derives it
+  // from Date.now(), which would call a healthy backoff or a just-due tick overdue.
+  //
+  // "scheduled", "queued" (a healthy ticker owns the wait) and "starting" (an admission in
+  // flight) are progress. "stalled", "unknown", "stopped", a schedule this build was
+  // not given a verdict for, and an inbox that could not be read are all decisions:
+  // a row nothing can confirm keeps asking rather than buying its way out of the count.
+  function queuedProgress(row) {
+    var wait = (row || {}).scheduled_wait;
+    if (!wait || row.error || row.journal === "invalid") return "";
+    return typeof wait.progress === "string" && wait.progress ? wait.progress : "unknown";
+  }
+  function queuedOnSchedule(row) {
+    var progress = queuedProgress(row);
+    return progress === "scheduled" || progress === "queued" || progress === "starting";
+  }
+  function queuedNeedsYou(row) {
+    return row.owner_busy !== true && !queuedOnSchedule(row);
+  }
   function updateNeedsYou() {
-    var waiting = QUEUED_SESSIONS.filter(function (row) { return row.owner_busy !== true; });
+    var waiting = QUEUED_SESSIONS.filter(queuedNeedsYou);
     var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS + MISSION_NEEDS.length + waiting.length, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
@@ -6450,7 +6574,7 @@
   var activityPanel = $("activityPanel"), activityButton = $("activityBtn");
   // Reads go through the shared authenticated path: a long-lived window whose process token went
   // stale gets one refresh and one retry, so an operations tab shows the snapshot rather than
-  // "could not refresh" until some later poll. Writes (activityPost) deliberately never retry.
+  // "could not refresh" until some later poll. Writes retry once only after an explicit auth refusal.
   function activityGet(path) {
     return authenticatedFetch(path)
       .then(function (r) { return r.json().then(function (d) {
@@ -6458,7 +6582,7 @@
       }); });
   }
   function activityPost(path, body) {
-    return fetch(path + "?token=" + encodeURIComponent(CT), { method: "POST",
+    return authenticatedFetch(path, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
       .then(function (r) { return r.json().then(function (d) {
         if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
@@ -6488,6 +6612,7 @@
     detail.textContent = text; row.appendChild(detail);
   }
   function activityNotice(message, bad) {
+    activityNoticeSeq++;
     var node = $("activityNotice"); if (!node) return;
     node.textContent = message || ""; node.classList.toggle("bad", !!bad);
   }
@@ -6501,7 +6626,12 @@
     };
     row.appendChild(button); return button;
   }
-  var currentControlTab = "overview", controlData = {};
+  // Which tab the editor on screen was opened from. An editor belongs to one lane, so a panel
+  // reopened on that lane still shows it, and a panel opened on any other lane does not.
+  var currentControlTab = "overview", controlEditorTab = "", controlData = {};
+  // A refresh answers the screen it was asked for. These let a late response say whether that
+  // screen is still there: a newer refresh, another tab or a closed panel retires an older one.
+  var activityRequestSeq = 0, activityNoticeSeq = 0;
   // Set by a conversation asking for ITS recovery item, and consumed by the next recovery render.
   var recoveryFocusSession = "";
   function renderOverview(activity, health, hooks, doctor) {
@@ -6612,26 +6742,31 @@
   function renderRecovery(data) {
     var items = data.items || [], optional = items.filter(isOptionalRecoveryCheck);
     var required = items.filter(function (item) { return optional.indexOf(item) < 0; });
-    var badge = $("activityHealth"); badge.textContent = data.status || "unknown";
+    var badge = $("activityHealth"); badge.textContent = t(data.status || "unknown");
     // Red means "something is stuck". Warning-only maintenance is not, but a status this page does
     // not recognise is treated as if it were, rather than quietly downgraded.
     badge.classList.toggle("bad", required.length > 0 ||
       ["ok", "warning"].indexOf(data.status) < 0);
-    $("controlSummary").textContent = (data.summary.total || 0) + " items · " +
-      (data.summary.needs_you || 0) + " need a decision · " + (data.summary.warning || 0) + " warnings" +
-      (optional.length ? " · " + optional.length + " optional" : "");
+    $("controlSummary").textContent = (data.summary.total || 0) + " " + t("items") + " · " +
+      (data.summary.needs_you || 0) + " " + t("need a decision") + " · " +
+      (data.summary.warning || 0) + " " + t("warnings") +
+      (optional.length ? " · " + optional.length + " " + t("optional") : "");
     var grid = $("activityGrid"); grid.textContent = "";
     var wanted = recoveryFocusSession, focused = null;
     recoveryFocusSession = "";                 // one arrival, one highlight
     function recoveryRow(row, item) {
       if (wanted && item.identity === wanted) { row.classList.add("is-focus"); focused = row; }
-      activityText(row, item.title || item.identity, item.severity); activityDetail(row, item.detail);
+      activityText(row, item.title ? t(item.title) : item.identity, item.severity);
+      activityDetail(row, item.detail === item.severity ? t(item.detail) : item.detail);
       if (item.command) { var cmd = document.createElement("div"); cmd.className = "activity-command";
         cmd.textContent = item.command; row.appendChild(cmd); }
       (item.actions || []).forEach(function (action) {
         if (["completed","not_fired","cancel"].indexOf(action) >= 0) {
           activityAction(row, action === "not_fired" ? "Not fired" : action, function () {
-            if (!window.confirm("I inspected the outside state and confirm: " + action + ".")) return;
+            // The question is translated; `resolution` is not. What the row asks and what the
+            // row posts are two different strings, and only the first belongs to a language.
+            if (!window.confirm(t("I inspected the outside state and confirm:") + " " +
+                                t(action) + ".")) return;
             return activityPost("/api/recovery/reconcile", {session:item.identity,
               resolution:action, confirmed:true}).then(loadActivity);
           });
@@ -6640,7 +6775,7 @@
             {action:"test_notifications"}).then(loadActivity); });
         } else if (action === "retry_dead_notifications") {
           activityAction(row, "Retry dead", function () {
-            if (!window.confirm("Retry every dead notification from the beginning?")) return;
+            if (!window.confirm(t("Retry every dead notification from the beginning?"))) return;
             return activityPost("/api/doctor/repair", {action:"retry_dead_notifications",
               confirmed:true}).then(loadActivity);
           });
@@ -6649,6 +6784,13 @@
             if (typeof setProductNav === "function") setProductNav("missions"); });
         } else if (action === "inspect_automation") {
           activityAction(row, "Open automation", function () { setControlTab("automations"); });
+        } else if (action === "review_automation") {
+          // The outcome stays in Execution history with its error and saved conversation; this
+          // only says a person read it, so the lane stops asking. Nothing is re-run or retried.
+          activityAction(row, "Mark reviewed", function () {
+            return activityPost("/api/automations/review",
+              {execution_id:item.identity}).then(loadActivity);
+          });
         }
       });
     }
@@ -6687,44 +6829,94 @@
   }
   function controlList(value) { return String(value || "").split(/[\n,;]/).map(function (x) {
     return x.trim(); }).filter(Boolean); }
+  // The automation currently open in the editor, exactly as it was accepted. Saving replaces the
+  // whole stored record, and this form shows a subset of a spec: the execution mode, context
+  // policy, notification choices, unshown permissions, trigger predicate and the rest of the
+  // budget belong to whoever set them. So a save overlays the edited fields onto this clone
+  // rather than rebuilding a spec from literals — rebuilding is how a plan automation became a
+  // writable project run and a deliberate turn cap became 50.
+  var automationEditorBase = {};
   function automationEditorSpec() {
-    var provider = $("autoProvider").value, target = $("autoTarget").value.trim(), trigger = {provider:provider};
+    var spec = JSON.parse(JSON.stringify(automationEditorBase || {}));
+    var provider = $("autoProvider").value, target = $("autoTarget").value.trim();
+    var stored = spec.trigger || {}, sameTrigger = provider === stored.provider;
+    // A different trigger type gets a trigger built for it; keeping the old one is how a page URL
+    // ends up on a file trigger. An unchanged type keeps its predicate and scheduling fields.
+    var trigger = sameTrigger ? stored : {provider:provider};
     if (provider === "timer") trigger.every_s = Math.max(1, Number(target || 3600));
-    if (provider === "file") { trigger.path = target; trigger.predicate = {type:"changed"}; }
-    if (provider === "page") { trigger.url = target; trigger.predicate = {type:"changed"}; }
+    if (provider === "file") { trigger.path = target; trigger.predicate = trigger.predicate || {type:"changed"}; }
+    if (provider === "page") { trigger.url = target; trigger.predicate = trigger.predicate || {type:"changed"}; }
     var current = $("autoWorkspace").value === "current";
-    return { automation_id:$("autoId").value.trim(), task:$("autoTask").value.trim(), trigger:trigger,
-      context:{policy:"fresh"}, workspace:{mode:current ? "current" : "isolated"},
-      budget:{max_wall_s:Number($("autoWall").value || 1800),
-        max_model_tokens:Number($("autoTokens").value || 200000),
-        max_cost_usd:Number($("autoCost").value || 25), max_actions:100,
-        max_runs_per_day:Number($("autoRuns").value || 24), max_retries:1, max_turns:50},
-      execution:{mode:"project"}, notifications:["failure","needs_you"], enabled:$("autoEnabled").checked,
-      permissions:{read_roots:controlList($("autoReadRoots").value), write_roots:[],
-        network_hosts:controlList($("autoHosts").value), tools:[], desktop_targets:[],
-        external_writes:$("autoExternal").checked, current_workspace:current,
-        webhook_ingest:provider === "webhook"} };
+    var workspace = spec.workspace || {}, sameWorkspace = current === (workspace.mode === "current");
+    workspace.mode = current ? "current" : "isolated";
+    var budget = spec.budget || {};
+    // A new automation is bounded by the budgets on this form and runs as many turns as the
+    // work needs; 0 is "no hard turn ceiling". An existing cap is left exactly as stored.
+    if (!("max_turns" in budget)) budget.max_turns = 0;
+    budget.max_wall_s = Number($("autoWall").value || 1800);
+    budget.max_model_tokens = Number($("autoTokens").value || 200000);
+    budget.max_cost_usd = Number($("autoCost").value || 25);
+    budget.max_actions = Number($("autoActions").value || 100);
+    budget.max_runs_per_day = Number($("autoRuns").value || 24);
+    var permissions = spec.permissions || {};
+    permissions.read_roots = controlList($("autoReadRoots").value);
+    permissions.network_hosts = controlList($("autoHosts").value);
+    permissions.external_writes = $("autoExternal").checked;
+    // Authority follows the choice that grants it: picking the current workspace or a webhook
+    // trigger authorizes that authority, and leaving either alone keeps exactly what was accepted
+    // — neither widening it nor dropping it because this form has no checkbox for it.
+    permissions.current_workspace = sameWorkspace ? permissions.current_workspace === true : current;
+    permissions.webhook_ingest = sameTrigger ? permissions.webhook_ingest === true : provider === "webhook";
+    spec.automation_id = $("autoId").value.trim(); spec.task = $("autoTask").value.trim();
+    spec.trigger = trigger; spec.workspace = workspace; spec.budget = budget;
+    spec.permissions = permissions; spec.enabled = $("autoEnabled").checked;
+    return spec;
+  }
+  // The editor on screen, as an identity rather than a yes/no. Two editors opened one after the
+  // other are two different screens even though their fields share element ids, so a callback
+  // that held on to the first one can tell it is looking at the second.
+  function currentControlEditor() {
+    var grid = $("activityGrid"); return grid ? grid.querySelector(".control-editor") : null;
+  }
+  // While a form's write is in flight its own fields stop taking input: the refresh that follows
+  // redraws the lane, and anything typed in between would disappear with it. Only this form, and
+  // only fields that were editable, so giving them back cannot enable something already off.
+  function lockControlFields(form) {
+    return Array.prototype.filter.call(form.querySelectorAll("input, select, textarea"),
+      function (field) { return !field.disabled; })
+      .map(function (field) { field.disabled = true; return field; });
+  }
+  function unlockControlFields(fields) {
+    fields.forEach(function (field) { field.disabled = false; });
   }
   function showAutomationEditor(spec) {
     spec = spec || {automation_id:"",task:"",trigger:{provider:"timer",every_s:3600},
-      workspace:{mode:"isolated"},budget:{},permissions:{},enabled:false};
+      context:{policy:"fresh"},workspace:{mode:"isolated"},budget:{},execution:{mode:"project"},
+      notifications:["failure","needs_you"],permissions:{},enabled:false};
+    // One editor at a time: a second one duplicates every id on the page, and the older, still
+    // visible form then saves the newer automation's fields.
+    Array.prototype.forEach.call(document.querySelectorAll(".control-editor"), function (panel) {
+      panel.remove(); });
     var editor = document.createElement("section"); editor.className = "control-editor";
-    editor.innerHTML = '<h3>Automation editor</h3><div class="control-form">' +
-      '<label>ID<input id="autoId" maxlength="80"></label><label>Trigger<select id="autoProvider"><option>timer</option><option>file</option><option>page</option><option>webhook</option></select></label>' +
-      '<label class="wide">Task<textarea id="autoTask"></textarea></label>' +
-      '<label class="wide">Schedule seconds, file path, or page URL<input id="autoTarget"></label>' +
-      '<label>Workspace<select id="autoWorkspace"><option value="isolated">Isolated</option><option value="current">Current (explicit authority)</option></select></label>' +
-      '<label>Max runs / day<input id="autoRuns" type="number" min="1"></label>' +
-      '<label>Max model tokens<input id="autoTokens" type="number" min="1"></label>' +
-      '<label>Max cost USD<input id="autoCost" type="number" min="0.01" step="0.01"></label>' +
-      '<label>Max wall seconds<input id="autoWall" type="number" min="1"></label>' +
-      '<label>Readable roots (comma/newline)<textarea id="autoReadRoots"></textarea></label>' +
-      '<label>Network hosts (comma/newline)<textarea id="autoHosts"></textarea></label>' +
-      '<div class="control-checks"><label><input id="autoEnabled" type="checkbox"> Enabled</label>' +
-      '<label><input id="autoExternal" type="checkbox"> Permit external writes</label></div>' +
-      '<div class="control-actions"><button type="button" id="autoPreview">Dry run trigger</button>' +
-      '<button type="button" class="primary" id="autoSave">Save automation</button></div></div>';
-    $("activityGrid").prepend(editor);
+    editor.innerHTML = '<h3>' + t("Automation editor") + '</h3><div class="control-form">' +
+      '<label>ID<input id="autoId" maxlength="80"></label><label>' + t("Trigger") + '<select id="autoProvider"><option>timer</option><option>file</option><option>page</option><option>webhook</option></select></label>' +
+      '<label class="wide">' + t("Task") + '<textarea id="autoTask"></textarea></label>' +
+      '<label class="wide">' + t("Schedule seconds, file path, or page URL") + '<input id="autoTarget"></label>' +
+      '<label>' + t("Workspace") + '<select id="autoWorkspace"><option value="isolated">' + t("Isolated") + '</option><option value="current">' + t("Current (explicit authority)") + '</option></select></label>' +
+      '<label>' + t("Max runs / day") + '<input id="autoRuns" type="number" min="1"></label>' +
+      '<label>' + t("Max model tokens") + '<input id="autoTokens" type="number" min="1"></label>' +
+      '<label>' + t("Max cost USD") + '<input id="autoCost" type="number" min="0.01" step="0.01"></label>' +
+      '<label>' + t("Max wall seconds") + '<input id="autoWall" type="number" min="1"></label>' +
+      '<label>' + t("Max tool actions") + '<input id="autoActions" type="number" min="1" step="1"></label>' +
+      '<p class="control-note" id="autoBudgetHelp"></p>' +
+      '<label>' + t("Readable roots (comma/newline)") + '<textarea id="autoReadRoots"></textarea></label>' +
+      '<label>' + t("Network hosts (comma/newline)") + '<textarea id="autoHosts"></textarea></label>' +
+      '<div class="control-checks"><label><input id="autoEnabled" type="checkbox"> ' + t("Enabled") + '</label>' +
+      '<label><input id="autoExternal" type="checkbox"> ' + t("Permit external writes") + '</label></div>' +
+      '<div class="control-actions"><button type="button" id="autoPreview">' + t("Dry run trigger") + '</button>' +
+      '<button type="button" class="primary" id="autoSave">' + t("Save automation") + '</button>' +
+      '<button type="button" id="autoClose">' + t("Close") + '</button></div></div>';
+    $("activityGrid").prepend(editor); controlEditorTab = currentControlTab;
     var trigger = spec.trigger || {}, permissions = spec.permissions || {}, budget = spec.budget || {};
     $("autoId").value = spec.automation_id || ""; $("autoTask").value = spec.task || "";
     $("autoProvider").value = trigger.provider || "timer";
@@ -6733,21 +6925,56 @@
     $("autoWorkspace").value = (spec.workspace || {}).mode || "isolated";
     $("autoRuns").value = budget.max_runs_per_day || 24; $("autoTokens").value = budget.max_model_tokens || 200000;
     $("autoCost").value = budget.max_cost_usd || 25; $("autoWall").value = budget.max_wall_s || 1800;
+    $("autoActions").value = budget.max_actions || 100;
+    automationEditorBase = JSON.parse(JSON.stringify(spec));
+    // Say what actually stops the work, including the ceilings this form does not let you move:
+    // a turn cap set outside the panel is named with the number it carries.
+    var turns = Number(budget.max_turns || 0);
+    $("autoBudgetHelp").textContent =
+      t("Collie keeps working until the task is done or one of these budgets runs out, including the tool-action ceiling.") + " " +
+      (turns > 0 ? t("It also stops after") + " " + turns + " " +
+                   t("model turns, a cap set outside this panel and kept as it is on save.")
+                 : t("No model-turn ceiling is set, so turns are not what ends this run."));
     $("autoReadRoots").value = (permissions.read_roots || []).join("\n");
     $("autoHosts").value = (permissions.network_hosts || []).join("\n");
     $("autoEnabled").checked = spec.enabled === true; $("autoExternal").checked = permissions.external_writes === true;
     $("autoPreview").onclick = function () { activityPost("/api/automations/preview",
       {spec:automationEditorSpec()}).then(function (d) { activityNotice(d.fired ?
-        "Trigger matches now; nothing was queued." : "Trigger does not match now; nothing was queued.", false); })
+        t("Trigger matches now; nothing was queued.") :
+        t("Trigger does not match now; nothing was queued."), false); })
         .catch(function (e) { activityNotice(e.message, true); }); };
-    $("autoSave").onclick = function () { activityPost("/api/automations/upsert",
-      {spec:automationEditorSpec()}).then(function () { activityNotice("Automation saved.", false); loadActivity(); })
-        .catch(function (e) { activityNotice(e.message, true); }); };
+    // One upsert per gesture: a second click while the first is in flight would write again.
+    // The confirmation waits for the refresh, which otherwise clears it in the same tick.
+    // A save owns exactly one screen -- the form it was typed in, on the tab it was typed on,
+    // in a panel still open. The write itself stands either way, but once that screen is gone
+    // the answer has nothing to say about whatever replaced it: no message, no refresh of
+    // someone else's tab, and no touching another editor's button.
+    var save = $("autoSave");
+    save.onclick = function () {
+      if (save.disabled) return;
+      var tab = currentControlTab, locked = lockControlFields(editor);
+      save.disabled = true;
+      var mine = function () {
+        return editor.isConnected && tab === currentControlTab &&
+          !!activityPanel && !activityPanel.hidden;
+      };
+      return activityPost("/api/automations/upsert", {spec:automationEditorSpec()})
+        .then(function () {
+          return mine() ? loadActivity({confirmNotice:"Automation saved."}) : false; },
+          function (e) { if (mine()) activityNotice(e.message, true); return false; })
+        .then(function (applied) {
+          // Give the form back only if it is still this form: another editor's fields and
+          // button are not ours to re-enable, and enabling them would let a second upsert out.
+          if (editor.isConnected) { save.disabled = false; unlockControlFields(locked); }
+          return applied;
+        });
+    };
+    $("autoClose").onclick = function () { editor.remove(); };
   }
   function renderAutomations(data) {
-    $("activityHealth").textContent = (data.specs || []).length + " configured";
+    $("activityHealth").textContent = (data.specs || []).length + " " + t("configured");
     $("activityHealth").classList.remove("bad"); $("controlSummary").textContent =
-      "Build, dry-run and inspect bounded timer, file, page and webhook automations.";
+      t("Build, dry-run and inspect bounded timer, file, page and webhook automations.");
     var grid = $("activityGrid"); grid.textContent = "";
     grid.appendChild(activityLane("Recipes", data.recipes || [], function (row, recipe) {
       activityText(row, recipe.label, "template"); activityDetail(row, recipe.description);
@@ -6762,7 +6989,8 @@
           enabled:!spec.enabled}).then(loadActivity); });
       activityAction(row, "Preview", function () { return activityPost("/api/automations/preview",
         {automation_id:spec.automation_id}).then(function (d) { activityNotice(d.fired ?
-          "Trigger matches now; nothing was queued." : "Trigger does not match now.", false); }); });
+          t("Trigger matches now; nothing was queued.") :
+          t("Trigger does not match now."), false); }); });
       activityAction(row, "Run now", function () {
         return activityPost("/api/automations/run", {automation_id:spec.automation_id,
           confirmed:true}).then(loadActivity); });
@@ -6771,9 +6999,20 @@
       activityText(row, run.automation_id + " · " + run.execution_id, run.state);
       activityDetail(row, run.last_error || ((run.usage || {}).model_tokens + " tokens · $" +
         Number((run.usage || {}).cost_usd || 0).toFixed(4)));
+      if (run.session_id) activityAction(row, t("Open saved conversation"), function () {
+        openSession(run.session_id);
+      });
+      // Each finished needs_you run is acknowledged on its own: a later run's outcome says
+      // nothing about this one, and an already reviewed run keeps its row without the button.
+      if (run.state === "needs_you" && !run.attention_reviewed_at) {
+        activityAction(row, t("Mark reviewed"), function () {
+          return activityPost("/api/automations/review",
+            {execution_id:run.execution_id}).then(loadActivity);
+        });
+      }
     }));
     var add = document.createElement("div"); add.className = "control-actions";
-    var button = document.createElement("button"); button.textContent = "New automation";
+    var button = document.createElement("button"); button.textContent = t("New automation");
     button.onclick = function () { showAutomationEditor(null); }; add.appendChild(button); grid.prepend(add);
   }
   function renderMemory(data) {
@@ -7160,32 +7399,53 @@
   }
   Array.prototype.forEach.call(document.querySelectorAll("[data-control-tab]"), function (button) {
     button.onclick = function () { setControlTab(button.dataset.controlTab); }; });
-  function loadActivity() {
-    if (!activityPanel || activityPanel.hidden) return Promise.resolve();
-    $("activityGrid").classList.toggle("online-dashboard", currentControlTab === "online");
+  function loadActivity(request) {
+    if (!activityPanel || activityPanel.hidden) return Promise.resolve(false);
+    var tab = currentControlTab, generation = ++activityRequestSeq;
+    // Which editor was on screen when this was asked for, not merely whether one was. An action
+    // asks for its own confirmation here; `.then(loadActivity)` hands over a response body, and
+    // a response body is not a message for the user.
+    var editorAtStart = currentControlEditor();
+    var pending = request && request.confirmNotice ? String(request.confirmNotice) : "";
+    $("activityGrid").classList.toggle("online-dashboard", tab === "online");
     $("activityHealth").textContent = "loading";
-    activityNotice(""); var requests, render;
-    if (currentControlTab === "overview") {
+    activityNotice(""); var requests, render, noticeSeq = activityNoticeSeq;
+    if (tab === "overview") {
       requests = Promise.all([activityGet("/api/activity"), activityGet("/api/healthz"),
         activityGet("/api/hooks"), activityGet("/api/doctor")]);
       render = function (values) { renderOverview(values[0],values[1],values[2],values[3]); };
-    } else if (currentControlTab === "recovery") {
+    } else if (tab === "recovery") {
       requests = activityGet("/api/recovery-center"); render = renderRecovery;
-    } else if (currentControlTab === "online") {
+    } else if (tab === "online") {
       requests = activityGet("/api/online"); render = renderOnline;
-    } else if (currentControlTab === "automations") {
+    } else if (tab === "automations") {
       requests = activityGet("/api/automations"); render = renderAutomations;
-    } else if (currentControlTab === "memory") {
+    } else if (tab === "memory") {
       requests = activityGet("/api/memory/claims"); render = renderMemory;
-    } else if (currentControlTab === "procedures") {
+    } else if (tab === "procedures") {
       requests = activityGet("/api/procedures"); render = renderProcedures;
-    } else if (currentControlTab === "budgets") {
+    } else if (tab === "budgets") {
       requests = activityGet("/api/budgets"); render = renderBudgets;
     } else { requests = activityGet("/api/security"); render = renderSecurity; }
-    return requests.then(function (value) { controlData[currentControlTab] = value; render(value); })
-      .catch(function (error) { $("activityHealth").textContent = error.message || "unavailable";
+    // Success and failure both belong to this request, tab and editor.
+    var current = function () {
+      return generation === activityRequestSeq && tab === currentControlTab &&
+        !!activityPanel && !activityPanel.hidden && currentControlEditor() === editorAtStart;
+    };
+    return requests.then(function (value) {
+      if (!current()) return false;
+      controlData[tab] = value;
+      // Something else spoke to the user while this was in flight; leave its message alone.
+      var quiet = activityNoticeSeq === noticeSeq;
+      render(value);
+      if (pending && quiet) activityNotice(t(pending), false);
+      return true;
+    })
+      .catch(function (error) { if (!current()) return false;
+        $("activityHealth").textContent = error.message || "unavailable";
         $("activityHealth").classList.add("bad");
-        activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true); });
+        activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true);
+        return false; });
   }
   var activityPageMode = "activity";
   function setActivityMode(mode) {
@@ -7206,6 +7466,7 @@
   }
   function setActivityOpen(open) {
     if (!activityPanel) return;
+    if (!open) activityRequestSeq++; // A closed visit cannot later redraw a reopened draft.
     if (open && typeof setLibraryOpen === "function") {
       setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     }
@@ -7213,7 +7474,13 @@
     $("scroll").hidden = !!open; $("composer").hidden = !!open;
     $("scrollDownBtn").hidden = !!open;
     if (open) setRunDetailsOpen(false);
-    activityButton.setAttribute("aria-expanded", open ? "true" : "false"); if (open) loadActivity();
+    activityButton.setAttribute("aria-expanded", open ? "true" : "false");
+    // Closing the panel hides the grid; it does not empty it. So reopening the same tab with the
+    // same unsaved editor still on screen asks for nothing: the answer would redraw the lane and
+    // take the typed draft with it, and nobody asked for a refresh by shutting a lid. Refresh,
+    // a tab change, Close on the form and the save's own refresh are unchanged — and opening on
+    // any other tab still fetches, so an editor is never left standing over another lane.
+    if (open && !(currentControlEditor() && controlEditorTab === currentControlTab)) loadActivity();
   }
   if (activityButton) activityButton.onclick = function () {
     var opening = activityPanel.hidden || activityPageMode !== "activity";
@@ -7228,7 +7495,10 @@
     setActivityOpen(false); if (typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   };
   if ($("activityRefresh")) $("activityRefresh").onclick = loadActivity;
-  window.setInterval(function () { if (activityPanel && !activityPanel.hidden) loadActivity(); }, 10000);
+  // The background poll re-renders the whole grid, which would discard an open automation draft.
+  // Explicit refreshes, tab changes and the save itself still run.
+  window.setInterval(function () {
+    if (activityPanel && !activityPanel.hidden && !currentControlEditor()) loadActivity(); }, 10000);
 
   // ---- Library: exact installed bytes + authority, with explicit lifecycle actions ----
   var libraryPanel = $("libraryPanel");
@@ -8993,9 +9263,24 @@
     var title = String(value || "").replace(/^\s*(?:#{1,6}|[-*>])\s*/, "").replace(/\s+/g, " ").trim();
     return title || t("Untitled task");
   }
+  // One sentence per server verdict, used by every surface that shows a schedule, so
+  // they cannot disagree about what the server said. The time stated is the next try,
+  // never a reset that has gone by — that would read as a promise already broken.
+  function scheduledWaitLabel(wait) {
+    var progress = (wait || {}).progress;
+    if (progress === "scheduled") return t("Already submitted — starts after") + " " +
+      todayTimeText(Number(wait.next_attempt_at) || wait.retry_at);
+    if (progress === "queued") return t("Waiting for automatic start — already submitted");
+    if (progress === "starting") return t("Starting now — already submitted");
+    if (progress === "stopped") return t("Automatic start stopped — start it when you're ready");
+    if (progress === "stalled") return t("Automatic start is overdue — open to check");
+    return t("Automatic start can't be confirmed — open to check");
+  }
   function queuedSessionLabel(row) {
-    return row.error || row.journal === "invalid" ? t("Saved requests need inspection") :
-      t("{n} saved requests waiting").replace("{n}", Number(row.pending || 0) + Number(row.claimed || 0));
+    if (row.error || row.journal === "invalid") return t("Saved requests need inspection");
+    var saved = t("{n} saved requests waiting")
+      .replace("{n}", Number(row.pending || 0) + Number(row.claimed || 0));
+    return row.scheduled_wait ? scheduledWaitLabel(row.scheduled_wait) + " · " + saved : saved;
   }
   function recentThreadGroup(updated) {
     var stamp = Number(updated || 0) * 1000;
@@ -9538,7 +9823,7 @@
     var icon = document.createElement("span"); icon.className = "today-row-icon"; icon.textContent = value.icon || "·";
     var copy = document.createElement("span"); copy.className = "today-row-copy";
     var title = document.createElement("span"); title.className = "today-row-title"; title.textContent = value.title || "";
-    var meta = document.createElement("span"); meta.className = "today-row-meta"; meta.textContent = value.meta || "";
+    var meta = document.createElement("span"); meta.className = "today-row-meta"; meta.textContent = value.meta || ""; meta.title = value.meta || "";
     var arrow = document.createElement("span"); arrow.className = "today-row-action"; arrow.textContent = value.action ? "→" : "";
     copy.appendChild(title); copy.appendChild(meta); row.appendChild(icon); row.appendChild(copy); row.appendChild(arrow);
     if (value.action) row.onclick = value.action;
@@ -9655,12 +9940,27 @@
     if (schedulerIssue) attention.push({icon:"!",title:t("Automatic task progress is temporarily blocked"),
       meta:schedulerIssue + " · " + t("Saved tasks are kept. Open Settings to check the model connection."),tone:"attention",
       action:function () { $("settingsBtn").click(); }});
-    (queuedData.sessions || []).filter(function (row) { return row.owner_busy !== true; }).forEach(function (row) {
-      attention.push({icon:"↳",title:row.title || t("Ongoing task"),meta:queuedSessionLabel(row),tone:"brief",
-        action:function () { openSession(row.session); }});
+    // Everything still queued stays visible and openable here — a scheduled start is
+    // a thing to know about, and dropping it would make Today quieter than the truth.
+    // It is marked `progress` instead: the list is cut to three, so decisions sort
+    // first and are never pushed out by rows the server is handling on a clock, and
+    // the tallies below speak only for rows a person is the answer to. The thread
+    // list keeps its own row for each of these either way.
+    var queuedRows = (queuedData.sessions || []).filter(function (row) { return row.owner_busy !== true; });
+    queuedRows.sort(function (a, b) { return (queuedNeedsYou(b) ? 1 : 0) - (queuedNeedsYou(a) ? 1 : 0); });
+    queuedRows.forEach(function (row) {
+      var needsDecision = queuedNeedsYou(row);
+      attention.push({icon:needsDecision ? "!" : "↳",title:row.title || t("Ongoing task"),
+        meta:queuedSessionLabel(row),tone:needsDecision ? "attention" : "brief",
+        progress:!needsDecision,action:function () { openSession(row.session); }});
     });
     attention.slice(0,3).forEach(function (item) { todayRow(attentionBox,item); });
-    $("todayAttentionCount").textContent = attention.length ? String(attention.length) : "";
+    var decisions = attention.filter(function (item) { return !item.progress; }).length;
+    var moving = attention.length - decisions;
+    var attentionLabel = !decisions && moving ? "Task progress" : "Needs attention";
+    $("todayAttentionTitle").setAttribute("data-i18n", attentionLabel);
+    $("todayAttentionTitle").textContent = t(attentionLabel);
+    $("todayAttentionCount").textContent = decisions ? String(decisions) : "";
     if (!attention.length && attentionUnavailable)
       todayEmpty(attentionBox, "Attention check incomplete", "Collie couldn't verify every source, so this area is not being marked clear.", function () { loadToday(true); }, "Try again");
     else if (!attention.length) todayEmpty(attentionBox, "Nothing urgent", "Collie will put changes here only when they deserve your attention.", null, "");
@@ -9681,8 +9981,8 @@
       todayBriefCard($("todaySuggestion"), "Collie suggests", proposed.title || t("A routine worth reviewing"),
         proposed.summary || t("This pattern repeated locally. Review it before Collie turns it into a reusable workflow."), "Review habit", todayOpenHabits);
     } else {
-      todayBriefCard($("todaySuggestion"), "Collie suggests", attention.length ? t("Clear the important things first") : t("Keep today realistic"),
-        attention.length ? t("Start with the items that need your decision; everything else can stay quiet.") :
+      todayBriefCard($("todaySuggestion"), "Collie suggests", decisions ? t("Clear the important things first") : t("Keep today realistic"),
+        decisions ? t("Start with the items that need your decision; everything else can stay quiet.") :
           t("Turn the open space into a short plan without filling every hour."), "Plan with Collie",
         function () { todayStartTask(t("Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.")); });
     }
@@ -9690,8 +9990,11 @@
     sourceLine.dataset.state = unavailable || !connected.length ? "partial" : "ready";
     sourceLine.textContent = connected.length ? todayCount(connected.length, "Private local brief · 1 connected source", "Private local brief · {n} connected sources") :
       t("Private local brief · connect sources to make it richer");
-    $("todaySummary").textContent = unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : attention.length ?
-      todayCount(attention.length, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : timeline.length ?
+    // Work the server is already carrying is said as progress, not as a demand: the
+    // headline cannot claim something needs a person while the badge for it is hidden.
+    $("todaySummary").textContent = unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : decisions ?
+      todayCount(decisions, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : moving ?
+      t("Automatic work is scheduled. Nothing needs your decision.") : timeline.length ?
       todayCount(timeline.length, "1 item is in view. Nothing urgent is waiting.", "{n} items are in view. Nothing urgent is waiting.") :
       t("You're clear for now. Collie will surface changes here without filling the page with noise.");
     todayLastLoaded = Date.now(); todayFreshness();
@@ -9862,7 +10165,7 @@
     if (!rec && ONLINE_NEEDS) {
       openOnlinePage(); return;
     }
-    var waiting = QUEUED_SESSIONS.filter(function (row) { return row.owner_busy !== true; });
+    var waiting = QUEUED_SESSIONS.filter(queuedNeedsYou);
     if (!rec && waiting.length) { openSession(waiting[0].session); return; }
     if (!rec) return;
     if (rec.session && rec.session !== currentSession) openSession(rec.session);
@@ -10435,15 +10738,10 @@
       var wait = state.scheduledWait;
       if (wait && wait.entry === entry.id && entry.state === "pending") {
         if (wait.state === "retired" && wait.reason) meta.title = wait.reason;
-        // "retired" is the server saying it gave up on starting this by itself.
-        // The row says so plainly and keeps its Start and Remove controls: the
-        // request is still accepted and still startable by hand.
-        meta.textContent += " · " + (wait.state === "admitting"
-          ? t("Starting now — already submitted")
-          : wait.state === "retired"
-          ? t("Automatic start stopped — start it when you're ready")
-          : t("Already submitted — starts after") + " " +
-            new Date(wait.retry_at * 1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}));
+        // The same sentence Today and the thread list show for this verdict. A
+        // stopped or unconfirmable schedule says so plainly and keeps its Start and
+        // Remove controls: the request is still accepted and still startable by hand.
+        meta.textContent += " · " + scheduledWaitLabel(wait);
       }
       var assets = entry.assets || (entry.metadata || {}).assets || {};
       if (assets.images || assets.contexts) meta.textContent += " · " + t("Attachments saved");
@@ -12635,6 +12933,9 @@
     // on, and it is never silently replaced by somewhere else.
     var setupSession = null, setupCwd = "", pendingCwd = "", scopeRequest = 0,
         workspaceInfo = {}, workspaceMissing = false;
+    // New tasks need a server-confirmed folder before Send can dispatch them.
+    var rootKnown = false, rootTries = 0, rootTimer = null, ROOT_TRIES = 3;
+    var CHECK_TIMEOUT_MS = 10000;
     // Checking a folder is a read-only look at the disk, not a second thing to approve, so Send
     // performs it itself; `checkFlight` is the look that is open and `checkKey` the question it
     // answers, so everything asking that same question joins it. `destination` counts the times
@@ -12644,13 +12945,16 @@
     var folder = $("taskFolder"), folderUse = $("taskFolderUse"), workspaceApply = $("taskWorkspaceApply");
     function paintWorkspace() {
       var isolated = workspaceInfo.mode === "isolated", shown = pendingCwd || setupCwd;
+      // A failed boot check must remain visible when the folder panel is collapsed.
+      var unconfirmed = !setupSession && !rootKnown && !checking && !workspaceMissing && !pendingCwd;
       $("taskWorkspaceLabel").textContent = t(isolated ? "Isolated folder" : "Working folder");
       $("taskWorkspacePath").textContent = shown;
       $("taskWorkspacePath").title = shown;
       // Collapsed is the normal state of this panel, so an unchecked selection has to be legible
       // from the summary line rather than only from the note inside it.
-      $("taskWorkspacePending").hidden = !(pendingCwd || checking);
-      $("taskWorkspacePending").textContent = t(checking ? "checking folder..." : "not checked yet");
+      $("taskWorkspacePending").hidden = !(pendingCwd || checking || unconfirmed);
+      $("taskWorkspacePending").textContent = t(checking ? "checking folder..."
+        : unconfirmed ? "folder not confirmed" : "not checked yet");
       folder.readOnly = !!setupSession && !workspaceMissing; folder.disabled = setupLocked;
       folderUse.hidden = !!setupSession && !workspaceMissing; folderUse.disabled = setupLocked;
       folderUse.textContent = t(setupSession ? "Continue in this folder" : "Use folder");
@@ -12658,13 +12962,17 @@
       $("taskWorkspaceNote").textContent = workspaceMissing
         ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : checking
         ? t("Checking folder...") : pendingCwd
-        ? t("This draft is aimed here. Send checks this folder before it starts.") : isolated
+        ? t("This draft is aimed here. Send checks this folder before it starts.") : unconfirmed
+        ? t("Could not check the working folder. Your draft is kept; Send checks again before it starts anything.") : isolated
         ? t("Changes stay here until you apply them. Main project:") + " " + (workspaceInfo.origin || "")
         : setupSession ? t("This conversation continues in its saved folder.") : "";
     }
     window.showTaskWorkspace = function (cwd, info) {
       // A workspace reported for this scope settles the question the selection was asking.
-      if (cwd) { setupCwd = cwd; pendingCwd = ""; folder.value = cwd; folder.setCustomValidity(""); }
+      if (cwd) {
+        setupCwd = cwd; pendingCwd = ""; folder.value = cwd; folder.setCustomValidity("");
+        rootKnown = true; stopRootRetry();
+      }
       workspaceInfo = info || {}; paintWorkspace(); saveSetup();
     };
     folder.addEventListener("input", function () {
@@ -12680,7 +12988,9 @@
     // What Send settles before starting a new task here. Only a new task's own folder is answered
     // this way: moving a conversation's workspace is still a relocation the person asks for.
     window.workspaceCheckNeeded = function () {
-      return !setupSession && (!!pendingCwd || workspaceMissing || !!folder.validationMessage);
+      // Existing conversations use their saved workspace and its separate relocation flow.
+      return !setupSession &&
+        (!!pendingCwd || !rootKnown || workspaceMissing || !!folder.validationMessage);
     };
     window.workspaceDestination = function () { return destination; };
     window.ensureWorkspaceChecked = function () {
@@ -12689,7 +12999,7 @@
         // Confirmed means the server said yes about the folder it was asked about, the draft is
         // still aimed at that same choice, and nothing objects to the field. (Settling the
         // requested path on its resolved spelling is not a change.)
-        return !!answered && destination === mark && !setupSession && !pendingCwd &&
+        return !!answered && destination === mark && !setupSession && !pendingCwd && rootKnown &&
           !workspaceMissing && !folder.validationMessage;
       });
     };
@@ -12776,6 +13086,8 @@
       folder.value = pendingCwd || setupCwd; destination++;   // this scope's aim, not the last one's
       folder.setCustomValidity(pendingCwd ? t("Select Use folder to check this location.") : "");
       workspaceInfo = {}; workspaceMissing = false;
+      // Remembered paths still need validation when this scope is restored.
+      rootKnown = false; stopRootRetry(); rootTries = 0;
       $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
       [verifyCommand, packCheck, $("packN")].forEach(function (el) { el.setCustomValidity(""); });
       paint();
@@ -12787,6 +13099,8 @@
         verify:config.verify_command, verifySource:config.verify_source,
         check:config.check, checkSource:"user", n:config.n});
       saveSetup();
+      // Restored submissions need the same folder validation as a scope switch.
+      window.refreshVerificationCandidates();
     };
     window.switchTaskSetup = function (sid) {
       sid = sid || null;
@@ -13046,27 +13360,62 @@
         capabilities = { reasoning_efforts: [], speed_tiers: ["standard"] }; reported = null; paint();
       });
     };
+    function stopRootRetry() { if (rootTimer) { clearTimeout(rootTimer); rootTimer = null; } }
+    function scheduleRootRetry(sid) {
+      // Retry transient boot failures with a bounded backoff. Send can retry after that.
+      stopRootRetry();
+      if (sid || rootKnown || workspaceMissing || setupSession !== sid || rootTries >= ROOT_TRIES) return;
+      var attempt = ++rootTries, asked = scopeRequest;
+      rootTimer = setTimeout(function () {
+        rootTimer = null;
+        // A newer question, a changed aim or a scope switch has already taken this over.
+        if (rootKnown || setupSession !== sid || scopeRequest !== asked) return;
+        window.refreshVerificationCandidates();
+      }, 250 * attempt);
+    }
     window.refreshVerificationCandidates = function () {
       var sid = setupSession, requestedFolder = !sid ? folder.value.trim() : "";
       // Asking again about the same choice is the same read-only look: joining the one already
       // open keeps a Send waiting on it, where a second question settles the first as stale.
       var watched = !!requestedFolder && (requestedFolder !== setupCwd || !!folder.validationMessage);
-      var key = watched ? destination + " " + requestedFolder : "";
+      // Coalesce boot checks too, including remembered paths that have not been confirmed.
+      var rootless = !sid && !rootKnown;
+      var key = (watched || rootless) ? destination + " " + requestedFolder : "";
       if (key && checkFlight && checkKey === key) return checkFlight;
+      stopRootRetry();
       var request = ++scopeRequest, beforeVerify = verifyCommand.value,
           beforeCheck = packCheck.value, beforeCwd = setupCwd;
       var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) :
         requestedFolder ? "?cwd=" + encodeURIComponent(requestedFolder) : "");
-      if (watched) { folder.setCustomValidity(t("Checking folder...")); checking = true; paintWorkspace(); }
-      var flight = authenticatedFetch(path).then(function (r) {
-        return r.json().then(function (data) {
+      if (watched) folder.setCustomValidity(t("Checking folder..."));
+      if (watched || rootless) { checking = true; paintWorkspace(); }
+      // Bound authentication refresh and body parsing as well as response headers. The race
+      // works without AbortController; abort only releases this check's own fetch.
+      var stop = typeof AbortController === "function" ? new AbortController() : null;
+      var expired = false, deadline = null;
+      var silence = new Promise(function (_, refuse) {
+        deadline = setTimeout(function () {
+          expired = true; if (stop) stop.abort();
+          refuse(new Error(t("The folder check did not answer in time.")));
+        }, CHECK_TIMEOUT_MS);
+      });
+      var look = authenticatedFetch(path, stop ? {signal: stop.signal} : null).then(function (r) {
+        return r.json().then(function (body) {
+          // Treat malformed success bodies as an unconfirmed folder.
+          var data = body && typeof body === "object" ? body : {};
           if (!r.ok) {
             var error = new Error(data.error || "HTTP " + r.status);
             error.workspaceMissing = !!data.workspace_missing; throw error;
           }
+          if (typeof data.cwd !== "string" || !data.cwd.trim()) {
+            throw new Error(t("The folder check did not answer with a folder."));
+          }
           return data;
         });
-      }).then(function (data) {
+      });
+      // Late responses after timeout cannot update the folder or release a waiting Send.
+      var flight = Promise.race([look, silence]).then(function (data) {
+        clearTimeout(deadline);
         // Resolves to whether this look answered its own question: one that a later question
         // overtook settles nothing, least of all a Send waiting on it.
         if (request !== scopeRequest || setupSession !== sid) return false;
@@ -13076,8 +13425,9 @@
         }
         if (!sid && folder.value.trim() !== requestedFolder) return false;
         // The answer is about the folder that was asked for, so the selection is now checked.
-        setupCwd = data.cwd || ""; if (!sid) pendingCwd = "";
+        setupCwd = data.cwd; if (!sid) pendingCwd = "";
         folder.value = setupCwd; folder.setCustomValidity(""); workspaceMissing = false;
+        rootKnown = true; stopRootRetry(); rootTries = 0;
         $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
         var first = (data.candidates || [])[0];
         if (!first) { saveSetup(); return true; }
@@ -13088,13 +13438,19 @@
         if (packCheck && !packCheck.value) { packCheck.value = first.command; packCheck.dataset.source = first.source || "detected"; }
         saveSetup(); return true;
       }).catch(function (error) {
+        clearTimeout(deadline);
         if (request !== scopeRequest || setupSession !== sid) return false;
-        workspaceMissing = !!error.workspaceMissing; paintWorkspace();
+        var reason = expired ? t("The folder check did not answer in time.")
+                             : error.message || String(error);
+        workspaceMissing = !!error.workspaceMissing;
+        $("taskWorkspaceStatus").textContent = reason;
+        if (!sid && requestedFolder) folder.setCustomValidity(reason);
+        scheduleRootRetry(sid);
+        paintWorkspace();
         if (workspaceMissing) $("taskWorkspace").open = true;
-        $("taskWorkspaceStatus").textContent = error.message || String(error);
-        if (!sid && requestedFolder) folder.setCustomValidity(error.message || String(error));
+        return false;
       });
-      if (watched) {
+      if (watched || rootless) {
         checkFlight = flight; checkKey = key;
         // Only the look that still owns the field may stop saying "checking".
         flight.then(function () {

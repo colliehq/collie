@@ -581,42 +581,54 @@ def _terminate_owned_posix_group(pgid: int, *, proc=None,
     SIGKILL delivery alone is not proof that every member has exited.  Poll the
     group until ESRCH before the post-verification workspace snapshot so an
     in-flight background write cannot race the freshness receipt.
+
+    As in ``tool_process._kill_owned_group``, signal before reaping and never
+    send another destructive signal afterward: reaping can permit pgid reuse.
+    Darwin may deny the initial signal to our own zombie-only group, so settle
+    that child and require ESRCH from a subsequent probe. EPERM is not extinction.
     """
     import signal
+    reap = getattr(proc, "poll", None)
+    if not callable(reap):
+        reap = None
+    initial_error = ""
     try:
         # SIGKILL is required on POSIX.  The numeric fallback keeps the helper
         # unit-testable from a Windows host where ``signal.SIGKILL`` is absent.
         os.killpg(int(pgid), getattr(signal, "SIGKILL", 9))
-        deadline = time.monotonic() + min(5.0, max(0.0, float(timeout_s)))
-        probe_error = ""
-        while time.monotonic() < deadline:
-            # A killed direct child remains a zombie until this parent reaps
-            # it. killpg(..., 0) still sees that zombie, so waiting for ESRCH
-            # before poll()/wait() would make our own child prevent the proof.
-            # Reap only the Popen child we own; group existence still decides
-            # whether any other member remains.
-            poll = getattr(proc, "poll", None)
-            if callable(poll):
-                try:
-                    poll()
-                except Exception as exc:
-                    return False, "%s: %s" % (type(exc).__name__, exc)
-            try:
-                os.killpg(int(pgid), 0)
-                probe_error = ""
-            except ProcessLookupError:
-                return True, ""
-            except PermissionError as e:
-                # Darwin may report EPERM during group teardown after SIGKILL.
-                # Only a later ESRCH confirms extinction; a persistent denial
-                # still fails closed at the same bounded deadline.
-                probe_error = "%s: %s" % (type(e).__name__, e)
-            time.sleep(.01)
-        return False, probe_error or "process group did not become extinct after SIGKILL"
     except ProcessLookupError:
         return True, ""
     except OSError as e:
-        return False, "%s: %s" % (type(e).__name__, e)
+        initial_error = "%s: %s" % (type(e).__name__, e)
+        if reap is None:
+            # Without a reaper there is no further child cleanup we can perform here.
+            return False, initial_error
+    deadline = time.monotonic() + min(5.0, max(0.0, float(timeout_s)))
+    probe_error = initial_error
+    while time.monotonic() < deadline:
+        # A killed direct child remains a zombie until this parent reaps
+        # it. killpg(..., 0) still sees that zombie, so waiting for ESRCH
+        # before poll()/wait() would make our own child prevent the proof.
+        # Reap only the Popen child we own; group existence still decides
+        # whether any other member remains.
+        if reap is not None:
+            try:
+                reap()
+            except Exception as exc:
+                return False, "%s: %s" % (type(exc).__name__, exc)
+        try:
+            os.killpg(int(pgid), 0)
+            probe_error = ""
+        except ProcessLookupError:
+            return True, ""
+        except PermissionError as e:
+            # Darwin may report EPERM during group teardown after SIGKILL.
+            # Only a later ESRCH confirms extinction; a persistent denial
+            # still fails closed at the same bounded deadline.
+            probe_error = "%s: %s" % (type(e).__name__, e)
+        time.sleep(.01)
+    return False, (probe_error or initial_error or
+                   "process group did not become extinct after SIGKILL")
 
 
 def _wait_verification_process(proc, timeout_s: float = 5.0) -> bool:

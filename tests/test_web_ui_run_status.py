@@ -30,6 +30,12 @@ sync_playwright = playwright_api.sync_playwright
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEBUI = os.path.join(os.path.dirname(HERE), "harness", "webui")
 TOKEN = "fixture-token"
+# What `/api/verification` answers here. The real route resolves a directory with
+# `sessions.resolve_cwd` and returns it, or refuses (409/404) — a 200 always names an absolute,
+# non-empty one (tests/test_verification_scope_api.py). The catch-all `{}` below used to answer
+# this route too, so every page loaded by this fixture booted with a working folder the server
+# had never named: a fixture contradicting the route, which is not a contract to build on.
+PROJECT_CWD = os.path.dirname(HERE)
 
 # ---------------------------------------------------------------- staged runs
 # Each script is a list of (event, payload). The stream sends them in order and closes, which is
@@ -374,6 +380,10 @@ RUNS = [{"session": "s-cap", "run": "r3", "state": "done", "stop_reason": "turn_
 
 
 class _Fixture(BaseHTTPRequestHandler):
+    # Reuse sockets across the many API reads in each page boot. JSON/files declare a length;
+    # the event stream below explicitly closes its connection to delimit its final frame.
+    protocol_version = "HTTP/1.1"
+
     stream_requests = []                 # every /api/stream the page opened, in order
     route_requests = []
     queue_entries = {}
@@ -574,6 +584,10 @@ class _Fixture(BaseHTTPRequestHandler):
             return self._json(dict(state, session_id=sid))
         if path == "/api/stream":
             return self._stream(query)
+        if path == "/api/verification":
+            sid = (query.get("session") or [""])[0]
+            return self._json({"session": sid, "cwd": (query.get("cwd") or [""])[0] or PROJECT_CWD,
+                               "candidates": []})
         if path.startswith("/api/"):
             return self._json({})
         return self._json({}, 404)
@@ -585,6 +599,8 @@ class _Fixture(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        # This finite fixture stream ends at EOF, including under HTTP/1.1.
+        self.send_header("Connection", "close")
         self.end_headers()
         try:
             if text == "Hold queue fixture":
@@ -794,6 +810,25 @@ def await_run(page, token=None):
     page.wait_for_timeout(200)
 
 
+def thread_row(page, name):
+    """The one sidebar row whose title is exactly `name`, resolved again each time it is used.
+
+    The sidebar is not patched in place: `loadSessions()` empties `#threads` and rebuilds every
+    row, and `pollRuns` calls it whenever `/api/runs` reports a run this page had not already
+    recorded — which on a cold load is always, because the page starts with no runs known. So a
+    row read out of `query_selector_all` names a node the next redraw throws away, and clicking
+    that handle a moment later fails with "Element is not attached to the DOM" rather than
+    opening the thread. A locator re-queries the live list at the instant of the click instead,
+    and being strict it refuses to act at all on anything but a single match. The title is
+    anchored against `.t-last`, the row's name node, so "Read README.md" cannot also select a
+    thread that merely begins that way.
+    """
+    row = page.locator(".thread").filter(
+        has=page.locator(".t-last").filter(has_text=re.compile(r"^%s$" % re.escape(name))))
+    assert row.count() == 1, "%r must name exactly one sidebar row, found %d" % (name, row.count())
+    return row
+
+
 class Page:
     """One loaded task surface, with its JS errors collected."""
 
@@ -856,17 +891,19 @@ def _reset_fixture_state():
 def ui(server, browser):
     _reset_fixture_state()
     context = browser.new_context(viewport={"width": 1280, "height": 900})
-    page = context.new_page()
     errors = []
-    page.on("pageerror", lambda e: errors.append(str(e)))
-    page.goto(server + "/?token=" + TOKEN, wait_until="load")
-    page.wait_for_selector("#input", timeout=8000)
-    page.wait_for_timeout(400)          # identity + model probes settle; onboarding must stay shut
-    assert not page.is_visible("#obOverlay.open"), "fixture should look configured"
-    yield Page(page, errors)
-    _Fixture.queue_release.set(); _Fixture.queue_ack.set()
+    try:
+        page = context.new_page()
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        page.wait_for_timeout(400)      # identity + model probes settle; onboarding stays shut
+        assert not page.is_visible("#obOverlay.open"), "fixture should look configured"
+        yield Page(page, errors)
+    finally:
+        _Fixture.queue_release.set(); _Fixture.queue_ack.set()
+        context.close()
     assert errors == [], "JS errors: %r" % errors
-    context.close()
 
 
 def test_refused_delete_keeps_open_thread_and_shows_server_reason(ui):
@@ -1177,17 +1214,13 @@ def test_switching_threads_never_shows_a_stale_title_or_status(ui):
     ui.ask("Read README.md and tell me what this tool does")
     assert ui.gate_state() in ("idle", None)
 
-    rows = ui.page.query_selector_all(".thread")
-    capped = [r for r in rows if "Migrate every module" in r.inner_text()][0]
-    capped.click()
+    thread_row(ui.page, "Migrate every module to the new config loader").click()
     ui.page.wait_for_timeout(400)
     assert ui.title() == "Migrate every module to the new config loader"
     assert "Stopped at the turn limit" in ui.log_text(), "a reopened capped run still says so"
     assert ui.page.inner_text("#stateText") == "turn limit"
 
-    finished = [r for r in ui.page.query_selector_all(".thread")
-                if "Read README.md" in r.inner_text()][0]
-    finished.click()
+    thread_row(ui.page, "Read README.md and tell me what this tool does").click()
     ui.page.wait_for_timeout(400)
     assert ui.title() == "Read README.md and tell me what this tool does"
     assert "Stopped at the turn limit" not in ui.log_text(), "the previous thread's verdict is gone"
@@ -1196,10 +1229,9 @@ def test_switching_threads_never_shows_a_stale_title_or_status(ui):
 
 def test_sidebar_calls_a_capped_run_paused_not_done(ui):
     ui.page.wait_for_timeout(400)       # the 2.5s registry poll seeds from /api/runs on load
-    row = [r for r in ui.page.query_selector_all(".thread")
-           if "Migrate every module" in r.inner_text()][0]
-    state = row.query_selector(".t-state")
-    assert state is not None
+    row = thread_row(ui.page, "Migrate every module to the new config loader")
+    state = row.locator(".t-state")
+    assert state.count() == 1
     label = state.inner_text().lower()          # the row is uppercased by CSS
     assert "done" not in label, "a run stopped by a cap is terminal but not finished"
     assert "paused" in label and "turn limit" in label
@@ -1212,9 +1244,7 @@ def test_reload_restores_the_thread_name_and_verdict(server, browser):
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.goto(server + "/?token=" + TOKEN, wait_until="load")
     page.wait_for_selector(".thread", timeout=8000)
-    row = [r for r in page.query_selector_all(".thread")
-           if "Migrate every module" in r.inner_text()][0]
-    row.click()
+    thread_row(page, "Migrate every module to the new config loader").click()
     page.wait_for_timeout(500)
     assert page.inner_text("#pageTitle") == "Migrate every module to the new config loader"
     assert "Stopped at the turn limit" in page.inner_text("#log")
@@ -2375,7 +2405,7 @@ STALE_PUMP = {"id": "service:notification-pump", "kind": "service", "identity": 
               "detail": "No fresh heartbeat for about 300 seconds", "actions": ["inspect_doctor"]}
 
 
-def _open_recovery_tab(page):
+def _open_recovery_tab(page, decision_label="need a decision"):
     """Open the control panel on the recovery tab, the way a person reaches it from the toolbar."""
     page.click("#topbarMore > summary")
     page.click("#activityBtn")
@@ -2383,8 +2413,8 @@ def _open_recovery_tab(page):
     page.wait_for_selector("#activityPanel:not([hidden])", timeout=8000)
     page.click('[data-control-tab="recovery"]')
     page.wait_for_function(
-        "() => document.getElementById('controlSummary').textContent.includes('need a decision')",
-        timeout=8000)
+        "label => document.getElementById('controlSummary').textContent.includes(label)",
+        arg=decision_label, timeout=8000)
     page.wait_for_timeout(150)
 
 
@@ -2544,7 +2574,9 @@ def test_the_optional_section_speaks_the_reader_s_language(server, browser):
     try:
         page.goto(server + "/?token=" + TOKEN, wait_until="load")
         page.wait_for_selector("#input", timeout=8000)
-        _open_recovery_tab(page)
+        # The summary is translated too; waiting for English would time out on
+        # a correctly rendered Chinese panel before its contents are inspected.
+        _open_recovery_tab(page, decision_label="需要决定")
         summary = page.text_content(".optional-lane summary")
         assert "可选检查" in summary and "无需决定" in summary and "(1)" in summary
         page.click(".optional-lane summary")

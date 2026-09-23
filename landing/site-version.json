@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "content_version": "live-copilot-v1",
-  "source_product_version": "0.27.0",
+  "source_product_version": "0.28.0",
   "public_download_channel": "latest-stable",
   "positioning": "local-first private personal intelligence",
   "privacy_notice_version": "live-copilot-v1",

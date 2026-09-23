@@ -1,7 +1,67 @@
 # Changelog
 
-## Unreleased
+## v0.28.0 — Longer tasks and clearer recovery
 
+- Give the final no-tools request an explicit summary instruction when execution ends without
+  a usable answer. It names an exhausted turn limit when applicable and asks for observed work
+  and remaining steps, without inventing verification or conversation persistence. A returned
+  tool request and its accompanying prose fall back to a stopped-run message. No extra request
+  or retry is added, and the host's own "not finished" notice is unchanged.
+- Refuse unsupported providers when a caller explicitly requires subscription-only routing,
+  before provider construction or plugin discovery. Codex OAuth also requires its first-party
+  endpoint under that constraint. Ordinary provider selection is unchanged.
+- End a quota wait when the accepted request it was scheduled to start is withdrawn, so the
+  remaining queued requests stop being shown as an automatic start nothing will perform. Only
+  the wait bound to the withdrawn request ends, a newer wait and an admission already under way
+  are left alone, and why the start stopped being scheduled stays readable.
+- Let an operator mark one finished automation execution that needs attention as reviewed, so the
+  health badge can return to normal. The acknowledgement is durable and applies to that execution
+  only: the run keeps its state, error, receipt and saved conversation, a later run is never
+  answered for by an earlier one, and nothing is re-run, retried or resumed.
+- Show the operations panel only answers for the screen that asked for them. A refresh that
+  finishes after a tab change, a newer refresh or a panel close no longer replaces current
+  content, health or messages, and no longer paints over an automation draft opened since.
+  Failures for the tab you are on are still reported.
+- Confirm a saved automation after its refresh finishes, so the message is readable, and send
+  one upsert per Save gesture. A refused save keeps the filled form and the usable button.
+- Answer a save on the form it was typed in. Leaving the automation editor, switching tabs or
+  closing the panel before the save lands no longer refreshes someone else's tab, carries the
+  confirmation onto the next screen, or re-enables a second editor mid-save. The write itself
+  still counts. A form stops taking edits only while its own save is in flight, and takes them
+  again if the save is refused.
+
+- Keep an unsaved automation draft when the operations panel is closed and opened again on the
+  same tab: reopening no longer refetches and redraws the lane out from under the form. Refresh,
+  a tab change, the editor's own Close and the save's refresh still redraw exactly as before, and
+  opening the panel on another tab still shows that tab rather than the draft.
+- Say the Recovery and Automations tabs in the language the rest of the page is in (Simplified
+  and Traditional Chinese): lane names, row severities, every action, the automation editor's
+  fields and help, and its confirmations. Automation ids, task text and server messages are shown
+  as they are, and what an action sends is unchanged.
+- Name the Automation Studio permission checkboxes on one line instead of breaking them over
+  three beside an empty half-row.
+- Refresh an expired process token when an operations-panel action is refused, then retry
+  that action once with the same payload. Other errors remain visible without automatic replay.
+- Open an automation's saved conversation from its execution history, including partial work
+  that needs attention. Navigation does not restart the task or expose answers in health metadata.
+- Let an automation work until the task is done or one of its budgets runs out. New automations
+  have no turn ceiling; wall, token, cost, tool-action and runs-per-day budgets stay mandatory
+  and are what bound the run. An explicit turn cap is now honored exactly as written, including
+  values above the Settings panel's interactive range, and existing caps are left unchanged.
+  Automation Studio now shows the tool-action budget as an editable field and says which
+  ceilings can end a run, including a turn cap set outside the panel.
+- Keep everything the Automation Studio form does not show when an automation is edited: the
+  execution mode (a plan automation is no longer promoted to a writable project run), context
+  policy, notification choices, permissions, trigger predicate and the rest of the budget.
+  Opening a second editor replaces the first instead of duplicating the form.
+- Show healthy automatic follow-ups as task progress instead of requests for a decision.
+  Keep stopped or unconfirmed starts visible, and show the next retry time consistently.
+- Count verification evidence only for checks that actually reached the tool. Refused or
+  blocked checks cannot verify an edit or replace the last executed check's result.
+- Stop a run when a pre-action recovery checkpoint cannot be saved, including later inner
+  tool calls. Preserve completed work and report failed final transcript saves accurately.
+- Return accepted follow-ups to the queue when starting them after a quota reset fails.
+  Keep the launch error visible even if releasing the claimed request also fails.
 - Detect user-created files blocking the parents of saved Pack changes during review, before
   writing any entries. Supported file-to-directory replacements and idempotent re-application
   remain available.
@@ -12,6 +72,38 @@
   details and wrap long paths on phone screens.
 - Keep protocol-conformance fixtures alive until their transport owns the process, preventing
   intermittent Windows startup failures without weakening process-tree ownership checks.
+- Read pending-request rows as the person sees them in the inbox race tests: a refused save keeps
+  its editor open, and that is no longer mistaken for a row lost to a late listing. The unsaved
+  draft, the refusal and the stale-overwrite guarantees are now checked on every repaint.
+- Stop fencing cancelled macOS runs when the only thing left in an owned process group is
+  Collie's own finished command: the group is asked again once that child is settled. The
+  kill still goes first, nothing destructive is ever sent afterwards, and a group that keeps
+  answering is still reported as unconfirmed.
+- Let the Windows Codex CLI and App Server routes start against Codex 0.156, which removed a
+  Windows sandbox setting that strict config then rejects. The setting is now sent only to the
+  older CLIs that measurably need it, decided from the executable actually resolved and re-checked
+  when it is replaced. An unreadable version keeps the setting rather than silently weakening the
+  sandbox. The optional Codex SDK route keeps its own pinned runtime and is unchanged.
+- Write files with the exact content supplied, so requested line endings survive on Windows
+  instead of being rewritten to CRLF (or doubled to CRCRLF), and report the real number of
+  bytes written rather than the character count. Editing an existing file still keeps that
+  file's own line endings.
+- Stop reporting an unattended automation as succeeded when it only ran out of turns, tokens
+  or output room. Those runs now ask for you, keep their partial answer and resumable thread,
+  and are not retried on their own — including when it is the final spend tally that crosses
+  the budget, which used to discard the finished run's whole receipt. A transcript that did
+  not save is reported instead of being claimed as durable history.
+- Say when a new task's working folder has not been confirmed yet, retry that check a bounded
+  number of times, and settle it before Send starts anything. A failed first check no longer
+  leaves a blank folder and a request that runs wherever the server defaults to; the draft and
+  its attachments are kept with a visible reason instead. A check that is never answered now
+  gives up after ten seconds and says so rather than leaving Send waiting forever, and an answer
+  that names no folder is treated as no answer at all.
+- Tell the agent that a task's file, command and access limits also bind its own verification,
+  searches and optional extra checks, that a scratch file deleted afterwards still counts as a
+  write, and that its report must describe the actions it took rather than the final state.
+
+See [the release review](docs/release-0.28.0.md) for behavior changes and validation limits.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 

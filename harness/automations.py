@@ -262,9 +262,13 @@ class AutomationSpec:
         if workspace.get("mode", "isolated") == "current" and not permissions.current_workspace:
             raise ValueError("current workspace requires permissions.current_workspace=true")
         budget = object_field("budget", {})
+        # max_turns 0 = no hard turn ceiling: an automation is bounded by the budgets that
+        # actually meter consumption, and those stay mandatory and strictly positive. An
+        # explicit positive cap written by a person is kept exactly as written.
         defaults = {"max_wall_s": 1800.0, "max_model_tokens": 200000,
                     "max_cost_usd": 25.0, "max_actions": 100,
-                    "max_runs_per_day": 24, "max_retries": 1, "max_turns": 50}
+                    "max_runs_per_day": 24, "max_retries": 1, "max_turns": 0}
+        unbounded_ok = ("max_retries", "max_turns")
         for key, default in defaults.items():
             raw = budget.get(key, default)
             try:
@@ -277,7 +281,7 @@ class AutomationSpec:
                     raise ValueError
             except (TypeError, ValueError, OverflowError):
                 raise ValueError("budget.%s must be numeric" % key)
-            if number < 0 or (key != "max_retries" and number == 0):
+            if number < 0 or (key not in unbounded_ok and number == 0):
                 raise ValueError("budget.%s must be positive" % key)
             budget[key] = number
         execution = object_field("execution", {})
@@ -497,6 +501,7 @@ class AutomationStore:
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
             started_at REAL NOT NULL DEFAULT 0, finished_at REAL NOT NULL DEFAULT 0,
             result_json TEXT NOT NULL DEFAULT '{}', last_error TEXT NOT NULL DEFAULT '',
+            attention_reviewed_at REAL NOT NULL DEFAULT 0,
             UNIQUE(automation_id,event_id));
           CREATE INDEX IF NOT EXISTS execution_due ON executions(state,created_at);
           CREATE TABLE IF NOT EXISTS usage(
@@ -509,13 +514,18 @@ class AutomationStore:
             event TEXT NOT NULL, decision TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
         """)
         execution_cols = {row[1] for row in self.db.execute("PRAGMA table_info(executions)")}
-        if "lease_token" not in execution_cols:
+        # Additive, defaulted columns only: an older database opens unchanged and every existing
+        # row keeps its state, error, receipt and history.  A zero default means "never reviewed".
+        for column, ddl in (("lease_token", "lease_token TEXT NOT NULL DEFAULT ''"),
+                            ("attention_reviewed_at",
+                             "attention_reviewed_at REAL NOT NULL DEFAULT 0")):
+            if column in execution_cols:
+                continue
             try:
-                self.db.execute(
-                    "ALTER TABLE executions ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''")
+                self.db.execute("ALTER TABLE executions ADD COLUMN " + ddl)
             except sqlite3.OperationalError:
                 # Another daemon/CLI opener may have won the same idempotent migration.
-                if "lease_token" not in {
+                if column not in {
                         row[1] for row in self.db.execute("PRAGMA table_info(executions)")}:
                     raise
         self.db.commit()
@@ -768,6 +778,45 @@ class AutomationStore:
                            {"error": str(error)[:500]}, execution_id=execution_id, now=now)
             self.db.commit()
         return changed.rowcount == 1
+
+    def mark_attention_reviewed(self, execution_id: str, *, now: float | None = None) -> dict:
+        """Acknowledge exactly one finished needs_you execution.
+
+        This is a projection-only receipt: state, last_error, result_json, the saved conversation
+        and the execution history row are all left exactly as the run left them.  Only the
+        attention projection stops counting this execution.  A run that is still pending, claimed
+        or running is refused — nothing here ends, retries or resumes work — and a later execution
+        of the same automation keeps its own, independent review.
+        """
+        now = float(time.time() if now is None else now)
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.db.execute(
+                    "SELECT automation_id,state,attention_reviewed_at FROM executions "
+                    "WHERE execution_id=?", (execution_id,)).fetchone()
+                if row is None:
+                    raise KeyError("automation execution is not recorded")
+                if row["state"] != NEEDS_YOU:
+                    raise ValueError(
+                        "only a finished needs_you execution can be marked reviewed")
+                # Scoped to this exact execution_id and idempotent: a second acknowledgement keeps
+                # the first receipt instead of rewriting it, and no other row is touched.
+                cur = self.db.execute(
+                    "UPDATE executions SET attention_reviewed_at=? WHERE execution_id=? "
+                    "AND state=? AND attention_reviewed_at<=0",
+                    (now, execution_id, NEEDS_YOU))
+                reviewed_at = now if cur.rowcount else float(row["attention_reviewed_at"])
+                if cur.rowcount:
+                    self.audit(row["automation_id"], "attention", "reviewed",
+                               {"reason": "operator marked this outcome reviewed"},
+                               execution_id=execution_id, now=now)
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+        return {"execution_id": execution_id, "automation_id": row["automation_id"],
+                "state": NEEDS_YOU, "attention_reviewed_at": reviewed_at}
 
     def add_usage(self, execution_id: str, *, model_tokens: int = 0,
                   cost_usd: float = 0, actions: int = 0, wall_s: float = 0,
@@ -1053,11 +1102,23 @@ class AutomationExecutor:
             request["resolved_workspace"] = self.workspaces.prepare(request)
             self._notify(request, "start", "Automation %s started" % request["automation_id"])
             result = self.runner(request, guard) or {}
-            guard.check()
+            # Final accounting may exceed a ceiling. Preserve the finished child's receipt
+            # while making the execution terminal; replaying its effects is not a retry.
+            budget_error = ""
+            try:
+                guard.check()
+            except BudgetExceeded as exc:
+                budget_error = str(exc)
             status = str(result.get("status") or SUCCEEDED)
+            error = _join_reasons(str(result.get("error") or ""), budget_error)
             if status not in (SUCCEEDED, FAILED, NEEDS_YOU):
-                raise ValueError("runner returned invalid status %s" % status)
-            error = str(result.get("error") or "")
+                invalid_status = "runner returned invalid status %s" % status
+                if not budget_error:
+                    raise ValueError(invalid_status)
+                error = _join_reasons(error, invalid_status)
+            if budget_error:
+                status = NEEDS_YOU
+                result = dict(result, status=status, error=error)
         except (BudgetExceeded, PermissionDenied) as exc:
             status, result, error = NEEDS_YOU, {}, "%s: %s" % (type(exc).__name__, exc)
         except Exception as exc:
@@ -1186,6 +1247,69 @@ def _unscopable_unattended_tool(name: str, policy: PermissionPolicy | None = Non
             or name.startswith(("browser_", "mcp__", "mcpctl_")))
 
 
+def _join_reasons(*parts: str) -> str:
+    """Combine failures without repeating the runner and executor's shared budget reason."""
+    out = ""
+    for part in parts:
+        part = str(part or "").strip()
+        if part and part not in out:
+            out = "%s; %s" % (out, part) if out else part
+    return out
+
+
+def _save_automation_session(session_id: str, result, *, project: str, cwd: str,
+                             vault: dict | None = None) -> str:
+    """Save the thread and confirm readback; return a redacted error or an empty string.
+
+    sessions.save returns an id even if it did not write a file. Continued runs require
+    that file, so the receipt must not claim a resumable session without checking it.
+    """
+    from . import redact as _redact, sessions
+    try:
+        sessions.save(session_id, getattr(result, "messages", None) or [], project=project,
+                      cwd=cwd, answer=getattr(result, "answer", "") or "")
+        if not sessions.load(session_id):
+            return "automation transcript did not persist for session %s" % session_id
+    except Exception as exc:
+        text = "automation transcript save failed: %s: %s" % (type(exc).__name__, exc)
+        return _redact.redact(text, vault if vault is not None else {})[:2000]
+    return ""
+
+
+def _automation_outcome(result, counter: dict, save_error: str) -> tuple[str, str, str]:
+    """Map the host's stop reason to (stop_reason, status, error).
+
+    Turn/token/output ceilings may set no error. result.success also defaults to False
+    in older adapters, so neither field alone identifies a completed run.
+    """
+    from .recorder import note_host_error, run_stop_reason
+    stop = str(run_stop_reason(result) or "completed")
+    host_error = str(getattr(result, "error", "") or "")
+    if counter["cancelled"]:
+        # Keep independent host errors, but avoid repeating the standard cancellation text.
+        stop, status = "canceled", NEEDS_YOU
+        error = _join_reasons("automation wall/action budget exhausted",
+                              "" if host_error in ("canceled by user", "interrupted by user")
+                              else host_error)
+    elif stop == "error":
+        status, error = FAILED, host_error
+    elif stop == "canceled":
+        status, error = NEEDS_YOU, "automation run was canceled before it finished"
+    elif stop != "completed":
+        status, error = NEEDS_YOU, (
+            "automation stopped at its %s before finishing the task" % stop.replace("_", " "))
+    else:
+        status, error = SUCCEEDED, ""
+    if save_error:
+        # A failed save prevents completion; retain a more specific early stop reason.
+        if stop == "completed":
+            note_host_error(result, save_error)
+            stop = str(run_stop_reason(result) or "completed")
+        status = NEEDS_YOU if status == SUCCEEDED else status
+        error = _join_reasons(error, save_error)
+    return stop, status, error[:2000]
+
+
 def _run_collie_request(request: dict) -> dict:
     """Child-process body for :class:`DefaultCollieRunner`."""
     from . import sessions, settings
@@ -1214,8 +1338,14 @@ def _run_collie_request(request: dict) -> dict:
     authority_store = (AutomationStore(str(request.get("_authority_db")))
                        if request.get("_authority_db") else None)
     try:
-        harness.max_turns = min(harness.max_turns, int(budget.get("max_turns") or 50))
-        harness._max_turns_hard_cap = harness.max_turns
+        # The accepted budget is this run's turn authority, applied exactly: zero means no hard
+        # turn ceiling, and a positive cap is honoured whatever the ambient MAX_TURNS says and
+        # above the Settings panel's interactive range (make_harness clamps that to 120 for the
+        # keyboard surfaces, which is not a ceiling on what an automation was accepted with).
+        # Intersecting the two was wrong in both directions, because 0 means unlimited on each.
+        turn_cap = max(0, int(budget.get("max_turns") or 0))
+        harness.max_turns = turn_cap
+        harness._max_turns_hard_cap = turn_cap or None
         if hasattr(harness.provider, "max_tokens"):
             harness.provider.max_tokens = max(1, min(
                 int(harness.provider.max_tokens), int(budget.get("max_model_tokens") or 1)))
@@ -1271,15 +1401,15 @@ def _run_collie_request(request: dict) -> dict:
         harness.checkpoint_scope = "session:" + session_id
         result = harness.run("automation:" + request["execution_id"], request["task"],
                              history=history)
-        sessions.save(session_id, result.messages,
-                      project=str(execution.get("project") or request["automation_id"]),
-                      cwd=cwd, answer=result.answer or "")
+        save_error = _save_automation_session(
+            session_id, result, cwd=cwd,
+            project=str(execution.get("project") or request["automation_id"]),
+            vault=getattr(harness, "_secret_vault", None))
+        stop, status, error = _automation_outcome(result, counter, save_error)
         return {
-            "status": NEEDS_YOU if counter["cancelled"] else (
-                FAILED if result.error else SUCCEEDED),
-            "error": ("automation wall/action budget exhausted" if counter["cancelled"] else
-                      str(result.error or "")[:2000]),
-            "session_id": session_id, "summary": str(result.answer or "")[:4000],
+            "status": status, "error": error, "stop_reason": stop,
+            "session_saved": not save_error,
+            "session_id": session_id, "summary": str(getattr(result, "answer", "") or "")[:4000],
             "model": str(getattr(result, "model", "") or ""),
             "total_tokens": int(getattr(result, "total_tokens", 0) or 0),
             "cost_usd": float(getattr(result, "cost_usd", 0) or 0),
@@ -1299,7 +1429,11 @@ def _run_collie_request(request: dict) -> dict:
 
 
 class DefaultCollieRunner:
-    """Run native Collie in a killable child with hard wall/token/cost/turn/action caps."""
+    """Run native Collie in a killable child with hard wall/token/cost/action caps.
+
+    The exported COLLIE_MAX_TURNS is the accepted budget's own value, so the child's
+    receipt and its actual ceiling agree; 0 there means no hard turn ceiling.
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -1368,12 +1502,19 @@ class DefaultCollieRunner:
                 if kind == "BudgetExceeded":
                     raise BudgetExceeded(str(result["exception"]))
                 raise AutomationError(str(result["exception"]))
-            guard.consume(
-                model_tokens=_runtime_number(
-                    result.get("total_tokens") or 0, "child total_tokens", integer=True),
-                cost_usd=_runtime_number(result.get("cost_usd") or 0, "child cost_usd"),
-                actions=_runtime_number(
-                    result.get("tool_calls") or 0, "child tool_calls", integer=True))
+            try:
+                guard.consume(
+                    model_tokens=_runtime_number(
+                        result.get("total_tokens") or 0, "child total_tokens", integer=True),
+                    cost_usd=_runtime_number(result.get("cost_usd") or 0, "child cost_usd"),
+                    actions=_runtime_number(
+                        result.get("tool_calls") or 0, "child tool_calls", integer=True))
+            except BudgetExceeded as exc:
+                # add_usage already persisted the child's spend. Keep its receipt and
+                # report the budget limit without replaying the finished child.
+                result["status"] = NEEDS_YOU
+                result["stop_reason"] = str(result.get("stop_reason") or "") or "budget_limit"
+                result["error"] = _join_reasons(str(result.get("error") or ""), str(exc))
             return result
         finally:
             with self._lock:

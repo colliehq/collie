@@ -114,7 +114,9 @@ def _policy_refusal(stderr: str) -> str:
     return ""
 
 
-def _windows_sandbox_override() -> list[str]:
+def _windows_sandbox_override(
+        executable: str,
+        version_probe: Callable[[str], tuple[str, str]] | None = None) -> list[str]:
     """Pick a Windows sandbox level explicitly, because the default rejects writes.
 
     Codex only auto-approves a patch when it can prove a platform sandbox is
@@ -144,11 +146,39 @@ def _windows_sandbox_override() -> list[str]:
     read-only" and changed nothing; adding this one override made the same run
     write the file.  Collie's Job Object already owns the process tree, so the
     private desktop was never what bounded the worker.
+
+    That second override is version-scoped by a schema fact, not a preference.
+    Codex 0.156.0 (verified 2026-09-22) dropped ``sandbox_private_desktop`` from
+    ``WindowsToml`` in ``codex-rs/config/src/types.rs``, which is
+    ``#[schemars(deny_unknown_fields)]``, and lists it as a removed setting in
+    ``codex-rs/config/src/strict_config.rs``.  Under ``--strict-config`` an
+    unknown ``-c`` field is a hard ``io::ErrorKind::InvalidData``, so sending
+    the old pair to a 0.156 CLI kills the launch before ``initialize``.
+
+    ``version_probe`` answers for ``executable`` — the file this launch will
+    actually run — not for whatever ``codex`` is first on PATH and not for the
+    SDK's bundled pin, which is a different binary on a different schedule (see
+    :mod:`harness.codex_sdk_worker`).  An unidentifiable CLI keeps the measured
+    override, because the two ways to be wrong are not symmetric: keeping the
+    key against a 0.156 host fails loudly at startup and changes nothing, while
+    dropping it against the 0.149-era host that was actually measured reinstates
+    a sandbox that refuses every write while still exiting 0.
+
+    The sandbox *level* is never version-gated: ``derive_permission_profile``
+    still downgrades workspace-write to read-only whenever the Windows level is
+    ``Disabled``, and 0.156's new ``mxc`` mode maps to ``Disabled``, so
+    ``unelevated`` remains the only choice Collie can make on the user's behalf.
+    Whether a 0.156 sandbox then *writes* is not settled here; see
+    ``docs/runners.md`` for what this gate has and has not been run against.
     """
     if not plat.is_windows():
         return []
-    return ["-c", 'windows.sandbox="unelevated"',
-            "-c", "windows.sandbox_private_desktop=false"]
+    override = ["-c", 'windows.sandbox="unelevated"']
+    probe = version_probe or _resolved_cli_version
+    version, _error = probe(executable)
+    if _needs_private_desktop_override(version):
+        override += ["-c", "windows.sandbox_private_desktop=false"]
+    return override
 
 # Codex 0.149.0 is not consistent about the name of the usage block on
 # `turn.completed`: older builds emit `usage`, newer ones `token_usage`.  Read
@@ -758,7 +788,8 @@ class CodexExecRunner:
                  snapshotter: Callable[[str], dict[str, Any]] = workspace_snapshot,
                  default_timeout_s: float = 900.0, max_events: int = 2_000,
                  max_event_chars: int = 128_000, env_policy: str = "codex",
-                 event_callback: Callable[[RunnerEvent], Any] | None = None):
+                 event_callback: Callable[[RunnerEvent], Any] | None = None,
+                 cli_version_probe: Callable[[str], tuple[str, str]] | None = None):
         if not _finite_number(default_timeout_s) or float(default_timeout_s) <= 0:
             raise ValueError("default_timeout_s must be positive")
         # Validate the policy name now: a typo that only surfaced at launch time
@@ -774,6 +805,9 @@ class CodexExecRunner:
         self.max_events = max(1, int(max_events))
         self.max_event_chars = max(1_024, int(max_event_chars))
         self._event_callback = event_callback
+        # Seam for the Windows config-schema gate: tests and callers that must
+        # not launch the installed CLI supply their own `(version, error)`.
+        self._cli_version_probe = cli_version_probe
         # {"allowed": [names], "stripped": [names]} for the most recent turn —
         # names only, so the caller can copy it straight into a run receipt.
         self.last_env_receipt: dict[str, list[str]] = {"allowed": [], "stripped": []}
@@ -796,6 +830,10 @@ class CodexExecRunner:
     def start(self, prompt: str, workspace: str, *, timeout_s: float | None = None
               ) -> RunnerSnapshot:
         root = _workspace(workspace)
+        # Before anything can spawn: building argv resolves the executable and
+        # may run `--version` on it, so the refusal that :meth:`_invoke` states
+        # as "before a process exists" has to happen here too.
+        runner_env.assert_no_billing_override(os.environ, self.credential_family)
         # Every flag after --cd exists to stop the *host's* Codex configuration
         # from reaching a worker.  `~/.codex/config.toml` is a user document: it
         # can register MCP servers, enable web_search, add project trust rules
@@ -819,11 +857,12 @@ class CodexExecRunner:
         #                         nobody in this run ever saw
         # `--ephemeral` is deliberately NOT passed: it discards the thread, and
         # `resume` needs the thread id that `thread.started` reports.
-        argv = [self._executable(), "exec", "--json", "--sandbox", "workspace-write",
+        executable = self._executable()
+        argv = [executable, "exec", "--json", "--sandbox", "workspace-write",
                 "--cd", root, "--ignore-user-config", "--ignore-rules",
                 "--strict-config", "-c", 'approval_policy="never"',
                 "-c", 'web_search="disabled"']
-        argv += _windows_sandbox_override()
+        argv += _windows_sandbox_override(executable, self._cli_version_probe)
         if self.model:
             argv += ["--model", self.model]
         argv.append("-")
@@ -842,6 +881,8 @@ class CodexExecRunner:
             raise ValueError("snapshot workspace is not canonical")
         if not snapshot.thread_id or not _THREAD_ID.fullmatch(snapshot.thread_id):
             raise ValueError("snapshot has no safe Codex thread id")
+        # Same reason as `start`: the version probe below is a child process.
+        runner_env.assert_no_billing_override(os.environ, self.credential_family)
         # `resume` does not expose the top-level --sandbox flag.  An explicit
         # config override keeps the resumed turn at the same workspace-write
         # boundary even if the user's global default later changes; the same
@@ -851,13 +892,14 @@ class CodexExecRunner:
         # thread id and applied its patch), so the resumed turn gets the same
         # host-config isolation as the first one rather than silently falling
         # back to the user's MCP servers and rules half way through a thread.
-        argv = [self._executable(), "exec", "resume", "--json",
+        executable = self._executable()
+        argv = [executable, "exec", "resume", "--json",
                 "--ignore-user-config", "--ignore-rules",
                 "--strict-config",
                 "-c", 'sandbox_mode="workspace-write"',
                 "-c", 'approval_policy="never"',
                 "-c", 'web_search="disabled"']
-        argv += _windows_sandbox_override()
+        argv += _windows_sandbox_override(executable, self._cli_version_probe)
         if self.model:
             argv += ["--model", self.model]
         argv += [snapshot.thread_id, "-"]
@@ -960,7 +1002,10 @@ class CodexExecRunner:
         # Refuse *before* a process exists.  An OPENAI_BASE_URL or CODEX_API_KEY
         # in the parent shell would silently re-route or re-bill this turn, and
         # the operator unsetting it is cheaper than anyone reconstructing which
-        # account paid.  Names only ever leave this call, never values.
+        # account paid.  Names only ever leave this call, never values.  Callers
+        # that build argv first (start/resume, which may run `--version`) repeat
+        # this check before they do; it stays here so every entry point is
+        # covered on its own.
         runner_env.assert_no_billing_override(os.environ, self.credential_family)
         # The complete child environment, not a set of additions: the worker gets
         # the allowlist and nothing else, so it reads its own ~/.codex login
@@ -1381,6 +1426,117 @@ def _cli_version(executable: str, timeout_s: float = 10.0) -> tuple[str, str]:
                (completed.stderr or completed.stdout or "").strip()))
     first = (completed.stdout or completed.stderr or "").strip().splitlines()
     return (first[0].strip()[:200] if first else ""), ""
+
+
+# `codex --version` prints "codex-cli 0.156.0", and only that shape -- or a line
+# that is *nothing but* a version token, which `_cli_version` has always reported
+# for other builds -- is read.  An arbitrary triple somewhere in an unrelated
+# banner ("node v22.1.0") is not a Codex version, and guessing one there would
+# silently answer "new schema" for an old CLI, which is the unsafe direction.
+_VERSION_TRIPLE = r"v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:[-+][0-9A-Za-z.+-]*)?"
+_CLI_VERSION = re.compile(r"codex-cli\s+" + _VERSION_TRIPLE + r"(?![\w.])",
+                          re.IGNORECASE)
+_BARE_VERSION = re.compile(r"\A" + _VERSION_TRIPLE + r"\Z")
+
+# Codex 0.156.0 dropped `windows.sandbox_private_desktop` from the config schema.
+_PRIVATE_DESKTOP_REMOVED_AT = (0, 156, 0)
+
+# One `--version` per binary per TTL, not per turn.  A *failed* or unreadable
+# answer is retried after the shorter cooldown so a transient timeout or an
+# unrecognised banner self-heals, while a CLI that will not answer at all still
+# cannot add its own timeout to the latency of every start and resume.
+_VERSION_RETRY_AFTER_S = 60.0
+_VERSION_CACHE_TTL_S = 900.0
+_MAX_CACHED_VERSIONS = 32
+_VERSION_CACHE: dict[str, tuple[tuple[Any, ...], str, str, float]] = {}
+_VERSION_CACHE_LOCK = threading.Lock()
+
+
+def _parse_cli_version(text: str) -> tuple[int, int, int] | None:
+    """Return ``(major, minor, patch)`` from a ``--version`` line, or None.
+
+    Only the ``codex-cli <triple>`` banner and a line that is entirely one
+    version token are read; anything else is None, and None keeps the measured
+    override.  A pre-release suffix (``0.156.0-alpha.1``) is read as its release
+    triple, because Codex ships a schema change in the pre-releases of the
+    version that carries it; no other suffix scheme is guessed at.
+    """
+    text = str(text or "").strip()
+    match = _CLI_VERSION.search(text) or _BARE_VERSION.match(text)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _needs_private_desktop_override(version: str) -> bool:
+    """Whether this CLI still accepts ``windows.sandbox_private_desktop``.
+
+    Unknown means yes.  See :func:`_windows_sandbox_override` for why the
+    unparseable case fails closed onto the measured override rather than onto
+    the newer schema.
+    """
+    parsed = _parse_cli_version(version)
+    return parsed is None or parsed < _PRIVATE_DESKTOP_REMOVED_AT
+
+
+def _executable_identity(executable: str) -> tuple[Any, ...] | None:
+    """Identify the *file*, so an upgrade in place invalidates a cached version.
+
+    ``npm -g install`` and the Codex installer both overwrite the same shim
+    path, so the path alone is not an identity.  Size plus nanosecond mtime plus
+    the creation time Windows reports as ``st_ctime_ns`` cover overwrite,
+    delete-and-recreate, and shim replacement; a rewrite that preserved all
+    three within one mtime tick would go unnoticed, which is why the cache is an
+    optimisation on top of a fail-closed default and never a source of truth.
+    """
+    try:
+        stat = os.stat(executable)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino, stat.st_dev,
+            stat.st_ctime_ns)
+
+
+def _resolved_cli_version(executable: str, *,
+                          probe: Callable[[str], tuple[str, str]] | None = None,
+                          now: float | None = None) -> tuple[str, str]:
+    """Return ``(version, error)`` for the file at ``executable``, cached by identity.
+
+    A path that cannot be stat'd is reported unknown *without* running anything:
+    a bare name, an unresolved shim or a test double is not a file this launch
+    will execute, and answering with some other ``codex`` on PATH would describe
+    the wrong binary.  That also keeps the installed CLI out of unit tests.
+
+    Caching is bounded two ways.  The identity of the file is re-taken on every
+    call, so an in-place upgrade is picked up at once — but the file resolved
+    here is often a stable npm shim that dispatches to a versioned binary
+    elsewhere, and that target can change with no observable change to the shim.
+    A good answer therefore expires after ``_VERSION_CACHE_TTL_S``; an answer
+    that could not be read or parsed expires after the shorter cooldown, so an
+    unrecognised banner or a timed-out probe cannot pin "unknown" for the life
+    of the process.
+    """
+    probe = probe or _cli_version
+    now = time.monotonic() if now is None else float(now)
+    identity = _executable_identity(executable) if executable else None
+    if identity is None:
+        return ("", "could not stat %s to identify the Codex CLI"
+                % (executable or "<empty>"))
+    key = os.path.normcase(os.path.abspath(executable))
+    with _VERSION_CACHE_LOCK:
+        cached = _VERSION_CACHE.get(key)
+        if cached is not None and cached[0] == identity and now < cached[3]:
+            return (cached[1], cached[2])
+    version, error = probe(executable)
+    understood = not error and _parse_cli_version(version) is not None
+    expires = now + (_VERSION_CACHE_TTL_S if understood else _VERSION_RETRY_AFTER_S)
+    with _VERSION_CACHE_LOCK:
+        if len(_VERSION_CACHE) >= _MAX_CACHED_VERSIONS and key not in _VERSION_CACHE:
+            # A host has one or two Codex binaries; an unbounded table here would
+            # only ever be a leak fed by whatever paths a caller passed.
+            _VERSION_CACHE.clear()
+        _VERSION_CACHE[key] = (identity, version, error, expires)
+    return (version, error)
 
 
 def _codex_login_state(auth_path: str, now: float) -> tuple[str, str, dict[str, Any]]:

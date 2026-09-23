@@ -872,6 +872,10 @@ def test_start_argv_sets_windows_sandbox_level(tmp_path, monkeypatch):
     assert 'windows.sandbox="unelevated"' in argv
     # The private desktop cannot be created from the start gate (CREATE_NO_WINDOW,
     # no console), and Codex degrades to refusing writes rather than erroring.
+    # This runner's executable is a test double that cannot be stat'd, so the
+    # version is unknown and the gate falls back to the measured override --
+    # the fail-closed branch of the 0.156 config-schema split covered in
+    # tests/test_codex_windows_version_compat.py.
     assert "windows.sandbox_private_desktop=false" in argv
 
     monkeypatch.setattr(agent_runners.plat, "is_windows", lambda: False)

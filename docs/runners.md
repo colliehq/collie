@@ -8,11 +8,14 @@ Version 0.22.0 adds three reviewed routes: Codex App Server for interactive appr
 official Codex Python SDK in a sanitized background sidecar, and Pi RPC with shell disabled. Collie
 remains the control plane in all three.
 
-The 0.27.0 release checks Codex CLI/Python SDK 0.155.1 and Claude Agent SDK
+The 0.28.0 release retains Codex CLI/Python SDK 0.155.1 and Claude Agent SDK
 0.2.157. Windows installers include Claude Code 2.1.278. The Codex SDK route
 uses the native CLI distributed with its pinned Python dependency, so installing
-the `codex` extra does not also require a separate CLI on `PATH`. See the
-[release review](release-0.27.0.md) for validation scope.
+the `codex` extra does not also require a separate CLI on `PATH`. The `PATH`
+routes additionally tolerate Codex CLI 0.156's removed Windows sandbox setting —
+see [the version split](#windows-sandbox-and-the-codex-cli-version-split), which
+also records what that has and has not been verified against. See the
+[release review](release-0.28.0.md) for validation scope.
 
 ## Worker is not the same thing as brain
 
@@ -186,6 +189,52 @@ It accepts text, data-image URLs, and local image files, and supports native thr
 and compaction. It deliberately does not pretend a one-request sidecar can steer a live turn; use
 `codex-app-server` when approval or mid-turn interaction matters. Malformed LFJSONL, duplicate or
 non-terminal result frames, and literal records after completion make the slice unsettled.
+
+### Windows sandbox, and the Codex CLI version split
+
+On Windows the Codex routes pin `windows.sandbox="unelevated"` on every launch. Without it, Codex
+rewrites an explicitly requested `workspace-write` sandbox to read-only whenever no Windows sandbox
+level is configured, and `--ignore-user-config` removes the one your `config.toml` would have
+supplied — so the turn refuses every write *and still exits 0*. `elevated` is never chosen for you
+(it needs a one-time administrator install) and 0.156's new `mxc` mode is never chosen either
+(it maps to a disabled sandbox). Collie never falls back to an unrestricted or elevated run.
+
+A second override, `windows.sandbox_private_desktop=false`, is **version-scoped**. Codex 0.156.0
+removed that field from its config schema, and Collie launches with `--strict-config`, under which
+an unknown `-c` field is a hard startup error — so passing it to a 0.156 CLI kills the launch before
+any model call. On older CLIs it is still required: measured on Windows 11 / Codex 0.149.0, a
+private-desktop sandbox under Collie's no-window start gate silently refused every write, and
+turning the desktop off was what made the same prompt write its file.
+
+The `codex-exec` and `codex-app-server` routes therefore ask the executable they actually resolved
+(not whatever `codex` is first on `PATH`, and not the Python SDK pin) for its version, once per
+binary, and send the override only below 0.156.0. The answer is cached and re-taken as soon as that
+file changes or is replaced in place, and in any case within fifteen minutes — an installer can
+repoint a stable `codex.cmd` shim at a new package binary without touching the shim itself, so a
+cached answer is never held for the life of the process. Only Codex's own `codex-cli <version>`
+banner (or a line that is nothing but a version) is read; anything else counts as unknown rather
+than being mined for the first version-shaped number in it. If the version cannot be read or parsed,
+Collie keeps the measured override: against a 0.156 host that fails loudly at startup and changes
+nothing, whereas dropping it against the host that was actually measured would reinstate a sandbox
+that quietly accomplishes nothing.
+
+What this change is verified to do is let a 0.156 CLI start: the launch that previously died with
+`unknown configuration field` now completes `initialize`, model list and thread start. What it does
+not settle is whether a 0.156 sandbox then writes. 0.156 makes the private desktop unconditional,
+which is the configuration the 0.149 measurement above found fatal under Collie's start gate — the
+implementation changed underneath (the desktop is now shared and cached, and a failure to get one is
+now a hard error rather than a silent degrade), but that is a reason to retest rather than evidence.
+Collie still treats a turn that changed nothing while its sandbox refused every write as a failure,
+so this fails visibly rather than banking empty progress.
+
+`codex-sdk` is on the other side of that split and is **not** version-gated. It runs the native
+binary bundled with its pinned `openai-codex` dependency (0.155.1 in this release), never one from
+`PATH`, so upgrading the CLI on your machine does not change what that route executes. Two
+consequences: a 0.156 host runs 0.156 for `codex-exec`/`codex-app-server` and 0.155.1 for
+`codex-sdk`, and bumping the `openai-codex` pin to 0.156 or later is a prerequisite for — and must
+be done in the same change as — removing the override from `harness/codex_sdk_worker.py`. That
+sidecar launches without `--strict-config`, so a stale key there would be ignored with a warning
+rather than refused, which is exactly the shape that produced the original silent write failure.
 
 ### `pi-rpc` — Pi RPC with an explicit file-tool boundary
 

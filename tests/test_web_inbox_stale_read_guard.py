@@ -3,7 +3,7 @@ import pytest
 from playwright.sync_api import expect
 
 from test_web_ui_run_status import _Fixture, _hold_queue, ui, server, browser
-from test_web_inbox_poll_race import HeldListing, _queue, _record
+from test_web_inbox_poll_race import HeldListing, _editing, _queue, _record, _row, _rows_now
 
 
 class _HeldRead(HeldListing):
@@ -36,7 +36,7 @@ def test_a_late_failing_read_does_not_report_an_error_over_a_confirmed_edit(ui):
     _record(ui.page)
     held.fail()
     states = ui.page.evaluate('window.__queuePollStates')
-    assert all(state == ['Updated pending request'] for state in states), states
+    assert all(state == [_row('Updated pending request')] for state in states), states
     assert ui.page.locator('#taskQueueList .task-queue-text').all_text_contents() == ['Updated pending request']
     # The failure belongs to a read that was already out of date; it is not the person's problem.
     assert 'Could not load pending requests' not in _notice(ui)
@@ -59,11 +59,64 @@ def test_a_failed_mutation_keeps_its_notice_and_its_row_against_a_late_listing(u
     expect(ui.page.locator('#taskQueue')).to_contain_text('edit rejected by fixture')
     _record(ui.page)
     held.release()
+    # A refused save keeps its editor open, so the row on screen is the textarea holding the
+    # words that were never saved. That is the row this listing must not take away.
     states = ui.page.evaluate('window.__queuePollStates')
-    assert all(state == ['Original pending request'] for state in states), states
+    assert all(state == [_editing('Never saved text')] for state in states), states
+    assert _rows_now(ui.page) == [_editing('Never saved text')]
     assert 'edit rejected by fixture' in _notice(ui)
     assert 'stale listing notice' not in _notice(ui)
     assert next(iter(_Fixture.queue_entries.values()))['text'] == 'Original pending request'
+    assert len(_Fixture.stream_requests) == 1 and not _Fixture.queue_starts
+
+
+def _record_notices(page):
+    page.evaluate('''() => {
+      window.__queueNoticeStates = [];
+      if (window.__queueNoticeObserver) window.__queueNoticeObserver.disconnect();
+      window.__queueNoticeObserver = new MutationObserver(() => {
+        const notice = document.getElementById('taskQueueNotice');
+        window.__queueNoticeStates.push(notice.hidden ? null : notice.textContent);
+      });
+      window.__queueNoticeObserver.observe(document.getElementById('taskQueueNotice'),
+                                           {subtree:true, childList:true, characterData:true, attributes:true});
+    }''')
+
+
+def test_a_repaint_while_a_refused_edit_is_open_keeps_the_row_the_draft_and_the_notice(ui):
+    # The case above only sees the queue repaint when something else asks for one, so on a quick
+    # machine its observer can come away with nothing to judge. Here the run ends while the
+    # refused edit is still open — which is what a slow runner reaches on its own once the held
+    # fixture stream times out — so the panel is certain to be rebuilt while the late listing
+    # lands. Every rebuild must keep the row, the words that were never saved, and the refusal.
+    _hold_queue(ui)
+    _queue(ui, 'Original pending request')
+    _Fixture.queue_status_extra = {'queue_error': {'error': 'stale listing notice'}}
+    held = HeldListing(ui.page)
+    held.wait()
+    assert held.snapshot['queue_error']['error'] == 'stale listing notice'
+    _Fixture.queue_status_extra = {}
+    ui.page.route('**/api/task-inbox/edit*',
+                  lambda route: route.fulfill(status=503, json={'error': 'edit rejected by fixture'}))
+    _edit_to(ui, 'Never saved text')
+    expect(ui.page.locator('#taskQueue')).to_contain_text('edit rejected by fixture')
+    _record(ui.page)
+    _record_notices(ui.page)
+    _Fixture.queue_release.set()
+    ui.page.wait_for_function("() => !document.getElementById('send').classList.contains('stop')")
+    held.release()
+    states = ui.page.evaluate('window.__queuePollStates')
+    assert states, 'the queue was never rebuilt, so this case proved nothing'
+    assert all(state == [_editing('Never saved text')] for state in states), states
+    assert ui.page.get_by_label('Edit pending request').input_value() == 'Never saved text'
+    # Not even for one frame does the stale listing's own message replace the refusal.
+    notices = ui.page.evaluate('window.__queueNoticeStates')
+    assert all(notice == 'edit rejected by fixture' for notice in notices), notices
+    assert _notice(ui).count('edit rejected by fixture') == 1
+    assert 'stale listing notice' not in _notice(ui)
+    # The run ending is not a reason to send anything, and the request stays as the server has it.
+    assert next(iter(_Fixture.queue_entries.values()))['text'] == 'Original pending request'
+    assert len(_Fixture.queue_posts) == 1
     assert len(_Fixture.stream_requests) == 1 and not _Fixture.queue_starts
 
 
