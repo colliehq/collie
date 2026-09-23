@@ -21,6 +21,10 @@
 - Read pending-request rows as the person sees them in the inbox race tests: a refused save keeps
   its editor open, and that is no longer mistaken for a row lost to a late listing. The unsaved
   draft, the refusal and the stale-overwrite guarantees are now checked on every repaint.
+- Stop fencing cancelled macOS runs when the only thing left in an owned process group is
+  Collie's own finished command: the group is asked again once that child is settled. The
+  kill still goes first, nothing destructive is ever sent afterwards, and a group that keeps
+  answering is still reported as unconfirmed.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
