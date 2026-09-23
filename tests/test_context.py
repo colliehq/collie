@@ -114,6 +114,48 @@ def test_grounding_directive():
     # the working-directory rule must not be readable as "nothing outside cwd exists"
     assert "absolute path" in system and "lives elsewhere on this machine" in system, system[:400]
 
+def test_scope_directive_binds_verification_and_reporting():
+    """SCOPE: after a run whose task forbade creating or deleting any file other than the one being
+    edited, collie wrote a scratch JSON to feed an optional malformed-config check, deleted it, and
+    reported "no other file was touched". The prompt must therefore say three things: the user's
+    limits bind verification and any self-chosen extra check (with an in-memory alternative, or an
+    honest "did not check"), an undone write still counts (the limit is about every write, not the
+    final diff), and the report describes the actions taken rather than the surviving end state.
+
+    Asserted over the COMPOSED system prompt under a wholesale identity override — the desktop
+    persona replaces composer.identity outright, and, like RESPONSE LANGUAGE and GROUNDING, this
+    duty lives outside identity so the override cannot drop it. Wording is free to change; what is
+    pinned is that each duty is still stated, in every mode, without disturbing the mode contracts.
+    This is prompt guidance only — it constrains nothing the tool layer does not."""
+    from harness.cli import make_harness
+    from harness.context import _scope_line
+    low = _scope_line().lower()
+    assert "optional extra check" in low, "scope must reach self-chosen checks, not only edits"
+    assert "in memory" in low and "did not check" in low, "needs a legal alternative + honest gap"
+    assert "undo it" in low and "final diff" in low, "a reverted write is still a write"
+    assert "not just the end state" in low, "the report follows the actions, not the snapshot"
+
+    h = make_harness(os.getcwd(), provider="mock", project="scope", embed="hash")
+    h.composer.identity = "You are collie, the user's live desktop assistant."   # wholesale override
+    built = {}
+    for mode in ("act", "plan", "review", "test"):
+        system, _msgs, _meta = h.composer.build(
+            {"messages": []}, "fix deployconf.py", os.getcwd(), "scope", mode=mode)
+        built[mode] = system
+        assert "SCOPE" in system, "the directive must survive the identity override in %s" % mode
+    # byte-stable per session: the directive carries no workspace/platform state, so re-composing
+    # the same turn must not move the cached prefix.
+    again, _msgs, _meta = h.composer.build(
+        {"messages": []}, "fix deployconf.py", os.getcwd(), "scope", mode="act")
+    assert again == built["act"]
+    # mode contracts are untouched: Act still owes an edit and a check, read-only modes still don't.
+    assert "make it with edit_file" in built["act"] and "python -m pytest -q" in built["act"]
+    for mode in ("plan", "review", "test"):
+        line = [l for l in built[mode].split("\n") if l.startswith("MODE: ")][0]
+        assert "Do not edit" in line and "edit_file" not in line, line
+    # ...and the wider-search licence is now bounded rather than unconditional.
+    assert "within whatever bounds the user set" in built["act"].lower()
+
 @contextlib.contextmanager
 def _isolated_home():
     """Point HOME at an empty tmp so ~/.claude/skills and ~/.collie/skills resolve to nothing —

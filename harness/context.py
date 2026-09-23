@@ -2,7 +2,7 @@
 
 The system prompt is assembled from three cache-ordered tiers:
 
-  STABLE   identity + language/grounding rules + mode role
+  STABLE   identity + language/grounding/scope rules + mode role
            + tool NAMES + skill manifest                          (rarely changes)
   CONTEXT  merged project rules (CLAUDE.md / AGENTS.md), char-capped
   VOLATILE core memory blocks + AUTO-PREFETCHED memory + timestamp  (LAST)
@@ -94,8 +94,9 @@ def _grounding_line() -> str:
     return (
         "GROUNDING — a search that came back empty proves only that YOUR QUERY came back empty, "
         "never that the thing does not exist. Before you tell the user something is missing, is not "
-        "a real project, or is not on this machine: search WIDER than the working directory (%s), "
-        "and try NAME VARIANTS — spacing, hyphens, case, and any FORMER name the thing may have had "
+        "a real project, or is not on this machine: search WIDER than the working directory (%s) — "
+        "wider WITHIN whatever bounds the user set, never past them — and try NAME VARIANTS — "
+        "spacing, hyphens, case, and any FORMER name the thing may have had "
         "— then state what you actually searched. One narrow query must never become a confident "
         "negative. Auto-recalled memory is a LEAD, not a fact: a weak fragment, especially one left "
         "over from an unrelated task, is not evidence about what something IS — confirm it on disk "
@@ -115,6 +116,21 @@ def _grounding_line() -> str:
         "no safe independent path remains. Never infer authorization from silence or repeat "
         "an outcome-uncertain side effect. State a caveat once — do not repeat the same limitation or the same offer in a "
         "later turn of the same conversation." % roots)
+
+
+def _scope_line() -> str:
+    """Keep optional checks within task scope; an undone side effect still happened.
+
+    Kept outside the replaceable persona, in the stable prefix. This is model
+    guidance, not a replacement for tool permission enforcement.
+    """
+    return (
+        "SCOPE — user limits on files, commands, network and permissions bind every action, "
+        "including search, verification and any optional extra check. Verification never grants "
+        "extra access: use an allowed check in memory, or skip it and say what you did not check "
+        "and why. A write counts even if you undo it; a restriction to named writable paths "
+        "applies throughout the task, not just to the final diff. Report actual actions and "
+        "checks, not just the end state. Disclose unintended side effects even if reverted.")
 
 
 @dataclass
@@ -235,6 +251,7 @@ class ContextComposer:
                     "this project actually supports: run its existing test suite (e.g. "
                     "python -m pytest -q) when it has one; when it has none, validate the "
                     "artifact you produced rather than installing or inventing a test project. "
+                    "Keep checks within the task's scope. "
                     "Report what your check did and did not establish. When the request only "
                     "asks a question, answer it from what you inspected; no edit is required.")
         # unknown/typo'd mode -> ACT (never silently drop the tool-usage + verify contract).
@@ -286,15 +303,16 @@ class ContextComposer:
         # Ordinary sources remain cached per cwd; a Library lifecycle/integrity generation change
         # deliberately invalidates the prefix so enable/disable/revoke is truthful in 24x7 runs.
         skill_index = self._skill_index(cwd)
-        # RESPONSE LANGUAGE + GROUNDING sit right after identity so they survive identity overrides
-        # (the desktop persona in webapp.py replaces self.identity wholesale but never touches these
-        # lines). Both are byte-stable, so they stay inside the cached prefix.
-        stable_parts = [self.identity, _response_language_line(), _grounding_line(),
+        # RESPONSE LANGUAGE + GROUNDING + SCOPE sit right after identity so they survive identity
+        # overrides (the desktop persona replaces identity wholesale). All are byte-stable
+        # within a session and stay in the cached prefix.
+        stable_parts = [self.identity, _response_language_line(), _grounding_line(), _scope_line(),
                         "DELIVERY: Keep the user's requested language, length, and format through "
                         "tool use, delegation, and internal verification reminders. Tool reports "
                         "are evidence to synthesize, not a template for your final response. "
                         "Lead with the result, include only checks and limitations relevant to "
-                        "that request, and do not repeat the investigation transcript. When the "
+                        "that request, and do not repeat the investigation transcript. Keep "
+                        "necessary disclosures concise. When the "
                         "user asks for one sentence or paragraph, honor that format.",
                         mode_role, tool_names]
         if skill_index:
