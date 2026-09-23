@@ -36,6 +36,11 @@
   instead of being rewritten to CRLF (or doubled to CRCRLF), and report the real number of
   bytes written rather than the character count. Editing an existing file still keeps that
   file's own line endings.
+- Stop reporting an unattended automation as succeeded when it only ran out of turns, tokens
+  or output room. Those runs now ask for you, keep their partial answer and resumable thread,
+  and are not retried on their own — including when it is the final spend tally that crosses
+  the budget, which used to discard the finished run's whole receipt. A transcript that did
+  not save is reported instead of being claimed as durable history.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
