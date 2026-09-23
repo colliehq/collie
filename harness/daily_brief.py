@@ -1421,8 +1421,8 @@ def _suggestions(brief, has_calendar):
             "one: do it, reschedule it, or drop it.", [row["id"] for row in stale[:3]])
     if not out:
         add("shortest-plan", "Keep today realistic",
-            "Nothing is urgent. Help me pick one worthwhile thing for today without "
-            "filling the whole day.", [])
+            "Help me pick one worthwhile thing for today without filling the whole day. "
+            "Check what needs attention first; do not assume missing sources are clear.", [])
     return out
 
 

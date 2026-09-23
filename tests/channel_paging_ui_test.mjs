@@ -75,4 +75,49 @@ const plain = value => JSON.parse(JSON.stringify(value));
   await pending;
   assert.deepEqual(plain(c.items), [{id:'reply'}]);
 }
-console.log('paging: success, refresh, failure, response order, account and tab switch pass');
+// A session-token rotation must retry the same account and historical cursor,
+// once only. Exercise the shipped request functions, including URL construction.
+const requestFunctions = source.slice(source.indexOf('function url('), source.indexOf('async function action('));
+function requestFixture(responses) {
+  const requests = [];
+  const context = vm.createContext({token:'expired',URLSearchParams,tr:en=>en,
+    async fetch(url, options) {
+      requests.push({url,options});
+      assert.ok(responses.length, 'no unbounded authentication retry');
+      const [status,payload] = responses.shift();
+      return {status,ok:status>=200 && status<300,async json(){return payload;}};
+    }});
+  vm.runInContext(requestFunctions,context);
+  return {context,requests};
+}
+{
+  const {context:c,requests:r} = requestFixture([
+    [403,{error:'expired'}], [200,{token:'fresh'}],
+    [200,{results:[{id:'older'}],has_more:false,next_before:0}]
+  ]);
+  const payload = await c.readSection('results','mail-owner',17);
+  assert.equal(payload.results[0].id,'older');
+  assert.equal(r.length,3);
+  assert.equal(r[1].url,'/api/session-token');
+  const first=new URL(r[0].url,'http://localhost'), retry=new URL(r[2].url,'http://localhost');
+  assert.equal(first.searchParams.get('token'),'expired');
+  assert.equal(retry.searchParams.get('token'),'fresh');
+  for(const target of [first,retry]) {
+    assert.equal(target.pathname,'/api/channels/results');
+    assert.equal(target.searchParams.get('connection'),'mail-owner');
+    assert.equal(target.searchParams.get('before'),'17');
+  }
+}
+{
+  const {context:c,requests:r} = requestFixture([
+    [403,{error:'expired'}], [200,{token:'fresh'}], [403,{error:'denied'}]
+  ]);
+  await assert.rejects(c.readSection('events','mail-owner',17), /denied/);
+  assert.equal(r.length,3,'a second refusal is surfaced without another retry');
+}
+{
+  const {context:c,requests:r} = requestFixture([[403,{error:'expired'}],[403,{error:'denied'}]]);
+  await assert.rejects(c.readSection('events','mail-owner',17), /expired/);
+  assert.equal(r.length,2,'failed token refresh surfaces the original request error');
+}
+console.log('paging: cursor, refresh, failure, response races and bounded token recovery pass');
