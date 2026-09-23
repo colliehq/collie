@@ -1965,6 +1965,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
             if path == "/meetings":
                 return self._serve_static("meetings.html", "text/html; charset=utf-8")
+            if path == "/communications":
+                return self._serve_static("communications.html", "text/html; charset=utf-8")
             if path in ("/live", "/interview"):
                 # /interview is a compatibility URL from the narrower 0.23 preview. The product
                 # surface is now the general Live Copilot, with meetings/boards as optional context.
@@ -2223,6 +2225,24 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return self._send_json({"schema": _schema_for_panel(), "values": vals,
                                         "identity": whoami()})
+            if path == "/api/channels" or path.startswith("/api/channels/"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import channel_web, communications
+                from .channel_service import ChannelService
+                query = urllib.parse.parse_qs(parsed.query)
+                connection = query.get("connection", [""])[0]
+                section = path.removeprefix("/api/channels").strip("/")
+                try:
+                    if section == "attachment":
+                        data = ChannelService(_state_root()).attachment(connection, query.get("digest", [""])[0])
+                        return self._send_html(data, ctype="application/octet-stream",
+                                               headers={"Content-Disposition": "attachment; filename=collie-attachment"})
+                    return self._send_json(channel_web.read(_state_root(), section, connection))
+                except (ValueError, communications.CommsError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "Communication records could not be read; existing data was kept"}, 409)
             if path == "/api/work-identities":
                 from .workidentity import public_connections
                 return self._send_json({"connections": public_connections(_state_root())})
@@ -3686,6 +3706,22 @@ class Handler(BaseHTTPRequestHandler):
                                                     "error": "could not apply ambient desktop: %s" % exc,
                                                     "values": settings.all_values()}, 500)
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
+            if path == "/api/channels":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(128 * 1024)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import channel_web, communications
+                try:
+                    result = channel_web.perform(_state_root(), body)
+                    if isinstance(result, dict) and result.get("ok") is False:
+                        return self._send_json({"error": result.get("error") or "The provider refused this request"}, 409)
+                    return self._send_json({"ok": True, "result": result})
+                except (ValueError, communications.CommsError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "Connection request failed; check account settings. Existing work was kept."}, 409)
             if path == "/api/work-identities":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -5391,6 +5427,13 @@ class Handler(BaseHTTPRequestHandler):
                 user_msg = ([{"type": "text", "text": model_q}] if model_q else []) + \
                            [{"type": "image", "media_type": mt, "data": data} for (mt, data) in imgs]
         self._sse_open()
+        from . import channel_policy
+        try:
+            communication_policy = channel_policy.resolve(frozen, input_entry, qs)
+        except ValueError as exc:
+            self._sse("done", {"session": sid, "answer": "", "error": str(exc)})
+            return
+        communication_draft = bool(communication_policy and communication_policy["scope"] == "draft")
         if not q and not imgs:
             self._sse("done", {"session": sid, "answer": "", "error": "empty message"})
             return
@@ -6733,6 +6776,8 @@ class Handler(BaseHTTPRequestHandler):
                     )
             except Exception:
                 pass
+            if communication_draft:
+                channel_policy.restrict_draft(h, input_entry)
             # every structural event hits BOTH the starting client's socket and the live bus (so the
             # Map / mini-map render it in real time); the token firehose stays client-only.
             # The run does not belong to the socket that started it.
@@ -6809,7 +6854,7 @@ class Handler(BaseHTTPRequestHandler):
                 # visible as a handoff artifact unless Collie explicitly closes it.
                 from .browserbridge import browser_space
                 with browser_space("web-" + sid[:36], release=True):
-                    run_kwargs = {"consolidate": True, "history": history}
+                    run_kwargs = {"consolidate": not communication_draft, "history": history}
                     if authority_text:
                         run_kwargs["authority_msg"] = authority_text
                     res = h.run("web", user_msg, **run_kwargs)
@@ -6936,6 +6981,8 @@ class Handler(BaseHTTPRequestHandler):
                 sessions.append_run_receipt(sid, {
                     **run_outcome(res, recovery_required=wait_fenced),
                     "run": run_id, "decision": decision_payload,
+                    **({"input_id": input_entry["id"], "communication_answer": res.answer}
+                       if communication_policy else {}),
                     "model": res.model, "effort": decision.effort,
                     "requested_speed": decision.speed, "actual_speed": actual_speed,
                     "verified": bool(getattr(res, "verified", False)),
@@ -7109,6 +7156,8 @@ def main(argv=None, on_bound=None):
     # pass also catches up waits recorded before this process existed.
     from . import quota_resume
     quota_resume.start_ticker()
+    from .channel_service import start_pump
+    start_pump(_state_root())
     # Live Copilot must keep understanding already-captured context when its panel is hidden. The
     # first-party Web/Desktop server is Collie's long-lived process, so this loop survives ordinary
     # navigation without turning Live into a browser-page feature.

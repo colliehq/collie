@@ -5140,7 +5140,9 @@
       if (c.mcp) body += '<div class="set-group"><h4>' + setEsc(t("App connections")) + '</h4>'
           + '<p class="set-hint" style="margin:0 0 10px">'
           + setEsc(t("Connections give Collie scoped tools from outside this device. Review their status and access here."))
-          + '</p><div id="workIdentityBox"></div><div id="mcpBox"></div></div>';
+          + '</p><p><a href="/communications" class="set-connection-link">'
+          + setEsc(loc ? "邮箱与电话 · 收件、草稿和结果通知" : "Email & phone · Inbox, drafts and result notifications")
+          + '</a></p><div id="workIdentityBox"></div><div id="mcpBox"></div></div>';
       panes += '<div class="set-pane' + on + '" data-cat="' + c.id + '"><h3>'
              + setEsc(loc && c.zh ? c.zh : c.label) + "</h3>" + body + "</div>";
     });
@@ -5166,12 +5168,14 @@
       var isVoice = row.id === "google_voice";
       var badges = '<span class="mcp-badge">' + setEsc(t(isVoice ? "Collie-assigned line" : "Collie work mailbox")) + '</span>';
       if (row.connected) badges += '<span class="mcp-badge">' + setEsc(t("connected")) + '</span>';
-      var target = row.connected ? row.account : (isVoice ? t("Open Google Voice Messages in Chrome, then connect.") : t("Create a Collie Mail address from the command line."));
+      var target = row.connected ? row.account : (isVoice ? t("Open Google Voice Messages in Chrome, then connect.") : t("Connect your mailbox"));
       var actions = "";
       if (isVoice) {
         var action = row.connected ? "disconnect" : "connect";
         actions = '<div class="mcp-acts"><button data-work-identity="' + action + '">'
           + setEsc(t(row.connected ? "Disconnect" : "Connect open Voice tab")) + '</button></div>';
+      } else {
+        actions = '<div class="mcp-acts"><a href="/communications">' + setEsc(t("Connect your mailbox")) + '</a></div>';
       }
       return '<div class="mcp-item"><div class="mcp-top"><span class="mcp-name">' + setEsc(row.label || row.id) + '</span>'
         + badges + '</div><div class="mcp-target">' + setEsc(target) + '</div>'

@@ -63,7 +63,9 @@ def test_undecryptable_mail_does_not_advance_past_unread_input(tmp_path, monkeyp
     def broken(*args):
         raise ValueError("sealed input failed")
     monkeypatch.setattr(dogmail, "open_from_relay", broken)
-    assert dogmail.fetch(state_dir=str(tmp_path))[0]["error"]
+    first = dogmail.fetch(state_dir=str(tmp_path))[0]
+    assert first["error"] and first["id"]
+    assert dogmail.fetch(state_dir=str(tmp_path))[0]["id"] == first["id"]
     assert dogmail.load(str(tmp_path))["dogs"]["collie"]["cursor"] == 4
 
 
@@ -75,3 +77,30 @@ def test_new_address_keeps_the_relay_key_pinned(tmp_path, monkeypatch):
     monkeypatch.setattr(dogmail, "_post", lambda *a, **k: {"ok": True})
     assert dogmail.claim_dog("collie", state_dir=str(tmp_path))["ok"]
     assert dogmail.load(str(tmp_path))["relay_pub"] == dogmail.b64(b"relay-key")
+
+
+def test_corrupt_key_store_is_never_replaced_by_new_identity(tmp_path, monkeypatch):
+    path = tmp_path / "mail.json"
+    original = '{"handle":{"priv":"recover-this-key"'
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(dogmail, "_post", lambda *a, **kw: pytest.fail("must not transmit a new identity"))
+    with pytest.raises(ValueError, match="keys were kept"):
+        dogmail.claim_handle("new", "owner@example.test", state_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="keys were kept"):
+        dogmail.save({}, str(tmp_path))
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_slow_fetch_does_not_roll_back_a_newer_cursor_or_other_identity(tmp_path, monkeypatch):
+    _mail_fixture(tmp_path, monkeypatch)
+    def response(*a, **kw):
+        current = dogmail.load(str(tmp_path))
+        current["dogs"]["collie"]["cursor"] = 50
+        current["dogs"]["other"] = {"address": "other.owner@example.test", "cursor": 80}
+        dogmail.save(current, str(tmp_path))
+        return {"ok": True, "messages": [{"at": 7, "env": {"cipher": "sealed-message"}}]}
+    monkeypatch.setattr(dogmail, "_get", response)
+    dogmail.fetch(state_dir=str(tmp_path))
+    current = dogmail.load(str(tmp_path))
+    assert current["dogs"]["collie"]["cursor"] == 50
+    assert current["dogs"]["other"]["cursor"] == 80
