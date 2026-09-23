@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.28.0 ? Longer tasks and clearer recovery
 
+- Refuse unsupported providers when a caller explicitly requires subscription-only routing,
+  before provider construction or plugin discovery. Codex OAuth also requires its first-party
+  endpoint under that constraint. Ordinary provider selection is unchanged.
 - End a quota wait when the accepted request it was scheduled to start is withdrawn, so the
   remaining queued requests stop being shown as an automatic start nothing will perform. Only
   the wait bound to the withdrawn request ends, a newer wait and an admission already under way
@@ -84,6 +87,8 @@
 - Tell the agent that a task's file, command and access limits also bind its own verification,
   searches and optional extra checks, that a scratch file deleted afterwards still counts as a
   write, and that its report must describe the actions it took rather than the final state.
+
+See [the release review](docs/release-0.28.0.md) for behavior changes and validation limits.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
