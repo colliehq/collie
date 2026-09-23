@@ -61,6 +61,9 @@
   its attachments are kept with a visible reason instead. A check that is never answered now
   gives up after ten seconds and says so rather than leaving Send waiting forever, and an answer
   that names no folder is treated as no answer at all.
+- Tell the agent that a task's file, command and access limits also bind its own verification,
+  searches and optional extra checks, that a scratch file deleted afterwards still counts as a
+  write, and that its report must describe the actions it took rather than the final state.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
