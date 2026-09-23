@@ -370,6 +370,35 @@ def test_poll_counts_unreadable_and_skipped_messages_without_a_clean_all_clear(s
     assert host.poll("mail")["warning"] == "" and host.connection("mail")["warning"] == ""
 
 
+def test_manual_drafts_do_not_starve_automatic_replies(service):
+    from harness.channel_service import MAX_AUTO_SEND
+    host, adapter = service
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    for index in range(MAX_AUTO_SEND + 1):
+        host.prepare_reply("mail", "manual-%d" % index, text="Review me first")
+    for index in range(MAX_AUTO_SEND + 1):
+        host.prepare_reply("mail", "auto-%d" % index, text="Ready", automatic=True)
+    first = host.tick()[0]
+    assert first["sent"] == first["attempted"] == MAX_AUTO_SEND
+    assert len(adapter.sent) == MAX_AUTO_SEND
+    assert all(row["metadata"]["auto_eligible"] for row in adapter.sent)
+    assert all(comms.get_result("mail", "manual-%d" % index, directory=host.directory)["state"]
+               == "pending" for index in range(MAX_AUTO_SEND + 1))
+    assert host.tick()[0]["sent"] == 1
+
+
+def test_unconfirmed_automatic_reply_is_not_reported_as_sent(service, monkeypatch):
+    host, adapter = service
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    host.prepare_reply("mail", "auto", text="Ready", automatic=True)
+    monkeypatch.setattr(adapter, "send", lambda *args: {})
+    report = host.tick()[0]
+    assert report["sent"] == 0 and report["attempted"] == 1
+    assert comms.get_result("mail", "auto", directory=host.directory)["state"] == "unknown"
+    assert any(issue["lane"] == "delivery" for issue in report["issues"])
+    assert host.tick()[0]["attempted"] == 0
+
+
 def test_new_connection_anchors_before_reading_and_retries_a_failed_anchor(service, adapter_config=None):
     host, adapter = service
     adapter.messages = [message("old-history")]

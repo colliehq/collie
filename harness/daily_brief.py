@@ -814,10 +814,12 @@ def _communication_items(payload, window):
                 row.get("acceptance"), dict) else {}
             session = _text(acceptance.get("session"), 80)
             if state == "accepted":
+                if row.get("settled"):
+                    continue
                 out.append(_item("message", native=native, source="communications",
                                  tone="progress", severity=9, title=row.get("subject"),
-                                 fallback="A message Collie is working on",
-                                 detail="Collie is working on this message.",
+                                 fallback="A message accepted as a task",
+                                 detail="Accepted as a task. Open its conversation for current progress.",
                                  generated=("detail",), status="accepted", when=when,
                                  href="/communications",
                                  dedupe="session:" + session if session else "",
@@ -1039,8 +1041,9 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
         any(_text(row.get("kind"), 32) == "calendar" for row in connected)
 
     if unavailable:
-        notices.append("Could not read: %s. Nothing missing has been assumed clear."
-                       % ", ".join(sorted(unavailable)))
+        notices.append(("无法读取：%s。未读取的内容不会被判定为无事。" if language.startswith("zh")
+                        else "Could not read: %s. Nothing missing has been assumed clear.")
+                       % ", ".join(_source_name(name, language) for name in sorted(unavailable)))
     # An empty agenda is only honest if something could have filled it.  The old guard
     # required the meetings source to be `ok`, so the commonest case of all -- a profile
     # where the calendar endpoint was never wired up at all -- produced a silent empty
@@ -1049,8 +1052,10 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
     if not agenda and not has_calendar and sources["meetings"]["state"] != "unavailable":
         notices.append("No calendar is connected, so the agenda is not a claim about your day.")
     if suppressed:
-        notices.append("%d item(s) are hidden by your own brief preferences. Hiding an item "
-                       "does not cancel or complete it." % len(suppressed))
+        notices.append(("你在简报中隐藏了 %d 项内容。隐藏不会取消或完成对应事项。"
+                        if language.startswith("zh") else
+                        "%d item(s) are hidden by your own brief preferences. Hiding an item "
+                        "does not cancel or complete it.") % len(suppressed))
     for key in ("unreadable", "partial", "quiet"):
         if comms_report[key]:
             notices.append(_COMMS_NOTICES[key][
@@ -1210,8 +1215,9 @@ _GENERATED = {"zh": {
     # messages and replies
     "A message is waiting for you": "有一条消息在等你查看",
     "Waiting for you to review it in Communications.": "等待你在“通讯”中查看。",
-    "A message Collie is working on": "Collie 正在处理的一条消息",
-    "Collie is working on this message.": "Collie 正在处理这条消息。",
+    "A message accepted as a task": "一条已接收为任务的消息",
+    "Accepted as a task. Open its conversation for current progress.":
+        "已接收为任务。请打开会话查看当前进展。",
     "A reply is waiting to be sent": "有一条回复等待发送",
     "Ready to send from Communications.": "可在“通讯”中发送。",
     "Ready to send. This connection is paused, so nothing will go out until you "
@@ -1373,6 +1379,29 @@ def _suggestions(brief, has_calendar):
 
 # ---------------------------------------------------------------- renderers
 
+_SOURCE_LABELS = {
+    "personal": ("Personal", "个人事项"), "missions": ("Missions", "任务"),
+    "approvals": ("Needs you", "需要你"), "procedures": ("Routines", "习惯"),
+    "runs": ("Runs", "运行"), "meetings": ("Calendar", "日历"),
+    "task_inbox": ("Sessions", "会话"), "communications": ("Email & phone", "邮箱与电话"),
+}
+
+
+def _source_name(name, language):
+    return _SOURCE_LABELS.get(name, (name, name))[str(language).startswith("zh")]
+
+
+def _item_detail(item, brief):
+    if item.get("detail"):
+        return item["detail"]
+    status = item.get("status") or ""
+    if not str(brief.get("language")).startswith("zh"):
+        return status.replace("_", " ")
+    return {"scheduled": "已安排", "queued": "排队中", "pending": "待处理",
+            "running": "进行中", "waiting": "等待中", "needs_you": "需要你",
+            "completed": "已完成", "done": "已完成", "failed": "未完成",
+            "submitted": "服务商已接收", "unknown": "结果尚不确定"}.get(status, status)
+
 #: Renderer strings.  Unknown languages fall back to English rather than to a key.
 _LABELS = {
     "en": {"attention": "Needs you", "agenda": "Today", "progress": "In progress",
@@ -1415,7 +1444,7 @@ def _when_text(item, brief):
 def _line(item, brief):
     """One item as plain text.  All strings here came through ``_text`` already."""
     bits = [_when_text(item, brief), item["title"]]
-    detail = item.get("detail") or item.get("status")
+    detail = _item_detail(item, brief)
     if detail:
         bits.append("(%s)" % detail)
     if item.get("stale"):
@@ -1457,7 +1486,8 @@ def render_text(brief, *, bilingual=False):
         lines += ["", "%s:" % _label(brief, "notices", bilingual)]
         lines += ["  - %s" % notice for notice in brief["notices"]]
     lines += ["", "%s: %s" % (_label(brief, "sources", bilingual),
-                              ", ".join(brief["coverage"]["ok"]) or "none")]
+                              ", ".join(_source_name(name, brief.get("language"))
+                                        for name in brief["coverage"]["ok"]) or "none")]
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1478,7 +1508,7 @@ def _html_rows(brief, key, rows, bilingual):
         if href.startswith("https://"):
             title = '<a href="%s">%s</a>' % (_esc(href), title)
         meta = " · ".join(_esc(bit) for bit in
-                          (_when_text(row, brief), row.get("detail") or row.get("status"))
+                          (_when_text(row, brief), _item_detail(row, brief))
                           if bit)
         out.append('<li style="margin:4px 0">%s%s</li>' % (
             title, ' <span style="color:#6b7280">%s</span>' % meta if meta else ""))
@@ -1529,7 +1559,8 @@ def render_email(brief, *, bilingual=False):
         parts.append("</ul>")
     parts.append('<p style="color:#6b7280;font-size:12px">%s: %s</p></div>' % (
         _esc(_label(brief, "sources", bilingual)),
-        _esc(", ".join(brief["coverage"]["ok"]) or "none")))
+        _esc(", ".join(_source_name(name, brief.get("language"))
+                       for name in brief["coverage"]["ok"]) or "none")))
     subject = "%s · %s · %s" % (_labels(brief.get("language"))["subject"], brief["date"],
                                 brief["headline"])
     return {"subject": _text(subject, 160), "text": text, "html": "".join(parts),

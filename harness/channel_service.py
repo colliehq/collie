@@ -1105,18 +1105,26 @@ class ChannelService:
                 % (deferred, MAX_DRAFTS, resumes or "shortly"))
         return drafted
 
-    def _delivery_lane(self, connection, row):
+    def _delivery_lane(self, connection, row, issues=None):
         """Sweep stale claims, then send only what was marked automatic."""
-        out = {"swept": len(self.sweep(connection)), "sent": 0}
+        out = {"swept": len(self.sweep(connection)), "sent": 0, "attempted": 0}
         if not row.get("auto_reply"):
             return out
-        for result in comms.next_sendable(connection, limit=MAX_AUTO_SEND, directory=self.directory):
+        pending = comms.list_results(connection, states=["pending"], limit=comms.MAX_OPEN_OUTBOX,
+                                     include_private=True, directory=self.directory)
+        for result in pending:
             # Calls always require a direct invocation from the UI.
-            private = comms.get_result(connection, result["id"], include_private=True, directory=self.directory)
-            if ((private.get("metadata") or {}).get("auto_eligible")
-                    and not (private.get("metadata") or {}).get("speak")):
-                self.send(connection, result["id"])
-                out["sent"] += 1
+            if ((result.get("metadata") or {}).get("auto_eligible")
+                    and not (result.get("metadata") or {}).get("speak")):
+                outcome = self.send(connection, result["id"])
+                out["attempted"] += 1
+                if outcome.get("state") == "submitted":
+                    out["sent"] += 1
+                elif issues is not None:
+                    issues.append({"lane": "delivery", "error":
+                                   "A reply could not be confirmed as submitted; check the outbox"})
+                if out["attempted"] >= MAX_AUTO_SEND:
+                    break
         return out
 
     def tick(self):
@@ -1163,7 +1171,7 @@ class ChannelService:
                 entry["drafted"] = lane("draft", lambda: self._draft_lane(connection, deferrals),
                                         "Drafting could not be started for this connection") or 0
                 issues.extend({"lane": "draft", "error": text} for text in deferrals)
-            delivery = lane("delivery", lambda: self._delivery_lane(connection, row),
+            delivery = lane("delivery", lambda: self._delivery_lane(connection, row, issues),
                             "Sending could not be completed; check the outbox")
             if delivery:
                 entry.update(delivery)

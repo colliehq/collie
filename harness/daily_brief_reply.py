@@ -33,8 +33,10 @@ Everything it will not do is the point:
 The item is quoted evidence, labelled as a dated historical snapshot of untrusted
 content.  The wrapper says so in the content itself, because the content is what
 a model sees: a line inside a brief that asks for an action is still just text
-that arrived in an email, and the drafting template it lands in has no tools
-anyway.  Both the item and its wrapper are bounded by the smaller of 64 KiB and
+that arrived in an email. Automatic drafting has no tools. If the owner explicitly
+opens a project task, the snapshot remains untrusted context: only the accepted
+message supplies the authority text, never its attachments. Both the item and its
+wrapper are bounded by the smaller of 64 KiB and
 ``input_assets.MAX_CONTEXT_CHARS``.
 
 ``ChannelService._snapshot_attachments`` calls this before saving the immutable

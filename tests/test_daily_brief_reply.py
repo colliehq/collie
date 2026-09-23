@@ -132,20 +132,21 @@ def test_a_provider_that_assigned_its_own_id_threads_just_as_well(host, zones):
     assert len(adapter.sent) == 1                     # reading restored nothing new
 
 
-def test_acceptance_freezes_the_original_brief_in_the_durable_input(host, zones):
+@pytest.mark.parametrize("draft", [True, False])
+def test_acceptance_freezes_the_original_brief_in_the_durable_input(host, zones, draft):
     root, service, adapter = host
     opt_in(root, service)
     report = sched.tick(root, at(2026, 9, 10), service=service)
     row = stored(service, report["job"]["result_id"])
     arrive(service, refs=[row["metadata"]["message_id"]])
-    accepted = service.accept("mail", "in-1", start=False)
+    accepted = service.accept("mail", "in-1", start=False, draft=draft)
     frozen = seen(service, "in-1")["acceptance_detail"]["config"]["frozen"]
     reference = frozen["communication_assets"]
     bundle = input_assets.load(accepted["session"], reference, directory=service.directory)
     assert bundle["contexts"][0]["kind"] == "daily_brief_snapshot"
     assert row["text"] in bundle["contexts"][0]["content"]
-    assert frozen["communication_policy"]["scope"] == "draft"
-    again = service.accept("mail", "in-1", start=False)
+    assert frozen["communication_policy"]["scope"] == ("draft" if draft else "task")
+    again = service.accept("mail", "in-1", start=False, draft=draft)
     assert again["entry_id"] == accepted["entry_id"]
     assert seen(service, "in-1")["acceptance_detail"]["config"]["frozen"]["communication_assets"] == reference
     assert len(adapter.sent) == 1

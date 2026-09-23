@@ -207,6 +207,7 @@ def _message_row(event):
             "subject": str(event.get("subject") or "")[:SUBJECT_LIMIT],
             "sender_allowed": bool(event.get("sender_allowed")),
             "automatic": bool(metadata.get("automatic")),
+            "settled": event.get("awaiting_reply") is False and event.get("state") == "accepted",
             "received": event.get("received"), "recorded": event.get("recorded"),
             "acceptance": {"state": str(acceptance.get("state") or "")[:32],
                            "session": str(acceptance.get("session") or "")[:96]}}

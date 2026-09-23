@@ -97,6 +97,18 @@ def message_rows(payload, key="events", connection=0):
     return payload["connections"][connection][key]
 
 
+def test_an_answered_message_leaves_progress_while_its_draft_remains_visible(mailbox):
+    arrive(mailbox)
+    mailbox.accept("mail", "one", start=False)
+    mailbox.prepare_reply("mail", "answer", text="Prepared reply", event_id="one")
+    payload = web._communications(mailbox.root, False, NOW)
+    assert message_rows(payload)[0]["settled"] is True
+    brief = db.build({"communications": payload}, now=NOW)
+    assert not brief["progress"]
+    assert len(brief["attention"]) == 1
+    assert brief["attention"][0]["kind"] == "reply"
+
+
 # --------------------------------------------------------------- collection
 
 

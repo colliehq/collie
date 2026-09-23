@@ -461,7 +461,7 @@ def test_unavailable_source_is_never_a_clear_day():
     assert brief["coverage"]["complete"] is False
     assert "meetings" in brief["coverage"]["unavailable"]
     assert "assumed clear" in brief["headline"]
-    assert "meetings" in " ".join(brief["notices"])
+    assert "Calendar" in " ".join(brief["notices"])
 
 
 def test_malformed_payload_is_unavailable_not_empty():

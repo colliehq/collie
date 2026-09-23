@@ -36,7 +36,9 @@ that already exists and never rebuilds different text under the same id.  The
 outbox state is the authority on what happened -- ``submitted`` means the provider
 accepted the message, which is not the same as delivery, and ``unknown`` is never
 resent.  Results are marked ``auto_eligible: False`` so the channel delivery lane
-leaves them alone; the scheduler sends only its own pending draft.
+leaves them alone; the scheduler sends only its own pending draft, and when a
+morning ends with that draft still unsent it withdraws it rather than leaving a
+brief nobody will ever send sitting in the outbox for good.
 
 Mounting (the parent owns the routes)::
 
@@ -73,6 +75,8 @@ DEFAULT_AT = "07:30"
 DEFAULT_GRACE_MINUTES = 240               # "this morning", not "some time today"
 MIN_GRACE_MINUTES, MAX_GRACE_MINUTES = 15, 12 * 60
 MAX_ATTEMPTS = 3                          # per job, ever; a failure waits for a person
+#: Who the outbox records as having withdrawn an abandoned day's draft.
+DISCARD_ACTOR = "daily-brief-schedule"
 JOB_RETENTION = 30
 CORRUPT_KEPT = 3
 SUBJECT_BYTES = 512
@@ -456,7 +460,9 @@ def configure(root, body, *, profile="default", now=None, service=None):
     ``body`` is ``{"enabled": bool}`` plus, when enabling, ``connection`` and
     ``timezone`` (IANA), and optionally ``at`` (``"HH:MM"``), ``language``
     (``en``/``zh``) and ``grace_minutes``.  There is no recipient field: the brief
-    goes to the chosen connection's owner address and nowhere else.
+    goes to the chosen connection's owner address and nowhere else, and no profile
+    either: the profile is the caller's to state, and a body naming a different one
+    is refused rather than quietly saved somewhere the person is not looking.
 
     This enables nothing but this preference.  A paused connection stays paused, a
     provider account is never created or touched, and the connection's own
@@ -468,6 +474,12 @@ def configure(root, body, *, profile="default", now=None, service=None):
     unknown = sorted(set(body) - set(FIELDS) - {"profile"})
     if unknown:
         raise ScheduleError("unknown setting(s): %s" % ", ".join(unknown[:5]))
+    if "profile" in body and body["profile"] != profile:
+        # The caller, not the body, says which profile is being written: the page
+        # has no profile picker and the matching read takes no profile either, so a
+        # body that names a different one would save a person's settings where they
+        # would never see them again.  Naming the one already being written is fine.
+        raise ScheduleError("this request cannot save the daily email to another profile")
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         raise ScheduleError("enabled must be true or false")
@@ -588,9 +600,80 @@ def _reconcile(job, service, wall):
                  .get("state") or "")
     if actual not in SETTLED_STATES or actual == job.get("state"):
         return False
+    if actual == "cancelled" and job.get("discarded"):
+        # This module withdrew that draft itself when the day was abandoned.  The
+        # reason the day ended is the record; re-reading it back off the outbox
+        # would overwrite it with the consequence.
+        return False
     job.update(state=actual, detail=_SETTLED.get(actual, "today's brief is %s" % actual),
                updated=wall)
     return True
+
+
+def _discard(service, job):
+    """Withdraw this job's own unsent draft.  ``discarded``, ``kept`` or ``""``.
+
+    A day that is over will never be emailed, and the draft it prepared should not
+    outlive it: left there it is a brief the person is shown forever, and enough of
+    them eventually fill the outbox against messages that could still be sent.
+
+    What it will not touch is anything that is not demonstrably this job's own
+    unsent draft.  A row that is ``sending`` may be in a provider's hands already, a
+    ``submitted``, ``failed`` or ``unknown`` one is the only evidence of what
+    happened, and a row that is not the scheduler's, or is another job's, was never
+    ours.  If the outbox refuses -- because a pass claimed it between the read and
+    the write, or it is simply gone -- that is reported as ``kept``: this claims no
+    cancellation it did not actually make.
+    """
+    stored = _stored(service, job.get("connection"), job.get("result_id"), private=True)
+    if not stored or stored.get("compacted"):
+        return ""
+    metadata = stored.get("metadata") or {}
+    if (metadata.get("source") != "daily_brief" or metadata.get("job_id") != job.get("id")
+            or metadata.get("auto_eligible") is not False):
+        return ""
+    if stored.get("state") != "pending":
+        return "kept"
+    try:
+        out = comms.cancel_result(job["connection"], job["result_id"], actor=DISCARD_ACTOR,
+                                  expected_digest=stored.get("digest"),
+                                  directory=service.directory)
+    except (comms.CommsError, OSError, ValueError):
+        return "kept"
+    return "discarded" if (out or {}).get("state") == "cancelled" else "kept"
+
+
+def _abandon(job, service, wall, reason):
+    """Close an open job for good, and take its unsent draft out of the outbox with it.
+
+    The outbox settles the day first: a brief the provider accepted while the window
+    was closing is ``submitted``, not abandoned, and nothing of it is withdrawn.
+    """
+    if _reconcile(job, service, wall):
+        return False
+    fate = _discard(service, job)
+    job.update(state="expired", updated=wall,
+               detail=reason + {"discarded": "; the unsent draft was discarded",
+                                "kept": "; the draft is in the outbox"}.get(fate, ""))
+    if fate == "discarded":
+        job["discarded"] = True
+    return fate == "discarded"
+
+
+def _sweep(state, service, wall, today):
+    """Abandon every open job left over from a local day that is already over.
+
+    The pass that closes today's window handles today; this is the rest of the story
+    -- a machine that was off from the send window until tomorrow, or a person who
+    switched the daily email off and left a prepared brief behind.  Neither will ever
+    be sent, and without this neither is ever cleared up.
+    """
+    changed = False
+    for job in state["jobs"]:
+        if job.get("state") in OPEN_STATES and str(job.get("date") or "") < today:
+            _abandon(job, service, wall, "this morning was over before the brief was sent")
+            changed = True
+    return changed
 
 
 def tick(root, now=None, *, profile="default", service=None):
@@ -609,9 +692,22 @@ def tick(root, now=None, *, profile="default", service=None):
         if state is None:
             return _report(profile, "error", error)
         prefs = state["prefs"]
+        if any(job.get("state") in OPEN_STATES for job in state["jobs"]):
+            # Days that ended are cleared up before anything else is decided, and
+            # whether the daily email is still on has no bearing on it: a draft
+            # nobody will ever send does not become sendable by being forgotten.
+            try:
+                so_far = _slot(wall, _zone(prefs["timezone"]), prefs["at"])[0]
+            except (ScheduleError, ValueError):        # unreadable clock, nothing to do
+                so_far = ""
+            if so_far:
+                service = _service(root, service)
+                if _sweep(state, service, wall, so_far):
+                    _save(path, state)
         if not prefs["enabled"]:
-            # Switched off: this reads one small file and stops.  No connection is
-            # opened, no outbox is touched and no provider is asked anything.
+            # Switched off with nothing left over: this reads one small file and
+            # stops.  No connection is opened, no outbox is touched and no provider
+            # is asked anything.
             return _report(profile, "disabled", "the daily email is switched off")
         if state["paused"]:
             return _report(profile, "needs_reconfigure",
@@ -650,14 +746,15 @@ def tick(root, now=None, *, profile="default", service=None):
                                   "window, so today's brief was not emailed"),
                        "created": wall, "updated": wall}
                 state["jobs"].append(job)
-            elif not _reconcile(job, service, wall):
+            else:
                 # The clock closes the window; it does not decide what happened.  A
                 # brief the provider accepted while the window was closing is settled
                 # by the outbox first, so "expired" is only ever said about a draft
-                # that really is still sitting there unsent.
-                job.update(state="expired", updated=wall,
-                           detail=("the morning window closed before this could be "
-                                   "sent; the draft is in the outbox"))
+                # that really is still sitting there unsent -- and that draft is
+                # withdrawn with the day, never left pending for a morning that has
+                # already passed.
+                _abandon(job, service, wall,
+                         "the morning window closed before this could be sent")
             _save(path, state)
             return _report(profile, job["state"], job["detail"], job=job, date=date)
 

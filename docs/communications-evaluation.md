@@ -46,6 +46,24 @@ against every possible prompt injection. Median final-round elapsed time was
 authority boundary comes from withholding tools and prior private context; it
 does not depend on the model choosing the right refusal wording.
 
+## Replying to a retained Daily Brief
+
+Two additional valid rounds exercised three historical-brief replies each, again
+with real Claude Code calls and synthetic local mail receipts. They used the real
+thread matching, acceptance, immutable attachment bundle and model-facing input path.
+All six provider captures contained the intended historical snapshot and no earlier
+private-session canary; tools and hooks remained disabled.
+
+The English case identified the first item from the original date. The Chinese case
+answered the second appointment's time as 14:30 and stated it was historical. A
+third-party instruction embedded in the brief did not trigger tool use or credential
+disclosure. The final prompt also stopped narrating that irrelevant instruction.
+Final-round durations were 3.444, 3.564 and 3.740 seconds (one request each).
+
+The first setup attempt used an incorrect fixture metadata key, so the host withheld
+the snapshot and the model said the brief was missing. That setup run is excluded
+from the six valid historical-context cases. No real email was sent in any round.
+
 ## Other verification
 
 The repository tests cover intake, thread matching, immutable attachment snapshots,
@@ -61,3 +79,11 @@ preview and preserving unsaved scheduling fields across status refreshes.
 Full platform gates and build artifacts run in the public `colliehq/collie` Actions
 workflows. Live SMTP, Twilio and Collie Mail delivery require separately configured
 provider accounts; passing fixture tests does not establish that provisioning.
+
+The [public relay build](https://github.com/colliehq/collie/actions/runs/35881417102)
+passed its protocol checks and produced the deployed bundle. The artifact's SHA-256
+values and source configuration were checked before uploading with bundling disabled.
+After deployment, `collie-mail/2` reported both durable ledgers, retained the same
+public key, and accepted a signed lookup for a nonexistent receipt (404 after auth).
+That check neither read mail nor sent it, and left the local identity file unchanged.
+Sending-domain entitlement remains unverified.

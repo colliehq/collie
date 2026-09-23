@@ -424,8 +424,14 @@ def test_a_draft_that_outlives_its_window_is_not_sent_later(host, zones):
 
     expired = sched.tick(root, at(2026, 9, 10, 12, 0), service=service)
     assert expired["state"] == "expired" and adapter.sent == []
-    assert outbox(service, states=["pending"])        # kept, visible, not sent
+    # The morning is over, so the draft goes with it: left pending it is a brief the
+    # person is shown forever and an open outbox row that will never be spent.
+    assert outbox(service, states=["pending"]) == []
+    assert [row["state"] for row in outbox(service)] == ["cancelled"]
+    assert "discarded" in expired["detail"]
     assert sched.tick(root, at(2026, 9, 10, 13, 0), service=service)["state"] == "expired"
+    # And the reason the day ended is what the record keeps, not the consequence.
+    assert ledger(root)["jobs"][-1]["detail"].startswith("the morning window closed")
 
 
 # --------------------------------------------------------------- local days
@@ -748,7 +754,7 @@ def test_a_manual_retry_is_the_persons_to_send_not_the_schedulers(host, zones):
     assert comms.get_result("mail", result_id, directory=service.directory)["state"] == "pending"
 
 
-def test_yesterdays_unsent_draft_is_left_where_it_is(host, zones):
+def test_yesterdays_unsent_draft_is_never_sent_and_does_not_outlive_the_day(host, zones):
     root, service, adapter = host
     opt_in(root, service, grace_minutes=60)
     with power_cut(service):
@@ -759,8 +765,10 @@ def test_yesterdays_unsent_draft_is_left_where_it_is(host, zones):
     today = sched.tick(root, at(2026, 9, 11), service=service)
     assert today["state"] == "submitted" and len(adapter.sent) == 1
     assert adapter.sent[0]["metadata"]["brief_date"] == "2026-09-11"
-    # Still there, still a person's to deal with, and still nobody's to send.
-    assert comms.get_result("mail", yesterday, directory=service.directory)["state"] == "pending"
+    # Yesterday's morning cannot come back, so yesterday's draft is withdrawn -- and
+    # withdrawn is not sent: the provider was asked for exactly one message.
+    assert comms.get_result("mail", yesterday, directory=service.directory)["state"] == "cancelled"
+    assert [job["state"] for job in ledger(root)["jobs"]] == ["expired", "submitted"]
     service.tick()
     assert len(adapter.sent) == 1
 
@@ -812,6 +820,119 @@ def test_a_repaired_ledger_sends_the_draft_that_was_already_stored(host, zones, 
     job = ledger(root)["jobs"][-1]
     assert job["brief_id"] == prepared["metadata"]["brief_id"] != "brief-2026-09-10-elsewhere"
     assert job["text_bytes"] == len(prepared["text"].encode())
+
+
+# --------------------------------------------------------------- abandoned days
+
+
+def test_an_abandoned_day_takes_its_draft_with_it_and_nothing_else(host, zones):
+    root, service, adapter = host
+    # Somebody else's draft, pending in the same outbox for the whole story.
+    comms.create_result("mail", "a-persons-own-draft", destination=OWNER,
+                        text="see you at six", metadata={"auto_eligible": True},
+                        directory=service.directory)
+    opt_in(root, service, grace_minutes=60)
+    with power_cut(service):
+        with pytest.raises(KeyboardInterrupt):
+            sched.tick(root, at(2026, 9, 10), service=service)
+    mine = ledger(root)["jobs"][-1]["result_id"]
+    assert comms.get_result("mail", mine, directory=service.directory)["state"] == "pending"
+
+    # Consent withdrawn while the draft is prepared.  The morning it belongs to is
+    # still today, so it is still a message the person could choose to send.
+    sched.configure(root, {"enabled": False}, service=service, now=at(2026, 9, 10, 8, 0))
+    assert sched.tick(root, at(2026, 9, 10, 12, 0), service=service)["state"] == "disabled"
+    assert comms.get_result("mail", mine, directory=service.directory)["state"] == "pending"
+
+    # The next day it is a brief for a morning that cannot come back.  Nothing will
+    # ever send it, and a pending row nothing will send is one a person is shown for
+    # ever and one the outbox cannot spend.
+    assert sched.tick(root, at(2026, 9, 11, 9, 0), service=service)["state"] == "disabled"
+    assert comms.get_result("mail", mine, directory=service.directory)["state"] == "cancelled"
+    job = ledger(root)["jobs"][-1]
+    assert job["state"] == "expired" and "discarded" in job["detail"]
+    assert adapter.sent == []                          # withdrawn is not sent
+
+    # Whatever else was in that outbox is none of this module's business.
+    other = comms.get_result("mail", "a-persons-own-draft", include_private=True,
+                             directory=service.directory)
+    assert other["state"] == "pending" and other["text"] == "see you at six"
+    assert [row["state"] for row in outbox(service)] == ["pending", "cancelled"]
+
+
+def test_a_brief_that_may_be_in_flight_is_never_withdrawn(host, zones):
+    root, service, adapter = host
+    opt_in(root, service, grace_minutes=60)
+    with power_cut(service):
+        with pytest.raises(KeyboardInterrupt):
+            sched.tick(root, at(2026, 9, 10), service=service)
+    mine = ledger(root)["jobs"][-1]["result_id"]
+    # Another sender holds it: whether it reached the provider is not knowable here,
+    # so the day may not claim to have taken it back.
+    comms.claim_send("mail", mine, transport="imap", directory=service.directory)
+
+    expired = sched.tick(root, at(2026, 9, 10, 12, 0), service=service)
+    assert expired["state"] == "expired" and "discarded" not in expired["detail"]
+    assert comms.get_result("mail", mine, directory=service.directory)["state"] == "sending"
+    assert ledger(root)["jobs"][-1].get("discarded") is None and adapter.sent == []
+
+
+def test_an_unknown_or_settled_brief_is_evidence_and_is_left_alone(host, zones):
+    root, service, adapter = host
+    opt_in(root, service, grace_minutes=60)
+    adapter.fail = RuntimeError("the connection dropped mid-conversation")
+    assert sched.tick(root, at(2026, 9, 10), service=service)["state"] == "unknown"
+    adapter.fail = None
+    mine = ledger(root)["jobs"][-1]["result_id"]
+
+    # Days later, with the schedule long since off: an `unknown` is the only record
+    # of a message that may have gone out, and it is never cancelled or re-sent.
+    sched.configure(root, {"enabled": False}, service=service, now=at(2026, 9, 10, 9, 0))
+    assert sched.tick(root, at(2026, 9, 14, 9, 0), service=service)["state"] == "disabled"
+    assert comms.get_result("mail", mine, directory=service.directory)["state"] == "unknown"
+    assert ledger(root)["jobs"][-1]["state"] == "unknown" and len(adapter.sent) == 1
+
+
+def test_a_foreign_draft_under_a_past_days_id_is_not_the_schedulers_to_discard(host, zones):
+    root, service, adapter = host
+    opt_in(root, service, grace_minutes=60)
+    stolen = sched._result_id("default", "mail", "2026-09-10")
+    comms.create_result("mail", stolen, destination=OWNER, text="not a brief",
+                        metadata={"auto_eligible": True}, directory=service.directory)
+    # The ledger believes it prepared that day; the row under the id is not its own.
+    blocked = sched.tick(root, at(2026, 9, 10), service=service)
+    assert blocked["state"] == "error" and "different message" in blocked["detail"]
+    # Nor would clearing up an abandoned day ever reach for it: the row has to prove
+    # it is the scheduler's own, and this job's, before anything withdraws it.
+    assert sched._discard(service, {"id": sched._job_id("default", "mail", "2026-09-10"),
+                                    "connection": "mail", "result_id": stolen}) == ""
+
+    assert sched.tick(root, at(2026, 9, 12), service=service)["state"] == "submitted"
+    assert comms.get_result("mail", stolen, directory=service.directory)["state"] == "pending"
+    assert len(adapter.sent) == 1
+
+
+# --------------------------------------------------------------- profiles
+
+
+def test_a_request_cannot_save_the_settings_to_another_profile(host, zones):
+    root, service, _adapter = host
+    body = {"enabled": True, "connection": "mail", "timezone": ZONE_KEY, "profile": "work"}
+    with pytest.raises(sched.ScheduleError) as bad:
+        sched.configure(root, dict(body), service=service, now=at(2026, 9, 1))
+    assert "profile" in str(bad.value)
+
+    # Refused, not quietly redirected: neither the profile the caller is reading nor
+    # the one the body named came on, and nothing was written for either.
+    assert sched.preferences(root, service=service)["enabled"] is False
+    assert sched.preferences(root, profile="work", service=service)["enabled"] is False
+    assert not os.path.exists(sched._path(root, "work"))
+
+    # Naming the profile the caller is already writing is not a redirection.
+    named = sched.configure(root, dict(body), profile="work", service=service,
+                            now=at(2026, 9, 1))
+    assert named["enabled"] is True and named["profile"] == "work"
+    assert sched.preferences(root, service=service)["enabled"] is False
 
 
 # --------------------------------------------------------------- real time zones

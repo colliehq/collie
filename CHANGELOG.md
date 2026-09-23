@@ -21,6 +21,9 @@
 - Protect unfinished accepted messages from history cleanup and recover pending work
   independently of mailbox connectivity. Retrying a known failure creates a new
   attempt while preserving the old receipt.
+- Keep retained manual drafts from blocking automatic replies. Count only confirmed
+  provider submissions as sent, and remove expired scheduler drafts without touching
+  an in-flight or unconfirmed delivery.
 - Harden the Collie Mail relay with durable delivery and handle claims, bounded input,
   verification throttles and public build artifacts. Provider provisioning remains
   separate from app setup; phone reception means SMS, not incoming voice calls.
