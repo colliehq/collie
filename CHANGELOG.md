@@ -12,6 +12,9 @@
   details and wrap long paths on phone screens.
 - Keep protocol-conformance fixtures alive until their transport owns the process, preventing
   intermittent Windows startup failures without weakening process-tree ownership checks.
+- Read pending-request rows as the person sees them in the inbox race tests: a refused save keeps
+  its editor open, and that is no longer mistaken for a row lost to a late listing. The unsaved
+  draft, the refusal and the stale-overwrite guarantees are now checked on every repaint.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
