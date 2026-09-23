@@ -4108,6 +4108,11 @@
     "Automatic task progress is temporarily blocked":"自动推进任务暂时受阻",
     "Saved tasks are kept. Open Settings to check the model connection.":"已保存任务仍然保留。可在设置中检查模型连接。",
     "{n} saved requests waiting":"{n} 条已保存要求待继续","Saved requests need inspection":"已保存要求需要检查",
+    "Automatic start is overdue — open to check":"自动启动已超时，请打开查看",
+    "Automatic start can't be confirmed — open to check":"无法确认自动启动状态，请打开查看",
+    "Waiting for automatic start — already submitted":"已提交，正在等待自动开始",
+    "Automatic work is scheduled. Nothing needs your decision.":"任务已安排自动处理，暂无需你决定。",
+    "Task progress":"任务进度",
     "Working folder":"工作目录","Isolated folder":"隔离目录","Folder on this computer":"这台电脑上的文件夹","Use folder":"使用此目录",
     "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
     "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
@@ -4309,6 +4314,11 @@
     "Automatic task progress is temporarily blocked":"自動推進任務暫時受阻",
     "Saved tasks are kept. Open Settings to check the model connection.":"已儲存任務仍然保留。可在設定中檢查模型連線。",
     "{n} saved requests waiting":"{n} 個已儲存要求待繼續","Saved requests need inspection":"已儲存要求需要檢查",
+    "Automatic start is overdue — open to check":"自動啟動已逾時，請開啟查看",
+    "Automatic start can't be confirmed — open to check":"無法確認自動啟動狀態，請開啟查看",
+    "Waiting for automatic start — already submitted":"已提交，正在等待自動開始",
+    "Automatic work is scheduled. Nothing needs your decision.":"任務已安排自動處理，暫無需你決定。",
+    "Task progress":"任務進度",
     "Working folder":"工作目錄","Isolated folder":"隔離目錄","Folder on this computer":"這台電腦上的資料夾","Use folder":"使用此目錄",
     "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
     "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
@@ -6072,8 +6082,31 @@
   // a question, and the run stays suspended until it is answered from here, from a phone,
   // or from the desktop. Whoever answers first wins; the rest see the row settle.
   var PERM_ROWS = {}, PENDING_PERMS = {}, GLOBAL_PERMS = {}, ONLINE_NEEDS = 0, MISSION_NEEDS = [], QUEUED_SESSIONS = [], PERMISSION_EPOCH = 0;
+  // A queued conversation the server has already scheduled to start after a provider
+  // reset is progress a person arranged, not a question waiting on them — counting it
+  // as one produces a badge that no decision can clear. The server owns that timer
+  // and the verdict on it (`scheduled_wait.progress`, decided from its own clock,
+  // backoff and liveness evidence); this reads that verdict and never re-derives it
+  // from Date.now(), which would call a healthy backoff or a just-due tick overdue.
+  //
+  // "scheduled", "queued" (a healthy ticker owns the wait) and "starting" (an admission in
+  // flight) are progress. "stalled", "unknown", "stopped", a schedule this build was
+  // not given a verdict for, and an inbox that could not be read are all decisions:
+  // a row nothing can confirm keeps asking rather than buying its way out of the count.
+  function queuedProgress(row) {
+    var wait = (row || {}).scheduled_wait;
+    if (!wait || row.error || row.journal === "invalid") return "";
+    return typeof wait.progress === "string" && wait.progress ? wait.progress : "unknown";
+  }
+  function queuedOnSchedule(row) {
+    var progress = queuedProgress(row);
+    return progress === "scheduled" || progress === "queued" || progress === "starting";
+  }
+  function queuedNeedsYou(row) {
+    return row.owner_busy !== true && !queuedOnSchedule(row);
+  }
   function updateNeedsYou() {
-    var waiting = QUEUED_SESSIONS.filter(function (row) { return row.owner_busy !== true; });
+    var waiting = QUEUED_SESSIONS.filter(queuedNeedsYou);
     var n = Object.keys(GLOBAL_PERMS || {}).length + ONLINE_NEEDS + MISSION_NEEDS.length + waiting.length, nav = $("needsYouNav"), count = $("needsYouCount");
     if (!nav || !count) return;
     nav.hidden = n === 0; count.textContent = String(n);
@@ -8993,9 +9026,24 @@
     var title = String(value || "").replace(/^\s*(?:#{1,6}|[-*>])\s*/, "").replace(/\s+/g, " ").trim();
     return title || t("Untitled task");
   }
+  // One sentence per server verdict, used by every surface that shows a schedule, so
+  // they cannot disagree about what the server said. The time stated is the next try,
+  // never a reset that has gone by — that would read as a promise already broken.
+  function scheduledWaitLabel(wait) {
+    var progress = (wait || {}).progress;
+    if (progress === "scheduled") return t("Already submitted — starts after") + " " +
+      todayTimeText(Number(wait.next_attempt_at) || wait.retry_at);
+    if (progress === "queued") return t("Waiting for automatic start — already submitted");
+    if (progress === "starting") return t("Starting now — already submitted");
+    if (progress === "stopped") return t("Automatic start stopped — start it when you're ready");
+    if (progress === "stalled") return t("Automatic start is overdue — open to check");
+    return t("Automatic start can't be confirmed — open to check");
+  }
   function queuedSessionLabel(row) {
-    return row.error || row.journal === "invalid" ? t("Saved requests need inspection") :
-      t("{n} saved requests waiting").replace("{n}", Number(row.pending || 0) + Number(row.claimed || 0));
+    if (row.error || row.journal === "invalid") return t("Saved requests need inspection");
+    var saved = t("{n} saved requests waiting")
+      .replace("{n}", Number(row.pending || 0) + Number(row.claimed || 0));
+    return row.scheduled_wait ? scheduledWaitLabel(row.scheduled_wait) + " · " + saved : saved;
   }
   function recentThreadGroup(updated) {
     var stamp = Number(updated || 0) * 1000;
@@ -9538,7 +9586,7 @@
     var icon = document.createElement("span"); icon.className = "today-row-icon"; icon.textContent = value.icon || "·";
     var copy = document.createElement("span"); copy.className = "today-row-copy";
     var title = document.createElement("span"); title.className = "today-row-title"; title.textContent = value.title || "";
-    var meta = document.createElement("span"); meta.className = "today-row-meta"; meta.textContent = value.meta || "";
+    var meta = document.createElement("span"); meta.className = "today-row-meta"; meta.textContent = value.meta || ""; meta.title = value.meta || "";
     var arrow = document.createElement("span"); arrow.className = "today-row-action"; arrow.textContent = value.action ? "→" : "";
     copy.appendChild(title); copy.appendChild(meta); row.appendChild(icon); row.appendChild(copy); row.appendChild(arrow);
     if (value.action) row.onclick = value.action;
@@ -9655,12 +9703,27 @@
     if (schedulerIssue) attention.push({icon:"!",title:t("Automatic task progress is temporarily blocked"),
       meta:schedulerIssue + " · " + t("Saved tasks are kept. Open Settings to check the model connection."),tone:"attention",
       action:function () { $("settingsBtn").click(); }});
-    (queuedData.sessions || []).filter(function (row) { return row.owner_busy !== true; }).forEach(function (row) {
-      attention.push({icon:"↳",title:row.title || t("Ongoing task"),meta:queuedSessionLabel(row),tone:"brief",
-        action:function () { openSession(row.session); }});
+    // Everything still queued stays visible and openable here — a scheduled start is
+    // a thing to know about, and dropping it would make Today quieter than the truth.
+    // It is marked `progress` instead: the list is cut to three, so decisions sort
+    // first and are never pushed out by rows the server is handling on a clock, and
+    // the tallies below speak only for rows a person is the answer to. The thread
+    // list keeps its own row for each of these either way.
+    var queuedRows = (queuedData.sessions || []).filter(function (row) { return row.owner_busy !== true; });
+    queuedRows.sort(function (a, b) { return (queuedNeedsYou(b) ? 1 : 0) - (queuedNeedsYou(a) ? 1 : 0); });
+    queuedRows.forEach(function (row) {
+      var needsDecision = queuedNeedsYou(row);
+      attention.push({icon:needsDecision ? "!" : "↳",title:row.title || t("Ongoing task"),
+        meta:queuedSessionLabel(row),tone:needsDecision ? "attention" : "brief",
+        progress:!needsDecision,action:function () { openSession(row.session); }});
     });
     attention.slice(0,3).forEach(function (item) { todayRow(attentionBox,item); });
-    $("todayAttentionCount").textContent = attention.length ? String(attention.length) : "";
+    var decisions = attention.filter(function (item) { return !item.progress; }).length;
+    var moving = attention.length - decisions;
+    var attentionLabel = !decisions && moving ? "Task progress" : "Needs attention";
+    $("todayAttentionTitle").setAttribute("data-i18n", attentionLabel);
+    $("todayAttentionTitle").textContent = t(attentionLabel);
+    $("todayAttentionCount").textContent = decisions ? String(decisions) : "";
     if (!attention.length && attentionUnavailable)
       todayEmpty(attentionBox, "Attention check incomplete", "Collie couldn't verify every source, so this area is not being marked clear.", function () { loadToday(true); }, "Try again");
     else if (!attention.length) todayEmpty(attentionBox, "Nothing urgent", "Collie will put changes here only when they deserve your attention.", null, "");
@@ -9681,8 +9744,8 @@
       todayBriefCard($("todaySuggestion"), "Collie suggests", proposed.title || t("A routine worth reviewing"),
         proposed.summary || t("This pattern repeated locally. Review it before Collie turns it into a reusable workflow."), "Review habit", todayOpenHabits);
     } else {
-      todayBriefCard($("todaySuggestion"), "Collie suggests", attention.length ? t("Clear the important things first") : t("Keep today realistic"),
-        attention.length ? t("Start with the items that need your decision; everything else can stay quiet.") :
+      todayBriefCard($("todaySuggestion"), "Collie suggests", decisions ? t("Clear the important things first") : t("Keep today realistic"),
+        decisions ? t("Start with the items that need your decision; everything else can stay quiet.") :
           t("Turn the open space into a short plan without filling every hour."), "Plan with Collie",
         function () { todayStartTask(t("Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.")); });
     }
@@ -9690,8 +9753,11 @@
     sourceLine.dataset.state = unavailable || !connected.length ? "partial" : "ready";
     sourceLine.textContent = connected.length ? todayCount(connected.length, "Private local brief · 1 connected source", "Private local brief · {n} connected sources") :
       t("Private local brief · connect sources to make it richer");
-    $("todaySummary").textContent = unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : attention.length ?
-      todayCount(attention.length, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : timeline.length ?
+    // Work the server is already carrying is said as progress, not as a demand: the
+    // headline cannot claim something needs a person while the badge for it is hidden.
+    $("todaySummary").textContent = unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : decisions ?
+      todayCount(decisions, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : moving ?
+      t("Automatic work is scheduled. Nothing needs your decision.") : timeline.length ?
       todayCount(timeline.length, "1 item is in view. Nothing urgent is waiting.", "{n} items are in view. Nothing urgent is waiting.") :
       t("You're clear for now. Collie will surface changes here without filling the page with noise.");
     todayLastLoaded = Date.now(); todayFreshness();
@@ -9862,7 +9928,7 @@
     if (!rec && ONLINE_NEEDS) {
       openOnlinePage(); return;
     }
-    var waiting = QUEUED_SESSIONS.filter(function (row) { return row.owner_busy !== true; });
+    var waiting = QUEUED_SESSIONS.filter(queuedNeedsYou);
     if (!rec && waiting.length) { openSession(waiting[0].session); return; }
     if (!rec) return;
     if (rec.session && rec.session !== currentSession) openSession(rec.session);
@@ -10435,15 +10501,10 @@
       var wait = state.scheduledWait;
       if (wait && wait.entry === entry.id && entry.state === "pending") {
         if (wait.state === "retired" && wait.reason) meta.title = wait.reason;
-        // "retired" is the server saying it gave up on starting this by itself.
-        // The row says so plainly and keeps its Start and Remove controls: the
-        // request is still accepted and still startable by hand.
-        meta.textContent += " · " + (wait.state === "admitting"
-          ? t("Starting now — already submitted")
-          : wait.state === "retired"
-          ? t("Automatic start stopped — start it when you're ready")
-          : t("Already submitted — starts after") + " " +
-            new Date(wait.retry_at * 1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}));
+        // The same sentence Today and the thread list show for this verdict. A
+        // stopped or unconfirmable schedule says so plainly and keeps its Start and
+        // Remove controls: the request is still accepted and still startable by hand.
+        meta.textContent += " · " + scheduledWaitLabel(wait);
       }
       var assets = entry.assets || (entry.metadata || {}).assets || {};
       if (assets.images || assets.contexts) meta.textContent += " · " + t("Attachments saved");

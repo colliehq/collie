@@ -2570,6 +2570,13 @@ class Handler(BaseHTTPRequestHandler):
                 for row in rows:
                     sid = row["session"]
                     row["owner_busy"] = web_tasks.owner_busy(sid)
+                    # The same sanitized schedule (and the host's own verdict on
+                    # it) the per-conversation endpoint publishes: without it this
+                    # lane cannot tell a start the server owns from one stranded
+                    # waiting for a person. `scheduled_wait` answers None when the
+                    # record is absent *or* unreadable, so a failure here costs
+                    # the row an annotation and never its place in the listing.
+                    row["scheduled_wait"] = web_tasks.scheduled_wait(sid)
                     row["title"] = summaries.get(sid, {}).get("title") or ""
                     if not row["title"] and not row.get("error"):
                         try:

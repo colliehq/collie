@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show healthy automatic follow-ups as task progress instead of requests for a decision.
+  Keep stopped or unconfirmed starts visible, and show the next retry time consistently.
 - Count verification evidence only for checks that actually reached the tool. Refused or
   blocked checks cannot verify an edit or replace the last executed check's result.
 - Stop a run when a pre-action recovery checkpoint cannot be saved, including later inner
