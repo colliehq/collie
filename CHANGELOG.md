@@ -29,6 +29,8 @@
   an in-flight or unconfirmed delivery.
 - Bind automatic task results to the recipient recorded at acceptance. A later
   recipient change leaves the answer in its original conversation for review.
+- Recover the final checked reply from older task journals across internal harness
+  notes, without crossing into another request or sending preliminary prose.
 - Harden the Collie Mail relay with durable delivery and handle claims, bounded input,
   verification throttles and public build artifacts. Provider provisioning remains
   separate from app setup; phone reception means SMS, not incoming voice calls.

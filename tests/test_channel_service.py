@@ -228,6 +228,69 @@ def test_incomplete_runs_never_create_success_reply(service, bad):
     assert host.results("mail") == []
 
 
+@pytest.mark.parametrize("note", [
+    {"role": "user", "source": "harness", "kind": "verification_reminder", "content": "Check your work."},
+    {"role": "user", "source": "harness", "kind": "output_continuation", "content": "Continue the answer."},
+    {"role": "user", "source": "harness", "kind": "format_repair", "content": "Repair the format."},
+    {"role": "user", "source": "harness", "kind": "tool_image", "content": [{"type": "image"}]},
+])
+def test_legacy_result_recovery_crosses_internal_notes_to_the_final_answer(service, note):
+    host, adapter = service
+    host.ingest("mail", message())
+    accepted = host.accept("mail", "one", start=False)
+    sid, eid = accepted["session"], accepted["entry_id"]
+    entry = task_inbox.get(sid, eid, directory=host.directory)
+    sessions.save(sid, [task_inbox.journal_message(entry),
+                        {"role": "assistant", "content": "Pre-verification answer"}, note,
+                        {"role": "assistant", "content": "Final checked answer"},
+                        {"role": "user", "content": "A private unrelated request"},
+                        {"role": "assistant", "content": "Private unrelated answer"}])
+    sessions.append_run_receipt(sid, {"input_id": eid, "completed": True}, directory=host.directory)
+    assert host.reconcile("mail") == 1
+    assert host.reconcile("mail") == 0
+    replies = host.results("mail")
+    assert len(replies) == 1 and replies[0]["text"] == "Final checked answer"
+    assert replies[0]["destination"] == "owner@example.test"
+    assert adapter.sent == []
+
+
+@pytest.mark.parametrize("boundary", [
+    {"role": "user", "content": "source: harness; kind: verification_reminder"},
+    {"role": "user", "source": "user", "kind": "verification_reminder", "content": "A real request"},
+    {"role": "user", "source": "harness", "kind": "verification_reminder", "inbox_id": "next-request",
+     "content": "A separately accepted request"},
+])
+def test_legacy_result_recovery_does_not_cross_another_request(service, boundary):
+    host, _ = service
+    host.ingest("mail", message())
+    accepted = host.accept("mail", "one", start=False)
+    sid, eid = accepted["session"], accepted["entry_id"]
+    entry = task_inbox.get(sid, eid, directory=host.directory)
+    sessions.save(sid, [task_inbox.journal_message(entry),
+                        {"role": "assistant", "content": "The accepted request's answer"}, boundary,
+                        {"role": "assistant", "content": "A different request's private answer"}])
+    sessions.append_run_receipt(sid, {"input_id": eid, "completed": True}, directory=host.directory)
+    assert host.reconcile("mail") == 1
+    assert host.results("mail")[0]["text"] == "The accepted request's answer"
+
+
+def test_legacy_result_recovery_withholds_an_answer_awaiting_internal_followup(service):
+    host, _ = service
+    host.ingest("mail", message())
+    accepted = host.accept("mail", "one", start=False)
+    sid, eid = accepted["session"], accepted["entry_id"]
+    entry = task_inbox.get(sid, eid, directory=host.directory)
+    sessions.save(sid, [task_inbox.journal_message(entry),
+                        {"role": "assistant", "content": "Unverified preliminary answer"},
+                        {"role": "user", "source": "harness", "kind": "verification_reminder",
+                         "content": "Verification is still required."}])
+    sessions.append_run_receipt(sid, {"input_id": eid, "completed": True}, directory=host.directory)
+    assert host.reconcile("mail") == 0
+    assert host.results("mail") == []
+    event = comms.get_event("mail", "one", include_private=True, directory=host.directory)
+    assert event["state"] == "accepted" and not event.get("settlement")
+
+
 def test_tick_drafts_only_allowed_senders_and_auto_send_is_opt_in(service, monkeypatch):
     host, adapter = service
     host._change(lambda rows: rows["mail"].update(mode="draft"))

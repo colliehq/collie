@@ -166,3 +166,26 @@ differed, and one Collie call retried. This experiment does not isolate the cost
 each factor and is not a general performance ranking. The orchestration invoked
 the real ownership, input and result APIs directly; detached scheduling, HTTP/SSE,
 attachments, cancellation and live delivery were not exercised by this comparison.
+
+## Real background task launch
+
+A separate synthetic report task used `ChannelService.accept` with
+`draft=False`, `approved=True` and `start=True`. The production desktop task
+scheduler started its own background thread, constructed the harness and ran
+Claude Code; the experiment did not manually execute the loop or insert receipts.
+It completed in 34.28 seconds with nine recorded model calls and seven tool calls.
+An independent CSV calculation confirmed all three corrected report values, and
+the source CSV was unchanged. The input was consumed, one completed receipt was
+durable, and exactly one pending reply was stored for the pinned owner. The paused
+connection refused sending. This tests the background entry point, not HTTP/SSE,
+browser streaming or live transport delivery.
+
+The resulting journal also exposed a recovery defect. In a copy with the receipt's
+stored answer and existing outbox row removed, recovery stopped at a harness
+verification reminder and selected the earlier 489-character answer instead of
+the final 704-character answer. The repaired path crosses internal host notes,
+requires an answer after the last such note, and stops at the next actual input.
+The same copied journal now yields the exact final answer. Regression cases cover
+verification, continuation, format-repair and tool-image notes, a missing final
+answer, and real user messages that quote or resemble host metadata. The original
+successful run and failing reproduction remain separate evidence.

@@ -920,7 +920,16 @@ class ChannelService:
             raise ChannelError("accepted input is not in the task journal")
         answers = []
         for message in messages[start + 1:]:
+            # Verification, continuation and tool-image notes belong to this
+            # run even though the model sees them as user-role messages. Only
+            # host provenance may cross that boundary; prose cannot claim it,
+            # and another durable input always starts a separate request.
             if message.get("role") == "user":
+                if message.get("source") == "harness" and not message.get("inbox_id"):
+                    # A requested internal follow-up supersedes earlier prose.
+                    # If no final answer follows, keep the request unsettled.
+                    answers.clear()
+                    continue
                 break
             if message.get("role") == "assistant" and not message.get("tool_calls") and isinstance(message.get("content"), str):
                 answers.append(message["content"])
