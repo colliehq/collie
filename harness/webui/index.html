@@ -920,6 +920,8 @@
   .control-actions button { border:1px solid var(--line); border-radius:7px; padding:7px 10px;
     background:var(--surface); color:var(--ink); cursor:pointer; }
   .control-actions button.primary { background:var(--pine); color:var(--on-accent); border-color:var(--pine); }
+  .control-editor .control-actions { flex-wrap:wrap; }
+  .control-editor .control-actions button { white-space:nowrap; }
   .control-meter { width:100%; height:5px; border-radius:99px; background:var(--line); overflow:hidden; }
   .control-meter i { display:block; height:100%; background:var(--meadow); }
   .control-summary { color:var(--muted); font-size:11.5px; margin:-4px 0 10px; }
@@ -6572,7 +6574,7 @@
   var activityPanel = $("activityPanel"), activityButton = $("activityBtn");
   // Reads go through the shared authenticated path: a long-lived window whose process token went
   // stale gets one refresh and one retry, so an operations tab shows the snapshot rather than
-  // "could not refresh" until some later poll. Writes (activityPost) deliberately never retry.
+  // "could not refresh" until some later poll. Writes retry once only after an explicit auth refusal.
   function activityGet(path) {
     return authenticatedFetch(path)
       .then(function (r) { return r.json().then(function (d) {
