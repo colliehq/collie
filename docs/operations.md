@@ -40,6 +40,16 @@ it is enabled. A crashed read-only execution can be reclaimed within its retry b
 lease that may have written externally moves to **Needs You**. Stale lease tokens cannot publish a
 late result.
 
+A finished execution in **Needs You** keeps asking until somebody says they read it. **Mark
+reviewed** — offered next to *Open automation* in the recovery lane and next to the run in
+Execution history — records that acknowledgement durably for that one execution
+(`POST /api/automations/review` with its `execution_id`; authenticated, no confirmation dialog,
+because it changes nothing outside Collie). It runs, retries and resumes nothing, and the run keeps
+its state, error, receipt, saved conversation and history row; only the attention projection stops
+counting it. Acknowledgement is per execution on purpose: two daily runs can strand two different
+pieces of work, so a later success never speaks for an earlier incident and each new **Needs You**
+arrives unreviewed. A run that is still pending, claimed or running cannot be marked reviewed.
+
 Memory review shows proposed, attested, verified, and rejected claims separately. Budget views show
 limits alongside observed usage rather than treating unknown usage as zero. The permissions view
 shows authority by surface and target; package publisher trust and package scope approval remain

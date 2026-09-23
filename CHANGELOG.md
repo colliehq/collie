@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let an operator mark one finished automation execution that needs attention as reviewed, so the
+  health badge can return to normal. The acknowledgement is durable and applies to that execution
+  only: the run keeps its state, error, receipt and saved conversation, a later run is never
+  answered for by an earlier one, and nothing is re-run, retried or resumed.
 - Refresh an expired process token when an operations-panel action is refused, then retry
   that action once with the same payload. Other errors remain visible without automatic replay.
 - Open an automation's saved conversation from its execution history, including partial work

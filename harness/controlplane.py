@@ -111,11 +111,16 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
         "state": row.get("state"), "lane": row.get("lane"),
     } for row in work["missions"] if row.get("state") in (
         "recovery_required", "needs_you")]
+    # A finished needs_you automation run is a standing demand until somebody says they looked at
+    # it.  Only that explicit, durable acknowledgement of this exact execution drops it out of the
+    # lane: a later successful run of the same automation proves nothing about this one, and every
+    # other state keeps its existing meaning.
     automation_recovery = [{
         "kind": "automation", "execution_id": row.get("execution_id"),
         "automation_id": row.get("automation_id"), "state": row.get("state"),
         "last_error": row.get("last_error"),
-    } for row in work["automations"] if row.get("state") == "needs_you"]
+    } for row in work["automations"] if row.get("state") == "needs_you"
+        and not float(row.get("attention_reviewed_at") or 0) > 0]
     report["work"] = {
         "interactive_active": len(work["sessions"]),
         "missions_active": sum(row.get("state") not in (

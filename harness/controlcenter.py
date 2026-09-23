@@ -53,7 +53,7 @@ def recovery_snapshot(path=None) -> dict:
         elif kind == "specialist":
             actions = ["inspect_specialist", "cancel_specialist"]
         elif kind == "automation":
-            actions = ["inspect_automation"]
+            actions = ["inspect_automation", "review_automation"]
         items.append({
             "id": "%s:%s" % (kind, identity), "kind": kind, "identity": identity,
             "severity": "needs_you", "title": labels.get(kind, "Recovery required"),
@@ -142,6 +142,10 @@ def _public_execution(row: dict, usage: dict | None = None) -> dict:
     keys = ("execution_id", "automation_id", "event_id", "state", "attempts",
             "created_at", "updated_at", "started_at", "finished_at")
     out = {key: row.get(key) for key in keys if row.get(key) is not None}
+    # Whether this outcome was acknowledged is navigation metadata: it says which rows still ask
+    # for a decision, and carries no answer, prompt or transcript.
+    if float(row.get("attention_reviewed_at") or 0) > 0:
+        out["attention_reviewed_at"] = float(row["attention_reviewed_at"])
     if row.get("last_error"):
         out["last_error"] = _bounded(row.get("last_error"), 500)
     out["usage"] = {key: (usage or {}).get(key, 0) for key in
@@ -229,6 +233,18 @@ def automation_run_now(automation_id: str, path=None, *, confirmed: bool = False
                                      now=now)
     return {"ok": True, "automation_id": spec.automation_id,
             "execution_id": execution_id, "queued": True}
+
+
+def automation_review_execution(execution_id: str, path=None, *,
+                                now: float | None = None) -> dict:
+    """Mark one finished needs_you execution reviewed; nothing is run, retried or deleted."""
+    from .automations import AutomationStore
+    execution_id = str(execution_id or "")[:200]
+    if not execution_id:
+        raise ValueError("execution_id is required")
+    with AutomationStore(os.path.join(_root(path), "automations.db")) as store:
+        reviewed = store.mark_attention_reviewed(execution_id, now=now)
+    return {"ok": True, "reviewed": reviewed}
 
 
 def _memory_path(path=None) -> str:

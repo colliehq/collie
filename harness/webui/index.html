@@ -4113,7 +4113,7 @@
     "Waiting for automatic start — already submitted":"已提交，正在等待自动开始",
     "Automatic work is scheduled. Nothing needs your decision.":"任务已安排自动处理，暂无需你决定。",
     "Task progress":"任务进度",
-    "Open saved conversation":"打开已保存的对话",
+    "Open saved conversation":"打开已保存的对话","Mark reviewed":"标记为已查看",
     "Working folder":"工作目录","Isolated folder":"隔离目录","Folder on this computer":"这台电脑上的文件夹","Use folder":"使用此目录",
     "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
     "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
@@ -4323,7 +4323,7 @@
     "Waiting for automatic start — already submitted":"已提交，正在等待自動開始",
     "Automatic work is scheduled. Nothing needs your decision.":"任務已安排自動處理，暫無需你決定。",
     "Task progress":"任務進度",
-    "Open saved conversation":"開啟已儲存的對話",
+    "Open saved conversation":"開啟已儲存的對話","Mark reviewed":"標記為已查看",
     "Working folder":"工作目錄","Isolated folder":"隔離目錄","Folder on this computer":"這台電腦上的資料夾","Use folder":"使用此目錄",
     "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
     "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
@@ -6690,6 +6690,13 @@
             if (typeof setProductNav === "function") setProductNav("missions"); });
         } else if (action === "inspect_automation") {
           activityAction(row, "Open automation", function () { setControlTab("automations"); });
+        } else if (action === "review_automation") {
+          // The outcome stays in Execution history with its error and saved conversation; this
+          // only says a person read it, so the lane stops asking. Nothing is re-run or retried.
+          activityAction(row, "Mark reviewed", function () {
+            return activityPost("/api/automations/review",
+              {execution_id:item.identity}).then(loadActivity);
+          });
         }
       });
     }
@@ -6815,6 +6822,14 @@
       if (run.session_id) activityAction(row, t("Open saved conversation"), function () {
         openSession(run.session_id);
       });
+      // Each finished needs_you run is acknowledged on its own: a later run's outcome says
+      // nothing about this one, and an already reviewed run keeps its row without the button.
+      if (run.state === "needs_you" && !run.attention_reviewed_at) {
+        activityAction(row, t("Mark reviewed"), function () {
+          return activityPost("/api/automations/review",
+            {execution_id:run.execution_id}).then(loadActivity);
+        });
+      }
     }));
     var add = document.createElement("div"); add.className = "control-actions";
     var button = document.createElement("button"); button.textContent = "New automation";
