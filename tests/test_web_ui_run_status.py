@@ -810,6 +810,25 @@ def await_run(page, token=None):
     page.wait_for_timeout(200)
 
 
+def thread_row(page, name):
+    """The one sidebar row whose title is exactly `name`, resolved again each time it is used.
+
+    The sidebar is not patched in place: `loadSessions()` empties `#threads` and rebuilds every
+    row, and `pollRuns` calls it whenever `/api/runs` reports a run this page had not already
+    recorded — which on a cold load is always, because the page starts with no runs known. So a
+    row read out of `query_selector_all` names a node the next redraw throws away, and clicking
+    that handle a moment later fails with "Element is not attached to the DOM" rather than
+    opening the thread. A locator re-queries the live list at the instant of the click instead,
+    and being strict it refuses to act at all on anything but a single match. The title is
+    anchored against `.t-last`, the row's name node, so "Read README.md" cannot also select a
+    thread that merely begins that way.
+    """
+    row = page.locator(".thread").filter(
+        has=page.locator(".t-last").filter(has_text=re.compile(r"^%s$" % re.escape(name))))
+    assert row.count() == 1, "%r must name exactly one sidebar row, found %d" % (name, row.count())
+    return row
+
+
 class Page:
     """One loaded task surface, with its JS errors collected."""
 
@@ -1195,17 +1214,13 @@ def test_switching_threads_never_shows_a_stale_title_or_status(ui):
     ui.ask("Read README.md and tell me what this tool does")
     assert ui.gate_state() in ("idle", None)
 
-    rows = ui.page.query_selector_all(".thread")
-    capped = [r for r in rows if "Migrate every module" in r.inner_text()][0]
-    capped.click()
+    thread_row(ui.page, "Migrate every module to the new config loader").click()
     ui.page.wait_for_timeout(400)
     assert ui.title() == "Migrate every module to the new config loader"
     assert "Stopped at the turn limit" in ui.log_text(), "a reopened capped run still says so"
     assert ui.page.inner_text("#stateText") == "turn limit"
 
-    finished = [r for r in ui.page.query_selector_all(".thread")
-                if "Read README.md" in r.inner_text()][0]
-    finished.click()
+    thread_row(ui.page, "Read README.md and tell me what this tool does").click()
     ui.page.wait_for_timeout(400)
     assert ui.title() == "Read README.md and tell me what this tool does"
     assert "Stopped at the turn limit" not in ui.log_text(), "the previous thread's verdict is gone"
@@ -1214,10 +1229,9 @@ def test_switching_threads_never_shows_a_stale_title_or_status(ui):
 
 def test_sidebar_calls_a_capped_run_paused_not_done(ui):
     ui.page.wait_for_timeout(400)       # the 2.5s registry poll seeds from /api/runs on load
-    row = [r for r in ui.page.query_selector_all(".thread")
-           if "Migrate every module" in r.inner_text()][0]
-    state = row.query_selector(".t-state")
-    assert state is not None
+    row = thread_row(ui.page, "Migrate every module to the new config loader")
+    state = row.locator(".t-state")
+    assert state.count() == 1
     label = state.inner_text().lower()          # the row is uppercased by CSS
     assert "done" not in label, "a run stopped by a cap is terminal but not finished"
     assert "paused" in label and "turn limit" in label
@@ -1230,9 +1244,7 @@ def test_reload_restores_the_thread_name_and_verdict(server, browser):
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.goto(server + "/?token=" + TOKEN, wait_until="load")
     page.wait_for_selector(".thread", timeout=8000)
-    row = [r for r in page.query_selector_all(".thread")
-           if "Migrate every module" in r.inner_text()][0]
-    row.click()
+    thread_row(page, "Migrate every module to the new config loader").click()
     page.wait_for_timeout(500)
     assert page.inner_text("#pageTitle") == "Migrate every module to the new config loader"
     assert "Stopped at the turn limit" in page.inner_text("#log")
