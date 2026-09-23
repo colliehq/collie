@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.28.0 ? Longer tasks and clearer recovery
+## v0.28.0 — Longer tasks and clearer recovery
 
 - Refuse unsupported providers when a caller explicitly requires subscription-only routing,
   before provider construction or plugin discovery. Codex OAuth also requires its first-party
