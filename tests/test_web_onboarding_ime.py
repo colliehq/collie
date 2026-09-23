@@ -1,4 +1,4 @@
-"""In the first-run naming dialog, Enter and Escape belong to the keyboard until the name is chosen.
+"""In the optional naming dialog, Enter and Escape belong to the keyboard until the name is chosen.
 
 Naming a companion in Chinese, Japanese or Korean means typing latin letters into an *open
 composition* and then pressing Enter to accept the candidate the keyboard offers — or Escape to
@@ -67,11 +67,12 @@ class Naming:
         route.fulfill(json={"ok": True})
 
     def open(self):
-        """Reload onto a machine with a default, editable name, so onboarding opens for real."""
+        """Explicitly preview naming; ordinary first-run no longer requires a name."""
         self.page.evaluate("() => localStorage.removeItem('collie-name-onboard-skip')")
         self.page.route("**/api/whoami", self._identity)
         self.page.route("**/api/settings?*", self._settings)
-        self.page.reload(wait_until="load")
+        url = self.page.url
+        self.page.goto(url + ("&" if "?" in url else "?") + "preview=identity", wait_until="load")
         expect(self.overlay).to_be_visible()
         expect(self.field).to_be_focused()
         return self

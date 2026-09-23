@@ -1,0 +1,49 @@
+name: Mail relay
+
+on:
+  pull_request:
+    paths:
+      - 'relay/mail_worker.js'
+      - 'relay/mail.wrangler.toml'
+      - 'tests/mail_relay_test.mjs'
+      - '.github/workflows/mail-relay.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'relay/mail_worker.js'
+      - 'relay/mail.wrangler.toml'
+      - '.github/workflows/mail-relay.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Exercise relay protocol and durable claims
+        run: node tests/mail_relay_test.mjs
+      - name: Build the deployable worker without credentials
+        # esbuild resolves a relative outdir from the config's project root (relay/).
+        run: npx --yes wrangler@4.136.3 deploy --config relay/mail.wrangler.toml --dry-run --outdir "$GITHUB_WORKSPACE/dist/mail-relay"
+      - name: Record the exact source and deployment configuration
+        run: |
+          test -s dist/mail-relay/mail_worker.js
+          cp relay/mail.wrangler.toml dist/mail-relay/
+          git rev-parse HEAD > dist/mail-relay/source-commit.txt
+          cd dist/mail-relay
+          sha256sum mail_worker.js mail.wrangler.toml > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mail-relay-${{ github.sha }}
+          path: dist/mail-relay/
+          if-no-files-found: error
+          retention-days: 14

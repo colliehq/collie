@@ -262,6 +262,74 @@ def test_rendering_the_schedule_never_submits_or_starts_anything(server, browser
     assert errors == []
 
 
+# The language answer, still in flight. /api/settings is a separate request from the ones
+# Today renders out of, so on a slower machine it lands after the rows are already up — the
+# order the Windows runner saw first. Holding it here makes that order the case every time
+# instead of the one a fast machine never reaches.
+_HOLD_SETTINGS = """(() => {
+  const original = window.fetch.bind(window);
+  const waiting = [];
+  window.releaseLanguageSettings = () => waiting.splice(0).forEach(resolve => resolve(
+    new Response(JSON.stringify({values:{LANG:'%s'}}), {headers:{'content-type':'application/json'}})));
+  window.fetch = (url, options) => String(url).split('?')[0] === '/api/settings'
+    ? new Promise(resolve => waiting.push(resolve))
+    : original(url, options);
+})();"""
+
+
+def _today_after_rows(ui, lang, rows):
+    """Render Today with the language answer still waiting, and hand back a live row."""
+    ui.page.add_init_script(_HOLD_SETTINGS % lang)
+    _reload(ui, rows)
+    # Today has already said what the day holds; only the language is outstanding.
+    expect(ui.page.locator("#todaySummary")).to_contain_text("Automatic work is scheduled")
+    return ui.page.locator("#todayAttention .today-row").first.element_handle()
+
+
+def _writes(page):
+    written = []
+    page.on("request", lambda request: request.method != "GET"
+            and written.append((request.method, request.url)))
+    return written
+
+
+def test_a_late_language_answer_does_not_put_the_placeholder_back_over_today(ui):
+    """The headline is derived from the day, not from a fixed string, so the chrome sweep
+    that runs when the language finally arrives cannot be allowed to restore the loading
+    placeholder over it — "Bringing today into focus…" above a page that is already in
+    focus is a lie about the state, and on the phone run it was the whole of what was left."""
+    written = _writes(ui.page)
+    row = _today_after_rows(ui, "en", [_row("auto-waiting", scheduled_wait=_wait())])
+    ui.page.evaluate("() => window.releaseLanguageSettings()")
+    ui.page.wait_for_timeout(200)
+    summary = ui.page.locator("#todaySummary")
+    expect(summary).to_contain_text("Automatic work is scheduled")
+    expect(summary).not_to_contain_text("Bringing today into focus")
+    expect(ui.page.locator("#todayAttentionTitle")).to_have_text("Task progress")
+    expect(ui.page.locator("#todayAttentionCount")).to_be_empty()
+    # The two other derived lines are restated from the same facts, not from their markup.
+    expect(ui.page.locator("#todaySourceLine")).not_to_contain_text("only connected sources")
+    expect(ui.page.locator("#todayUpdated")).not_to_have_text("Checking…")
+    # Relabelling happens where the lines stand: the row a person may be reading, or have
+    # focused, is the same node rather than a fresh one, and nothing was sent to say so.
+    assert row.evaluate("el => el.isConnected") is True
+    assert written == [] and _Fixture.queue_posts == [] and _Fixture.queue_starts == []
+
+
+def test_a_late_language_answer_restates_todays_headline_in_that_language(ui):
+    """Same race, answered in Chinese. The headline has to change language without changing
+    what it claims: still progress, still nothing to decide."""
+    written = _writes(ui.page)
+    row = _today_after_rows(ui, "zh", [_row("auto-waiting", scheduled_wait=_wait())])
+    ui.page.evaluate("() => window.releaseLanguageSettings()")
+    summary = ui.page.locator("#todaySummary")
+    expect(summary).to_contain_text("任务已安排自动处理")
+    expect(summary).not_to_contain_text("正在整理今天")
+    expect(ui.page.locator("#todayAttentionTitle")).to_have_text("任务进度")
+    assert row.evaluate("el => el.isConnected") is True
+    assert written == [] and _Fixture.queue_posts == [] and _Fixture.queue_starts == []
+
+
 @pytest.mark.parametrize("viewport", VIEWPORTS)
 @pytest.mark.parametrize("progress", ["scheduled", "queued", "starting"])
 def test_a_scheduled_only_today_reads_the_same_on_a_phone(server, browser, viewport, progress):

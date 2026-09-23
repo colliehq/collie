@@ -35,6 +35,11 @@ named contract—not a claim that every property of the result is proven.
 For queued follow-ups, Mission updates, stopping and resuming work, and reviewing saved Pack
 changes, see the [task workflow guide](docs/task-workflows.md).
 
+The desktop starts as Collie; choosing a nickname is optional. Use
+[Email & phone](docs/communication-channels.md) for an inbox, reply drafts and saved results,
+and [Daily Brief](docs/daily-brief.md) for today's priorities, schedule and progress.
+Morning email is a separate opt-in setting; the desktop brief works without an email account.
+
 ## Why it's different
 
 **Memory lives inside the workflow.** Optional outside-AI learning turns content-free local activity

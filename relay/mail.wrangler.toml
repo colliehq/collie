@@ -23,6 +23,13 @@ custom_domain = true
 
 [vars]
 MAIL_DOMAIN = "collie.run"
+# "structured" uses the current send_email object API ({from,to,subject,text,headers} -> {messageId},
+# with Message-ID/Date/MIME owned by the platform). Set "legacy" for an account still on the raw
+# EmailMessage binding. There is NO automatic fallback between them: retrying the other shape after
+# an ambiguous failure is how one notification becomes two.
+# Preserve the deployed Email Routing API until this account's separate Email
+# Sending entitlement and domain are verified. Changing shape is not provisioning.
+MAIL_SEND_MODE = "legacy"
 
 [[kv_namespaces]]
 binding = "MAIL"
@@ -32,9 +39,44 @@ id = "3519e848a362462ba78f5e11358de20d"
 binding = "DIRECTORY"
 id = "4883260071e34fd7a708962105e21450"
 
-# Sending is only used for the one code that binds a handle to a key. Cloudflare's send_email
-# binding may only deliver to addresses VERIFIED on this account, which is enough for the first
-# user's own claim and not enough for a public sign-up — a real sending provider goes here before
-# this is offered to anyone else.
+# Outbound: the handle-verification code, and a dog's reply to its own owner.
+#
+# Read this before assuming it works. The Email Routing `send_email` binding delivers only to
+# addresses verified as destination addresses ON THIS CLOUDFLARE ACCOUNT
+# (https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/). That is NOT
+# the same verification as a handle's owner proving control of their address to us: an owner who
+# passed our six-digit check is still a stranger to the account until somebody adds and confirms
+# them there, so /send answers 502 E_RECIPIENT_NOT_ALLOWED for every real user.
+#
+# Sending to arbitrary verified-domain recipients is the separate Email Sending product, which
+# needs its own sending-domain provisioning (https://developers.cloudflare.com/email-routing/).
+# Whether this account has it is unverified here — a probe returned 401 — so treat outbound as
+# UNPROVEN, not configured. MAIL_SEND_MODE picks the shape; neither shape grants permission.
 [[send_email]]
 name = "MAILER"
+
+# The send ledger: one SQLite Durable Object per mailbox, holding a small receipt per request id so
+# that "at most one provider attempt per retained request id" is a property of the storage rather
+# than a hope. KV cannot do this — two concurrent requests both read "not sent" and both send.
+[[durable_objects.bindings]]
+name = "MAIL_DELIVERY"
+class_name = "MailDelivery"
+
+# The identity ledger: one SQLite Durable Object per NAME — per handle, per dog address, per
+# recipient of a verification code. Claiming used to be `get` / decide / `put` against KV with an
+# await in the middle, so two claims for one name could both read "free" and the second write won.
+# The decision now happens inside a transactionSync in the object the name maps to, and KV is the
+# mirror it publishes afterwards. /handle/claim, /handle/verify and /dog/claim answer 503 without
+# this binding rather than falling back to the racy path.
+[[durable_objects.bindings]]
+name = "CLAIMS"
+class_name = "DirectoryClaims"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MailDelivery"]
+
+# Separate tag, so this applies cleanly whether or not v1 has already been deployed.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DirectoryClaims"]

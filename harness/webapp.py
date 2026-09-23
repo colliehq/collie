@@ -1965,6 +1965,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static("ambient.html", "text/html; charset=utf-8")
             if path == "/meetings":
                 return self._serve_static("meetings.html", "text/html; charset=utf-8")
+            if path == "/communications":
+                return self._serve_static("communications.html", "text/html; charset=utf-8")
+            if path == "/brief":
+                return self._serve_static("daily_brief.html", "text/html; charset=utf-8")
             if path in ("/live", "/interview"):
                 # /interview is a compatibility URL from the narrower 0.23 preview. The product
                 # surface is now the general Live Copilot, with meetings/boards as optional context.
@@ -2223,6 +2227,47 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return self._send_json({"schema": _schema_for_panel(), "values": vals,
                                         "identity": whoami()})
+            if path == "/api/brief/preferences":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import daily_brief_schedule
+                try:
+                    return self._send_json(daily_brief_schedule.preferences(_state_root()))
+                except Exception:
+                    return self._send_json({"error": "Daily email settings could not be read. Nothing was sent."}, 409)
+            if path == "/api/brief":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import daily_brief_web
+                try:
+                    query = urllib.parse.parse_qs(parsed.query)
+                    return self._send_json(daily_brief_web.read(
+                        _state_root(), timezone=query.get("timezone", ["UTC"])[0],
+                        utc_offset_minutes=query.get("utc_offset_minutes", [None])[0],
+                        language=query.get("language", ["en"])[0]))
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "The brief could not refresh. Saved work was kept."}, 409)
+            if path == "/api/channels" or path.startswith("/api/channels/"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import channel_web, communications
+                from .channel_service import ChannelService
+                query = urllib.parse.parse_qs(parsed.query)
+                connection = query.get("connection", [""])[0]
+                section = path.removeprefix("/api/channels").strip("/")
+                try:
+                    if section == "attachment":
+                        data = ChannelService(_state_root()).attachment(connection, query.get("digest", [""])[0])
+                        return self._send_html(data, ctype="application/octet-stream",
+                                               headers={"Content-Disposition": "attachment; filename=collie-attachment"})
+                    return self._send_json(channel_web.read(_state_root(), section, connection,
+                                                           before=query.get("before", [""])[0]))
+                except (ValueError, communications.CommsError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "Communication records could not be read; existing data was kept"}, 409)
             if path == "/api/work-identities":
                 from .workidentity import public_connections
                 return self._send_json({"connections": public_connections(_state_root())})
@@ -3686,6 +3731,49 @@ class Handler(BaseHTTPRequestHandler):
                                                     "error": "could not apply ambient desktop: %s" % exc,
                                                     "values": settings.all_values()}, 500)
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
+            if path == "/api/brief":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import daily_brief_web
+                try:
+                    result = daily_brief_web.perform(_state_root(), body)
+                    return self._send_json(result, 409 if result.get("ok") is False else 200)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "Brief preferences could not be saved. Existing work was kept."}, 409)
+            if path == "/api/brief/preferences":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import daily_brief_schedule
+                try:
+                    return self._send_json(daily_brief_schedule.configure(_state_root(), body))
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "Daily email settings could not be saved. Review them before enabling delivery."}, 409)
+            if path == "/api/channels":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(128 * 1024)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import channel_web, communications
+                try:
+                    result = channel_web.perform(_state_root(), body)
+                    if isinstance(result, dict) and result.get("ok") is False:
+                        return self._send_json({"error": result.get("error") or "The provider refused this request"}, 409)
+                    return self._send_json({"ok": True, "result": result})
+                except (ValueError, communications.CommsError) as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "Connection request failed; check account settings. Existing work was kept."}, 409)
             if path == "/api/work-identities":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -5391,6 +5479,13 @@ class Handler(BaseHTTPRequestHandler):
                 user_msg = ([{"type": "text", "text": model_q}] if model_q else []) + \
                            [{"type": "image", "media_type": mt, "data": data} for (mt, data) in imgs]
         self._sse_open()
+        from . import channel_policy
+        try:
+            communication_policy = channel_policy.resolve(frozen, input_entry, qs)
+        except ValueError as exc:
+            self._sse("done", {"session": sid, "answer": "", "error": str(exc)})
+            return
+        communication_draft = bool(communication_policy and communication_policy["scope"] == "draft")
         if not q and not imgs:
             self._sse("done", {"session": sid, "answer": "", "error": "empty message"})
             return
@@ -6704,21 +6799,23 @@ class Handler(BaseHTTPRequestHandler):
                                  "error": error, "input_id": input_entry["id"]})
                     return
                 h.input_entry = input_entry
-            # Desktop/live-wallpaper persona: collie here is the user's on-desktop assistant with a real
-            # shell + the user's logged-in browser. Nudge it to ACT on local/system questions (time, tz,
-            # hardware, status, location) via bash/powershell.exe instead of refusing for "lack of a tool".
+            # Describe this runtime accurately. Tool schemas and their actual
+            # results determine access; an identity prompt cannot grant it.
             try:
+                from . import plat as runtime_platform
                 h.composer.identity = (
-                    "You are collie, a focused coding agent running as the user's live desktop assistant. "
-                    "Use tools to gather facts before answering; be concise and correct. "
-                    "You have a real shell (bash) and, on this machine (WSL under Windows), can call "
-                    "powershell.exe to reach the Windows host. For anything about the local machine — "
-                    "current time, timezone, hardware/spec, OS, battery or status, network or approximate "
-                    "location — just RUN the command (date, timedatectl, `powershell.exe Get-ComputerInfo`, "
-                    "`powershell.exe Get-TimeZone`, `curl -s ipinfo.io`, etc.) rather than saying you lack "
-                    "permission. You also drive the user's real logged-in browser via the browser_* tools. "
-                    "Do NOT preface your work with what you are about to do (no 'let me check', no 'I'll look "
-                    "into it') — just do it, then give the result directly and concisely."
+                    "You are Collie, the user's desktop assistant for completing practical work. "
+                    "Current runtime platform: %s. " % runtime_platform.os_label()
+                    + "Use the available tools to check facts and carry authorized work to completion. "
+                    "Choose commands appropriate to this platform and the shell described by the tool. "
+                    "Do not assume a browser is connected, an account is signed in, or a capability "
+                    "is available until the tool results establish it. Respect the active permissions. "
+                    "Continue ordinary reversible steps without repeatedly asking the user to confirm. "
+                    "If an optional step is unavailable, keep the useful work and briefly say what was "
+                    "skipped. Ask one concise question only when missing information or authority "
+                    "prevents the main task from continuing. Preserve progress across interruptions. "
+                    "Report observed results and remaining limitations accurately; never turn a failed "
+                    "or unchecked action into success. Keep replies useful and concise."
                 )
                 if run_opts["intent"] == "plan":
                     h.composer.identity += (
@@ -6733,6 +6830,8 @@ class Handler(BaseHTTPRequestHandler):
                     )
             except Exception:
                 pass
+            if communication_draft:
+                channel_policy.restrict_draft(h, input_entry)
             # every structural event hits BOTH the starting client's socket and the live bus (so the
             # Map / mini-map render it in real time); the token firehose stays client-only.
             # The run does not belong to the socket that started it.
@@ -6809,7 +6908,7 @@ class Handler(BaseHTTPRequestHandler):
                 # visible as a handoff artifact unless Collie explicitly closes it.
                 from .browserbridge import browser_space
                 with browser_space("web-" + sid[:36], release=True):
-                    run_kwargs = {"consolidate": True, "history": history}
+                    run_kwargs = {"consolidate": not communication_draft, "history": history}
                     if authority_text:
                         run_kwargs["authority_msg"] = authority_text
                     res = h.run("web", user_msg, **run_kwargs)
@@ -6936,6 +7035,8 @@ class Handler(BaseHTTPRequestHandler):
                 sessions.append_run_receipt(sid, {
                     **run_outcome(res, recovery_required=wait_fenced),
                     "run": run_id, "decision": decision_payload,
+                    **({"input_id": input_entry["id"], "communication_answer": res.answer}
+                       if communication_policy else {}),
                     "model": res.model, "effort": decision.effort,
                     "requested_speed": decision.speed, "actual_speed": actual_speed,
                     "verified": bool(getattr(res, "verified", False)),
@@ -7109,6 +7210,8 @@ def main(argv=None, on_bound=None):
     # pass also catches up waits recorded before this process existed.
     from . import quota_resume
     quota_resume.start_ticker()
+    from .channel_service import start_pump
+    start_pump(_state_root())
     # Live Copilot must keep understanding already-captured context when its panel is hidden. The
     # first-party Web/Desktop server is Collie's long-lived process, so this loop survives ordinary
     # navigation without turning Live into a browser-page feature.

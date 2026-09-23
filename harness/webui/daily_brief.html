@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Daily brief · Collie</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f4ef;--panel:#fff;--ink:#22251f;--mut:#697166;--line:#dfe3d9;--brand:#296449;--soft:#e8f2e9;--danger:#a5362e;--warn:#8a5a12;font:15px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#141813;--panel:#1d231c;--ink:#ecf0e8;--mut:#a8b3a2;--line:#394335;--brand:#9ad0a8;--soft:#293f2e;--danger:#ffb3aa;--warn:#e6b667}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}button,input,select,textarea{font:inherit;color:inherit}button,a,select,textarea{touch-action:manipulation}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}a{color:var(--brand);text-underline-offset:3px}button,.button{border:1px solid var(--line);border-radius:9px;padding:8px 13px;background:var(--panel);text-decoration:none;min-height:40px}button.primary{background:var(--brand);color:var(--panel);border-color:var(--brand);font-weight:650}button.quiet{border-color:transparent;background:transparent}:focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+h1,h2,h3,p{margin:0}h1{font-size:25px;letter-spacing:-.5px}h2{font-size:18px}h3{font-size:16px}.muted{color:var(--mut);font-size:13px}.shell{max-width:940px;margin:auto;padding:24px}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.head{display:flex;align-items:center;gap:14px}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+.notice{border:1px solid var(--line);background:var(--soft);border-radius:10px;padding:10px 13px;margin-bottom:14px;font-size:14px;overflow-wrap:anywhere}.notice.error{background:transparent;border-color:var(--danger);color:var(--danger)}
+.lede{font-size:20px;font-weight:600;margin:2px 0 6px;overflow-wrap:anywhere}.stamp{display:flex;gap:10px;flex-wrap:wrap;align-items:center;color:var(--mut);font-size:13px}
+.items{display:grid;gap:10px;margin-top:12px;padding:0;list-style:none}
+.item{border:1px solid var(--line);border-radius:12px;padding:13px;display:grid;gap:6px}.item.top{border-color:var(--brand)}.item .row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.title{font-weight:600;overflow-wrap:anywhere}.meta{color:var(--mut);font-size:13px;overflow-wrap:anywhere}.meta .sep{padding:0 6px}
+.tag{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--mut);white-space:nowrap}.tag.stale{color:var(--warn);border-color:var(--warn)}.tag.decision{color:var(--brand);border-color:var(--brand)}
+.agenda{display:grid;gap:6px;margin-top:10px;padding:0;list-style:none}.agenda li{display:grid;grid-template-columns:62px minmax(0,1fr);gap:10px;padding:7px 0;border-top:1px solid var(--line)}.agenda time{color:var(--mut);font-variant-numeric:tabular-nums}
+.lines{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:14px}.lines li{margin:3px 0;overflow-wrap:anywhere}
+.sources{display:grid;gap:8px;margin-top:10px;padding:0;list-style:none}.sources li{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:8px;font-size:14px}.sources .bad{color:var(--danger)}
+.empty{text-align:center;padding:26px 10px;display:grid;gap:8px}
+[hidden]{display:none!important}
+dialog{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:14px;padding:20px;max-width:680px;width:calc(100% - 28px)}dialog::backdrop{background:#0009}.dialog-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+textarea{width:100%;min-height:270px;border:1px solid var(--line);border-radius:10px;padding:11px;background:var(--bg);resize:vertical;font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+input,select{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--bg);min-height:40px;width:100%;max-width:340px}
+.fields{display:grid;gap:13px;margin:14px 0 0;grid-template-columns:repeat(auto-fit,minmax(215px,1fr))}.field{display:grid;gap:5px;align-content:start}.field label{color:var(--mut);font-size:13px}.field .muted{font-size:12px}
+.facts{display:grid;gap:6px;margin:12px 0 0;padding:0;list-style:none}.facts li{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:7px;font-size:14px}.facts .key{color:var(--mut)}.facts .bad{color:var(--danger)}
+details{margin-top:14px}summary{cursor:pointer;color:var(--mut);font-size:14px;padding:9px 0}
+@media(max-width:560px){.shell{padding:16px}h1{font-size:21px}.lede{font-size:18px}header{flex-direction:column}.item .row{flex-direction:column}.agenda li{grid-template-columns:54px minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="head"><a class="button" href="/" aria-label="Back to Collie">←</a><div><h1 data-en="Daily brief" data-zh="每日简报"></h1><p class="muted" data-en="What today actually looks like, from your own sources." data-zh="根据你自己的来源，呈现今天的真实情况。"></p></div></div>
+    <div class="actions"><button id="lang" class="quiet" aria-label="Language">中文</button><button id="refresh" data-en="Refresh" data-zh="刷新"></button></div>
+  </header>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+  <section class="panel" aria-labelledby="lede">
+    <p id="greeting" class="muted"></p>
+    <h2 id="lede" class="lede"></h2>
+    <div class="stamp"><span id="stampDate"></span><span id="stampZone"></span><span id="stampFresh"></span></div>
+    <p id="freshnote" class="muted" style="margin-top:8px" data-en="Each line below is what that source reported at the time shown — not a live check. Collie does not treat an older notice as the current state." data-zh="下面每一条都是该来源在所示时间的记录，不是实时状态。Collie 不会把旧通知当作当前状态。"></p>
+  </section>
+
+  <section id="attention" class="panel" hidden aria-labelledby="attentionHead">
+    <h2 id="attentionHead" data-en="Needs you" data-zh="需要你"></h2>
+    <p class="muted" data-en="Hiding a line removes it from this brief only. It is not finished, it stays in Needs You and Missions, and it comes back if it changes." data-zh="隐藏只影响这份简报。任务不会因此完成，仍保留在“需要你”和任务列表中；内容变化后会重新出现。"></p>
+    <ul id="attentionList" class="items"></ul>
+    <p id="attentionMore" class="muted" hidden></p>
+  </section>
+
+  <section id="agendaPanel" class="panel" hidden aria-labelledby="agendaHead">
+    <h2 id="agendaHead" data-en="Today" data-zh="今天"></h2>
+    <ul id="agendaList" class="agenda"></ul>
+  </section>
+
+  <section id="progressPanel" class="panel" hidden aria-labelledby="progressHead">
+    <h2 id="progressHead" data-en="In progress and finished today" data-zh="进行中与今日完成"></h2>
+    <ul id="progressList" class="items"></ul>
+  </section>
+
+  <section id="quiet" class="panel empty" hidden>
+    <h2 data-en="Keep the rest of your day open." data-zh="把剩下的时间留给自己。"></h2>
+    <p class="muted" data-en="Every source listed below answered this time, and none of them is waiting on a decision from you. Connect a calendar or an inbox when you want a fuller picture." data-zh="下面列出的来源本次都已读取成功，其中没有等待你决定的事项。需要更完整的简报时，可以连接日历或邮箱。"></p>
+    <div class="actions"><a class="button" href="/meetings" data-en="Calendar" data-zh="日历"></a><a class="button" href="/communications" data-en="Email & phone" data-zh="邮箱与电话"></a></div>
+  </section>
+
+  <section id="setup" class="panel" hidden aria-labelledby="setupHead">
+    <h2 id="setupHead" data-en="Set up your brief" data-zh="开始设置"></h2>
+    <p class="muted" data-en="No source has anything to report yet. These take a minute each." data-zh="目前还没有来源可供汇总。下面每一步大约一分钟。"></p>
+    <div id="setupLinks" class="actions" style="margin-top:12px"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="sourcesHead">
+    <h2 id="sourcesHead" data-en="Sources" data-zh="来源"></h2>
+    <p class="muted" data-en="Read from this device when you open the brief. Unavailable sources stay visible." data-zh="打开简报时从本机读取。无法读取的来源会明确显示。"></p>
+    <ul id="sourceList" class="sources"></ul>
+    <ul id="notices" class="lines"></ul>
+  </section>
+
+  <section id="hiddenPanel" class="panel" hidden aria-labelledby="hiddenHead">
+    <h2 id="hiddenHead" data-en="Hidden by you" data-zh="你隐藏的内容"></h2>
+    <p class="muted" data-en="These are hidden from the brief only. Bring one back at any time." data-zh="仅在简报中隐藏，可随时恢复。"></p>
+    <ul id="hiddenList" class="items"></ul>
+  </section>
+
+  <section class="panel" aria-labelledby="emailHead">
+    <h2 id="emailHead" data-en="The same brief as email text" data-zh="这份简报的邮件文本"></h2>
+    <p class="muted" data-en="Built from this same snapshot, so the two cannot disagree. Preview or copy it now — previewing sends nothing. To get it by email each morning, turn that on below." data-zh="由同一份快照生成，因此两者不会出现分歧。可以立即预览或复制——预览不会发送任何内容。若希望每天早上收到邮件，请在下方开启。"></p>
+    <div class="actions" style="margin-top:12px"><button id="previewBtn" data-en="Preview email text" data-zh="预览邮件文本"></button></div>
+  </section>
+
+  <section class="panel" aria-labelledby="schedHead">
+    <h2 id="schedHead" data-en="Email it to yourself each morning" data-zh="每天早上发到你的邮箱"></h2>
+    <p class="muted" data-en="Off until you turn it on. Sent to the owner address already saved with your chosen email connection." data-zh="默认关闭。开启后，通过所选邮箱连接，发到该连接已绑定的你的收件地址。"></p>
+
+    <ul id="schedFacts" class="facts"></ul>
+    <div id="schedNotice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <details id="schedOptions">
+      <summary data-en="Email settings" data-zh="邮件设置"></summary>
+    <form id="schedForm" novalidate>
+      <div class="fields">
+        <p class="field"><label for="schedConn" data-en="Send from this email account" data-zh="使用这个邮箱账号发送"></label><select id="schedConn"></select><span id="schedConnNote" class="muted"></span></p>
+        <p class="field"><label for="schedAt" data-en="Local time to send" data-zh="本地发送时间"></label><input id="schedAt" type="time" step="60" value="07:30"><span class="muted" data-en="Your morning, on a 24-hour clock." data-zh="按 24 小时制填写你的早晨时间。"></span></p>
+        <p class="field"><label for="schedLang" data-en="Language of the email" data-zh="邮件语言"></label><select id="schedLang"><option value="en">English</option><option value="zh">中文</option></select><span class="muted" data-en="Independent of the language of this page." data-zh="与本页面的显示语言无关。"></span></p>
+      </div>
+      <p id="schedNoConn" class="muted" hidden><span data-en="No email account is connected yet, so there is nowhere to send it." data-zh="尚未连接邮箱账号，因此没有可发送的目标。"></span> <a href="/communications" data-en="Connect email" data-zh="连接邮箱"></a></p>
+
+      <details id="schedAdvanced">
+        <summary data-en="Advanced" data-zh="高级选项"></summary>
+        <div class="fields">
+          <p class="field"><label for="schedZone" data-en="Time zone" data-zh="时区"></label><input id="schedZone" type="text" spellcheck="false" autocapitalize="off" placeholder="Europe/Berlin"><span class="muted" data-en="An IANA name. This machine's own zone is filled in for you." data-zh="IANA 名称，已为你填入本机时区。"></span></p>
+          <p class="field"><label for="schedGrace" data-en="Still send it up to this many minutes late" data-zh="最多允许延迟这么多分钟发送"></label><input id="schedGrace" type="number" inputmode="numeric" step="5" min="15" max="720"><span class="muted" data-en="After that the day is skipped instead." data-zh="超过之后，这一天将直接跳过。"></span></p>
+        </div>
+      </details>
+
+      <div class="actions" style="margin-top:16px"><button id="schedSave" class="primary" type="submit" data-en="Turn on and save" data-zh="开启并保存"></button><button id="schedOff" type="button" data-en="Turn off" data-zh="关闭"></button><button id="schedRevert" type="button" class="quiet" hidden data-en="Undo my edits" data-zh="撤销我的修改"></button><button id="schedReload" type="button" class="quiet" data-en="Check status again" data-zh="重新查看状态"></button><a class="button" href="/communications" data-en="Email accounts" data-zh="邮箱账号"></a></div>
+    </form>
+
+    <ul class="lines">
+      <li data-en="Nothing here is saved, and nothing is turned on, until you press a button." data-zh="在你点击按钮之前，这里不会保存任何设置，也不会开启任何功能。"></li>
+      <li data-en="Collie must be running on this computer during that window. If it is asleep the whole time, that day is skipped and said so — never sent later as a backlog." data-zh="该时段内这台电脑上的 Collie 必须运行。若整段时间都处于休眠，该日会被跳过并明确说明——不会事后补发。"></li>
+      <li data-en="At most one email a local day, even if you refresh or restart." data-zh="每个本地日最多一封邮件，即使你刷新或重启也是如此。"></li>
+      <li data-en="This switch is its own: it creates or touches no mail account, and it is separate from a connection's auto-reply, which replies to people who write to you." data-zh="这是一个独立开关：不会创建或改动邮箱账号，也与连接的自动回复无关（那个用于回复给你写信的人）。"></li>
+      <li data-en="If you save while this morning's window is already open, today's brief may be emailed within a few minutes." data-zh="如果保存时今天的发送时段已经开始，今天的简报可能会在几分钟内发出。"></li>
+      <li data-en="Collie can only report that your mail account accepted the message. That is not proof it arrived." data-zh="Collie 只能确认邮箱账号已接受该邮件，这不等于邮件已送达。"></li>
+    </ul>
+
+    </details>
+    <details id="schedHistory" hidden>
+      <summary data-en="Recent days" data-zh="最近几天"></summary>
+      <ul id="schedJobs" class="facts"></ul>
+    </details>
+  </section>
+</div>
+
+<dialog id="previewDialog" aria-labelledby="previewTitle">
+  <h2 id="previewTitle" data-en="Daily brief email" data-zh="每日简报邮件"></h2>
+  <p id="previewSubject" class="muted"></p>
+  <label class="muted" for="previewText" data-en="Message text" data-zh="邮件正文"></label>
+  <textarea id="previewText" readonly spellcheck="false" aria-describedby="previewNote"></textarea>
+  <p id="previewNote" class="muted"></p>
+  <div id="previewError" class="notice error" role="alert" hidden></div>
+  <div class="dialog-foot"><button id="copyText" data-en="Copy text" data-zh="复制文本"></button><button id="closePreview" class="primary" data-en="Close" data-zh="关闭"></button></div>
+</dialog>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+// Private-mode browsers and blocked-storage policies make localStorage *throw*, not
+// return null; a remembered language is never worth a blank page.
+const store={
+  get(key){try{return localStorage.getItem(key);}catch(e){return null;}},
+  set(key,value){try{localStorage.setItem(key,value);}catch(e){}},
+};
+let lang=String(store.get("collie-brief-lang")||navigator.language||"en").startsWith("zh")?"zh":"en";
+let token=(document.querySelector('meta[name="collie-token"]')||{}).content||"",data=null;
+const tr=(en,zh)=>lang==="zh"?zh:en;
+function translate(){document.documentElement.lang=lang==="zh"?"zh-CN":"en";$("lang").textContent=lang==="zh"?"EN":"中文";document.querySelectorAll("[data-en]").forEach(el=>{el.textContent=el.dataset[lang]||el.dataset.en;});}
+function text(el,value){el.textContent=value==null?"":String(value);return el;}
+function node(tag,value,cls){const el=text(document.createElement(tag),value);if(cls)el.className=cls;return el;}
+function notice(value,error=false,target="notice"){const el=$(target);text(el,value);el.classList.toggle("error",error);el.hidden=!value;}
+function url(path,params={}){const q=new URLSearchParams(params);q.set("token",token);return path+"?"+q.toString();}
+async function api(path,body=null,params={},retry=true){
+  const res=await fetch(url(path,params),body?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}:{cache:"no-store"});
+  if(res.status===403&&retry){const auth=await fetch("/api/session-token");if(auth.ok){token=(await auth.json()).token;return api(path,body,params,false);}}
+  let payload={};try{payload=await res.json();}catch(e){payload={};}
+  if(!res.ok||payload.ok===false)throw new Error(payload.error||tr("The request failed.","请求失败。"));
+  return payload;
+}
+async function busy(button,work,target="notice"){if(button&&button.disabled)return;if(button)button.disabled=true;notice("",false,target);try{await work();}catch(e){notice(e.message,true,target);}finally{if(button)button.disabled=false;}}
+
+// ── formatting ──────────────────────────────────────────────────────────────
+const zone=()=>{try{return Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC";}catch(e){return "UTC";}};
+const offset=()=>-new Date().getTimezoneOffset();
+function clock(seconds){if(!seconds)return "";try{return new Date(seconds*1000).toLocaleTimeString(lang==="zh"?"zh-CN":"en",{hour:"2-digit",minute:"2-digit"});}catch(e){return "";}}
+function dateLine(value){if(!value)return "";try{return new Date(value+"T12:00:00").toLocaleDateString(lang==="zh"?"zh-CN":"en",{weekday:"long",month:"long",day:"numeric",year:"numeric"});}catch(e){return value;}}
+function ago(seconds){
+  if(!seconds)return "";
+  const mins=Math.round((Date.now()/1000-seconds)/60);
+  if(mins<1)return tr("just now","刚刚");
+  if(mins<60)return tr(mins+" min ago",mins+" 分钟前");
+  const hours=Math.round(mins/60);
+  if(hours<24)return tr(hours+" h ago",hours+" 小时前");
+  const days=Math.round(hours/24);
+  return tr(days+" d ago",days+" 天前");
+}
+const SOURCES={personal:["Personal","个人事项"],missions:["Missions","任务"],approvals:["Needs you","需要你"],procedures:["Routines","习惯"],runs:["Runs","运行"],meetings:["Calendar","日历"],task_inbox:["Sessions","会话"],communications:["Email & phone","邮箱与电话"]};
+const sourceName=key=>{const row=SOURCES[key];return row?tr(row[0],row[1]):key;};
+const STATUS={overdue:["Late","已逾期"],possibly_delayed:["May be late","可能延迟"],soon:["Soon","即将"],pending:["Waiting for you","等待你"],needs_you:["Needs you","需要你"],failed:["Failed","失败"],recovery_required:["Needs recovery","需要恢复"],review_required:["Needs review","需要查看"],blocked:["Blocked","已阻塞"],running:["Running","进行中"],queued:["Queued","排队中"],waiting:["Waiting","等待中"],done:["Done","已完成"],completed:["Done","已完成"],succeeded:["Done","已完成"],scheduled:["Scheduled","已安排"],proposed:["Suggested","建议"]};
+const statusName=key=>{const row=STATUS[key];return row?tr(row[0],row[1]):(key||"").replace(/_/g," ");};
+function sourceStamp(name){const row=(data&&data.sources||[]).find(s=>s.name===name);return row?row.collected_at:0;}
+
+// ── rows ────────────────────────────────────────────────────────────────────
+function metaLine(item){
+  const bits=[sourceName(item.source)];
+  const at=clock(item.when);
+  if(at)bits.push(tr("reported ","记录时间 ")+at);
+  bits.push(tr("read ","读取于 ")+ago(sourceStamp(item.source)));
+  if(item.status)bits.push(statusName(item.status));
+  const line=node("p","","meta");
+  bits.forEach((bit,index)=>{if(index)line.append(node("span","·","sep"));line.append(node("span",bit));});
+  return line;
+}
+function itemRow(item,options={}){
+  const li=node("li","","item"+(options.top?" top":""));
+  const head=node("div","","row");
+  const left=node("div","");
+  left.append(node("strong",item.title,"title"));
+  if(item.detail)left.append(node("p",item.detail,"meta"));
+  head.append(left);
+  const tags=node("div","","actions");
+  if(item.kind==="approval")tags.append(node("span",tr("Decision","待决定"),"tag decision"));
+  if(item.stale)tags.append(node("span",tr("unchanged since ","未变化，始于 ")+item.first_seen_date,"tag stale"));
+  else if(item.days_seen>1)tags.append(node("span",tr("in your brief "+item.days_seen+" days",item.days_seen+" 天在简报中"),"tag"));
+  head.append(tags);
+  li.append(head,metaLine(item));
+  const row=node("div","","actions");
+  const href=(item.source_ref||{}).href;
+  if(href){const open=node("a",tr("Open ","打开 ")+sourceName(item.source),"button");open.href=href;row.append(open);}
+  if(options.controls){
+    if(item.kind==="approval"){
+      row.append(node("span",tr("A waiting decision cannot be hidden.","等待决定的事项无法隐藏。"),"muted"));
+    }else{
+      const hide=node("button",tr("Hide","隐藏"));
+      hide.setAttribute("aria-label",tr("Hide from this brief: ","从简报中隐藏：")+item.title);
+      hide.addEventListener("click",()=>busy(hide,()=>act({action:"dismiss",item_id:item.id,fingerprint:item.fingerprint})));
+      const snooze=node("button",tr("Snooze 1 day","暂缓一天"));
+      snooze.setAttribute("aria-label",tr("Snooze for one day: ","暂缓一天：")+item.title);
+      snooze.addEventListener("click",()=>busy(snooze,()=>act({action:"snooze",item_id:item.id,minutes:1440,fingerprint:item.fingerprint})));
+      row.append(hide,snooze);
+    }
+  }
+  if(row.childNodes.length)li.append(row);
+  return li;
+}
+async function act(body){await api("/api/brief",body);await load();}
+
+// ── render ──────────────────────────────────────────────────────────────────
+function render(){
+  translate();
+  if(!data)return;
+  const brief=data.brief||{},counts=brief.counts||{},coverage=brief.coverage||{};
+  text($("greeting"),brief.greeting||"");
+  text($("lede"),brief.headline||"");
+  text($("stampDate"),dateLine(brief.date));
+  const tz=brief.timezone||{};
+  text($("stampZone"),(tz.resolved||"UTC")+(tz.degraded?tr(" · time zone fell back: ","　·　时区回退：")+(tz.reason||""):""));
+  text($("stampFresh"),tr("collected ","读取于 ")+ago(data.collected_at));
+
+  const top=brief.top||[],list=$("attentionList");
+  list.replaceChildren();
+  top.forEach(item=>list.append(itemRow(item,{top:true,controls:true})));
+  $("attention").hidden=!top.length;
+  const more=(counts.attention||0)-top.length;
+  text($("attentionMore"),more>0?tr(more+" more are waiting in Needs You and Missions.",more+" 项仍在“需要你”和任务列表中等待。"):"");
+  $("attentionMore").hidden=more<=0;
+
+  const agenda=brief.agenda||[],agendaList=$("agendaList");
+  agendaList.replaceChildren();
+  agenda.forEach(item=>{
+    const li=document.createElement("li");
+    const when=document.createElement("time");
+    text(when,clock(item.when)||tr("all day","全天"));
+    const body=node("div","");
+    body.append(node("strong",item.title,"title"));
+    const bits=[sourceName(item.source)];
+    if(item.detail)bits.push(item.detail);
+    body.append(node("p",bits.join(" · "),"meta"));
+    li.append(when,body);
+    agendaList.append(li);
+  });
+  $("agendaPanel").hidden=!agenda.length;
+
+  const moving=(brief.progress||[]).concat(brief.completed||[]),progressList=$("progressList");
+  progressList.replaceChildren();
+  moving.forEach(item=>progressList.append(itemRow(item,{controls:false})));
+  $("progressPanel").hidden=!moving.length;
+
+  $("quiet").hidden=!(brief.all_clear&&!agenda.length&&!moving.length);
+
+  const setup=brief.setup,links=$("setupLinks");
+  links.replaceChildren();
+  if(setup){(setup.steps||[]).forEach(step=>{const a=node("a",step.title,"button");a.href=step.href||"/";links.append(a);});}
+  $("setup").hidden=!setup;
+
+  const sources=$("sourceList");
+  sources.replaceChildren();
+  (data.sources||[]).forEach(row=>{
+    const li=document.createElement("li");
+    li.append(node("span",sourceName(row.name)));
+    const state=row.state==="ok"?tr("read ","读取于 ")+ago(row.collected_at)
+      :(row.reason||tr("could not be read","读取失败"));
+    li.append(node("span",state,row.state==="ok"?"muted":"muted bad"));
+    sources.append(li);
+  });
+  const notes=$("notices");
+  notes.replaceChildren();
+  (brief.notices||[]).forEach(line=>notes.append(node("li",line)));
+
+  const hidden=(data.feedback||{}).hidden||[],hiddenList=$("hiddenList");
+  hiddenList.replaceChildren();
+  hidden.forEach(row=>{
+    const li=node("li","","item");
+    li.append(node("strong",row.title||tr("Hidden item","已隐藏的事项"),"title"));
+    const until=row.until?new Date(row.until*1000).toLocaleString(lang==="zh"?"zh-CN":"en",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
+    li.append(node("p",row.mode==="snooze"?tr("Snoozed until ","暂缓至 ")+until:tr("Hidden","已隐藏"),"meta"));
+    const actions=node("div","","actions");
+    const back=node("button",tr("Bring back","恢复显示"));
+    back.setAttribute("aria-label",tr("Bring back ","恢复 ")+(row.title||tr("item","事项")));
+    back.addEventListener("click",()=>busy(back,()=>act({action:"restore",item_id:row.item_id})));
+    actions.append(back);
+    li.append(actions);
+    hiddenList.append(li);
+  });
+  $("hiddenPanel").hidden=!hidden.length;
+}
+
+// A second request may start before the first answers -- switching language does exactly
+// that -- so every load is numbered and only the newest one may touch the page. An older
+// answer is dropped whole, brief and error alike, instead of repainting yesterday's
+// language over today's request.
+let briefSeq=0;
+async function load(button){
+  const mine=++briefSeq;
+  await busy(button,async()=>{
+    let payload;
+    try{payload=await api("/api/brief",null,{timezone:zone(),utc_offset_minutes:offset(),language:lang});}
+    catch(e){if(mine!==briefSeq)return;throw e;}
+    if(mine!==briefSeq)return;
+    data=payload;render();
+  });
+}
+
+// ── the morning email ───────────────────────────────────────────────────────
+// Read on its own request, so settings that cannot be read leave the brief itself
+// perfectly usable. Nothing on this panel is sent, saved or enabled without a press.
+let prefs=null,prefsError="",prefsDirty=false,prefsSeq=0;
+const KINDS={imap:["Email account","邮箱账号"],collie_mail:["Collie mail","Collie 邮箱"]};
+const kindName=key=>{const row=KINDS[key];return row?tr(row[0],row[1]):(key||"");};
+const JOB={
+  submitted:["Your mail account accepted it. That is not proof it arrived.","邮箱账号已接受。这不等于邮件已送达。"],
+  failed:["Your mail account refused it. It is kept so you can try again by hand.","邮箱账号拒收了这封邮件。它已保留，你可以手动重试。"],
+  unknown:["It is not known whether it was sent, so it will not be sent again.","无法确定是否已发送，因此不会重发。"],
+  cancelled:["Cancelled before it was sent.","在发送前已取消。"],
+  skipped:["Collie was not running during the window that morning, so that day was skipped.","那天早上的时段内 Collie 未运行，因此该日已跳过。"],
+  expired:["The morning window closed before it went out. The draft is in your outbox.","早晨时段结束前未能发出，草稿保留在发件箱中。"],
+  queued:["Prepared and waiting for the next pass inside this morning's window.","已准备好，等待今天早晨时段内的下一次尝试。"],
+  sending:["Being sent now.","正在发送。"],
+  preparing:["Being prepared.","正在准备。"],
+  error:["It could not be sent. Nothing was sent twice.","无法发送。不会重复发送。"],
+};
+const jobWord=key=>{const row=JOB[key];return row?tr(row[0],row[1]):"";};
+function fact(key,value,bad){const li=node("li","");li.append(node("span",key,"key"),node("span",value,bad?"bad":""));return li;}
+function connectionReason(value){
+  const reasons={"the email connection is paused":["Email connection paused","邮箱连接已暂停"],
+    "this connection's settings were interrupted while saving":["Save the email connection settings again","请重新保存邮箱连接设置"],
+    "connect this account again before the brief can be emailed":["Reconnect the email account to send the brief","请重新连接邮箱，才能发送简报"]};
+  const words=reasons[value];return words?tr(words[0],words[1]):value;
+}
+
+function fillConnections(){
+  // Rebuilt on every paint, because the labels are translated -- but never allowed to
+  // move the user's choice.
+  const select=$("schedConn"),rows=(prefs||{}).connections||[],saved=(prefs||{}).connection||"";
+  const want=select.value||saved;
+  select.replaceChildren();
+  if(!saved)select.append(Object.assign(node("option",tr("Choose an email account","选择一个邮箱账号")),{value:""}));
+  rows.forEach(row=>{
+    const bits=[row.destination_masked||row.id,kindName(row.kind)];
+    if(!row.ready)bits.push(connectionReason(row.reason)||tr("not ready","暂不可用"));
+    select.append(Object.assign(node("option",bits.join(" · ")),{value:row.id}));
+  });
+  if(saved&&!rows.some(row=>row.id===saved))
+    select.append(Object.assign(node("option",((prefs||{}).destination_masked||saved)+" · "+tr("no longer available","已不可用")),{value:saved}));
+  if([...select.options].some(option=>option.value===want))select.value=want;
+  const chosen=rows.find(row=>row.id===select.value);
+  text($("schedConnNote"),chosen&&!chosen.ready?(connectionReason(chosen.reason)||"")
+    :chosen?tr("Sent to this connection's saved owner address.","发送到这个连接已绑定的你的收件地址。"):"");
+  // "Nothing is connected" and "we could not read the settings" are different facts.
+  $("schedNoConn").hidden=rows.length>0||!prefs||!!prefsError||prefs.available===false;
+  select.disabled=!rows.length&&!saved;
+}
+
+function fillFields(){
+  // A half-typed setting is the user's, not the server's: a refresh or a language
+  // switch never overwrites it.
+  if(prefsDirty)return;
+  const p=prefs||{},defaults=p.defaults||{};
+  $("schedConn").value=p.connection||"";
+  $("schedAt").value=p.at||defaults.at||"07:30";
+  $("schedLang").value=(p.updated?p.language:lang)==="zh"?"zh":"en";
+  $("schedZone").value=p.timezone||zone();
+  const grace=$("schedGrace"),range=defaults.grace_range||[15,720];
+  grace.min=String(range[0]);grace.max=String(range[1]);
+  grace.value=String(p.grace_minutes||defaults.grace_minutes||240);
+}
+
+function renderSched(){
+  const facts=$("schedFacts"),p=prefs;
+  facts.replaceChildren();
+  fillConnections();
+  const broken=!!prefsError||!!(p&&p.available===false);
+  text($("schedSave"),p&&p.enabled?tr("Save changes","保存修改"):tr("Turn on and save","开启并保存"));
+  // Turning off is also the repair for settings that cannot be read: it is the one
+  // write that needs nothing from the damaged file.
+  $("schedOff").hidden=!((p&&p.enabled)||broken);
+  $("schedRevert").hidden=!prefsDirty;
+  if(broken){
+    // Unreadable settings are stated, not guessed at. Nothing was changed or sent.
+    facts.append(fact(tr("Settings","设置"),prefsError||p.error||tr("could not be read","读取失败"),true));
+    facts.append(fact(tr("What happened","实际情况"),
+      tr("This page could not read the settings. Reload, or set it up again here.",
+         "本页面无法读取设置。可重新读取，或在此重新设置。")));
+    $("schedHistory").hidden=true;
+    return;
+  }
+  if(!p){facts.append(fact(tr("Settings","设置"),tr("loading…","正在读取…")));return;}
+  facts.append(fact(tr("Daily email","每日邮件"),p.enabled
+    ?tr("On","已开启"):tr("Off — the brief stays in this app only.","已关闭——简报仅在本应用内查看。")));
+  if(p.enabled){
+    facts.append(fact(tr("Sent to","发送至"),p.destination_masked||tr("this account's own address","该账号本人的地址")));
+    facts.append(fact(tr("Each morning at","每天早上"),(p.at||"")+" · "+(p.timezone||"")));
+    facts.append(fact(tr("Email language","邮件语言"),p.language==="zh"?"中文":"English"));
+    const account=(p.connections||[]).find(row=>row.id===p.connection);
+    if(account&&!account.ready)facts.append(fact(tr("Waiting for email","等待邮箱恢复"),connectionReason(account.reason),true));
+  }
+  if(p.needs_reconfigure)
+    facts.append(fact(tr("Paused","已暂停"),(p.paused_reason||tr("this needs setting up again","需要重新设置"))+" "
+      +tr("Choose an account and save again.","请重新选择账号并保存。"),true));
+  const last=p.last;
+  if(last){
+    const when=last.date||"",word=jobWord(last.state)||last.detail||"";
+    facts.append(fact(tr("Last email","最近一次"),(when?when+" · ":"")+(word||last.state||""),
+      ["failed","error","unknown"].indexOf(last.state)>=0));
+  }else if(p.enabled){
+    facts.append(fact(tr("Last email","最近一次"),tr("none yet","还没有发送过")));
+  }
+  const jobs=(p.jobs||[]).slice().reverse(),list=$("schedJobs");
+  list.replaceChildren();
+  jobs.forEach(job=>list.append(fact(job.date||"",jobWord(job.state)||job.state||"")));
+  $("schedHistory").hidden=!jobs.length;
+}
+
+async function loadPrefs(button){
+  const mine=++prefsSeq;
+  let payload=null,failed="";
+  if(button)button.disabled=true;
+  try{payload=await api("/api/brief/preferences");}
+  catch(e){failed=e.message;}
+  finally{if(button)button.disabled=false;}
+  if(mine!==prefsSeq)return;                       // a save or a newer read owns the panel
+  prefsError=failed;
+  if(!failed)adopt(payload);
+  renderSched();
+}
+function adopt(payload){prefs=payload||null;fillFields();}
+
+function schedBody(enable){
+  // Exactly the six settings the server accepts. There is no recipient here to send.
+  if(!enable)return {enabled:false};
+  const connection=$("schedConn").value.trim();
+  if(!connection)throw new Error(tr("Choose which email account should send it.","请选择用于发送的邮箱账号。"));
+  const at=$("schedAt").value.trim();
+  if(!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(at))throw new Error(tr("The send time must look like 07:30.","发送时间需形如 07:30。"));
+  const timezone=$("schedZone").value.trim()||zone();
+  const grace=Number($("schedGrace").value);
+  if(!Number.isInteger(grace))throw new Error(tr("The late cutoff must be a whole number of minutes.","延迟上限需为整数分钟。"));
+  return {enabled:true,connection:connection,timezone:timezone,at:at,
+          language:$("schedLang").value==="zh"?"zh":"en",grace_minutes:grace};
+}
+
+async function saveSched(enable){
+  const payload=await api("/api/brief/preferences",schedBody(enable));
+  const fresh=payload&&typeof payload.enabled==="boolean"?payload:(payload||{}).preferences;
+  prefsSeq++;                                      // this answer is newer than any read in flight
+  prefsDirty=false;prefsError="";
+  if(fresh&&typeof fresh.enabled==="boolean")adopt(fresh);
+  renderSched();
+  const lines=((prefs||{}).notices||[]).slice(0,3).map(line=>{
+    const paused=/^The daily email is on, but (.+), so nothing will be sent until that is fixed\.$/.exec(line);
+    return paused?tr(line,"每日邮件已开启，但"+connectionReason(paused[1])+"，恢复后才会发送。"):line;
+  });
+  if(enable)lines.push(tr("Saved and on. If this morning's window is already open, today's brief may go out within a few minutes.",
+    "已保存并开启。如果今天早晨的发送时段已经开始，今天的简报可能会在几分钟内发出。"));
+  else lines.push(tr("Daily email is off. An email already being submitted may still finish.","每日邮件已关闭。正在提交的邮件可能仍会完成发送。"));
+  notice(lines.join(" "),false,"schedNotice");
+  if(!fresh)await loadPrefs();
+}
+
+// ── wiring ──────────────────────────────────────────────────────────────────
+$("lang").addEventListener("click",()=>{lang=lang==="zh"?"en":"zh";store.set("collie-brief-lang",lang);render();renderSched();load();});
+$("refresh").addEventListener("click",()=>load($("refresh")));
+$("closePreview").addEventListener("click",()=>$("previewDialog").close());
+$("previewBtn").addEventListener("click",()=>busy($("previewBtn"),async()=>{
+  if(!data)throw new Error(tr("The brief is still loading.","简报还在加载中。"));
+  const email=data.email||{};
+  text($("previewSubject"),email.subject||"");
+  $("previewText").value=email.text||"";
+  text($("previewNote"),email.available===false
+    ?(email.reason||tr("Today's brief could not be rendered as email text.","今天的简报无法生成邮件文本。"))
+    :tr("This is the text of the brief shown above, from the same snapshot. Previewing sends nothing.",
+        "这是上面所显示简报的文本，来自同一份快照。预览不会发送任何内容。"));
+  notice("",false,"previewError");
+  $("previewDialog").showModal();
+}));
+$("copyText").addEventListener("click",()=>busy($("copyText"),async()=>{
+  const value=$("previewText").value;
+  try{await navigator.clipboard.writeText(value);}
+  catch(e){$("previewText").focus();$("previewText").select();throw new Error(tr("Copying was blocked. The text is selected — copy it with your keyboard.","复制被浏览器阻止。文本已选中，请用键盘复制。"));}
+  notice(tr("Copied.","已复制。"),false,"previewError");
+},"previewError"));
+// Editing marks the form dirty, so a reload never overwrites what someone is typing.
+$("schedForm").addEventListener("input",()=>{prefsDirty=true;});
+$("schedForm").addEventListener("change",()=>{prefsDirty=true;renderSched();});
+$("schedForm").addEventListener("submit",event=>{
+  event.preventDefault();
+  busy($("schedSave"),()=>saveSched(true),"schedNotice");
+});
+$("schedOff").addEventListener("click",()=>busy($("schedOff"),()=>saveSched(false),"schedNotice"));
+// Re-reading the status never throws away what someone typed; undoing is its own,
+// clearly named button, and it is local -- it asks the server for nothing.
+$("schedReload").addEventListener("click",()=>{
+  const dirty=prefsDirty;
+  notice("",false,"schedNotice");
+  loadPrefs($("schedReload")).then(()=>{
+    if(dirty&&prefsDirty)notice(tr("Status re-read. The unsaved changes below were kept — undo them to see what is saved.",
+      "已重新读取状态。下方未保存的修改已保留——如需查看已保存的设置，请撤销修改。"),false,"schedNotice");
+  });
+});
+$("schedRevert").addEventListener("click",()=>{
+  prefsDirty=false;fillFields();renderSched();
+  notice(tr("Your edits were dropped. These are the settings as saved.","已放弃修改，以下是已保存的设置。"),false,"schedNotice");
+});
+translate();
+load();
+loadPrefs();
+</script>
+</body>
+</html>

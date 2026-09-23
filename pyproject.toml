@@ -32,14 +32,15 @@ codex = ["openai-codex==0.155.1"]         # official SDK + matching verified Cod
 remote = ["cryptography"]               # Collie Remote E2E. QR codes need nothing: harness/qr.py is stdlib
 online = ["cryptography"]               # device signing + sealed connected-mode envelopes
 extensions = ["cryptography"]           # Ed25519 publisher signatures and local publisher trust roots
-desktop = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
+desktop = ["tzdata",                    # IANA time zones for morning emails on Windows
+           "pyobjc-framework-Cocoa; sys_platform == 'darwin'",     # the real behind-the-icons
            "pyobjc-framework-WebKit; sys_platform == 'darwin'",     # desktop on macOS (window
            "pyobjc-framework-Quartz; sys_platform == 'darwin'"]     # levels + WKWebView, no Xcode)
 tui = ["rich"]                          # the full-experience terminal chat (collie tui)
 acp = ["agent-client-protocol"]         # editor integration (collie acp)
 search = ["ddgs"]                        # keyless web_search (DuckDuckGo JSON API)
 speech = ["sherpa-onnx>=1.13,<1.14", "soundfile"] # local SenseVoice Live transcription; model stays user-local
-dev = ["pytest", "pyyaml", "numpy", "Pillow>=10", "aiohttp"]
+dev = ["pytest", "pyyaml", "numpy", "Pillow>=10", "aiohttp", "tzdata"]
 docs = ["mkdocs-material"]               # the user docs site (mkdocs serve / build); see mkdocs.yml
 
 [project.scripts]

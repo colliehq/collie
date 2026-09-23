@@ -1550,6 +1550,100 @@ def pending_sessions(*, directory=None, limit=200):
     return rows[:max(0, int(limit))]
 
 
+#: Defaults for :func:`pending_sessions_window`.  ``SCAN`` is what bounds the work:
+#: it is the number of inbox files a windowed read is allowed to open, whatever the
+#: store holds.
+WINDOW_LIMIT = 50
+WINDOW_SCAN_LIMIT = 100
+
+
+def pending_sessions_window(*, directory=None, limit=WINDOW_LIMIT,
+                            scan_limit=WINDOW_SCAN_LIMIT):
+    """A *bounded* listing of sessions with input waiting, for read-only surfaces.
+
+    :func:`pending_sessions` answers "all of it", and the schedulers that decide what
+    to run next need exactly that.  A display surface does not: the Daily Brief shows
+    at most ``limit`` rows, and paying for every inbox in the store to produce them
+    makes opening the brief slower the longer the person has used the product.
+
+    So this opens at most ``scan_limit`` inbox files and stops early once ``limit``
+    rows are found.  What that costs in exchange is coverage, and the return value is
+    a dict rather than a list precisely so the shortfall cannot be lost:
+
+    ``sessions``
+        the rows, newest-touched first, same fields as :func:`pending_sessions` minus
+        ``journal`` — a transcript's status cannot be had without decoding it, and
+        that is the cost this function exists to avoid.  Unreadable inboxes still
+        appear, with ``error`` and ``unreadable``, because a store that needs looking
+        at must not vanish from a listing.
+    ``examined`` / ``total`` / ``unexamined``
+        how many candidate inboxes were opened, how many the store holds, and the
+        difference.
+    ``truncated``
+        ``True`` when anything was left unopened *or* unreported.  A caller that
+        cannot show this must not claim the store is quiet.
+
+    Which files make the window is decided by file modification time, newest first,
+    because that is the only ordering available without opening them; it is a
+    preference for recent work, not a guarantee, and ``truncated`` is what says so.
+    """
+    limit, scan_limit = max(0, int(limit)), max(0, int(scan_limit))
+    root = _root(directory)
+    base = session_owner.sidecar_dir(INBOX_SUBDIR, root=root)
+    empty = {"sessions": [], "truncated": False, "examined": 0, "total": 0,
+             "unexamined": 0, "limit": limit, "scan_limit": scan_limit}
+    if not os.path.isdir(base):
+        return empty
+    candidates = []
+    try:
+        with os.scandir(base) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                sid = entry.name[: -len(".json")]
+                if not sessions._path(sid, directory=base):
+                    continue               # not an id we could have written
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    mtime = 0.0            # still a candidate; just undatable
+                candidates.append((mtime, sid))
+    except OSError as exc:
+        raise StoreCorrupt("inbox directory is unreadable: %s" % exc) from None
+    # Newest first, and by id for the ties a coarse filesystem clock produces, so the
+    # same store always yields the same window.
+    candidates.sort(key=lambda row: (-row[0], row[1]))
+
+    rows, examined = [], 0
+    for mtime, sid in candidates[:scan_limit]:
+        if len(rows) >= limit:
+            break
+        examined += 1
+        try:
+            path = store_path(sid, root=root)
+            with sessions._locked(path):
+                doc = _load(path, sid)
+                life = _settle_lifecycle(doc, sid, root)
+        except InboxError as exc:
+            rows.append({"session": sid, "error": str(exc), "unreadable": True,
+                         "updated": mtime})
+            continue
+        counts = {state: 0 for state in STATES}
+        for entry in doc["entries"]:
+            counts[entry["state"]] += 1
+        if not (counts["pending"] or counts["claimed"]):
+            continue
+        rows.append({"session": sid, "pending": counts["pending"],
+                     "claimed": counts["claimed"], "lifecycle": life,
+                     "updated": doc.get("updated") or 0.0})
+    rows.sort(key=lambda row: float(row.get("updated") or 0), reverse=True)
+    rows = rows[:limit]
+    return {"sessions": rows, "truncated": examined < len(candidates),
+            "examined": examined, "total": len(candidates),
+            "unexamined": max(0, len(candidates) - examined),
+            "limit": limit, "scan_limit": scan_limit}
+
+
 def journal_message(entry):
     """The journal message an executor must insert for a consumed entry.
 

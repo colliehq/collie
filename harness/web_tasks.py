@@ -1129,6 +1129,20 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
     reporting — and it waits for nothing else this turn still has to write.
     """
     outcome = getattr(handler, "_stream_outcome", None) or {}
+    if ((entry or {}).get("metadata") or {}).get("communication"):
+        from .channel_service import ChannelError, ChannelService
+        try:
+            ChannelService().capture_result(sid, entry, outcome)
+        except ChannelError as exc:
+            # An owner change needs a reviewed reply, not another recovery
+            # attempt. These messages are composed locally and name the next
+            # step without exposing transport bodies or credentials.
+            note_queue_error(sid, str(exc)[:500], entry_id=entry["id"], kind="communication")
+        except Exception:
+            # The input-tagged run receipt allows a later channel tick to finish
+            # this local handoff. A notification failure must not repeat the task.
+            note_queue_error(sid, "The task result is saved; its email or SMS reply is waiting for recovery",
+                             entry_id=entry["id"], kind="communication")
     claimed = [entry["id"]] if entry else []
     claimed += [row["id"] for row in getattr(handler, "_input_handed", None) or []]
     try:

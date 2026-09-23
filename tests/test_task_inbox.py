@@ -320,6 +320,99 @@ def test_status_distinguishes_a_new_session_from_an_orphan(store):
     assert [r["session"] for r in task_inbox.pending_sessions()] == ["s-orphan"]
 
 
+# ------------------------------------------- the bounded listing display surfaces use
+
+
+def test_the_bounded_window_opens_at_most_its_scan_budget(store, monkeypatch):
+    """The whole point: cost is the window, not the store.
+
+    ``pending_sessions`` answers for every inbox a profile has, which is what a
+    scheduler needs.  A display surface asking for 5 rows must not pay for 40
+    documents to get them, so the number of files actually opened is counted here
+    rather than inferred from a clock.
+    """
+    for index in range(40):
+        task_inbox.enqueue("s-%02d" % index, "e1", "waiting")
+    opened = []
+    real = task_inbox._load
+    monkeypatch.setattr(task_inbox, "_load",
+                        lambda path, session: (opened.append(session), real(path, session))[1])
+
+    window = task_inbox.pending_sessions_window(limit=5, scan_limit=10)
+    assert len(window["sessions"]) == 5
+    assert len(opened) <= 5, "more inboxes were opened than rows were asked for"
+    assert window["truncated"] and window["examined"] <= 10
+    assert window["total"] == 40 and window["unexamined"] == 40 - window["examined"]
+
+    opened.clear()
+    wide = task_inbox.pending_sessions_window(limit=100, scan_limit=12)
+    assert len(opened) == 12, "the scan budget is the ceiling on files opened"
+    assert len(wide["sessions"]) == 12 and wide["truncated"]
+    assert wide["examined"] == 12 and wide["unexamined"] == 28
+
+
+def test_the_bounded_window_is_complete_when_it_reaches_everything(store):
+    task_inbox.enqueue("s-a", "e1", "waiting")
+    task_inbox.enqueue("s-b", "e1", "waiting")
+    task_inbox.enqueue("s-done", "e1", "already handled")
+    task_inbox.cancel("s-done", "e1")
+
+    window = task_inbox.pending_sessions_window(limit=50, scan_limit=50)
+    assert [row["session"] for row in window["sessions"]] == ["s-b", "s-a"]
+    assert not window["truncated"] and window["unexamined"] == 0
+    assert window["examined"] == window["total"] == 3
+    assert [row["pending"] for row in window["sessions"]] == [1, 1]
+    assert all(row["lifecycle"] == "open" for row in window["sessions"])
+
+
+def test_the_bounded_window_keeps_an_unreadable_inbox_visible(store):
+    """A store that will not open is a problem to show, never an empty result."""
+    task_inbox.enqueue("s-torn", "e1", "accepted")
+    with open(task_inbox.store_path("s-torn"), "w", encoding="utf-8") as fh:
+        fh.write('{"version": 1, "session": "s-torn", "entries": ')
+    task_inbox.enqueue("s-fine", "e1", "waiting")
+
+    window = task_inbox.pending_sessions_window(limit=50, scan_limit=50)
+    rows = {row["session"]: row for row in window["sessions"]}
+    assert set(rows) == {"s-torn", "s-fine"}
+    assert rows["s-torn"]["unreadable"] and rows["s-torn"]["error"]
+    assert "pending" not in rows["s-torn"], "an unreadable store reports no counts"
+    assert task_inbox.status("s-fine")["counts"]["pending"] == 1  # nothing was repaired
+
+
+def test_the_bounded_window_does_not_mutate_or_discard_anything(store):
+    task_inbox.enqueue("s-keep", "e1", "waiting")
+    task_inbox.enqueue("s-keep", "e2", "also waiting")
+    before = _read("s-keep")
+    for _ in range(3):
+        task_inbox.pending_sessions_window(limit=1, scan_limit=1)
+    assert _read("s-keep") == before
+    assert [e["id"] for e in task_inbox.list_entries("s-keep")] == ["e1", "e2"]
+    assert task_inbox.pending_sessions()[0]["pending"] == 2
+
+
+def test_the_bounded_window_honours_its_own_root(tmp_path, store):
+    custom = str(tmp_path / "custom sessions")
+    os.makedirs(custom)
+    task_inbox.enqueue("s-custom", "e1", "hello", directory=custom)
+    window = task_inbox.pending_sessions_window(directory=custom)
+    assert [row["session"] for row in window["sessions"]] == ["s-custom"]
+    assert task_inbox.pending_sessions_window()["sessions"] == []      # env store
+    assert task_inbox.pending_sessions_window()["total"] == 0
+
+
+def test_the_full_pending_listing_is_unchanged(store):
+    """Schedulers need every row, with its journal status.  This is that contract."""
+    for index in range(5):
+        task_inbox.enqueue("s-%d" % index, "e1", "waiting")
+    sessions.save("s-3", [{"role": "user", "content": "hi"}])
+    rows = task_inbox.pending_sessions()
+    assert [row["session"] for row in rows] == ["s-4", "s-3", "s-2", "s-1", "s-0"]
+    assert {row["journal"] for row in rows} == {"missing", "ok"}
+    assert all(row["pending"] == 1 and row["claimed"] == 0 for row in rows)
+    assert len(task_inbox.pending_sessions(limit=2)) == 2
+
+
 def test_sessions_are_isolated(store):
     task_inbox.enqueue("s-a", "shared-id", "for a")
     task_inbox.enqueue("s-b", "shared-id", "for b")
