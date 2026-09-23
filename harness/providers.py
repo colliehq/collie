@@ -2291,11 +2291,22 @@ def resolve_speed_tier(name: str, model: str | None, requested: str | None) -> t
     return requested, caps
 
 
+# Claude routes enforce this flag themselves. Codex uses OAuth only; its endpoint
+# is checked below because CODEX_BASE_URL can otherwise redirect that route.
+_SUBSCRIPTION_ONLY_PROVIDERS = (
+    "anthropic-oauth", "claude-sub", "claude-cli", "cli",
+    "claude-agent-sdk", "claude-sdk", "codex-oauth", "codex-sub", "codex",
+)
+
+
 def make_provider(name: str, model: str | None = None, effort: str | None = None,
                   speed: str = "standard", *,
                   subscription_only: bool = False,
                   structured_repair: bool = True) -> ModelProvider:
     """Build a provider.
+
+    ``subscription_only`` refuses unsupported routes before construction or plugin
+    discovery. Absent or False preserves the provider's ordinary routing behavior.
 
     ``structured_repair`` is the Claude Agent SDK route's compatibility switch:
     the host's single corrective turn after a refused response envelope is sent
@@ -2303,6 +2314,13 @@ def make_provider(name: str, model: str | None = None, effort: str | None = None
     free-text corrective turn for a controlled comparison; every other provider
     ignores it, because only this one has a schema transport to escalate to.
     """
+    if subscription_only and name not in _SUBSCRIPTION_ONLY_PROVIDERS:
+        # Deliberately first: an unknown name resolves to this same answer rather than
+        # to a plugin hunt, because no plugin declares a subscription-billing contract.
+        raise ValueError(
+            "subscription_only is not supported by provider %r — it is not a Claude or "
+            "ChatGPT subscription route (supported: %s)"
+            % (name, ", ".join(sorted(_SUBSCRIPTION_ONLY_PROVIDERS))))
     chosen_model = model or provider_default_model(name)
     resolved_speed, _caps = resolve_speed_tier(name, chosen_model, speed)
     if name == "mock":
@@ -2315,6 +2333,9 @@ def make_provider(name: str, model: str | None = None, effort: str | None = None
             subscription_only=subscription_only)
     if name in ("codex-oauth", "codex-sub", "codex"):     # ChatGPT Codex subscription (gpt-5.6-terra)
         from .codex_oauth import CodexOAuthProvider
+        if (subscription_only and CodexOAuthProvider.URL !=
+                "https://chatgpt.com/backend-api/codex/responses"):
+            raise ValueError("subscription_only requires the first-party Codex endpoint")
         return CodexOAuthProvider(model=chosen_model, effort=effort, speed=resolved_speed)
     if name in ("claude-cli", "cli"):
         return ClaudeCliProvider(
