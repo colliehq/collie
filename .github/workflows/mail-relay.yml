@@ -32,11 +32,11 @@ jobs:
       - name: Exercise relay protocol and durable claims
         run: node tests/mail_relay_test.mjs
       - name: Build the deployable worker without credentials
-        run: npx --yes wrangler@4.136.3 deploy --config relay/mail.wrangler.toml --dry-run --outdir dist/mail-relay
+        # esbuild resolves a relative outdir from the config's project root (relay/).
+        run: npx --yes wrangler@4.136.3 deploy --config relay/mail.wrangler.toml --dry-run --outdir "$GITHUB_WORKSPACE/dist/mail-relay"
       - name: Record the exact source and deployment configuration
         run: |
-          # Wrangler's --outdir emits index.js; retain the config's entry filename.
-          mv dist/mail-relay/index.js dist/mail-relay/mail_worker.js
+          test -s dist/mail-relay/mail_worker.js
           cp relay/mail.wrangler.toml dist/mail-relay/
           git rev-parse HEAD > dist/mail-relay/source-commit.txt
           cd dist/mail-relay
