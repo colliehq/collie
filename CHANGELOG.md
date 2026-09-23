@@ -25,6 +25,16 @@
   still counts. A form stops taking edits only while its own save is in flight, and takes them
   again if the save is refused.
 
+- Keep an unsaved automation draft when the operations panel is closed and opened again on the
+  same tab: reopening no longer refetches and redraws the lane out from under the form. Refresh,
+  a tab change, the editor's own Close and the save's refresh still redraw exactly as before, and
+  opening the panel on another tab still shows that tab rather than the draft.
+- Say the Recovery and Automations tabs in the language the rest of the page is in (Simplified
+  and Traditional Chinese): lane names, row severities, every action, the automation editor's
+  fields and help, and its confirmations. Automation ids, task text and server messages are shown
+  as they are, and what an action sends is unchanged.
+- Name the Automation Studio permission checkboxes on one line instead of breaking them over
+  three beside an empty half-row.
 - Refresh an expired process token when an operations-panel action is refused, then retry
   that action once with the same payload. Other errors remain visible without automatic replay.
 - Open an automation's saved conversation from its execution history, including partial work

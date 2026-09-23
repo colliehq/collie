@@ -911,7 +911,11 @@
   .control-form textarea { min-height:66px; resize:vertical; }
   .control-note { grid-column:1/-1; margin:0; color:var(--muted); font-size:10.5px; line-height:1.45; }
   .control-checks { grid-column:1/-1; display:flex; gap:12px; flex-wrap:wrap; }
-  .control-checks label { flex-direction:row; align-items:center; }
+  .control-checks label { flex-direction:row; align-items:center; gap:6px; }
+  /* A checkbox is not a text field: the 100% above made the box claim the whole label and left
+     its name the leftovers, so "Permit external writes" broke over three lines with half the
+     row empty beside it. The label still wraps as a whole item on a narrow screen. */
+  .control-checks input[type="checkbox"] { width:auto; flex:0 0 auto; }
   .control-actions { grid-column:1/-1; display:flex; gap:7px; align-items:center; }
   .control-actions button { border:1px solid var(--line); border-radius:7px; padding:7px 10px;
     background:var(--surface); color:var(--ink); cursor:pointer; }
@@ -4331,7 +4335,32 @@
     "The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.":"服务商已达用量上限，并给出了预计恢复接受请求的时间。以上工作已保留，在此之前 Collie 不会调用服务商。",
     "The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.":"本次运行收到的可重试时间已到；这里尚未确认服务商当前是否可用。需要继续时，可以发送请求。",
     "What the provider returned":"服务商返回的原始信息",
-    "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件"
+    "will run with":"将使用","worker failed":"工作进程失败","worker settled":"工作进程已结束","More worker events omitted":"已省略更多工作进程事件",
+    // System activity · Recovery. The severities and resolutions below are what the row SAYS;
+    // what it posts stays the API's own value.
+    "Needs You & recovery":"需要你处理与恢复","needs_you":"需要你决定","warning":"警告",
+    "items":"项","need a decision":"需要决定","warnings":"警告","optional":"可选",
+    "completed":"已完成","not_fired":"未触发","Not fired":"未触发","cancel":"已取消",
+    "I inspected the outside state and confirm:":"我已检查外部实际状态并确认：",
+    "Send test":"发送测试通知","Retry dead":"重试失败通知",
+    "Retry every dead notification from the beginning?":"从头重试所有失败的通知？",
+    "Open Mission":"打开任务","Open automation":"打开自动化","Mark reviewed":"标记为已查看",
+    // System activity · Automations, including the editor a person types a draft into.
+    "Build, dry-run and inspect bounded timer, file, page and webhook automations.":
+      "创建、试运行并查看受额度约束的定时、文件、页面和 Webhook 自动化。",
+    "configured":"项已配置","Recipes":"预置模板","Configured":"已配置","Execution history":"执行记录",
+    "template":"模板","Use":"使用","Preview":"预览","Run now":"立即运行","New automation":"新建自动化",
+    "Open saved conversation":"打开已保存的对话","Automation saved.":"自动化已保存。",
+    "Trigger matches now; nothing was queued.":"触发条件当前匹配；没有加入任何队列。",
+    "Trigger does not match now; nothing was queued.":"触发条件当前不匹配；没有加入任何队列。",
+    "Trigger does not match now.":"触发条件当前不匹配。",
+    "Automation editor":"自动化编辑器","Trigger":"触发方式",
+    "Schedule seconds, file path, or page URL":"间隔秒数、文件路径或页面网址",
+    "Isolated":"隔离目录","Current (explicit authority)":"当前工作区（需显式授权）",
+    "Readable roots (comma/newline)":"可读取目录（逗号或换行分隔）",
+    "Network hosts (comma/newline)":"可访问主机（逗号或换行分隔）",
+    "Enabled":"启用","Permit external writes":"允许对外写入",
+    "Dry run trigger":"试运行触发条件","Save automation":"保存自动化"
   });
   Object.assign(ZHTW, {
     "More models": "更多模型",
@@ -4541,7 +4570,32 @@
     "The provider reached its usage limit and reported when it expects to accept requests again. The work above is kept, and Collie is not calling the provider before then.":"服務商已達用量上限，並給出了預計恢復接受請求的時間。以上工作已保留，在此之前 Collie 不會呼叫服務商。",
     "The retry time reported for this run has arrived. Provider availability has not been checked here. You can send a request when you are ready.":"本次執行收到的可重試時間已到；這裡尚未確認服務商目前是否可用。需要繼續時，可以傳送請求。",
     "What the provider returned":"服務商傳回的原始訊息",
-    "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件"
+    "will run with":"將使用","worker failed":"工作程序失敗","worker settled":"工作程序已結束","More worker events omitted":"已省略更多工作程序事件",
+    // System activity · Recovery. The severities and resolutions below are what the row SAYS;
+    // what it posts stays the API's own value.
+    "Needs You & recovery":"需要你處理與復原","needs_you":"需要你決定","warning":"警告",
+    "items":"項","need a decision":"需要決定","warnings":"警告","optional":"選用",
+    "completed":"已完成","not_fired":"未觸發","Not fired":"未觸發","cancel":"已取消",
+    "I inspected the outside state and confirm:":"我已檢查外部實際狀態並確認：",
+    "Send test":"傳送測試通知","Retry dead":"重試失敗通知",
+    "Retry every dead notification from the beginning?":"從頭重試所有失敗的通知？",
+    "Open Mission":"開啟任務","Open automation":"開啟自動化","Mark reviewed":"標記為已查看",
+    // System activity · Automations, including the editor a person types a draft into.
+    "Build, dry-run and inspect bounded timer, file, page and webhook automations.":
+      "建立、試執行並查看受額度限制的定時、檔案、頁面和 Webhook 自動化。",
+    "configured":"項已設定","Recipes":"預置範本","Configured":"已設定","Execution history":"執行記錄",
+    "template":"範本","Use":"使用","Preview":"預覽","Run now":"立即執行","New automation":"新增自動化",
+    "Open saved conversation":"開啟已儲存的對話","Automation saved.":"自動化已儲存。",
+    "Trigger matches now; nothing was queued.":"觸發條件目前符合；沒有排入任何佇列。",
+    "Trigger does not match now; nothing was queued.":"觸發條件目前不符合；沒有排入任何佇列。",
+    "Trigger does not match now.":"觸發條件目前不符合。",
+    "Automation editor":"自動化編輯器","Trigger":"觸發方式",
+    "Schedule seconds, file path, or page URL":"間隔秒數、檔案路徑或頁面網址",
+    "Isolated":"隔離目錄","Current (explicit authority)":"目前工作區（需明確授權）",
+    "Readable roots (comma/newline)":"可讀取目錄（逗號或換行分隔）",
+    "Network hosts (comma/newline)":"可連線主機（逗號或換行分隔）",
+    "Enabled":"啟用","Permit external writes":"允許對外寫入",
+    "Dry run trigger":"試執行觸發條件","Save automation":"儲存自動化"
   });
   var I18N = {
     zh: ZH,
@@ -6564,7 +6618,9 @@
     };
     row.appendChild(button); return button;
   }
-  var currentControlTab = "overview", controlData = {};
+  // Which tab the editor on screen was opened from. An editor belongs to one lane, so a panel
+  // reopened on that lane still shows it, and a panel opened on any other lane does not.
+  var currentControlTab = "overview", controlEditorTab = "", controlData = {};
   // A refresh answers the screen it was asked for. These let a late response say whether that
   // screen is still there: a newer refresh, another tab or a closed panel retires an older one.
   var activityRequestSeq = 0, activityNoticeSeq = 0;
@@ -6678,14 +6734,15 @@
   function renderRecovery(data) {
     var items = data.items || [], optional = items.filter(isOptionalRecoveryCheck);
     var required = items.filter(function (item) { return optional.indexOf(item) < 0; });
-    var badge = $("activityHealth"); badge.textContent = data.status || "unknown";
+    var badge = $("activityHealth"); badge.textContent = t(data.status || "unknown");
     // Red means "something is stuck". Warning-only maintenance is not, but a status this page does
     // not recognise is treated as if it were, rather than quietly downgraded.
     badge.classList.toggle("bad", required.length > 0 ||
       ["ok", "warning"].indexOf(data.status) < 0);
-    $("controlSummary").textContent = (data.summary.total || 0) + " items · " +
-      (data.summary.needs_you || 0) + " need a decision · " + (data.summary.warning || 0) + " warnings" +
-      (optional.length ? " · " + optional.length + " optional" : "");
+    $("controlSummary").textContent = (data.summary.total || 0) + " " + t("items") + " · " +
+      (data.summary.needs_you || 0) + " " + t("need a decision") + " · " +
+      (data.summary.warning || 0) + " " + t("warnings") +
+      (optional.length ? " · " + optional.length + " " + t("optional") : "");
     var grid = $("activityGrid"); grid.textContent = "";
     var wanted = recoveryFocusSession, focused = null;
     recoveryFocusSession = "";                 // one arrival, one highlight
@@ -6697,7 +6754,10 @@
       (item.actions || []).forEach(function (action) {
         if (["completed","not_fired","cancel"].indexOf(action) >= 0) {
           activityAction(row, action === "not_fired" ? "Not fired" : action, function () {
-            if (!window.confirm("I inspected the outside state and confirm: " + action + ".")) return;
+            // The question is translated; `resolution` is not. What the row asks and what the
+            // row posts are two different strings, and only the first belongs to a language.
+            if (!window.confirm(t("I inspected the outside state and confirm:") + " " +
+                                t(action) + ".")) return;
             return activityPost("/api/recovery/reconcile", {session:item.identity,
               resolution:action, confirmed:true}).then(loadActivity);
           });
@@ -6706,7 +6766,7 @@
             {action:"test_notifications"}).then(loadActivity); });
         } else if (action === "retry_dead_notifications") {
           activityAction(row, "Retry dead", function () {
-            if (!window.confirm("Retry every dead notification from the beginning?")) return;
+            if (!window.confirm(t("Retry every dead notification from the beginning?"))) return;
             return activityPost("/api/doctor/repair", {action:"retry_dead_notifications",
               confirmed:true}).then(loadActivity);
           });
@@ -6829,25 +6889,25 @@
     Array.prototype.forEach.call(document.querySelectorAll(".control-editor"), function (panel) {
       panel.remove(); });
     var editor = document.createElement("section"); editor.className = "control-editor";
-    editor.innerHTML = '<h3>Automation editor</h3><div class="control-form">' +
-      '<label>ID<input id="autoId" maxlength="80"></label><label>Trigger<select id="autoProvider"><option>timer</option><option>file</option><option>page</option><option>webhook</option></select></label>' +
-      '<label class="wide">Task<textarea id="autoTask"></textarea></label>' +
-      '<label class="wide">Schedule seconds, file path, or page URL<input id="autoTarget"></label>' +
-      '<label>Workspace<select id="autoWorkspace"><option value="isolated">Isolated</option><option value="current">Current (explicit authority)</option></select></label>' +
+    editor.innerHTML = '<h3>' + t("Automation editor") + '</h3><div class="control-form">' +
+      '<label>ID<input id="autoId" maxlength="80"></label><label>' + t("Trigger") + '<select id="autoProvider"><option>timer</option><option>file</option><option>page</option><option>webhook</option></select></label>' +
+      '<label class="wide">' + t("Task") + '<textarea id="autoTask"></textarea></label>' +
+      '<label class="wide">' + t("Schedule seconds, file path, or page URL") + '<input id="autoTarget"></label>' +
+      '<label>' + t("Workspace") + '<select id="autoWorkspace"><option value="isolated">' + t("Isolated") + '</option><option value="current">' + t("Current (explicit authority)") + '</option></select></label>' +
       '<label>' + t("Max runs / day") + '<input id="autoRuns" type="number" min="1"></label>' +
       '<label>' + t("Max model tokens") + '<input id="autoTokens" type="number" min="1"></label>' +
       '<label>' + t("Max cost USD") + '<input id="autoCost" type="number" min="0.01" step="0.01"></label>' +
       '<label>' + t("Max wall seconds") + '<input id="autoWall" type="number" min="1"></label>' +
       '<label>' + t("Max tool actions") + '<input id="autoActions" type="number" min="1" step="1"></label>' +
       '<p class="control-note" id="autoBudgetHelp"></p>' +
-      '<label>Readable roots (comma/newline)<textarea id="autoReadRoots"></textarea></label>' +
-      '<label>Network hosts (comma/newline)<textarea id="autoHosts"></textarea></label>' +
-      '<div class="control-checks"><label><input id="autoEnabled" type="checkbox"> Enabled</label>' +
-      '<label><input id="autoExternal" type="checkbox"> Permit external writes</label></div>' +
-      '<div class="control-actions"><button type="button" id="autoPreview">Dry run trigger</button>' +
-      '<button type="button" class="primary" id="autoSave">Save automation</button>' +
+      '<label>' + t("Readable roots (comma/newline)") + '<textarea id="autoReadRoots"></textarea></label>' +
+      '<label>' + t("Network hosts (comma/newline)") + '<textarea id="autoHosts"></textarea></label>' +
+      '<div class="control-checks"><label><input id="autoEnabled" type="checkbox"> ' + t("Enabled") + '</label>' +
+      '<label><input id="autoExternal" type="checkbox"> ' + t("Permit external writes") + '</label></div>' +
+      '<div class="control-actions"><button type="button" id="autoPreview">' + t("Dry run trigger") + '</button>' +
+      '<button type="button" class="primary" id="autoSave">' + t("Save automation") + '</button>' +
       '<button type="button" id="autoClose">' + t("Close") + '</button></div></div>';
-    $("activityGrid").prepend(editor);
+    $("activityGrid").prepend(editor); controlEditorTab = currentControlTab;
     var trigger = spec.trigger || {}, permissions = spec.permissions || {}, budget = spec.budget || {};
     $("autoId").value = spec.automation_id || ""; $("autoTask").value = spec.task || "";
     $("autoProvider").value = trigger.provider || "timer";
@@ -6871,7 +6931,8 @@
     $("autoEnabled").checked = spec.enabled === true; $("autoExternal").checked = permissions.external_writes === true;
     $("autoPreview").onclick = function () { activityPost("/api/automations/preview",
       {spec:automationEditorSpec()}).then(function (d) { activityNotice(d.fired ?
-        "Trigger matches now; nothing was queued." : "Trigger does not match now; nothing was queued.", false); })
+        t("Trigger matches now; nothing was queued.") :
+        t("Trigger does not match now; nothing was queued."), false); })
         .catch(function (e) { activityNotice(e.message, true); }); };
     // One upsert per gesture: a second click while the first is in flight would write again.
     // The confirmation waits for the refresh, which otherwise clears it in the same tick.
@@ -6902,9 +6963,9 @@
     $("autoClose").onclick = function () { editor.remove(); };
   }
   function renderAutomations(data) {
-    $("activityHealth").textContent = (data.specs || []).length + " configured";
+    $("activityHealth").textContent = (data.specs || []).length + " " + t("configured");
     $("activityHealth").classList.remove("bad"); $("controlSummary").textContent =
-      "Build, dry-run and inspect bounded timer, file, page and webhook automations.";
+      t("Build, dry-run and inspect bounded timer, file, page and webhook automations.");
     var grid = $("activityGrid"); grid.textContent = "";
     grid.appendChild(activityLane("Recipes", data.recipes || [], function (row, recipe) {
       activityText(row, recipe.label, "template"); activityDetail(row, recipe.description);
@@ -6919,7 +6980,8 @@
           enabled:!spec.enabled}).then(loadActivity); });
       activityAction(row, "Preview", function () { return activityPost("/api/automations/preview",
         {automation_id:spec.automation_id}).then(function (d) { activityNotice(d.fired ?
-          "Trigger matches now; nothing was queued." : "Trigger does not match now.", false); }); });
+          t("Trigger matches now; nothing was queued.") :
+          t("Trigger does not match now."), false); }); });
       activityAction(row, "Run now", function () {
         return activityPost("/api/automations/run", {automation_id:spec.automation_id,
           confirmed:true}).then(loadActivity); });
@@ -6941,7 +7003,7 @@
       }
     }));
     var add = document.createElement("div"); add.className = "control-actions";
-    var button = document.createElement("button"); button.textContent = "New automation";
+    var button = document.createElement("button"); button.textContent = t("New automation");
     button.onclick = function () { showAutomationEditor(null); }; add.appendChild(button); grid.prepend(add);
   }
   function renderMemory(data) {
@@ -7402,7 +7464,13 @@
     $("scroll").hidden = !!open; $("composer").hidden = !!open;
     $("scrollDownBtn").hidden = !!open;
     if (open) setRunDetailsOpen(false);
-    activityButton.setAttribute("aria-expanded", open ? "true" : "false"); if (open) loadActivity();
+    activityButton.setAttribute("aria-expanded", open ? "true" : "false");
+    // Closing the panel hides the grid; it does not empty it. So reopening the same tab with the
+    // same unsaved editor still on screen asks for nothing: the answer would redraw the lane and
+    // take the typed draft with it, and nobody asked for a refresh by shutting a lid. Refresh,
+    // a tab change, Close on the form and the save's own refresh are unchanged — and opening on
+    // any other tab still fetches, so an editor is never left standing over another lane.
+    if (open && !(currentControlEditor() && controlEditorTab === currentControlTab)) loadActivity();
   }
   if (activityButton) activityButton.onclick = function () {
     var opening = activityPanel.hidden || activityPageMode !== "activity";
