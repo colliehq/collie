@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh an expired process token when an operations-panel action is refused, then retry
+  that action once with the same payload. Other errors remain visible without automatic replay.
 - Open an automation's saved conversation from its execution history, including partial work
   that needs attention. Navigation does not restart the task or expose answers in health metadata.
 - Show healthy automatic follow-ups as task progress instead of requests for a decision.

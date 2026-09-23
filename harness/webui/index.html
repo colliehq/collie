@@ -6499,7 +6499,7 @@
       }); });
   }
   function activityPost(path, body) {
-    return fetch(path + "?token=" + encodeURIComponent(CT), { method: "POST",
+    return authenticatedFetch(path, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
       .then(function (r) { return r.json().then(function (d) {
         if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d;
