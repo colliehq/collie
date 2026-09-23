@@ -374,6 +374,10 @@ RUNS = [{"session": "s-cap", "run": "r3", "state": "done", "stop_reason": "turn_
 
 
 class _Fixture(BaseHTTPRequestHandler):
+    # Reuse sockets across the many API reads in each page boot. JSON/files declare a length;
+    # the event stream below explicitly closes its connection to delimit its final frame.
+    protocol_version = "HTTP/1.1"
+
     stream_requests = []                 # every /api/stream the page opened, in order
     route_requests = []
     queue_entries = {}
@@ -585,6 +589,8 @@ class _Fixture(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        # This finite fixture stream ends at EOF, including under HTTP/1.1.
+        self.send_header("Connection", "close")
         self.end_headers()
         try:
             if text == "Hold queue fixture":
@@ -856,17 +862,19 @@ def _reset_fixture_state():
 def ui(server, browser):
     _reset_fixture_state()
     context = browser.new_context(viewport={"width": 1280, "height": 900})
-    page = context.new_page()
     errors = []
-    page.on("pageerror", lambda e: errors.append(str(e)))
-    page.goto(server + "/?token=" + TOKEN, wait_until="load")
-    page.wait_for_selector("#input", timeout=8000)
-    page.wait_for_timeout(400)          # identity + model probes settle; onboarding must stay shut
-    assert not page.is_visible("#obOverlay.open"), "fixture should look configured"
-    yield Page(page, errors)
-    _Fixture.queue_release.set(); _Fixture.queue_ack.set()
+    try:
+        page = context.new_page()
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(server + "/?token=" + TOKEN, wait_until="load")
+        page.wait_for_selector("#input", timeout=8000)
+        page.wait_for_timeout(400)      # identity + model probes settle; onboarding stays shut
+        assert not page.is_visible("#obOverlay.open"), "fixture should look configured"
+        yield Page(page, errors)
+    finally:
+        _Fixture.queue_release.set(); _Fixture.queue_ack.set()
+        context.close()
     assert errors == [], "JS errors: %r" % errors
-    context.close()
 
 
 def test_refused_delete_keeps_open_thread_and_shows_server_reason(ui):
