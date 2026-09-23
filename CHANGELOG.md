@@ -27,6 +27,11 @@
   Collie's own finished command: the group is asked again once that child is settled. The
   kill still goes first, nothing destructive is ever sent afterwards, and a group that keeps
   answering is still reported as unconfirmed.
+- Let the Windows Codex CLI and App Server routes start against Codex 0.156, which removed a
+  Windows sandbox setting that strict config then rejects. The setting is now sent only to the
+  older CLIs that measurably need it, decided from the executable actually resolved and re-checked
+  when it is replaced. An unreadable version keeps the setting rather than silently weakening the
+  sandbox. The optional Codex SDK route keeps its own pinned runtime and is unchanged.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 

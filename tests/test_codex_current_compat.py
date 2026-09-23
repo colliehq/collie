@@ -452,6 +452,14 @@ def test_windows_forces_an_explicit_sandbox_level(monkeypatch):
     posix = codex_sdk_worker._overrides()
 
     assert 'windows.sandbox="unelevated"' in windows
+    # Unconditional here, and only here.  The sidecar runs the SDK's *bundled*
+    # binary (``client.py`` resolves ``codex_cli_bin``, never PATH), pinned to
+    # 0.155.1 -- a version whose schema still has the field.  The PATH routes
+    # resolve whatever the host installed and therefore version-gate the same
+    # key; see tests/test_codex_windows_version_compat.py.  Bumping the
+    # openai-codex pin to 0.156+ makes this line stale, and because this launch
+    # passes no --strict-config it would be ignored with a warning rather than
+    # refused -- so the pin bump and this line have to move together.
     assert "windows.sandbox_private_desktop=false" in windows
     assert not [row for row in posix if row.startswith("windows.")]
 

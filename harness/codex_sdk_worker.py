@@ -34,6 +34,14 @@ _OVERRIDES = (
 # silently writes nothing.  They mirror ``_windows_sandbox_override()`` in
 # ``agent_runners``; see its docstring for why ``unelevated`` and a shared
 # desktop are the only choices Collie can make on the user's behalf.
+#
+# These are deliberately NOT version-gated the way the PATH routes are: this
+# sidecar runs the binary bundled with ``openai-codex==0.155.1`` (``client.py``
+# resolves ``codex_cli_bin``, never PATH), whose schema still has
+# ``sandbox_private_desktop``.  Codex 0.156.0 removed the field, so bumping that
+# pin means deleting the second entry below in the same change -- and this
+# launch has no ``--strict-config``, so a stale key here would be an ignored
+# warning rather than a loud failure.
 _WINDOWS_OVERRIDES = (
     'windows.sandbox="unelevated"',
     "windows.sandbox_private_desktop=false",
