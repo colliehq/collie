@@ -129,7 +129,8 @@ def _scope_line() -> str:
         "including search, verification and any optional extra check. Verification never grants "
         "extra access: use an allowed check in memory, or skip it and say what you did not check "
         "and why. A write counts even if you undo it; a restriction to named writable paths "
-        "applies throughout the task, not just to the final diff. Report actual actions and "
+        "applies throughout the task, not just to the final diff. Do not move a forbidden check "
+        "to a temporary directory outside the allowed scope. Report actual actions and "
         "checks, not just the end state. Disclose unintended side effects even if reverted.")
 
 

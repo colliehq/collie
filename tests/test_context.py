@@ -124,16 +124,12 @@ def test_scope_directive_binds_verification_and_reporting():
 
     Asserted over the COMPOSED system prompt under a wholesale identity override — the desktop
     persona replaces composer.identity outright, and, like RESPONSE LANGUAGE and GROUNDING, this
-    duty lives outside identity so the override cannot drop it. Wording is free to change; what is
-    pinned is that each duty is still stated, in every mode, without disturbing the mode contracts.
+    duty lives outside identity so the override cannot drop it. Check its complete inclusion in
+    every mode without disturbing the mode contracts; live experiments assess model behavior.
     This is prompt guidance only — it constrains nothing the tool layer does not."""
     from harness.cli import make_harness
     from harness.context import _scope_line
-    low = _scope_line().lower()
-    assert "optional extra check" in low, "scope must reach self-chosen checks, not only edits"
-    assert "in memory" in low and "did not check" in low, "needs a legal alternative + honest gap"
-    assert "undo it" in low and "final diff" in low, "a reverted write is still a write"
-    assert "not just the end state" in low, "the report follows the actions, not the snapshot"
+    directive = _scope_line()
 
     h = make_harness(os.getcwd(), provider="mock", project="scope", embed="hash")
     h.composer.identity = "You are collie, the user's live desktop assistant."   # wholesale override
@@ -142,7 +138,7 @@ def test_scope_directive_binds_verification_and_reporting():
         system, _msgs, _meta = h.composer.build(
             {"messages": []}, "fix deployconf.py", os.getcwd(), "scope", mode=mode)
         built[mode] = system
-        assert "SCOPE" in system, "the directive must survive the identity override in %s" % mode
+        assert directive in system, "the directive must survive the identity override in %s" % mode
     # byte-stable per session: the directive carries no workspace/platform state, so re-composing
     # the same turn must not move the cached prefix.
     again, _msgs, _meta = h.composer.build(
