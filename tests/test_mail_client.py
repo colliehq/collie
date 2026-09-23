@@ -113,3 +113,29 @@ def test_http_failure_hides_provider_body_and_rejects_redirects(monkeypatch):
 def test_relay_origin_refuses_unprotected_or_credential_urls(origin):
     with pytest.raises(ValueError):
         mail._relay_url(origin)
+
+
+def test_lost_verification_response_recovers_same_reserved_identity(tmp_path, monkeypatch):
+    calls = []
+    def claim(path, body, **kwargs):
+        calls.append(body)
+        return {"ok": True, "verified": len(calls) > 1, "sent": len(calls) == 1}
+    monkeypatch.setattr(mail, "_post", claim)
+    mail.claim_handle("owner", "owner@example.test", state_dir=tmp_path)
+    pending = mail.load(tmp_path)["handle"]
+    assert pending["verified"] is False
+    result = mail.claim_handle("owner", "owner@example.test", state_dir=tmp_path)
+    recovered = mail.load(tmp_path)["handle"]
+    assert result["verified"] and recovered["verified"]
+    assert recovered["priv"] == pending["priv"] and calls[0] == calls[1]
+
+
+def test_rate_limit_guidance_preserves_only_bounded_numeric_fields(monkeypatch):
+    payload = {"error": "private body", "retry_after": 60, "attempts_left": "private body"}
+    def opening(*args, **kwargs):
+        raise urllib.error.HTTPError("https://example.test", 429, "limited", {},
+                                     io.BytesIO(json.dumps(payload).encode()))
+    monkeypatch.setattr(mail.urllib.request, "build_opener", lambda *a: SimpleNamespace(open=opening))
+    result = mail._get("/mail", relay="https://example.test")
+    assert result["retry_after"] == 60 and "60 seconds" in result["error"]
+    assert "private body" not in json.dumps(result) and "attempts_left" not in result

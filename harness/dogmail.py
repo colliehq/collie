@@ -229,11 +229,27 @@ def _request(path, *, body=None, headers=None, relay=""):
             value = json.loads(raw) if len(raw) <= 16 * 1024 else {}
         except (ValueError, UnicodeDecodeError):
             value = {}
-        clean = {"ok": False, "http_status": exc.code, "error": "mail relay refused the request"}
+        explanation = {
+            401: "Mail authentication failed; check this device's mail identity.",
+            403: "The mail relay refused access; check the verified owner and sending permissions.",
+            409: "This claim or request conflicts with an existing record; the existing keys were kept.",
+            429: "Too many requests; wait before trying again.",
+            501: "Outgoing mail is not configured on this relay.",
+            503: "The mail relay is temporarily unavailable; saved work was kept.",
+        }.get(exc.code, "mail relay refused the request")
+        clean = {"ok": False, "http_status": exc.code, "error": explanation}
         if isinstance(value, dict):
             for key in ("id", "status", "receipt", "duplicate", "at", "updated"):
                 if key in value:
                     clean[key] = value[key]
+            for key in ("retry_after", "attempts_left"):
+                number = value.get(key)
+                if isinstance(number, int) and not isinstance(number, bool) and 0 <= number <= 86400:
+                    clean[key] = number
+            if clean.get("retry_after"):
+                clean["error"] += " Try again in %d seconds." % clean["retry_after"]
+            if "attempts_left" in clean:
+                clean["error"] = "The verification code was not accepted. %d attempts remain." % clean["attempts_left"]
         return clean
 
 
@@ -307,7 +323,18 @@ def claim_handle(handle: str, email: str, relay: str = "", *, state_dir=None) ->
         identity = _change(reserve, state_dir)
         if identity is None:
             return {"ok": False, "error": "this device already has a verified mail identity"}
-        return _post("/handle/claim", {"handle": handle, "pub": identity["pub"], "email": email}, relay=relay)
+        response = _post("/handle/claim", {"handle": handle, "pub": identity["pub"], "email": email}, relay=relay)
+        if response.get("ok") is True and response.get("verified") is True:
+            # A verification may have succeeded remotely just before its response
+            # was lost. An idempotent claim of this same key recovers that state.
+            def recover(current):
+                latest = current.get("handle") or {}
+                if (latest.get("pub"), latest.get("name"), latest.get("email")) != (
+                        identity["pub"], handle, email):
+                    raise ValueError("mail identity changed during recovery; existing keys were kept")
+                latest["verified"] = True
+            _change(recover, state_dir)
+        return response
 
 
 def verify_handle(code: str, relay: str = "", *, state_dir=None) -> dict:
