@@ -97,13 +97,14 @@ def test_the_scheduler_names_a_thread_a_reply_can_be_matched_to(host, zones):
 # --------------------------------------------------------------- a real reply
 
 
-def test_a_reply_quoting_the_message_id_gets_that_morning_back(host, zones):
+@pytest.mark.parametrize("sender", [OWNER, OWNER.upper()])
+def test_a_reply_quoting_the_message_id_gets_that_morning_back(host, zones, sender):
     root, service, _adapter = host
     opt_in(root, service)
     report = sched.tick(root, at(2026, 9, 10), service=service)
     row = stored(service, report["job"]["result_id"])
 
-    event = arrive(service, refs=[row["metadata"]["message_id"]])
+    event = arrive(service, refs=[row["metadata"]["message_id"]], sender=sender)
     assert event["thread_key"] == row["thread_key"]
 
     item = context(service, "in-1")

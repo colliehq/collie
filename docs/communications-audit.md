@@ -267,8 +267,7 @@ tasks.
 * **Concurrency:** finding 3 is reproduced by a deterministic re-entrant call,
   not by real threads. The interleaving it stands for is real — the two locks
   are genuinely disjoint — but the test does not measure how often it is hit.
-* **Case sensitivity, noted not filed.** `_thread` compares addresses with `==`
-  while `comms._matches_policy` compares case-insensitively, so an owner
-  configured as `Owner@example.test` whose client sends `owner@example.test`
-  passes the allow-list but starts a new thread. Narrow (the domain is already
-  lower-cased), but the two comparisons could be unified.
+* **Case comparison, repaired in final integration.** Thread matching now uses
+  the same address normalization as the inbox allow-list. Parameterized tests cover
+  received-message references and replies to an emailed Daily Brief with mixed-case
+  owner addresses, while a different sender still cannot join the thread.

@@ -414,9 +414,10 @@ class ChannelService:
         if self._row(connection)["kind"] == "twilio":
             return "sms-" + _hash(message["sender"])
         refs = set(message.get("in_reply_to") or []) | set(message.get("references") or [])
-        if refs:
+        if refs and isinstance(message["sender"], str):
+            sender = comms._normalize_address(message["sender"], "email")
             for event in self.events(connection, limit=200):
-                if (event.get("sender") == message["sender"] and
+                if (comms._normalize_address(event.get("sender") or "", "email") == sender and
                         (event.get("metadata") or {}).get("message_id") in refs):
                     return event["thread_key"]
             for result in self.results(connection, limit=500):
@@ -424,7 +425,7 @@ class ChannelService:
                 identifiers = {(result.get("metadata") or {}).get("message_id"), provider_id}
                 if provider_id:
                     identifiers.add("<" + provider_id.strip("<>") + ">")
-                if (result.get("destination") == message["sender"] and result.get("thread_key")
+                if (comms._normalize_address(result.get("destination") or "", "email") == sender and result.get("thread_key")
                         and identifiers.intersection(refs)):
                     return result["thread_key"]
         return "mail-" + _hash(message.get("message_id") or message["event_id"])

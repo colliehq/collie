@@ -117,10 +117,11 @@ def test_provider_refusal_and_automatic_mail_are_visible_without_starting_tasks(
     assert host._row("mail")["cursor"] == {"uid": 20}
 
 
-def test_email_reference_cannot_join_another_senders_thread(service):
+@pytest.mark.parametrize("sender", ["owner@example.test", "Owner@EXAMPLE.TEST"])
+def test_email_reference_cannot_join_another_senders_thread(service, sender):
     host, _ = service
     host.ingest("mail", message("one"))
-    host.ingest("mail", message("two", in_reply_to=["<one@example.test>"]))
+    host.ingest("mail", message("two", sender=sender, in_reply_to=["<one@example.test>"]))
     host.ingest("mail", message("three", sender="someone@example.test", references=["<one@example.test>"]))
     rows = {r["id"]: r for r in host.events("mail")}
     assert rows["one"]["thread_key"] == rows["two"]["thread_key"]
