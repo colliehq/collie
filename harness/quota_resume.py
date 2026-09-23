@@ -74,6 +74,7 @@ MAX_ATTEMPTS = 4                  # bookkeeping failures before the record retir
 RETRY_BACKOFF = (30.0, 120.0, 600.0)
 BUSY_BACKOFF = 60.0               # a conversation that was busy is asked again later
 CLAIM_GRACE = 90.0                # a claim younger than this is assumed in flight
+TICK_INTERVAL = 30.0              # how often the pass looks for due waits
 MAX_DUE_PER_PASS = 32             # admissions attempted per pass
 MAX_SCAN = 4096                   # records *examined* per pass, so sorting is fair
 _MAX_BYTES = 64 * 1024
@@ -522,33 +523,96 @@ def tick(*, now=None, limit=MAX_DUE_PER_PASS):
     return out
 
 
-def status(session):
-    """The sanitized view a surface may show: what is scheduled, and when.
+def _next_try(row):
+    """The earliest this wait may be admitted — the pair ``claim`` enforces."""
+    return max(float(row["retry_at"]), float(row.get("next_attempt_at") or 0))
 
-    Deliberately not the record.  A pid, a claim time and this module's own
-    retry bookkeeping answer no question a person asked; the entry that is
-    scheduled, whether it is waiting, already starting or has given up, the time
-    it will start after and — if something stopped it — the reason, are the
-    whole contract.
+
+def _ticker_progress(now):
+    """A healthy bounded pass owns its backlog, however old the reset time is."""
+    info = ticker_status()
+    if not info.get("running"):
+        return "stalled"
+    interval = float(info.get("interval") or TICK_INTERVAL)
+    beat = float(info.get("last_at") or 0.0)
+    started = float(info.get("started_at") or 0.0)
+    if started > beat and 0 <= now - started <= interval:
+        return "queued"            # the first pass is running, within its startup grace
+    if beat <= 0 or now - beat > 2 * interval:
+        return "unknown"
+    return "queued"
+
+
+def _waiting_progress(row, now):
+    if now <= _next_try(row):
+        return "scheduled"
+    return _ticker_progress(now)
+
+
+def _admitting_progress(row, now):
+    """Is an admission in flight?  The same evidence ``recover`` acts on, read
+    without writing: the claim's grace first, then the session lease and the
+    bound entry.  An answer nothing could read stays ``unknown`` — it is not a
+    claim of progress, and not a verdict that the claimant is gone.
+    """
+    if now - float(row.get("claimed_at") or 0) < CLAIM_GRACE:
+        return "starting"
+    try:
+        verdict = claim_evidence(row, now=now)
+    except Exception:
+        verdict = "unknown"
+    if verdict == "in_flight":
+        return "starting"
+    if verdict == "abandoned":
+        # tick() recovers this exact claim before admitting due work.
+        return _ticker_progress(now)
+    if verdict in ("delivered", "gone"):
+        return None                # this schedule says nothing about other queued entries
+    return "unknown" if verdict == "unknown" else "stalled"
+
+
+def status(session, *, now=None):
+    """The sanitized view a surface may show: what is scheduled, when it is next
+    tried, and whether this host can still vouch for it.
+
+    Deliberately not the record.  A pid, a claim time, a nonce and this module's
+    own retry counters answer no question a person asked.  ``next_attempt_at`` is
+    published because ``retry_at`` alone is not the next start once a backoff has
+    moved it, and ``progress`` because it is the one field a surface cannot work
+    out for itself — it is decided here, from this process's clock, the record's
+    own backoff and the liveness evidence above, never from a browser's clock:
+
+      ``scheduled``  the next try is ahead
+      ``queued``     the healthy ticker will attempt admission or claim recovery
+      ``starting``   an admission is in flight
+      ``unknown``    nothing here could be read; visible, never called progress
+      ``stalled``    nothing is going to start this without a person
+      ``stopped``    this module gave up on its own bookkeeping
     """
     row = read(session)
     if row is None:
         return None
-    if row["state"] not in ("waiting", "admitting"):
+    now = time.time() if now is None else float(now)
+    if row["state"] == "waiting":
+        progress = _waiting_progress(row, now)
+    elif row["state"] == "admitting":
+        progress = _admitting_progress(row, now)
+        if progress is None:
+            return None
+    elif (row["state"] == "retired"
+            and int(row.get("attempts") or 0) >= MAX_ATTEMPTS):
         # A wait that retired because it got its answer — the request ran, or was
         # withdrawn, or a fence took over — is not news: the queue row already
         # shows that.  A wait that retired because *this module's* bookkeeping
         # kept failing is: the scheduled start silently stopped being scheduled,
         # and only saying so keeps the queue row honest.  The request is still
         # pending and still startable by hand, so this is a label, not an alarm.
-        if (row["state"] == "retired"
-                and int(row.get("attempts") or 0) >= MAX_ATTEMPTS):
-            return {"entry": row["entry"], "state": "retired",
-                    "retry_at": int(row["retry_at"]),
-                    "reason": row.get("reason") or ""}
+        progress = "stopped"
+    else:
         return None
-    return {"entry": row["entry"], "state": row["state"],
-            "retry_at": int(row["retry_at"]), "reason": row.get("reason") or ""}
+    return {"entry": row["entry"], "state": row["state"], "progress": progress,
+            "retry_at": int(row["retry_at"]), "reason": row.get("reason") or "",
+            "next_attempt_at": 0 if progress == "stopped" else int(_next_try(row))}
 
 
 # ------------------------------------------------------------------ the ticker
@@ -556,7 +620,11 @@ def status(session):
 _TICK_LOCK = threading.Lock()
 _TICK_THREAD = None
 _TICK_STOP = None                 # the stop event of the thread above, never shared
-_TICK_STATUS = {"passes": 0, "started": 0, "last_error": "", "last_at": 0.0}
+# `interval` and `last_at` are the pass's own account of itself: how often it
+# intends to look, and when it last finished looking.  `status` reads both rather
+# than assuming a healthy timer — a stopped or undated pass is not progress.
+_TICK_STATUS = {"passes": 0, "started": 0, "last_error": "", "last_at": 0.0,
+                "interval": 0.0, "started_at": 0.0}
 
 
 def ticker_status():
@@ -565,7 +633,7 @@ def ticker_status():
                     running=bool(_TICK_THREAD and _TICK_THREAD.is_alive()))
 
 
-def start_ticker(interval=30.0):
+def start_ticker(interval=TICK_INTERVAL):
     """Start the one process-local pass over due waits (idempotent).
 
     The server owns this timer because the server is what can act on it.  A tab
@@ -582,6 +650,8 @@ def start_ticker(interval=30.0):
         if _TICK_THREAD is not None and _TICK_THREAD.is_alive():
             return _TICK_THREAD
         stop = threading.Event()
+        _TICK_STATUS["interval"] = max(1.0, float(interval))
+        _TICK_STATUS["started_at"] = time.time()
 
         def _loop():
             while not stop.is_set():

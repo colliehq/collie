@@ -655,7 +655,8 @@ def test_the_queue_endpoint_shows_the_scheduled_start_and_nothing_private(lab):
     assert code == 200
     wait = data["scheduled_wait"]
     assert wait == {"entry": "follow-1", "state": "waiting", "retry_at": retry_at,
-                    "reason": ""}, "sanitized: the bound entry, its state and its time"
+                    "next_attempt_at": retry_at, "progress": "scheduled", "reason": ""}, \
+        "sanitized: the bound entry, its state, its next try and the host's verdict"
     assert [row["id"] for row in data["entries"] if row["state"] == "pending"] == ["follow-1"]
 
     # The wait is over, and the endpoint says so rather than leaving a stale time.
@@ -683,7 +684,8 @@ def test_a_schedule_that_gave_up_on_itself_is_still_visible(lab):
     assert row["state"] == "retired" and row["attempts"] == quota_resume.MAX_ATTEMPTS
 
     assert quota_resume.status(session) == {"entry": "follow-1", "state": "retired",
-                                            "retry_at": retry_at,
+                                            "retry_at": retry_at, "progress": "stopped",
+                                            "next_attempt_at": 0,
                                             "reason": "the wait could not be written"}
     code, data = _get(lab, "/api/task-inbox?session=" + session)
     assert data["scheduled_wait"]["state"] == "retired"
@@ -707,8 +709,14 @@ def test_the_page_reports_the_scheduled_start_on_the_bound_row():
     start = text.index("function renderTaskQueue()")
     end = text.index("function loadTaskQueue()")
     row = text[start:end]
-    assert "Already submitted — starts after" in row
-    assert "Automatic start stopped" in row, "a schedule that gave up says so"
+    # The sentence itself lives in one shared helper, so this row, the thread list
+    # and Today cannot disagree about what the server said.
+    assert "scheduledWaitLabel(wait)" in row
+    label = text[text.index("function scheduledWaitLabel("):
+                 text.index("function queuedSessionLabel(")]
+    assert "Already submitted — starts after" in label
+    assert "Automatic start stopped" in label, "a schedule that gave up says so"
+    assert "wait.next_attempt_at" in label, "the next try, never a reset that has gone by"
     assert "wait.entry === entry.id" in row, "only the bound entry"
     assert "scheduled_wait" in text and "state.scheduledWait" in row
     assert "setInterval" not in row and "setTimeout" not in row, "no browser-owned timer"

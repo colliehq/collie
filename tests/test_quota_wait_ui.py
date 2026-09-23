@@ -11,18 +11,26 @@ from test_web_ui_run_status import TOKEN, _Fixture, _reset_fixture_state, browse
     ('zh', ('已提交，将在此时间后开始', '已提交，正在启动', '自动启动已停止，可随时手动开始')),
     ('zh-tw', ('已提交，將在此時間後開始', '已提交，正在啟動', '自動啟動已停止，可隨時手動開始')),
 ])
-@pytest.mark.parametrize('state,index', [('waiting',0),('admitting',1),('retired',2)])
+# `progress` is the host's verdict on its own timer, and the row states that verdict
+# rather than re-deciding it from the tab's clock: a healthy wait, an admission in
+# flight, a schedule that gave up.
+@pytest.mark.parametrize('state,progress,index', [('waiting','scheduled',0),
+                                                 ('admitting','starting',1),
+                                                 ('retired','stopped',2)])
 def test_scheduled_queue_state_is_localized_and_does_not_submit(
-        server, browser, monkeypatch, viewport, lang, labels, state, index):
+        server, browser, monkeypatch, viewport, lang, labels, state, progress, index):
     _reset_fixture_state()
     monkeypatch.setattr(_Fixture, 'lang', lang)
     entry={'id':'accepted-next','session':'s-read','mode':'follow_up','seq':1,
            'state':'pending','text':'already accepted request','digest':'v1','metadata':{}}
     monkeypatch.setattr(_Fixture, 'queue_entries', {entry['id']:entry})
     reason='Scheduler could not persist the claim <inspect>'
+    retry_at=int(time.time())+120
     monkeypatch.setattr(_Fixture, 'queue_status_extra', {
         'owner_busy':False,
-        'scheduled_wait':{'entry':entry['id'],'state':state,'retry_at':int(time.time())+120,
+        'scheduled_wait':{'entry':entry['id'],'state':state,'retry_at':retry_at,
+                          'next_attempt_at':0 if progress=='stopped' else retry_at,
+                          'progress':progress,
                           'reason':reason if state=='retired' else ''}})
     context=browser.new_context(viewport=viewport)
     page=context.new_page(); errors=[]
