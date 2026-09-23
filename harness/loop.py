@@ -2107,7 +2107,11 @@ class Harness:
         # it is on disk, so "delivered" is a fact rather than an intention.
         initial_acked = self._ack_input_entry(input_entry, checkpointed)
         if checkpointed is False:
-            res.error = "the initial request could not be persisted; this run stopped before calling the model"
+            # The same store outage is a host error mid-run and at the terminal save;
+            # timing must not decide how a surface classifies it.
+            from .recorder import note_host_error as _note_host_error
+            _note_host_error(res, "the initial request could not be persisted; this run "
+                                  "stopped before calling the model")
         elif input_entry is not None and not initial_acked:
             res.error = "the initial request could not be acknowledged; this run stopped before calling the model"
         # Tool output uses the same vault initialized before the prompt above.
@@ -3006,8 +3010,30 @@ class Harness:
                             detail.update(internal=True, inner_complete=True,
                                           inner_tool_name=tc.name, inner_tool_call_id=tc.id)
                         journal_detail = dict(detail)
-                        self._session_checkpoint(
-                            session["messages"], rid, turn, journal_state, detail)
+                        if self._session_checkpoint(
+                                session["messages"], rid, turn, journal_state,
+                                detail) is False:
+                            # The call is over and only its receipt was lost.  Stop rather
+                            # than buy turns this host still cannot journal, and report the
+                            # call exactly as far as it got: dispatch alone does not prove an
+                            # effect, and a completed one must not be replayed or rolled back
+                            # on a guess about the outside world.
+                            if not dispatched:
+                                fault = ("the host could not persist the outcome of %s, "
+                                         "which was not executed; check the session store, "
+                                         "then resume the thread")
+                            elif failed_tool:
+                                fault = ("%s was started and then reported a failure the "
+                                         "host could not save; it may have taken effect "
+                                         "before failing, so do not blindly replay it or "
+                                         "roll it back. Check the session store and what "
+                                         "the tool actually did")
+                            else:
+                                fault = ("%s completed and its result could not be saved; "
+                                         "the call did run, so do not replay it or roll its "
+                                         "effect back. Check the session store and what the "
+                                         "tool actually did")
+                            durability_fault = durability_fault or fault % (tc.name,)
                         # Internal screenshots stay queued until the parent result is paired; adding
                         # a user image before that result would break provider tool-use ordering.
                         if record_result and getattr(ctx, "images", None):
@@ -3100,8 +3126,10 @@ class Harness:
                                 if durability_fault:
                                     # Check under the dispatch lock before approval or execution.
                                     # A healed store does not restart a run already stopped here.
-                                    return ("DENIED: a durability checkpoint already failed in "
-                                            "this run; crash recovery cannot be fenced, so no "
+                                    # Stays generic: the failed checkpoint may have been this
+                                    # run's pre-action fence or a completed call's receipt.
+                                    return ("DENIED: a durability checkpoint failed earlier in "
+                                            "this run; the session journal is unreliable, so no "
                                             "further tool will be started")
                                 self.sequence += 1
                                 # The parent execute_code source is restored immediately before
@@ -3733,6 +3761,14 @@ class Harness:
             res.error = _redact.redact(str(res.error), self._secret_vault)[:4_000]
             res.stop_reason = run_stop_reason(res)
             res.success = False
+        elif durability_fault and journal_state == "tool_complete":
+            # The store healed in time for the terminal save, which pops the fence: the
+            # whole thread, including the receipt lost mid-turn, is on disk. Say so rather
+            # than send a person to reconcile a healthy store. The run still stopped here,
+            # so the host-error classification and this error's precedence are unchanged.
+            note_host_error(res, "the final save then succeeded, so the saved session does "
+                                 "hold this run's latest results and no recovery fence is "
+                                 "left open")
         self.recorder.finish_run(res)
         # final receipt — the honest token/time/$ tally + the verification verdict, for the
         # streaming UX / editor / ACP surfaces (the "$" the brand promises, now on the wire).
