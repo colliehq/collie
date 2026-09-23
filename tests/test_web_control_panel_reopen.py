@@ -253,8 +253,8 @@ EDITOR = {
 RECOVERY = {
     "en": ["Needs You & recovery", "needs_you", "Interrupted interactive action", "completed",
            "Not fired", "items", "need a decision"],
-    "zh": ["需要你处理与恢复", "需要你决定", "已完成", "未触发", "项", "需要决定"],
-    "zh-tw": ["需要你處理與復原", "需要你決定", "已完成", "未觸發", "項", "需要決定"],
+    "zh": ["需要你处理与恢复", "需要你决定", "交互操作已中断", "已完成", "未触发", "项", "需要决定"],
+    "zh-tw": ["需要你處理與復原", "需要你決定", "互動操作已中斷", "已完成", "未觸發", "項", "需要決定"],
 }
 
 

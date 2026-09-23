@@ -22,6 +22,9 @@ form does not show, including plan mode, continued context and tool permissions.
 the trigger type intentionally replaces the trigger configuration. Background refreshes
 leave an open draft alone; late responses cannot overwrite a replacement editor. Save
 temporarily locks its own fields, submits once and leaves them editable after a refusal.
+Closing and reopening the same panel preserves its draft and retires older refreshes.
+Recovery and automation controls have additional Simplified and Traditional Chinese labels;
+checkbox labels also keep their available width on desktop and phone layouts.
 
 ## Task continuity
 

@@ -57,8 +57,8 @@ An automation is bounded by its budget, and every key is frozen into the spec wh
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `max_wall_s` | 1800 | Hard wall-clock ceiling; the child process tree is killed at it. |
-| `max_model_tokens` | 200000 | Hard token ceiling for the run. |
-| `max_cost_usd` | 25 | Hard metered-spend ceiling for the run. |
+| `max_model_tokens` | 200000 | Run token budget, checked against reported usage. |
+| `max_cost_usd` | 25 | Run cost budget, checked against reported spend. |
 | `max_actions` | 100 | Hard ceiling on tool calls. |
 | `max_runs_per_day` | 24 | How often the trigger may start a run. |
 | `max_retries` | 1 | Reclaim attempts after a crashed read-only execution. 0 disables retries. |
@@ -68,11 +68,12 @@ The first five must be positive: they are what actually bounds an unattended run
 turns" is only safe while they stay mandatory. Four of them — `max_wall_s`, `max_model_tokens`,
 `max_cost_usd` and `max_actions` — are metered against observed usage during the run. Metered is
 not the same as rate-limited: `max_runs_per_day` bounds how often the trigger may start a run and
-is never consumed inside one. Only `max_turns` and `max_retries` accept 0.
+is never consumed inside one. Only `max_turns` and `max_retries` accept 0. A model response can
+cross a token or cost budget before its usage is known. That run stops as **Needs You**, keeping
+its result and usage receipt, including any usage above the configured value.
 
-A turn ceiling is different in kind. Nothing meters it and it is not reported in advance, so a run
-that hits it stops mid-task — `stop_reason: turn_limit`, status **Needs You** — with wall, tokens
-and cost still unspent. New automations therefore default to `max_turns: 0`, and the Automation
+A separate turn ceiling can stop a task while wall, token and cost budgets remain available:
+`stop_reason: turn_limit`, status **Needs You**. New automations therefore default to `max_turns: 0`, and the Automation
 Studio editor carries a stored cap through untouched instead of rewriting it. An automation that
 already has an explicit positive cap keeps it exactly as written; nothing migrates existing values.
 An accepted cap is applied as written, including values above the Settings panel's interactive

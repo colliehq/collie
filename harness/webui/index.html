@@ -4340,7 +4340,10 @@
     // what it posts stays the API's own value.
     "Needs You & recovery":"需要你处理与恢复","needs_you":"需要你决定","warning":"警告",
     "items":"项","need a decision":"需要决定","warnings":"警告","optional":"可选",
-    "completed":"已完成","not_fired":"未触发","Not fired":"未触发","cancel":"已取消",
+    "completed":"已完成","not_fired":"未触发","Not fired":"未触发","cancel":"取消",
+    "Interrupted interactive action":"交互操作已中断","Mission recovery required":"任务需要恢复",
+    "Specialist needs attention":"专项任务需要处理","Automation outcome needs review":"自动化结果需要查看",
+    "Recovery required":"需要恢复","Notification delivery needs attention":"通知发送需要处理",
     "I inspected the outside state and confirm:":"我已检查外部实际状态并确认：",
     "Send test":"发送测试通知","Retry dead":"重试失败通知",
     "Retry every dead notification from the beginning?":"从头重试所有失败的通知？",
@@ -4575,7 +4578,10 @@
     // what it posts stays the API's own value.
     "Needs You & recovery":"需要你處理與復原","needs_you":"需要你決定","warning":"警告",
     "items":"項","need a decision":"需要決定","warnings":"警告","optional":"選用",
-    "completed":"已完成","not_fired":"未觸發","Not fired":"未觸發","cancel":"已取消",
+    "completed":"已完成","not_fired":"未觸發","Not fired":"未觸發","cancel":"取消",
+    "Interrupted interactive action":"互動操作已中斷","Mission recovery required":"任務需要復原",
+    "Specialist needs attention":"專項任務需要處理","Automation outcome needs review":"自動化結果需要查看",
+    "Recovery required":"需要復原","Notification delivery needs attention":"通知傳送需要處理",
     "I inspected the outside state and confirm:":"我已檢查外部實際狀態並確認：",
     "Send test":"傳送測試通知","Retry dead":"重試失敗通知",
     "Retry every dead notification from the beginning?":"從頭重試所有失敗的通知？",
@@ -6748,7 +6754,8 @@
     recoveryFocusSession = "";                 // one arrival, one highlight
     function recoveryRow(row, item) {
       if (wanted && item.identity === wanted) { row.classList.add("is-focus"); focused = row; }
-      activityText(row, item.title || item.identity, item.severity); activityDetail(row, item.detail);
+      activityText(row, item.title ? t(item.title) : item.identity, item.severity);
+      activityDetail(row, item.detail === item.severity ? t(item.detail) : item.detail);
       if (item.command) { var cmd = document.createElement("div"); cmd.className = "activity-command";
         cmd.textContent = item.command; row.appendChild(cmd); }
       (item.actions || []).forEach(function (action) {
@@ -7457,6 +7464,7 @@
   }
   function setActivityOpen(open) {
     if (!activityPanel) return;
+    if (!open) activityRequestSeq++; // A closed visit cannot later redraw a reopened draft.
     if (open && typeof setLibraryOpen === "function") {
       setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false);
     }
