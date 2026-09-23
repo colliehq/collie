@@ -5072,7 +5072,7 @@
       (items || []).forEach(function (s) {
         var v = values[s.key], id = "set_" + s.key, ctl;
         var lockedName = s.key === "COMPANION_NAME" && identity.name_editable === false;
-        if (s.key === "COMPANION_NAME" && (!v || lockedName) && identity.name) v = identity.name;
+        if (s.key === "COMPANION_NAME" && (!v || lockedName)) v = identity.name || "Collie";
         if (s.type === "select") {
           ctl = '<select id="' + id + '" data-key="' + s.key + '">' + (s.options || []).map(function (o) {
             var ov = (o && o.value != null) ? o.value : o, ol = (o && o.label != null) ? o.label : o;

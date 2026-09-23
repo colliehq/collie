@@ -2262,7 +2262,8 @@ class Handler(BaseHTTPRequestHandler):
                         data = ChannelService(_state_root()).attachment(connection, query.get("digest", [""])[0])
                         return self._send_html(data, ctype="application/octet-stream",
                                                headers={"Content-Disposition": "attachment; filename=collie-attachment"})
-                    return self._send_json(channel_web.read(_state_root(), section, connection))
+                    return self._send_json(channel_web.read(_state_root(), section, connection,
+                                                           before=query.get("before", [""])[0]))
                 except (ValueError, communications.CommsError) as exc:
                     return self._send_json({"error": str(exc)}, 400)
                 except Exception:

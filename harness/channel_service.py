@@ -41,6 +41,10 @@ DRAFT_WINDOW = comms.MAX_PENDING_EVENTS
 # fix the connection rather than queue an eleventh identical message.
 MAX_SEND_ATTEMPTS = 10
 
+# Rows in one page of a message list.  Bounded so a connection carrying its
+# full retained history never answers a single request with all of it.
+PAGE_SIZE = 100
+
 
 class ChannelError(ValueError):
     pass
@@ -351,7 +355,7 @@ class ChannelService:
         self._status(connection, "connected")
         return result
 
-    def events(self, connection, *, limit=100, newest=True):
+    def events(self, connection, *, limit=100, newest=True, before_seq=None):
         """This connection's received messages, newest window first, oldest-first within it.
 
         ``newest`` defaults to True because every caller here is looking at
@@ -360,16 +364,48 @@ class ChannelService:
         settled events, so a window taken from the front would freeze on the
         first hundred messages a mailbox ever received and never show the one
         that just arrived.  Pass ``newest=False`` to read from the beginning.
+
+        ``before_seq`` pages *backwards* from that newest window, which is what
+        makes the rest of the retained history reachable at all: without it an
+        accepted message that has slipped past row one hundred can only be
+        reviewed by first clearing the newer ones.
         """
         self._row(connection)
         return comms.list_events(connection, limit=limit, include_private=True,
-                                 newest=newest, directory=self.directory)
+                                 newest=newest, before_seq=before_seq, directory=self.directory)
 
-    def results(self, connection, *, limit=100, newest=True):
+    def results(self, connection, *, limit=100, newest=True, before_seq=None):
         """This connection's outgoing messages, newest window; see ``events``."""
         self._row(connection)
         return comms.list_results(connection, limit=limit, include_private=True,
-                                  newest=newest, directory=self.directory)
+                                  newest=newest, before_seq=before_seq, directory=self.directory)
+
+    def page(self, connection, section, *, before_seq=None, limit=PAGE_SIZE):
+        """One bounded page of ``events`` or ``results``, plus where to go next.
+
+        The store holds far more than a page — hundreds of open results and a
+        thousand unsettled acceptances — and every one of those rows can still
+        be acted on, so a surface that shows only the newest hundred is hiding
+        live work rather than old history.  This reads ``limit + 1`` rows and
+        drops the extra *oldest* one: asking for one more row than we intend to
+        show is how we learn whether anything older exists without a second
+        read, and it means the caller is never offered an "older" control that
+        leads to an empty page.
+
+        ``next_before`` is the sequence of the oldest row actually returned, so
+        the following page starts strictly behind it — no row is repeated and
+        none is skipped between the two.
+        """
+        if section not in {"events", "results"}:
+            raise ChannelError("unknown communication view")
+        limit = max(1, min(int(limit), PAGE_SIZE))
+        reader = self.events if section == "events" else self.results
+        rows = reader(connection, limit=limit + 1, before_seq=before_seq)
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[-limit:]
+        return {section: rows, "has_more": has_more,
+                "next_before": (rows[0].get("seq") or 0) if has_more and rows else 0}
 
     def _store_attachments(self, connection, attachments):
         folder = os.path.join(self.root, "channel-assets", _key(connection))

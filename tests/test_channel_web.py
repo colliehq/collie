@@ -39,7 +39,8 @@ def request(web, path="/api/channels", body=None, authenticated=True):
 
 
 def test_channels_and_mail_contents_require_token(web):
-    for path in ("/api/channels", "/api/channels/events?connection=mail", "/api/channels/results?connection=mail"):
+    for path in ("/api/channels", "/api/channels/events?connection=mail", "/api/channels/results?connection=mail",
+                 "/api/channels/events?connection=mail&before=5", "/api/channels/results?connection=mail&before=5"):
         assert request(web, path, authenticated=False)[0] == 403
     assert request(web, body={"action": "poll", "connection": "mail"}, authenticated=False)[0] == 403
     status, payload, _ = request(web)
@@ -147,6 +148,109 @@ def test_page_is_served_with_script_hash_csp_and_local_token(web):
     assert "'unsafe-eval'" not in headers["Content-Security-Policy"]
 
 
+def page(web, section, before=None):
+    path = "/api/channels/%s?connection=mail" % section
+    if before is not None:
+        path += "&before=" + str(before)
+    status, payload, _ = request(web, path)
+    assert status == 200, payload
+    return payload
+
+
+def test_an_older_unsent_reply_is_reachable_behind_a_hundred_newer_results(web):
+    """The store keeps far more than a page; an unsettled draft must stay openable."""
+    _, _, (host, adapter) = web
+    adapter.fail = TimeoutError("provider timed out")
+    host.prepare_reply("mail", "old-unknown", text="Delivery was never confirmed.")
+    host.send("mail", "old-unknown")
+    adapter.fail = None
+    host.prepare_reply("mail", "old-pending", text="Still waiting to be sent.")
+    for index in range(101):
+        host.prepare_reply("mail", "later-%03d" % index, text="Later draft %d" % index)
+    newest = page(web, "results")
+    assert len(newest["results"]) == 100 and newest["has_more"] and newest["next_before"] > 0
+    assert not {"old-unknown", "old-pending"} & {row["id"] for row in newest["results"]}
+    older = page(web, "results", newest["next_before"])
+    rows = {row["id"]: row for row in older["results"]}
+    assert rows["old-unknown"]["state"] == "unknown"
+    # Actionable, not a count: the body and the digest an edit/discard needs are here.
+    assert rows["old-pending"]["state"] == "pending"
+    assert rows["old-pending"]["text"] == "Still waiting to be sent."
+    assert rows["old-pending"]["digest"] and rows["old-pending"]["destination"] == "owner@example.test"
+    assert not older["has_more"] and older["next_before"] == 0
+
+
+def test_an_older_accepted_message_is_reachable_behind_a_hundred_newer_events(web):
+    _, _, (host, _) = web
+    host.ingest("mail", message("kept-accepted", subject="Contract review"))
+    accepted = host.accept("mail", "kept-accepted", start=False)
+    for index in range(101):
+        host.ingest("mail", message("arrival-%03d" % index))
+    newest = page(web, "events")
+    assert len(newest["events"]) == 100 and newest["has_more"]
+    assert "kept-accepted" not in {row["id"] for row in newest["events"]}
+    older = page(web, "events", newest["next_before"])
+    row = {r["id"]: r for r in older["events"]}["kept-accepted"]
+    assert row["state"] == "accepted" and row["subject"] == "Contract review"
+    assert row["acceptance"]["session"] == accepted["session"] and not row.get("settlement")
+
+
+def test_page_boundary_repeats_no_row_and_skips_none(web):
+    from harness import communications as comms
+    _, _, (host, _) = web
+    for index in range(150):
+        host.ingest("mail", message("seq-%03d" % index))
+    first, second = page(web, "events"), None
+    second = page(web, "events", first["next_before"])
+    walked = [row["id"] for row in second["events"]] + [row["id"] for row in first["events"]]
+    assert len(walked) == len(set(walked)) == 150
+    every = [row["id"] for row in comms.list_events("mail", limit=500, directory=host.directory)]
+    assert walked == every
+    assert not second["has_more"] and second["next_before"] == 0
+
+
+def test_exactly_one_page_of_rows_offers_no_older_page(web):
+    _, _, (host, _) = web
+    for index in range(100):
+        host.ingest("mail", message("only-%03d" % index))
+    newest = page(web, "events")
+    assert len(newest["events"]) == 100
+    assert newest["has_more"] is False and newest["next_before"] == 0
+
+
+def test_new_arrivals_reach_the_newest_page_without_moving_an_older_cursor(web):
+    _, _, (host, _) = web
+    for index in range(120):
+        host.ingest("mail", message("early-%03d" % index))
+    cursor = page(web, "events")["next_before"]
+    settled = [row["id"] for row in page(web, "events", cursor)["events"]]
+    for index in range(3):
+        host.ingest("mail", message("fresh-%d" % index))
+    newest = page(web, "events")
+    assert {"fresh-0", "fresh-1", "fresh-2"} <= {row["id"] for row in newest["events"]}
+    assert [row["id"] for row in page(web, "events", cursor)["events"]] == settled
+
+
+def test_a_cursor_that_is_not_a_positive_sequence_is_refused(web):
+    _, _, (host, _) = web
+    host.ingest("mail", message("kept"))
+    for bad in ("0", "-1", "abc", "1.5", "1e3", "%20", "9" * 40, "+5", "0x10"):
+        for section in ("events", "results"):
+            status, payload, _ = request(web, "/api/channels/%s?connection=mail&before=%s" % (section, bad))
+            assert status == 400, (section, bad, payload)
+            assert "collie@example.test" not in json.dumps(payload)
+            assert "Please prepare a reply." not in json.dumps(payload)
+
+
+def test_served_page_carries_the_older_and_newer_controls(web):
+    """The API paging above is only reachable if the shipped page still offers it."""
+    status, content, _ = request(web, "/communications", authenticated=False)
+    source = content.decode()
+    assert status == 200
+    assert "Older messages" in source and "Newer messages" in source
+    assert "/api/channels/\"+section" in source and "before" in source
+
+
 def test_desktop_acceptance_runs_restricted_draft_and_saves_reply_without_sending(web, monkeypatch):
     """Real HTTP, scheduler, lease, loop and outbox; only the model is scripted."""
     import time
@@ -184,3 +288,15 @@ def test_desktop_acceptance_runs_restricted_draft_and_saves_reply_without_sendin
     assert len(results) == 1, webapp.Handler._runs.get(sid)
     assert results[0]["text"].startswith("Draft:") and results[0]["state"] == "pending"
     assert adapter.sent == []
+
+
+def test_page_navigation_keeps_its_cursor_and_rejects_stale_responses():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    done = subprocess.run([node, str(Path(__file__).with_name("channel_paging_ui_test.mjs"))],
+                          capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stdout + done.stderr

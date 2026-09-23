@@ -1,7 +1,8 @@
 # Email and phone
 
-Open **Email & phone** in the desktop app, or visit `/communications` in its web
-interface. An account is optional: local tasks and the Daily Brief work without one.
+Open **Settings → App connections → Email & phone** in the desktop app, or visit
+`/communications` in its web interface. An account is optional: local tasks and the
+Daily Brief work without one.
 The desktop starts as **Collie**; an optional display name lives in Settings and
 does not determine your email address or phone number.
 
@@ -27,6 +28,11 @@ identity stays on the device so reconnecting does not lose its keys.
 Messages first appear in the inbox. You can prepare a reply, dismiss a message, or
 choose **Run as project task** for work that needs project tools. An email's sender
 header and instructions in its body do not grant those tools access.
+
+The inbox and reply list show a bounded page. Use the older/newer controls to
+reach earlier messages, including drafts and unconfirmed sends still needing
+review. Refresh keeps the page you are browsing; switching accounts or tabs
+returns to the newest page.
 
 Optional automatic drafting uses a restricted workflow with no tools, project
 memory or earlier private task history. It has an hourly limit; deferred messages

@@ -20,6 +20,11 @@ Source timestamps show when Collie read its local records. An unavailable or par
 read source is reported explicitly. An empty calendar does not mean you have no
 appointments if no calendar is connected.
 
+For large task histories, the brief reads a recent window instead of opening every
+conversation. It tells you how many session inboxes were not checked, and never
+assumes that the unread portion is clear. This does not change task scheduling or
+remove older work.
+
 ## Receive a morning email
 
 1. Connect an email account in [Email & phone](communication-channels.md).

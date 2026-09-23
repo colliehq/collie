@@ -205,6 +205,54 @@ def test_translation_never_moves_an_item_or_forgets_it_was_hidden(tmp_path):
     assert db.build(rows, now=NOON, language="zh", state_dir=str(tmp_path))["progress"] == []
 
 
+def test_a_partly_read_session_store_is_partial_coverage_and_not_a_clear_day():
+    """The sessions collector reads a bounded window.  What it did not open must be
+    said out loud: an unlooked-at inbox is the one place a missed instruction hides."""
+    quiet = db.build(payloads(task_inbox={"sessions": [], "truncated": False,
+                                          "examined": 4, "total": 4, "unexamined": 0}),
+                     now=NOON)
+    assert quiet["coverage"]["partial"] == [] and quiet["all_clear"] is True
+
+    cut = payloads(task_inbox={"sessions": [], "truncated": True, "examined": 50,
+                               "total": 312, "unexamined": 262})
+    brief = db.build(cut, now=NOON)
+    assert brief["coverage"]["partial"] == ["task_inbox"]
+    assert brief["all_clear"] is False, "an unfinished scan cannot report a clear day"
+    assert any("262 session(s) were not checked" in note and
+               "assumed clear" in note for note in brief["notices"])
+    assert any("262 个会话未被检查" in note for note in
+               db.build(cut, now=NOON, language="zh")["notices"])
+    # Coverage, not availability: the rows that were read are still shown.
+    assert brief["coverage"]["complete"] is True
+    assert "task_inbox" in brief["coverage"]["ok"]
+
+
+def test_an_unreadable_session_inbox_is_counted_rather_than_read_as_empty():
+    rows = payloads(task_inbox={"sessions": [
+        {"session": "s-torn", "unreadable": True,
+         "error": "this session's stored input could not be read"}],
+        "truncated": False, "examined": 2, "total": 2, "unexamined": 0})
+    brief = db.build(rows, now=NOON)
+    assert brief["coverage"]["partial"] == ["task_inbox"] and brief["all_clear"] is False
+    assert any("1 session(s) hold input that could not be read" in note
+               for note in brief["notices"])
+    assert any("无法读取" in note for note in
+               db.build(rows, now=NOON, language="zh")["notices"])
+    # The row itself stays a demand rather than disappearing into the count.
+    assert [item["source"] for item in brief["attention"]] == ["task_inbox"]
+
+
+def test_a_truncated_flag_without_counts_still_reports_partial():
+    """Metadata may be older or narrower than this builder; unknown shortfall is
+    still a shortfall, and rounds to 'something was not checked'."""
+    brief = db.build(payloads(task_inbox={"sessions": [], "truncated": True}), now=NOON)
+    assert brief["coverage"]["partial"] == ["task_inbox"] and brief["all_clear"] is False
+    assert any("1 session(s) were not checked" in note for note in brief["notices"])
+    # An unavailable source is already reported as unavailable; it is not double-counted.
+    down = db.build(payloads(task_inbox={"__unavailable": True, "error": "x"}), now=NOON)
+    assert down["coverage"]["partial"] == [] and "task_inbox" in down["coverage"]["unavailable"]
+
+
 def test_a_stranded_request_is_not_hidden_behind_a_dead_scheduled_wait():
     """quota_resume publishes 'stalled'/'stopped'/'unknown' to say the opposite of
     progress: nothing starts this without a person.  Reading any wait as 'handled'

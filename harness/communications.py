@@ -1489,8 +1489,27 @@ _EVENT_NEEDS = {
 }
 
 
+def _before_cursor(before_seq):
+    """Validate a pagination cursor: a strictly positive sequence number.
+
+    Rows are selected with ``seq < before_seq``, never ``<=``, so a page whose
+    oldest row is the cursor for the next one can neither repeat that row nor
+    skip the one behind it.  Zero and negatives are refused rather than clamped:
+    a caller that computed a cursor wrongly should hear about it instead of
+    silently receiving the newest page under an older page's label.
+    """
+    if before_seq is None:
+        return None
+    if isinstance(before_seq, bool) or not isinstance(before_seq, int):
+        raise InvalidRequest("before_seq must be a positive sequence number")
+    if before_seq <= 0:
+        raise InvalidRequest("before_seq must be a positive sequence number")
+    return before_seq
+
+
 def list_events(connection_id, *, states=None, limit=200, directory=None,
-                include_private=False, newest=False, needs=None, reserve_oldest=0):
+                include_private=False, newest=False, needs=None, reserve_oldest=0,
+                before_seq=None):
     """Received messages in arrival order, oldest first.
 
     ``limit`` slices from the front by default, so a caller reading a connection
@@ -1506,7 +1525,15 @@ def list_events(connection_id, *, states=None, limit=200, directory=None,
     being starved by the newest.  Both filters are a bounded scan of the
     document this call already read — no secondary index, nothing to keep in
     step with it.
+
+    ``before_seq`` is the pagination cursor, and it is applied with the other
+    filters — *before* the window — for the same reason: a reader walking
+    backwards past the newest hundred rows needs the hundred behind them, not
+    an empty page cut out of a window that was already taken from the end.  It
+    changes nothing for the default callers, who pass no cursor at all, so the
+    lane fairness above is untouched.
     """
+    before = _before_cursor(before_seq)
     if states is not None:
         states = set(states)
         unknown = states - set(EVENT_STATES)
@@ -1521,6 +1548,7 @@ def list_events(connection_id, *, states=None, limit=200, directory=None,
         doc = _load(path, connection_id)
         rows = [e for e in doc["events"]
                 if (states is None or e["state"] in states)
+                and (before is None or (e.get("seq") or 0) < before)
                 and (wanted is None or wanted(e))]
     rows.sort(key=lambda e: e["seq"])
     return [public_event(e, include_private=include_private)
@@ -2632,12 +2660,14 @@ def get_result(connection_id, result_id, *, directory=None, include_private=Fals
 
 
 def list_results(connection_id, *, states=None, limit=200, directory=None,
-                 include_private=False, newest=False):
+                 include_private=False, newest=False, before_seq=None):
     """Outgoing messages in creation order, oldest first.
 
     ``newest=True`` takes the window from the end, exactly as ``list_events``
     does, for callers that must not be pinned to the oldest history.
+    ``before_seq`` pages backwards from there on the same terms.
     """
+    before = _before_cursor(before_seq)
     if states is not None:
         states = set(states)
         unknown = states - set(OUTBOX_STATES)
@@ -2647,7 +2677,9 @@ def list_results(connection_id, *, states=None, limit=200, directory=None,
     path = store_path(connection_id, root=root)
     with sessions._locked(path):
         doc = _load(path, connection_id)
-        rows = [m for m in doc["outbox"] if states is None or m["state"] in states]
+        rows = [m for m in doc["outbox"]
+                if (states is None or m["state"] in states)
+                and (before is None or (m.get("seq") or 0) < before)]
     rows.sort(key=lambda m: m["seq"])
     return [public_result(m, include_private=include_private)
             for m in _window(rows, limit, newest)]

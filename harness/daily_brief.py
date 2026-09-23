@@ -1034,6 +1034,14 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
     # silence would let a day with an unread pending message report as clear.
     partial = ["communications"] if (comms_report["partial"] or
                                      comms_report["unreadable"]) else []
+    # The same rule for sessions.  The collector reads a bounded window of the inbox
+    # store; a profile holding more sessions than that window covers has queued input
+    # this brief never opened, and an inbox that would not open has input nobody can
+    # see.  Either way the scan is incomplete, which is partial coverage -- and below,
+    # what stops `all_clear` even when the rows that *were* read are all quiet.
+    inbox_report = _inbox_coverage(sources["task_inbox"])
+    if inbox_report["partial"] or inbox_report["unreadable"]:
+        partial.append("task_inbox")
     configured = bool(ok_names)
     connected = [row for row in _rows(personal_block, "sources")
                  if row.get("enabled") and _text(row.get("permission_state"), 32) == "granted"]
@@ -1060,6 +1068,10 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
         if comms_report[key]:
             notices.append(_COMMS_NOTICES[key][
                 1 if language.startswith("zh") else 0] % comms_report[key])
+    for key in ("unreadable", "partial"):
+        if inbox_report[key]:
+            notices.append(_INBOX_NOTICES[key][
+                1 if language.startswith("zh") else 0] % inbox_report[key])
 
     counts = {"attention": len(attention), "attention_total": len(
         [row for row in ordered if row["tone"] == "attention"]),
@@ -1100,7 +1112,7 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
                     for row in sources.values()],
         "coverage": {"ok": sorted(ok_names), "unavailable": sorted(unavailable),
                      "absent": sorted(absent), "complete": complete,
-                     "partial": partial, "configured": configured},
+                     "partial": sorted(partial), "configured": configured},
         "top": top,
         "attention": attention,
         "agenda": agenda,
@@ -1255,6 +1267,43 @@ _COMMS_NOTICES = {
                    "been assumed clear.",
                    "有 %d 个消息连接无法读取，其中的内容未被判定为无事。"),
 }
+
+#: Notices about the sessions source.  ``partial`` counts sessions this brief did not
+#: open at all -- the bounded window is a budget, not a claim that the rest are quiet.
+_INBOX_NOTICES = {
+    "partial": ("%d session(s) were not checked, because one brief reads only the most "
+                "recently updated ones. Nothing in them has been assumed clear.",
+                "有 %d 个会话未被检查，单份简报只读取最近更新的部分，"
+                "其余内容未被判定为无事。"),
+    "unreadable": ("%d session(s) hold input that could not be read. Nothing in them "
+                   "has been assumed clear.",
+                   "有 %d 个会话的待处理输入无法读取，其中的内容未被判定为无事。"),
+}
+
+
+def _inbox_coverage(source):
+    """How much of the session inbox store this brief actually looked at.
+
+    The collector reports ``truncated`` with the counts behind it.  A source that
+    failed outright is already ``unavailable`` and counted there, so it contributes
+    nothing here; what this catches is the quieter case of a read that *succeeded* and
+    still did not reach everything.  ``partial`` is a number of sessions rather than a
+    flag because the notice says how many, and an unknown shortfall still has to say
+    something -- hence the fallback of 1.
+    """
+    payload = source.get("payload") if isinstance(source, dict) else None
+    if not isinstance(payload, dict) or source.get("state") != "ok":
+        return {"partial": 0, "unreadable": 0}
+    rows = payload.get("sessions")
+    rows = rows if isinstance(rows, list) else []
+    unexamined = payload.get("unexamined")
+    unexamined = int(unexamined) if isinstance(unexamined, (int, float)) and \
+        not isinstance(unexamined, bool) and unexamined > 0 else 0
+    if payload.get("truncated") and not unexamined:
+        unexamined = 1
+    return {"partial": unexamined,
+            "unreadable": len([row for row in rows if isinstance(row, dict)
+                               and (row.get("unreadable") or row.get("error"))])}
 
 
 def _localize(rows, language):

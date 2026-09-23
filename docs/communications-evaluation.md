@@ -106,6 +106,63 @@ matching digests and a valid store after reopening. Wall time was 3.23 seconds;
 total final fixture state was 511,650 bytes.
 
 This is one local run, not a throughput guarantee. It exercises the real count
-threshold and concurrent writes. It does not saturate the 24 MiB byte limit or
-the 1,000-acceptance limit, and it does not test concurrent provider delivery.
+threshold and concurrent writes. Separate capacity experiments below exercise
+the byte and acceptance ceilings. None tests concurrent provider delivery.
 The transport adapter refused every network operation by construction.
+
+## Storage backpressure and recovery
+
+Two additional Windows experiments used the same unmodified production limits:
+
+- The byte-bound fixture held 256 pending results and 124 events, including an
+  accepted request still owed a reply. It reached **25,165,814 bytes**, ten bytes
+  below the 24 MiB ceiling. A further `ChannelService.ingest` raised `StoreFull`;
+  the store's bytes, hash and modification time were unchanged. The earlier
+  accepted message, durable input and existing reply retained their exact content
+  and digests. This run took 55.25 seconds.
+- At **1,000 unsettled acceptances**, another `ChannelService.accept` was refused
+  before reservation. The received message remained pending, no task input was
+  created for it, and the existing store remained byte-identical. Setup used 996
+  small module-API acceptances plus four full service acceptances; it is not a
+  measurement of 1,000 full service configurations. This run took 150.62 seconds.
+
+In a copy of the full byte fixture, explicitly discarding one filler draft freed
+space and a new message was accepted into the inbox. The original unfinished
+request and stored reply stayed identical. That recovery took 1.04 seconds and
+made no provider calls. These are one-run boundary checks, not throughput claims;
+large inputs piling into one session's separate task-inbox store remain untested.
+
+Reading Daily Brief against the 1,000-session fixture exposed an 8–10 second
+inbox scan. Its new bounded read reduced a cold read from 9.98 to 1.04 seconds
+and two warm reads from 7.95/8.11 to 0.65/0.74 seconds on the same machine.
+It examined 50 recent inboxes and explicitly reported the 950 not checked;
+`all_clear` stayed false. These timings include local collectors, snapshot
+persistence and email rendering, with networking disabled, and exclude HTTP
+and browser rendering. The full 24 MiB communication fixture separately read
+in 0.64 seconds cold and 0.32/0.31 seconds warm without this optimization.
+
+## Approved project tasks versus native Claude Code
+
+Two small deterministic workspaces were run once through each harness, using
+Claude Code 2.1.278, `claude-opus-5`, medium effort and subscription authentication.
+At most two model runs were active concurrently. Both received the same fixture
+and request, with file and shell tools limited to the local task.
+
+| Task | Collie through communication acceptance | Native Claude Code | Result |
+| --- | ---: | ---: | --- |
+| Repair an inclusive-range boundary bug | 19.75 s | 9.36 s | Both pass |
+| Recompute a report from a CSV | 25.79 s | 9.12 s | Both pass |
+
+Verification checked the supplied tests plus an independent function oracle, and
+separately recomputed the report values while checking that source files stayed
+unchanged. Collie used the accepted durable input, executed six recorded tool calls
+per task, consumed the input and captured one pending result for the pinned owner.
+Native Claude Code recorded four tool calls per task. Connections stayed paused,
+so no transport was reached.
+
+Collie was slower in these two samples. Its CLI-backed provider starts an invocation
+for each model request; the native worker retains its session. Tool choices also
+differed, and one Collie call retried. This experiment does not isolate the cost of
+each factor and is not a general performance ranking. The orchestration invoked
+the real ownership, input and result APIs directly; detached scheduling, HTTP/SSE,
+attachments, cancellation and live delivery were not exercised by this comparison.

@@ -1,8 +1,28 @@
 """Authenticated desktop communication actions. Provider secrets are write-only."""
 from __future__ import annotations
 
+import re
+
 from . import communications as comms, dogmail
 from .channel_service import ChannelError, ChannelService
+
+# A cursor is a sequence number this server itself published as ``next_before``.
+# Bounded in length before it is converted so a query string cannot hand us an
+# arbitrarily long integer to parse, and refused rather than coerced: a client
+# that sends "0", "-3" or "12e4" has a bug, and quietly answering it with the
+# newest page would show that page under an older page's label.
+_CURSOR = re.compile(r"[0-9]{1,15}")
+
+
+def _cursor(value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not _CURSOR.fullmatch(value):
+        raise ChannelError("invalid page cursor")
+    seq = int(value)
+    if seq <= 0:
+        raise ChannelError("invalid page cursor")
+    return seq
 
 
 def mail_identity(root):
@@ -14,14 +34,17 @@ def mail_identity(root):
                           for name, row in (data.get("dogs") or {}).items() if not row.get("pending")]}
 
 
-def read(root, section="", connection=""):
+def read(root, section="", connection="", before=""):
+    """The overview, or one bounded page of a connection's messages.
+
+    ``before`` is optional and absent for every existing caller, so the default
+    answer is still the newest page and nothing about it changed.
+    """
     host = ChannelService(root)
     if not section:
         return dict(host.overview(), mail_identity=mail_identity(root))
-    if section == "events":
-        return {"events": host.events(connection)}
-    if section == "results":
-        return {"results": host.results(connection)}
+    if section in {"events", "results"}:
+        return host.page(connection, section, before_seq=_cursor(before))
     raise ChannelError("unknown communication view")
 
 

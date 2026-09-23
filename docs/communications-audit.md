@@ -260,7 +260,10 @@ tasks.
   (`_retained_event`) is the real one. A separate production-limit benchmark now
   crosses the actual 500-record threshold with 620 settled messages and preserves
   the earlier acceptance; see [evaluation](communications-evaluation.md).
-  The byte limit and 1,000-acceptance ceiling were not saturated.
+  Separate follow-up experiments also reached the real byte limit and the
+  1,000-acceptance ceiling, with byte-identical stores around refused transactions
+  and a successful discard-to-new-intake recovery. Setup provenance and remaining
+  limits are recorded in the evaluation.
   `_reconcile_candidates`' pre-window filter is
   likewise pinned by calling it with a small explicit budget rather than by
   writing 500 accepted events.

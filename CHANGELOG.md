@@ -7,7 +7,8 @@
 - Add a desktop inbox for IMAP/SMTP email, Collie Mail and Twilio SMS, with optional
   outbound voice readouts. Received messages, accepted work, attachments, drafts and
   delivery attempts survive restarts. Credentials stay local and are never returned
-  by the connections API.
+  by the connections API. Browse older messages and results without losing the
+  current page on refresh.
 - Draft replies in a restricted conversation without tools, hooks or earlier private
   session history. Open a message as a project task explicitly when it needs tools.
   Edit, discard and retry from the inbox; an unconfirmed send is never blindly replayed.
@@ -15,6 +16,8 @@
   task progress and communication work, with source freshness and incomplete coverage
   visible. Hide or snooze repeated items without completing them; changed items return.
   Desktop and email use the same snapshot, including Chinese and local time zones.
+  Large task histories use a bounded recent window and explicitly report unread
+  coverage instead of blocking the brief on every stored conversation.
 - Offer an optional morning email to the owner address of a saved mail connection.
   Preserve its exact content for reply context, respect pauses and consent changes,
   avoid catch-up bursts and distinguish provider acceptance from delivery.

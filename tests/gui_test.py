@@ -338,7 +338,9 @@ def main():
             nrows = len(pg.query_selector_all(".set-row"))
             check("settings modal opens w/ rows", nrows >= 6, "rows=%d" % nrows)
             check("Settings keeps the optional display name editable",
-                  pg.is_visible("#set_COMPANION_NAME") and pg.input_value("#set_COMPANION_NAME") == "Collie")
+                  pg.is_visible("#set_COMPANION_NAME") and pg.is_enabled("#set_COMPANION_NAME")
+                  and pg.input_value("#set_COMPANION_NAME") == "Collie",
+                  "value=%r" % pg.input_value("#set_COMPANION_NAME"))
             old_avatar = pg.get_attribute("[data-collie-avatar]", "src") or ""
             pg.fill("#set_COMPANION_NAME", "Nori")
             pg.press("#set_COMPANION_NAME", "Tab")

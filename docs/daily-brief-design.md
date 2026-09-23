@@ -92,6 +92,13 @@ to `false` and adds a notice saying what was *not* covered. Reporting it `unavai
 would throw away the connections that did open; reporting nothing would let an unread
 message be rendered as a clear day.
 
+The session collector uses `task_inbox.pending_sessions_window`, a read surface
+over the same local inbox store. It enumerates candidate file metadata, opens at
+most 100 inboxes and stops once 50 relevant rows are found; journals are not
+decoded. File modification time selects this recent window. Unexamined and
+unreadable inboxes put `task_inbox` in `coverage["partial"]` with an English or
+Chinese notice. The scheduler's full `pending_sessions` contract is unchanged.
+
 ### Messages
 
 `communications` is the only source whose rows were written by strangers, so it is the

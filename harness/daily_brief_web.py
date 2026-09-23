@@ -67,6 +67,9 @@ BriefError = daily_brief.BriefError
 ACTIONS = ("dismiss", "snooze", "restore", "preview")
 SNOOZE_MAX_MINUTES = 60 * 24 * 7
 INBOX_LIMIT = 50
+#: How many session inboxes one brief is allowed to open to fill ``INBOX_LIMIT`` rows.
+#: Anything past it is reported as partial coverage, never as quiet.
+INBOX_SCAN_LIMIT = 100
 PROCEDURE_LIMIT = 20
 #: How much of the message stores one brief reads.  Whatever is past these is reported
 #: as partial coverage by the builder, never dropped in silence.
@@ -152,8 +155,29 @@ def _meetings(root, live, now):
 
 
 def _task_inbox(root, live, now):
+    """The most recently touched sessions that still hold input -- a bounded read.
+
+    ``task_inbox.pending_sessions`` answers for the whole store, which is what the
+    schedulers need and what a brief must not pay for: it opens every inbox a profile
+    has ever had before applying any limit, so opening the brief got slower with every
+    session.  ``pending_sessions_window`` opens at most its scan budget instead, and
+    reports what it did not reach.  That shortfall is carried through to the builder as
+    partial coverage -- the rows nobody looked at are precisely the ones that must not
+    be summarised as a clear day.
+
+    An inbox that would not open keeps its row and is marked ``unreadable``.  Its
+    reason is replaced here with a name-only sentence: store errors quote the file path
+    and, for a torn document, sometimes a fragment of what the person typed.
+    """
     from . import sessions, task_inbox
-    rows = task_inbox.pending_sessions(directory=sessions.store_root(root), limit=INBOX_LIMIT)
+    window = task_inbox.pending_sessions_window(
+        directory=sessions.store_root(root), limit=INBOX_LIMIT,
+        scan_limit=INBOX_SCAN_LIMIT)
+    rows = window["sessions"]
+    for row in rows:
+        if row.get("unreadable") or row.get("error"):
+            row["unreadable"] = True
+            row["error"] = "this session's stored input could not be read"
     if live and rows:
         # Only inside the serving process, and only for its own root: these three
         # helpers read the ambient state directory, so borrowing them for another
@@ -171,7 +195,9 @@ def _task_inbox(root, live, now):
             except Exception:
                 pass
             row["title"] = row.get("title") or (titles.get(session) or {}).get("title") or ""
-    return {"sessions": rows}
+    return {"sessions": rows, "truncated": bool(window["truncated"]),
+            "examined": window["examined"], "total": window["total"],
+            "unexamined": window["unexamined"]}
 
 
 def _runs(root, live, now):

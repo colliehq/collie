@@ -167,6 +167,87 @@ def test_inbox_reads_the_execution_store_and_honors_profile_isolation(root, othe
     assert web._task_inbox(other, False, NOW)["sessions"] == []
 
 
+def test_the_inbox_collector_reads_a_bounded_window_and_says_what_it_missed(root, monkeypatch):
+    """A profile with more sessions than one brief reads is partial, never quiet.
+
+    The bug this covers is a slow brief, and the wrong fix for it is a quiet one: a
+    collector that reads the first 50 of 400 inboxes and reports nothing else exists
+    would turn 350 unlooked-at sessions into a clear morning.
+    """
+    from harness import sessions, task_inbox
+    monkeypatch.setenv("COLLIE_STATE_DIR", root)
+    custom = os.path.join(root, "custom-journals")
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", custom)
+    monkeypatch.setattr(web, "INBOX_LIMIT", 3)
+    monkeypatch.setattr(web, "INBOX_SCAN_LIMIT", 5)
+    for index in range(9):
+        task_inbox.enqueue("brief-task-%d" % index, "input-1", "Continue", directory=custom)
+    opened = []
+    real = task_inbox._load
+    monkeypatch.setattr(task_inbox, "_load",
+                        lambda path, session: (opened.append(session), real(path, session))[1])
+
+    payload = web._task_inbox(root, False, NOW)
+    assert len(payload["sessions"]) == 3 and len(opened) <= 5
+    assert payload["truncated"] and payload["total"] == 9
+    assert payload["unexamined"] == 9 - payload["examined"]
+
+    brief = db.build({**_payloads(), "task_inbox": payload}, now=NOW, state_dir=root)
+    assert "task_inbox" in brief["coverage"]["partial"]
+    assert brief["all_clear"] is False
+    assert any("were not checked" in note and "assumed clear" in note
+               for note in brief["notices"])
+
+
+def test_an_unchecked_session_store_is_never_a_clear_day(root, monkeypatch):
+    """No active rows found is not an answer when the scan did not finish."""
+    from harness import sessions, task_inbox
+    monkeypatch.setenv("COLLIE_STATE_DIR", root)
+    custom = os.path.join(root, "custom-journals")
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", custom)
+    for index in range(4):
+        task_inbox.enqueue("brief-idle-%d" % index, "input-1", "handled", directory=custom)
+        task_inbox.cancel("brief-idle-%d" % index, "input-1", directory=custom)
+    monkeypatch.setattr(web, "INBOX_SCAN_LIMIT", 2)
+
+    payload = web._task_inbox(root, False, NOW)
+    assert payload["sessions"] == [] and payload["truncated"]
+    brief = db.build({**_payloads(), "task_inbox": payload}, now=NOW, state_dir=root)
+    assert brief["all_clear"] is False and "task_inbox" in brief["coverage"]["partial"]
+    zh = db.build({**_payloads(), "task_inbox": payload}, now=NOW, state_dir=root,
+                  language="zh")
+    assert any("未被检查" in note and "未被判定为无事" in note for note in zh["notices"])
+
+
+def test_an_unreadable_inbox_is_a_visible_problem_with_no_path_in_it(root, monkeypatch):
+    from harness import sessions, task_inbox
+    monkeypatch.setenv("COLLIE_STATE_DIR", root)
+    custom = os.path.join(root, "custom-journals")
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", custom)
+    task_inbox.enqueue("brief-torn", "input-1", "my private instruction", directory=custom)
+    with open(task_inbox.store_path("brief-torn", directory=custom), "w",
+              encoding="utf-8") as fh:
+        fh.write('{"version": 1, "session": "brief-torn", "entries": ')
+
+    payload = web._task_inbox(root, False, NOW)
+    row = payload["sessions"][0]
+    assert row["session"] == "brief-torn" and row["unreadable"]
+    brief = db.build({**_payloads(), "task_inbox": payload}, now=NOW, state_dir=root)
+    assert "task_inbox" in brief["coverage"]["partial"] and brief["all_clear"] is False
+    notices = " ".join(brief["notices"])
+    assert "could not be read" in notices
+    blob = json.dumps(brief, ensure_ascii=False)
+    assert custom not in blob and "my private instruction" not in blob
+    assert "entries" not in notices and custom not in notices
+
+
+def _payloads():
+    """Eight sources that all read cleanly and hold nothing -- the quiet baseline."""
+    return {"personal": {}, "missions": {}, "approvals": {}, "procedures": {},
+            "runs": {}, "meetings": {}, "task_inbox": {"sessions": []},
+            "communications": {}}
+
+
 def test_process_memory_sources_are_unavailable_with_a_reason_when_unreadable(root):
     report = {row["name"]: row for row in web.read(root, now=NOW)["sources"]}
     for name in ("runs", "approvals"):
