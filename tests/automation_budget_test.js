@@ -37,7 +37,7 @@ function grab(startPat) {
 function field() {
   let value = '';
   return {get value() { return value; }, set value(v) { value = String(v == null ? '' : v); },
-          checked: false, textContent: '', onclick: null};
+          checked: false, disabled: false, textContent: '', onclick: null};
 }
 
 function harness() {
@@ -46,13 +46,20 @@ function harness() {
   const document = {
     createElement: () => {
       const el = {className: '', innerHTML: '',
+                  get isConnected() { return live.includes(el); },
+                  querySelectorAll: (sel) => sel === 'input, select, textarea' ?
+                    Object.entries(nodes).filter(([id]) => id.startsWith('auto') &&
+                      !['autoPreview', 'autoSave', 'autoClose', 'autoBudgetHelp'].includes(id))
+                      .map(([, node]) => node) : [],
                   remove: () => { const i = live.indexOf(el); if (i >= 0) live.splice(i, 1); }};
       return el;
     },
     querySelectorAll: (sel) => sel === '.control-editor' ?
       live.filter(el => el.className === 'control-editor') : [],
   };
-  nodes.activityGrid = {prepend: (el) => live.unshift(el)};
+  nodes.activityGrid = {prepend: (el) => live.unshift(el),
+    querySelector: (sel) => sel === '.control-editor' ?
+      live.find(el => el.className === 'control-editor') || null : null};
   // Every id the editor writes to or reads from. A missing one is a real break, not a stub gap:
   // the page would throw the same way.
   for (const id of ['autoId', 'autoTask', 'autoProvider', 'autoTarget', 'autoWorkspace', 'autoRuns',
@@ -65,16 +72,21 @@ function harness() {
   // Strict mode and the state declaration are both load-bearing: without them a deleted `var`
   // would create an implicit global here and pass, while the shipped page threw on every open.
   const src = '"use strict";\n' +
-              [grab('function controlList(value)'),
+              [grab('  var currentControlTab'),
+               grab('function controlList(value)'),
                grab('  var automationEditorBase'),
                grab('  function automationEditorSpec()'),
+               grab('  function currentControlEditor()'),
+               grab('  function lockControlFields(form)'),
+               grab('  function unlockControlFields(fields)'),
                grab('  function showAutomationEditor(spec)')].join('\n');
   const mod = {exports: {}};
-  new Function('module', '$', 'document', 't', 'activityPost', 'activityNotice', 'loadActivity',
+  new Function('module', '$', 'document', 't', 'activityPost', 'activityNotice', 'loadActivity', 'activityPanel',
                src + '\nmodule.exports = {automationEditorSpec, showAutomationEditor};')(
     mod, (id) => { if (!nodes[id]) throw new Error('unknown element id: ' + id); return nodes[id]; },
     document, (en) => en,
-    (url, body) => { posts.push({url, body}); return Promise.resolve({}); }, () => {}, () => {});
+    (url, body) => { posts.push({url, body}); return Promise.resolve({}); }, () => {},
+    () => Promise.resolve(true), {hidden: false});
   return {nodes, posts, live, api: mod.exports};
 }
 

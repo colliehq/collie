@@ -388,6 +388,25 @@ def test_the_form_refuses_edits_while_its_save_is_in_flight_instead_of_losing_th
     assert len(upsert.requests) == 1, upsert.requests
 
 
+def test_a_failed_refresh_for_an_old_editor_does_not_report_against_its_replacement(ui):
+    page = ui.page
+    listing = Held(page, "**/api/automations?*", SPECS_A, later=SPECS_A)
+    _open_panel(page)
+    page.locator('[data-control-tab="automations"]').click()
+    listing.wait(); listing.release()
+    expect(page.locator("#activityHealth")).to_have_text("1 configured")
+    page.get_by_role("button", name="New automation", exact=True).click()
+    page.click("#activityRefresh")
+    listing.wait()
+    page.get_by_role("button", name="Edit", exact=True).first.click()
+    page.fill("#autoTask", "the replacement draft")
+    listing.release({"error": "old listing failed"}, status=500)
+    page.wait_for_timeout(150)
+    expect(page.locator("#autoTask")).to_have_value("the replacement draft")
+    assert "old listing failed" not in _notice(page)
+    assert "old listing failed" not in page.inner_text("#activityHealth")
+
+
 def test_a_refused_save_hands_the_fields_back_with_their_text(ui):
     page = ui.page
     _listing(page)

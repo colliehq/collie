@@ -7356,17 +7356,13 @@
     } else if (tab === "budgets") {
       requests = activityGet("/api/budgets"); render = renderBudgets;
     } else { requests = activityGet("/api/security"); render = renderSecurity; }
-    // The screen this answer was asked for: still the newest request, still that tab, still open.
+    // Success and failure both belong to this request, tab and editor.
     var current = function () {
       return generation === activityRequestSeq && tab === currentControlTab &&
-        !!activityPanel && !activityPanel.hidden;
+        !!activityPanel && !activityPanel.hidden && currentControlEditor() === editorAtStart;
     };
     return requests.then(function (value) {
       if (!current()) return false;
-      // A different editor from the one this refresh was asked under holds text the user has not
-      // saved -- opened since, or opened in place of the one that was there. Either way the
-      // older answer must not paint over it. Refreshing with the same editor still redraws.
-      if (currentControlEditor() !== editorAtStart) return false;
       controlData[tab] = value;
       // Something else spoke to the user while this was in flight; leave its message alone.
       var quiet = activityNoticeSeq === noticeSeq;
