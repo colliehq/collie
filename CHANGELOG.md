@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Open an automation's saved conversation from its execution history, including partial work
+  that needs attention. Navigation does not restart the task or expose answers in health metadata.
 - Show healthy automatic follow-ups as task progress instead of requests for a decision.
   Keep stopped or unconfirmed starts visible, and show the next retry time consistently.
 - Count verification evidence only for checks that actually reached the tool. Refused or

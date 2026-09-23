@@ -146,6 +146,17 @@ def _public_execution(row: dict, usage: dict | None = None) -> dict:
         out["last_error"] = _bounded(row.get("last_error"), 500)
     out["usage"] = {key: (usage or {}).get(key, 0) for key in
                     ("model_tokens", "cost_usd", "actions", "wall_s")}
+    # Expose navigation metadata only. Answers and transcripts stay behind the
+    # conversation route instead of being copied into the operations snapshot.
+    try:
+        receipt = json.loads(row.get("result_json") or "{}")
+    except (ValueError, TypeError):
+        receipt = None
+    if isinstance(receipt, dict) and receipt.get("session_saved") is True:
+        sid = receipt.get("session_id")
+        if (isinstance(sid, str) and 0 < len(sid) <= 128 and sid not in (".", "..")
+                and all(char.isalnum() or char in "-_." for char in sid)):
+            out["session_id"] = sid
     return out
 
 
