@@ -42,6 +42,7 @@ scheme (Ed25519) so the handle's authority is checkable without the relay being 
 Written down here rather than left as an assumption.
 """
 import base64
+import hashlib
 import json
 import os
 import time
@@ -53,7 +54,8 @@ from . import e2e
 
 RELAY = os.environ.get("COLLIE_MAIL_RELAY", "https://mail.collie.run")
 DOMAIN = os.environ.get("COLLIE_MAIL_DOMAIN", "collie.run")
-STORE = os.path.expanduser("~/.collie/mail.json")
+_DEFAULT_STORE = os.path.expanduser("~/.collie/mail.json")
+STORE = _DEFAULT_STORE       # legacy callers/tests may supply an explicit store
 
 INFO_AUTH = b"collie-mail-auth"
 INFO_SEAL = b"collie-mail-seal"
@@ -71,26 +73,32 @@ def ub64(s: str) -> bytes:
 
 # ---------------------------------------------------------------- the store
 
-def load() -> dict:
+def _store_path(state_dir=None):
+    if state_dir is not None:
+        return os.path.join(os.path.abspath(os.path.expanduser(state_dir)), "mail.json")
+    if STORE != _DEFAULT_STORE:
+        return STORE
+    from .controlplane import state_dir as active_state_dir
+    return os.path.join(active_state_dir(), "mail.json")
+
+
+def load(state_dir=None) -> dict:
     try:
-        with open(STORE, encoding="utf-8") as f:
-            return json.load(f) or {}
+        with open(_store_path(state_dir), encoding="utf-8") as f:
+            value = json.load(f) or {}
+            return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def save(d: dict) -> None:
-    os.makedirs(os.path.dirname(STORE), exist_ok=True)
-    tmp = STORE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
-        f.write("\n")
-    try:
+def save(d: dict, state_dir=None) -> None:
+    from . import sessions
+    path = _store_path(state_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with sessions._locked(path):
+        sessions._atomic_dump(d, path)
         from . import plat
-        plat.chmod_private(tmp)          # private keys live in here
-    except Exception:
-        pass
-    os.replace(tmp, STORE)
+        plat.chmod_private(path)
 
 
 def address_for(dog: str, handle: str) -> str:
@@ -179,18 +187,18 @@ def _get(path: str, headers: dict = None, relay: str = "") -> dict:
         return {"ok": False, "status": e.code, "error": e.read().decode("utf-8", "replace")[:200]}
 
 
-def relay_public(relay: str = "") -> bytes:
+def relay_public(relay: str = "", *, state_dir=None) -> bytes:
     """The relay's X25519 public key. Cached after the first fetch — but note what trusting it on
     first use means: whoever answers this endpoint becomes the party every auth key is derived
     against. Pin it in the store rather than fetching it fresh each time."""
-    st = load()
+    st = load(state_dir)
     if st.get("relay_pub"):
         return ub64(st["relay_pub"])
     d = _get("/pubkey", relay=relay)
     if not d.get("pub"):
         raise RuntimeError("relay did not publish a public key: %s" % json.dumps(d)[:200])
     st["relay_pub"] = d["pub"]
-    save(st)
+    save(st, state_dir)
     return ub64(d["pub"])
 
 
@@ -205,38 +213,40 @@ def _signed_headers(dog: dict, method: str, path: str, relay_pub: bytes) -> dict
 
 # ---------------------------------------------------------------- claiming
 
-def claim_handle(handle: str, email: str, relay: str = "") -> dict:
+def claim_handle(handle: str, email: str, relay: str = "", *, state_dir=None) -> dict:
     """Step one, once per person: prove you control a real mailbox, and bind the handle to a key."""
-    st = load()
+    st = load(state_dir)
+    if (st.get("handle") or {}).get("verified"):
+        return {"ok": False, "error": "this device already has a verified mail identity"}
     priv, pub = e2e.keypair()
     st.setdefault("handle", {})
     st["handle"].update({"name": handle, "priv": b64(priv), "pub": b64(pub), "verified": False})
-    save(st)
+    save(st, state_dir)
     return _post("/handle/claim", {"handle": handle, "pub": b64(pub), "email": email}, relay=relay)
 
 
-def verify_handle(code: str, relay: str = "") -> dict:
-    st = load()
+def verify_handle(code: str, relay: str = "", *, state_dir=None) -> dict:
+    st = load(state_dir)
     h = st.get("handle") or {}
     if not h.get("name"):
         return {"ok": False, "error": "no handle claimed on this machine yet"}
     d = _post("/handle/verify", {"handle": h["name"], "code": code, "pub": h["pub"]}, relay=relay)
     if d.get("ok"):
         h["verified"] = True
-        save(st)
+        save(st, state_dir)
     return d
 
 
-def claim_dog(name: str, relay: str = "") -> dict:
+def claim_dog(name: str, relay: str = "", *, state_dir=None) -> dict:
     """Give one dog an address. Its key is made HERE and never leaves."""
-    st = load()
+    st = load(state_dir)
     h = st.get("handle") or {}
     if not h.get("verified"):
         return {"ok": False, "error": "claim and verify a handle first (collie mail claim)"}
     dogs = st.setdefault("dogs", {})
     if name in dogs and dogs[name].get("address"):
         return {"ok": True, "address": dogs[name]["address"], "note": "already had one"}
-    rp = relay_public(relay)
+    rp = relay_public(relay, state_dir=state_dir)
     priv, pub = e2e.keypair()
     address = address_for(name, h["name"])
     tag = cert_tag(ub64(h["priv"]), rp, address, pub)
@@ -245,29 +255,36 @@ def claim_dog(name: str, relay: str = "") -> dict:
     if not d.get("ok"):
         return d
     dogs[name] = {"address": address, "priv": b64(priv), "pub": b64(pub), "cursor": 0}
-    save(st)
+    # relay_public may have just pinned the relay key. Preserve that pin when
+    # adding the new address rather than restoring the pre-request snapshot.
+    current = load(state_dir)
+    current.setdefault("dogs", {}).update(dogs)
+    save(current, state_dir)
     return {"ok": True, "address": address}
 
 
 # ---------------------------------------------------------------- reading
 
-def _dog(name: str = "") -> dict:
-    st = load()
+def _dog(name: str = "", *, state_dir=None) -> dict:
+    st = load(state_dir)
     dogs = st.get("dogs") or {}
     if name:
         return dogs.get(name) or {}
     return (list(dogs.values()) or [{}])[0]
 
 
-def fetch(name: str = "", since: int = None, relay: str = "") -> list:
+def fetch(name: str = "", since: int = None, relay: str = "", *, state_dir=None,
+          advance_cursor: bool = True) -> list:
     """Everything waiting, decrypted here. The relay hands over ciphertext and a delivery time."""
-    dog = _dog(name)
+    dog = _dog(name, state_dir=state_dir)
     if not dog.get("address"):
         return []
-    rp = relay_public(relay)
+    rp = relay_public(relay, state_dir=state_dir)
     cursor = dog.get("cursor", 0) if since is None else since
     path = "/mail?since=%d" % cursor
     d = _get(path, headers=_signed_headers(dog, "GET", path, rp), relay=relay)
+    if d.get("ok") is False:
+        raise RuntimeError("mail could not be retrieved (status %s)" % d.get("status", "unknown"))
     out = []
     for m in d.get("messages") or []:
         try:
@@ -277,16 +294,22 @@ def fetch(name: str = "", since: int = None, relay: str = "") -> list:
             continue
         try:
             msg = json.loads(raw.decode("utf-8"))
+            if not isinstance(msg, dict):
+                raise ValueError("mail payload must be an object")
         except Exception:
             msg = {"raw": raw.decode("utf-8", "replace")}
         msg["at"] = m.get("at")
+        # Old relays lack message ids; hashing the sealed envelope is stable
+        # across fetches and never exposes message contents in a task id.
+        msg["id"] = m.get("id") or hashlib.sha256(json.dumps(
+            m.get("env"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         out.append(msg)
-    if out:
-        st = load()
+    if out and advance_cursor and not any(m.get("error") for m in out):
+        st = load(state_dir)
         for k, v in (st.get("dogs") or {}).items():
             if v.get("address") == dog["address"]:
                 v["cursor"] = max([m.get("at") or 0 for m in d.get("messages") or []] + [cursor])
-        save(st)
+        save(st, state_dir)
     return out
 
 
