@@ -51,8 +51,10 @@ Incoming task acceptance, queued input and outgoing results survive restarts.
 Reopening the page does not authorize a second send.
 
 Changing the result recipient does not retarget a task that was already accepted.
-Its answer remains in the original conversation. Review that answer and prepare a
-fresh reply when you intentionally want it sent to the newly configured recipient.
+Its answer remains in the original conversation. Use **Open task** to review it,
+then **Write reviewed reply** on the received message to prepare a reply for the
+address shown. Saving that draft clears the message's outstanding-reply reminder;
+it waits for **Send now** even when automatic replies are enabled.
 
 ## Morning email
 

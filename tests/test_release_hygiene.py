@@ -274,7 +274,9 @@ def test_formal_installer_payloads_include_online_and_claude_by_default():
         encoding="utf-8")
     mac = (ROOT / "installer" / "build_mac.sh").read_text(encoding="utf-8")
 
-    assert '"$repo[local,remote,online,claude]"' in windows
+    windows_extras = re.search(r'"\$repo\[([^\]]+)\]"', windows)
+    assert windows_extras is not None
+    assert {"local", "remote", "online", "claude", "desktop"} <= set(windows_extras.group(1).split(","))
     assert '"claude_agent_sdk"' in windows
     assert 'EXTRAS="${3:-local,tui,desktop,remote,online,claude}"' in mac_payload
     assert 'EXTRAS="local,tui,desktop,remote,online,claude"' in mac

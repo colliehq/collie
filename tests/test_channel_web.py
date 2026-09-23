@@ -61,6 +61,28 @@ def test_edit_and_discard_are_authenticated_and_do_not_send(web):
     assert not adapter.sent
 
 
+def test_reviewed_reply_resolves_an_accepted_message_after_recipient_change(web):
+    from harness import communications as comms
+    _, _, (host, adapter) = web
+    host.ingest("mail", message("review-owner"))
+    accepted = host.accept("mail", "review-owner", start=False)
+    host.configure("mail", kind="imap", config={"address": "collie@example.test"},
+                   owner="newowner@example.test", auto_reply=True)
+    body = {"action": "prepare", "connection": "mail", "id": "reviewed-owner",
+            "event": "review-owner", "text": "Reviewed for this recipient."}
+    assert request(web, body=body, authenticated=False)[0] == 403
+    assert request(web, body=body)[0] == 200
+    event = comms.get_event("mail", "review-owner", directory=host.directory)
+    result = comms.get_result("mail", "reviewed-owner", include_private=True, directory=host.directory)
+    assert event["settlement"]["result"] == result["id"]
+    assert result["session"] == accepted["session"] and result["destination"] == "newowner@example.test"
+    assert result["in_reply_to"] == "<review-owner@example.test>"
+    assert not result["metadata"]["auto_eligible"]
+    assert host._delivery_lane("mail", host._row("mail"))["attempted"] == 0
+    issues = []
+    assert host.reconcile("mail", issues) == 0 and issues == [] and not adapter.sent
+
+
 def test_received_html_is_returned_as_data_not_rendered_markup(web):
     _, _, (host, adapter) = web
     adapter.messages = [message(text='<script>window.unsafe=1</script>')]
