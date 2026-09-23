@@ -59,6 +59,11 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "get", lambda key, default=None:
                         "mock" if key == "MODEL" else original(key, default))
     host = ChannelService(root)
+    # These cases audit durable intake, policy and recovery, not the executor.
+    # A live scheduler would outlast monkeypatch's environment and clock scopes.
+    monkeypatch.setattr(host, "_start_pending", lambda session, **kwargs: {
+        "session": session, "started": False, "reason": "isolated audit",
+    })
     adapter = Adapter()
     monkeypatch.setattr(ChannelService, "_adapter", staticmethod(lambda kind: adapter))
     host.configure("mail", kind="imap", config={"address": "collie@example.test"},

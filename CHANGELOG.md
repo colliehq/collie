@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.29.1 — Bound startup waits when the clock changes
+
+- Use elapsed time for the short wait that acknowledges a newly started background
+  task. A frozen or adjusted system clock can no longer keep the request waiting
+  indefinitely or make that wait expire early. Ready tasks still return immediately.
+
 ## v0.29.0 — Email, phone and a shared Daily Brief
 
 - Start on the desktop without choosing a nickname. The name remains editable in
