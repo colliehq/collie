@@ -1334,6 +1334,7 @@ def admit_after_quota_reset(wait):
                            nonce=nonce, now=now)
         return {"session": sid, "started": False, "reason": "busy"}
     handed = False
+    claimed = None                 # what this admission took and has not handed over
     try:
         current = quota_resume.read(sid)
         if (current is None or current.get("nonce") != nonce
@@ -1382,27 +1383,46 @@ def admit_after_quota_reset(wait):
             quota_resume.retire(sid, "the accepted request this was waiting for was no "
                                      "longer waiting when the reset came", nonce=nonce)
             return {"session": sid, "started": False, "reason": "nothing_pending"}
+        claimed = entry["id"]
         if entry["id"] != bound:
             # The store handed back something else: the bound request moved out
             # from under this claim between the read and it.  Put it straight
             # back -- it is somebody else's turn to start, not this wait's.
             release_undelivered(sid, lease, [entry["id"]],
                                 "this request was not the one scheduled for the reset")
+            claimed = None
             quota_resume.retire(sid, "the accepted request this was waiting for is no "
                                      "longer queued, so nothing was started", nonce=nonce)
             return {"session": sid, "started": False, "reason": "nothing_pending"}
         schedule(sid, lease, entry)
         handed = True
+        claimed = None             # the run owns it now; only it may settle it
         quota_resume.retire(sid, "started after the provider's reset", nonce=nonce,
                             state="admitted")
         return {"session": sid, "started": True, "entry": public_entry(entry),
                 "retry_at": int(wait["retry_at"])}
     except Exception as exc:
-        quota_resume.failed(sid, "the queued request could not be started: %s: %s"
-                            % (type(exc).__name__, str(exc)[:200]), nonce=nonce, now=now)
+        # `schedule` starts an OS thread, so admission can fail after the exact
+        # request has been claimed, and `claimed` is the state no surface can
+        # leave: cancel and edit are refused because it is claimed, Start while
+        # it is.  So it goes back to waiting under the lease that still makes
+        # the release legal -- best effort, and second to the reporting below: a
+        # lost lease or a store that will not write must not bury the launch
+        # failure that is the cause, so it is caught and named instead.
+        cleanup = ""
+        if claimed is not None:
+            try:
+                release_undelivered(sid, lease, [claimed],
+                                    "it could not be started after the provider's reset")
+            except Exception as failure:
+                cleanup = ("; the claim could not be returned to waiting: %s: %s"
+                           % (type(failure).__name__, str(failure)[:120]))
+        cause = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+        quota_resume.failed(sid, "the queued request could not be started: %s%s"
+                            % (cause, cleanup), nonce=nonce, now=now)
         note_queue_error(sid, "the queued request could not be started after the "
-                              "provider's reset: %s: %s"
-                              % (type(exc).__name__, str(exc)[:200]), kind="quota_wait")
+                              "provider's reset: %s%s" % (cause, cleanup),
+                         kind="quota_wait")
         return {"session": sid, "started": False, "reason": "error"}
     finally:
         if not handed:

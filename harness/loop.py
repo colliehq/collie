@@ -2100,6 +2100,8 @@ class Harness:
         self._restore_compaction(session)
         journal_state = "turn_boundary"
         journal_detail = {}
+        # A failed pre-action journal write stops this run, including later inner RPCs.
+        durability_fault = ""
         checkpointed = self._session_checkpoint(session["messages"], rid, 0, journal_state)
         # Acknowledge the accepted request only now — the transcript that contains
         # it is on disk, so "delivered" is a fact rather than an intention.
@@ -2744,12 +2746,16 @@ class Harness:
                                     self._authorize(tc, tool, still_active=still_active))))
                         return tc, tool, repairs, denied
 
-                    def _account_tool_outcome(tc, out, receipt=None):
+                    def _account_tool_outcome(tc, out, receipt=None, *, dispatched=False):
                         """Apply the normal edit/reproduction accounting to every dispatched call.
 
                         ``receipt`` is the host-minted execution record for this exact call (or
                         None), captured by the caller straight off ``Tool.run``'s return value.
                         It is passed by value, never stashed, so it cannot outlive its call.
+
+                        ``dispatched`` records whether this call reached ``Tool.run``. A refused
+                        call provides no workspace evidence and must preserve the last real
+                        verification result. In particular, DENIED text is not a passing test.
                         """
                         nonlocal did_edit, last_edit_turn, last_repro_turn
                         nonlocal last_repro_failed, last_repro_asserted, edit_generation
@@ -2757,9 +2763,13 @@ class Harness:
                         try:            # edit-accounting + repro detection: best-effort bookkeeping
                             if os.environ.get("COLLIE_DEBUG"):
                                 a = json.dumps(tc.args, ensure_ascii=False)
-                                print("  T%d %s(%s) -> %s" % (
-                                    turn, tc.name, a[:90], str(out)[:120].replace("\n", " ")),
+                                print("  T%d %s(%s)%s -> %s" % (
+                                    turn, tc.name, a[:90], "" if dispatched else " [not run]",
+                                    str(out)[:120].replace("\n", " ")),
                                     flush=True)
+                            if not dispatched:
+                                # Refusals and pre-dispatch failures are not fresh observations.
+                                return
                             # count an edit ONLY if it actually landed. edit_file/write_file
                             # return "ERROR: old_string not found/appears N times" WITHOUT writing.
                             edit_ok = (tc.name in ("write_file", "edit_file")
@@ -2826,7 +2836,7 @@ class Harness:
                         the provider emitted only the parent execute_code tool_use, so such a message
                         would be protocol-invalid.  They still pass through every host-owned fence.
                         """
-                        nonlocal journal_state, journal_detail
+                        nonlocal journal_state, journal_detail, durability_fault
                         if still_active is not None and not still_active():
                             # A late HTTP handler must not mutate a completed RunResult, fire hooks,
                             # or overwrite the parent's terminal session checkpoint.
@@ -2836,6 +2846,9 @@ class Harness:
                         # including one that is denied, malformed, or fails before running — starts
                         # with none, and no later call or concurrent inner RPC call can inherit it.
                         receipt = None
+                        # Per-call state, including inner RPCs; a Tool.run exception still counts
+                        # as execution and its ERROR remains failed verification evidence.
+                        dispatched = False
                         if isinstance(tc.args, dict) and "_malformed_args" in tc.args:
                             out = ("ERROR: tool call arguments were not valid JSON (truncated or "
                                    "malformed). Raw prefix: %s. Re-emit the call with valid JSON "
@@ -2881,6 +2894,12 @@ class Harness:
                                 if checkpointed is False:
                                     out = ("ERROR: durability checkpoint failed; tool was not "
                                            "executed because crash recovery could not be fenced")
+                                    # Further model turns cannot repair a failed host journal.
+                                    durability_fault = durability_fault or (
+                                        "the host could not persist a crash-recovery checkpoint "
+                                        "before running %s; this run stopped without executing it. "
+                                        "Check the session store, then resume the thread."
+                                        % (tc.name,))
                                 elif still_active is not None and not still_active():
                                     return ("DENIED: parent execute_code invocation ended before "
                                             "the inner tool could execute")
@@ -2900,6 +2919,7 @@ class Harness:
                                     previous_call_id = ctx.tool_call_id
                                     ctx.tool_call_id = tc.id
                                     try:
+                                        dispatched = True
                                         out = tool.run(run_args, ctx)
                                     finally:
                                         ctx.tool_call_id = previous_call_id
@@ -2918,6 +2938,7 @@ class Harness:
                                     previous_call_id = ctx.tool_call_id
                                     ctx.tool_call_id = tc.id
                                     try:
+                                        dispatched = True
                                         out = tool.run(run_args, ctx)
                                         # Capture the host's own record of what ran BEFORE
                                         # redaction (which returns a plain str and would drop it)
@@ -3012,7 +3033,7 @@ class Harness:
                         if not record_result:
                             emit_data["internal"] = True
                         self._emit("tool", **emit_data)
-                        _account_tool_outcome(tc, out, receipt)
+                        _account_tool_outcome(tc, out, receipt, dispatched=dispatched)
                         return out
 
                     def _make_inner_broker(parent_call_id):
@@ -3076,6 +3097,12 @@ class Harness:
                                     return "DENIED: an earlier tool requires recovery inspection"
                                 if self.revoked.is_set():
                                     return "DENIED: parent execute_code invocation is no longer active"
+                                if durability_fault:
+                                    # Check under the dispatch lock before approval or execution.
+                                    # A healed store does not restart a run already stopped here.
+                                    return ("DENIED: a durability checkpoint already failed in "
+                                            "this run; crash recovery cannot be fenced, so no "
+                                            "further tool will be started")
                                 self.sequence += 1
                                 # The parent execute_code source is restored immediately before
                                 # execution. A secret used by that script therefore returns over
@@ -3153,12 +3180,26 @@ class Harness:
                             if self._cancel_requested():
                                 canceled = True
                             break
+                        if durability_fault:
+                            # Every later call in this batch would meet the same refused
+                            # fence. Stop dispatching; finalization closes their tool_use
+                            # blocks as never-started, which is exactly what happened.
+                            break
                     if hook_contexts and not canceled:
                         session["messages"].append({
                             "role": "user",
                             "source": "harness", "kind": "lifecycle_context",
                             "content": "[Trusted lifecycle context]\n" + "\n".join(hook_contexts),
                         })
+                    if durability_fault:
+                        # Preserve earlier errors and classify this as a host failure.
+                        # Finalization still gives cancellation its existing precedence.
+                        from .recorder import note_host_error as _note_host_error
+                        _note_host_error(res, durability_fault)
+                        self._emit("durability_stop", reason=durability_fault[:300],
+                                   turn=turn)
+                        res.turns = turn + 1
+                        break
                     if canceled:
                         res.turns = turn + 1
                         break
@@ -3644,7 +3685,7 @@ class Harness:
             # was explicitly disabled.
             res.error = _redact.redact(str(res.error), self._secret_vault)[:4_000]
             res.success = False
-        from .recorder import run_stop_reason
+        from .recorder import note_host_error, run_stop_reason
         res.stop_reason = "output_limit" if last_stop == "length" else "completed"
         res.stop_reason = run_stop_reason(res)
         res.success = res.stop_reason == "completed"
@@ -3659,7 +3700,7 @@ class Harness:
         if answer and not (m and m[-1].get("role") == "assistant" and m[-1].get("content") == answer):
             m.append({"role": "assistant", "content": answer})
         res.messages = m                      # expose the thread so a session can be saved/continued
-        self.recorder.finish_run(res)
+        # Persist first so the recorded outcome includes any final journal failure.
         if journal_state in ("executing_tool", "external_action"):
             # The tool may have committed its effect before the process/host code
             # failed. Preserve the fence for explicit reconciliation.
@@ -3672,12 +3713,27 @@ class Harness:
             fence_state = ("executing_tool"
                            if _sessions.replay_safe_boundary(journal_state, journal_detail)
                            else "external_action")
-            self._session_checkpoint(m, rid, res.turns, fence_state,
-                                     recovery_detail, terminal=False)
+            final_saved = self._session_checkpoint(m, rid, res.turns, fence_state,
+                                                   recovery_detail, terminal=False)
+            unsaved = ("the crash-recovery fence for this run could not be persisted; "
+                       "the interrupted call must be reconciled by hand")
         else:
-            self._session_checkpoint(m, rid, res.turns, "terminal",
-                                     {"error": res.error, "verified": res.verified},
-                                     terminal=True)
+            final_saved = self._session_checkpoint(m, rid, res.turns, "terminal",
+                                                   {"error": res.error,
+                                                    "verified": res.verified},
+                                                   terminal=True)
+            # Earlier checkpoints may survive, and the last turn may already have effects.
+            # Report the missing final save without recommending a blind retry.
+            unsaved = ("the final transcript save failed, so the latest progress may be "
+                       "missing from the saved thread; check the saved session and what "
+                       "the last turn actually did before retrying it")
+        if final_saved is False:
+            # Preserve the real answer but do not report an unsaved run as completed.
+            note_host_error(res, unsaved)
+            res.error = _redact.redact(str(res.error), self._secret_vault)[:4_000]
+            res.stop_reason = run_stop_reason(res)
+            res.success = False
+        self.recorder.finish_run(res)
         # final receipt — the honest token/time/$ tally + the verification verdict, for the
         # streaming UX / editor / ACP surfaces (the "$" the brand promises, now on the wire).
         # verified = edited + a repro ran on the FIXED code + it didn't fail + (in assert-mode) it

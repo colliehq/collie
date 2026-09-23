@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Count verification evidence only for checks that actually reached the tool. Refused or
+  blocked checks cannot verify an edit or replace the last executed check's result.
+- Stop a run when a pre-action recovery checkpoint cannot be saved, including later inner
+  tool calls. Preserve completed work and report failed final transcript saves accurately.
+- Return accepted follow-ups to the queue when starting them after a quota reset fails.
+  Keep the launch error visible even if releasing the claimed request also fails.
 - Detect user-created files blocking the parents of saved Pack changes during review, before
   writing any entries. Supported file-to-directory replacements and idempotent re-application
   remain available.

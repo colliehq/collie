@@ -41,9 +41,9 @@ class RunResult:
     canceled: bool = False
     stop_reason: str = ""
     retry_at: int = 0              # upstream quota reset; Mission persists its wait separately
-    # Set by `note_host_error` when a failure is recorded AFTER run() returned (save,
-    # required check, effect boundary).  It withdraws the provider-wait reading of
-    # `retry_at`: the run is no longer merely early.
+    # Set by `note_host_error` for host failures during or after run() (journal save,
+    # required check, effect boundary). It withdraws the provider-wait reading of
+    # `retry_at`: waiting for the provider alone cannot resolve this failure.
     host_error: bool = False
     tool_calls: int = 0
     arg_repairs: int = 0     # model-quirk arg repairs applied this run (point 7)
