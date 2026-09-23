@@ -273,6 +273,33 @@ def clear(session, *, nonce=None, reason=""):
     return _transition(session, nonce, _apply)
 
 
+WITHDRAWN_REASON = "the accepted request this was waiting for was withdrawn"
+
+
+def withdraw(session, entry_id, *, reason=WITHDRAWN_REASON):
+    """Retire this entry's waiting schedule, retaining its reason and nonce guard.
+
+    An admitting claim owns its transition and revalidates under the session lease.
+    """
+    entry_id = str(entry_id or "")
+    if not entry_id:
+        return None
+    row = read(session)
+    if row is None or row["state"] != "waiting" or row["entry"] != entry_id:
+        return None
+    return retire(session, reason, nonce=row["nonce"])
+
+
+def _bound_withdrawn(row):
+    """Check other cancellation paths too; a missing/unreadable entry proves nothing."""
+    from . import task_inbox
+    try:
+        entry = task_inbox.get(row["session"], row["entry"])
+    except Exception:
+        return False
+    return bool(entry is not None and entry.get("state") == "canceled")
+
+
 def defer(session, reason, *, nonce, now=None):
     """Put a claimed wait back, for a reason a later pass could resolve.
 
@@ -593,6 +620,10 @@ def status(session, *, now=None):
     if row is None:
         return None
     now = time.time() if now is None else float(now)
+    if row["state"] != "admitting" and _bound_withdrawn(row):
+        # An abandoned schedule must not imply other queued requests will start.
+        # In-flight admissions are projected separately by _admitting_progress.
+        return None
     if row["state"] == "waiting":
         progress = _waiting_progress(row, now)
     elif row["state"] == "admitting":

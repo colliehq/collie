@@ -5251,9 +5251,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Withdrawing queued input is its own action.  Stop is about the
                 # model that is running; using it to clear a queue would also
                 # abandon the answer being produced.
+                entry_id = web_tasks.check_entry_id(body.get("id"))
                 entry = task_inbox.cancel(
-                    sid, web_tasks.check_entry_id(body.get("id")),
-                    reason=str(body.get("reason") or "")[:200])
+                    sid, entry_id, reason=str(body.get("reason") or "")[:200])
+                # Retire only this entry's waiting schedule; preserve in-flight claims.
+                web_tasks.withdraw_wait(sid, entry_id)
                 return self._send_json({"session": sid,
                                         "entry": web_tasks.public_entry(entry)})
             return self._send_json(web_tasks.start_pending(sid))

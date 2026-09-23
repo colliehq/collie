@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- End a quota wait when the accepted request it was scheduled to start is withdrawn, so the
+  remaining queued requests stop being shown as an automatic start nothing will perform. Only
+  the wait bound to the withdrawn request ends, a newer wait and an admission already under way
+  are left alone, and why the start stopped being scheduled stays readable.
 - Refresh an expired process token when an operations-panel action is refused, then retry
   that action once with the same payload. Other errors remain visible without automatic replay.
 - Open an automation's saved conversation from its execution history, including partial work
