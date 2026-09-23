@@ -13,6 +13,7 @@ import re
 
 MAX_MAIL_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 128_000
+MAX_TEXT_BYTES = 64 * 1024
 MAX_ATTACHMENTS = 16
 MAX_PARTS = 64
 _MESSAGE_ID = re.compile(r"<[^<>\s\x00-\x1f]{1,250}>")
@@ -64,7 +65,7 @@ def address(value):
 
 def message_ids(value):
     value = str(value or "")
-    if len(value) > 8192:
+    if len(value.encode("utf-8")) > 6000:
         raise MailFormatError("email thread headers are too large")
     ids = _MESSAGE_ID.findall(value)
     if len(ids) > 32:
@@ -84,7 +85,7 @@ def _text(part):
         parser = _ReadableHTML()
         parser.feed(value)
         value = "".join(parser.parts)
-    if len(value) > MAX_TEXT_CHARS:
+    if len(value) > MAX_TEXT_CHARS or len(value.encode("utf-8")) > MAX_TEXT_BYTES:
         raise MailFormatError("email text exceeds the supported size; nothing was truncated")
     return value.strip()
 
@@ -113,16 +114,17 @@ def parse(raw, *, envelope_from="", envelope_to=""):
             raise MailFormatError("email attachment encoding is invalid")
         name = str(part.get_filename() or "attachment")
         name = re.sub(r"[\\/\x00-\x1f\x7f]", "_", name).strip()[:180] or "attachment"
+        name = name.encode("utf-8")[:240].decode("utf-8", "ignore") or "attachment"
         attachments.append({"name": name, "content_type": part.get_content_type(),
                             "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                             "data": base64.b64encode(data).decode("ascii")})
         if len(attachments) > MAX_ATTACHMENTS:
             raise MailFormatError("email contains more than 16 attachments")
     subject = str(message.get("Subject") or "")
-    if len(subject) > 1000:
+    if len(subject.encode("utf-8")) > 2000:
         raise MailFormatError("email subject is too long")
     ids = message_ids(message.get("Message-ID"))
-    if len(ids) > 1:
+    if len(ids) > 1 or len(message.get_all("Message-ID", [])) > 1:
         raise MailFormatError("email has ambiguous Message-ID headers")
     sender = envelope_from or str(message.get("From") or "")
     recipient = envelope_to or str(message.get("To") or "")
@@ -157,7 +159,7 @@ def from_relay(row):
                      envelope_to=str(row.get("to") or ""))
     # Older fixtures and service-generated messages can carry plain text.
     text = row.get("text") or ""
-    if not isinstance(text, str) or not text or len(text) > MAX_TEXT_CHARS:
+    if not isinstance(text, str) or not text or len(text.encode("utf-8")) > MAX_TEXT_BYTES:
         raise MailFormatError("email has no supported body")
     return {"sender": address(str(row.get("from") or "")),
             "recipient": address(str(row.get("to") or "")),
@@ -169,9 +171,9 @@ def from_relay(row):
 def compose(*, sender, recipient, subject, text, message_id, in_reply_to="", references=()):
     """Build one result email with a stable id; no recipient expansion or HTML."""
     sender, recipient = address(sender), address(recipient)
-    if not isinstance(subject, str) or len(subject) > 1000 or "\r" in subject or "\n" in subject:
+    if not isinstance(subject, str) or len(subject.encode("utf-8")) > 2048 or "\r" in subject or "\n" in subject:
         raise MailFormatError("invalid result email subject")
-    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
+    if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > MAX_TEXT_BYTES:
         raise MailFormatError("result email body is empty or too large")
     if not isinstance(message_id, str) or not _MESSAGE_ID.fullmatch(message_id):
         raise MailFormatError("invalid result message id")

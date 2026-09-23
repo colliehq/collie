@@ -29,6 +29,27 @@ def test_relay_mime_preserves_unicode_and_attachment_bytes():
     assert base64.b64decode(attachment["data"]).decode() == "名称,价格\n产品一,100\n"
 
 
+def test_body_limit_counts_utf8_bytes_and_duplicate_message_id_is_refused():
+    message = _message()
+    message.set_content("测" * 23000)
+    with pytest.raises(mail.MailFormatError, match="size"):
+        mail.parse(message.as_bytes())
+    raw = _message().as_bytes().replace(b"Message-ID:", b"Message-ID: <another@example.test>\nMessage-ID:")
+    with pytest.raises(mail.MailFormatError, match="ambiguous"):
+        mail.parse(raw)
+
+
+def test_long_unicode_subject_can_be_replied_to_and_filename_fits_durable_metadata():
+    message = _message()
+    message.replace_header("Subject", "测" * 650)
+    message.add_attachment(b"data", maintype="text", subtype="plain", filename="测" * 170 + ".txt")
+    parsed = mail.parse(message.as_bytes())
+    assert len(parsed["attachments"][0]["name"].encode()) <= 240
+    result = mail.compose(sender=parsed["recipient"], recipient=parsed["sender"],
+                          subject="Re: " + parsed["subject"], text="Result", message_id="<reply@example.test>")
+    assert result["Subject"] == "Re: " + parsed["subject"]
+
+
 def test_html_is_readable_text_without_loading_remote_images():
     message = _message()
     message.set_content('<html><head><style>hidden</style></head><body><p>Keep this</p>'
