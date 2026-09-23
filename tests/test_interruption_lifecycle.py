@@ -101,8 +101,14 @@ def test_cancel_nested_python_command_stops_descendants_and_resumes(tmp_path, mo
         res = h.run("nested", "run the probe")
         assert res.canceled
         assert not _paired(res.messages)
-        assert "Probe has started" in _results(res.messages)["script"]
-        assert sessions.recovery_state("nested-stop") is None
+        script = _results(res.messages)["script"]
+        assert "Probe has started" in script
+        # Carry the tool's own account of the stop into the failure. Two owned trees are
+        # terminated here — execute_code's script and the bash command it brokered — and
+        # each states WHY it could not confirm its tree (execute_code in its first line,
+        # bash in the captured inner result). The recovery state alone names neither, so
+        # a host that fails this is otherwise unfalsifiable from its log.
+        assert sessions.recovery_state("nested-stop") is None, script[:2000]
         time.sleep(2.2)
         assert not (tmp_path / "late").exists()
     finally:
