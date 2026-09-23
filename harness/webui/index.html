@@ -3251,10 +3251,16 @@
     return "en";
   }
   var ZH = {
-    "Collie keeps working until the task is done or one of these budgets runs out. There is no separate turn limit.":
-      "Collie 会一直做到任务完成，或其中一项额度用尽为止；没有单独的轮数上限。",
-    "Collie keeps working until the task is done or one of these budgets runs out. This automation also stops after a fixed number of model turns, set outside this panel; saving keeps it.":
-      "Collie 会一直做到任务完成，或其中一项额度用尽为止。这条自动化还设有固定的模型轮数上限（在此面板之外设置）；保存时会保留该设置。",
+    "Collie keeps working until the task is done or one of these budgets runs out, including the tool-action ceiling.":
+      "Collie 会一直做到任务完成，或其中一项额度用尽为止，工具操作次数上限也在其中。",
+    "It also stops after": "它还会在", // followed by the turn count, then the clause below
+    "model turns, a cap set outside this panel and kept as it is on save.":
+      "个模型轮数后停止；该上限在此面板之外设置，保存时会原样保留。",
+    "No model-turn ceiling is set, so turns are not what ends this run.":
+      "没有设置模型轮数上限，因此结束这次运行的不会是轮数。",
+    "Max runs / day": "每天最多运行次数", "Max model tokens": "最多模型 token",
+    "Max cost USD": "最高费用（美元）", "Max wall seconds": "最长运行秒数",
+    "Max tool actions": "最多工具操作次数",
     "Starting now — already submitted": "已提交，正在启动",
     "Automatic start stopped — start it when you're ready": "自动启动已停止，可随时手动开始",
     "Already submitted — starts after": "已提交，将在此时间后开始",
@@ -3691,6 +3697,16 @@
   // Traditional Chinese (Taiwan idiom). Generated from ZH via OpenCC s2twp — 設定/儲存/載入/訊息/
   // 執行/連線/傳送/登入, not a naive character swap. Regenerate with: python installer/gen_zhtw.py
   var ZHTW = {
+    "Collie keeps working until the task is done or one of these budgets runs out, including the tool-action ceiling.":
+      "Collie 會一直做到任務完成，或其中一項額度用盡為止，工具操作次數上限也在其中。",
+    "It also stops after": "它還會在", // followed by the turn count, then the clause below
+    "model turns, a cap set outside this panel and kept as it is on save.":
+      "個模型輪數後停止；該上限在此面板之外設定，儲存時會原樣保留。",
+    "No model-turn ceiling is set, so turns are not what ends this run.":
+      "沒有設定模型輪數上限，因此結束這次執行的不會是輪數。",
+    "Max runs / day": "每天最多執行次數", "Max model tokens": "最多模型 token",
+    "Max cost USD": "最高費用（美元）", "Max wall seconds": "最長執行秒數",
+    "Max tool actions": "最多工具操作次數",
     "Starting now — already submitted": "已提交，正在啟動",
     "Automatic start stopped — start it when you're ready": "自動啟動已停止，可隨時手動開始",
     "Already submitted — starts after": "已提交，將在此時間後開始",
@@ -6725,53 +6741,76 @@
   }
   function controlList(value) { return String(value || "").split(/[\n,;]/).map(function (x) {
     return x.trim(); }).filter(Boolean); }
-  // The budget of the automation currently open in the editor. This form shows four of its
-  // keys; the rest (a turn cap, an action cap, a retry count, anything added later) belong to
-  // whoever set them, so an edit here carries them through untouched instead of rebuilding the
-  // budget from literals and silently resetting a deliberate choice.
-  var automationEditorBudget = {};
+  // The automation currently open in the editor, exactly as it was accepted. Saving replaces the
+  // whole stored record, and this form shows a subset of a spec: the execution mode, context
+  // policy, notification choices, unshown permissions, trigger predicate and the rest of the
+  // budget belong to whoever set them. So a save overlays the edited fields onto this clone
+  // rather than rebuilding a spec from literals — rebuilding is how a plan automation became a
+  // writable project run and a deliberate turn cap became 50.
+  var automationEditorBase = {};
   function automationEditorSpec() {
-    var provider = $("autoProvider").value, target = $("autoTarget").value.trim(), trigger = {provider:provider};
+    var spec = JSON.parse(JSON.stringify(automationEditorBase || {}));
+    var provider = $("autoProvider").value, target = $("autoTarget").value.trim();
+    var stored = spec.trigger || {}, sameTrigger = provider === stored.provider;
+    // A different trigger type gets a trigger built for it; keeping the old one is how a page URL
+    // ends up on a file trigger. An unchanged type keeps its predicate and scheduling fields.
+    var trigger = sameTrigger ? stored : {provider:provider};
     if (provider === "timer") trigger.every_s = Math.max(1, Number(target || 3600));
-    if (provider === "file") { trigger.path = target; trigger.predicate = {type:"changed"}; }
-    if (provider === "page") { trigger.url = target; trigger.predicate = {type:"changed"}; }
+    if (provider === "file") { trigger.path = target; trigger.predicate = trigger.predicate || {type:"changed"}; }
+    if (provider === "page") { trigger.url = target; trigger.predicate = trigger.predicate || {type:"changed"}; }
     var current = $("autoWorkspace").value === "current";
-    var budget = Object.assign({}, automationEditorBudget);
+    var workspace = spec.workspace || {}, sameWorkspace = current === (workspace.mode === "current");
+    workspace.mode = current ? "current" : "isolated";
+    var budget = spec.budget || {};
     // A new automation is bounded by the budgets on this form and runs as many turns as the
     // work needs; 0 is "no hard turn ceiling". An existing cap is left exactly as stored.
     if (!("max_turns" in budget)) budget.max_turns = 0;
     budget.max_wall_s = Number($("autoWall").value || 1800);
     budget.max_model_tokens = Number($("autoTokens").value || 200000);
     budget.max_cost_usd = Number($("autoCost").value || 25);
+    budget.max_actions = Number($("autoActions").value || 100);
     budget.max_runs_per_day = Number($("autoRuns").value || 24);
-    return { automation_id:$("autoId").value.trim(), task:$("autoTask").value.trim(), trigger:trigger,
-      context:{policy:"fresh"}, workspace:{mode:current ? "current" : "isolated"}, budget:budget,
-      execution:{mode:"project"}, notifications:["failure","needs_you"], enabled:$("autoEnabled").checked,
-      permissions:{read_roots:controlList($("autoReadRoots").value), write_roots:[],
-        network_hosts:controlList($("autoHosts").value), tools:[], desktop_targets:[],
-        external_writes:$("autoExternal").checked, current_workspace:current,
-        webhook_ingest:provider === "webhook"} };
+    var permissions = spec.permissions || {};
+    permissions.read_roots = controlList($("autoReadRoots").value);
+    permissions.network_hosts = controlList($("autoHosts").value);
+    permissions.external_writes = $("autoExternal").checked;
+    // Authority follows the choice that grants it: picking the current workspace or a webhook
+    // trigger authorizes that authority, and leaving either alone keeps exactly what was accepted
+    // — neither widening it nor dropping it because this form has no checkbox for it.
+    permissions.current_workspace = sameWorkspace ? permissions.current_workspace === true : current;
+    permissions.webhook_ingest = sameTrigger ? permissions.webhook_ingest === true : provider === "webhook";
+    spec.automation_id = $("autoId").value.trim(); spec.task = $("autoTask").value.trim();
+    spec.trigger = trigger; spec.workspace = workspace; spec.budget = budget;
+    spec.permissions = permissions; spec.enabled = $("autoEnabled").checked;
+    return spec;
   }
   function showAutomationEditor(spec) {
     spec = spec || {automation_id:"",task:"",trigger:{provider:"timer",every_s:3600},
-      workspace:{mode:"isolated"},budget:{},permissions:{},enabled:false};
+      context:{policy:"fresh"},workspace:{mode:"isolated"},budget:{},execution:{mode:"project"},
+      notifications:["failure","needs_you"],permissions:{},enabled:false};
+    // One editor at a time: a second one duplicates every id on the page, and the older, still
+    // visible form then saves the newer automation's fields.
+    Array.prototype.forEach.call(document.querySelectorAll(".control-editor"), function (panel) {
+      panel.remove(); });
     var editor = document.createElement("section"); editor.className = "control-editor";
     editor.innerHTML = '<h3>Automation editor</h3><div class="control-form">' +
       '<label>ID<input id="autoId" maxlength="80"></label><label>Trigger<select id="autoProvider"><option>timer</option><option>file</option><option>page</option><option>webhook</option></select></label>' +
       '<label class="wide">Task<textarea id="autoTask"></textarea></label>' +
       '<label class="wide">Schedule seconds, file path, or page URL<input id="autoTarget"></label>' +
       '<label>Workspace<select id="autoWorkspace"><option value="isolated">Isolated</option><option value="current">Current (explicit authority)</option></select></label>' +
-      '<label>Max runs / day<input id="autoRuns" type="number" min="1"></label>' +
-      '<label>Max model tokens<input id="autoTokens" type="number" min="1"></label>' +
-      '<label>Max cost USD<input id="autoCost" type="number" min="0.01" step="0.01"></label>' +
-      '<label>Max wall seconds<input id="autoWall" type="number" min="1"></label>' +
+      '<label>' + t("Max runs / day") + '<input id="autoRuns" type="number" min="1"></label>' +
+      '<label>' + t("Max model tokens") + '<input id="autoTokens" type="number" min="1"></label>' +
+      '<label>' + t("Max cost USD") + '<input id="autoCost" type="number" min="0.01" step="0.01"></label>' +
+      '<label>' + t("Max wall seconds") + '<input id="autoWall" type="number" min="1"></label>' +
+      '<label>' + t("Max tool actions") + '<input id="autoActions" type="number" min="1" step="1"></label>' +
       '<p class="control-note" id="autoBudgetHelp"></p>' +
       '<label>Readable roots (comma/newline)<textarea id="autoReadRoots"></textarea></label>' +
       '<label>Network hosts (comma/newline)<textarea id="autoHosts"></textarea></label>' +
       '<div class="control-checks"><label><input id="autoEnabled" type="checkbox"> Enabled</label>' +
       '<label><input id="autoExternal" type="checkbox"> Permit external writes</label></div>' +
       '<div class="control-actions"><button type="button" id="autoPreview">Dry run trigger</button>' +
-      '<button type="button" class="primary" id="autoSave">Save automation</button></div></div>';
+      '<button type="button" class="primary" id="autoSave">Save automation</button>' +
+      '<button type="button" id="autoClose">' + t("Close") + '</button></div></div>';
     $("activityGrid").prepend(editor);
     var trigger = spec.trigger || {}, permissions = spec.permissions || {}, budget = spec.budget || {};
     $("autoId").value = spec.automation_id || ""; $("autoTask").value = spec.task || "";
@@ -6781,12 +6820,16 @@
     $("autoWorkspace").value = (spec.workspace || {}).mode || "isolated";
     $("autoRuns").value = budget.max_runs_per_day || 24; $("autoTokens").value = budget.max_model_tokens || 200000;
     $("autoCost").value = budget.max_cost_usd || 25; $("autoWall").value = budget.max_wall_s || 1800;
-    automationEditorBudget = budget;
-    // Say what stops the work. Only an automation that already carries a turn cap mentions one —
-    // there is no new field for it, and saving this form keeps whatever is stored.
-    $("autoBudgetHelp").textContent = Number(budget.max_turns || 0) > 0 ?
-      t("Collie keeps working until the task is done or one of these budgets runs out. This automation also stops after a fixed number of model turns, set outside this panel; saving keeps it.") :
-      t("Collie keeps working until the task is done or one of these budgets runs out. There is no separate turn limit.");
+    $("autoActions").value = budget.max_actions || 100;
+    automationEditorBase = JSON.parse(JSON.stringify(spec));
+    // Say what actually stops the work, including the ceilings this form does not let you move:
+    // a turn cap set outside the panel is named with the number it carries.
+    var turns = Number(budget.max_turns || 0);
+    $("autoBudgetHelp").textContent =
+      t("Collie keeps working until the task is done or one of these budgets runs out, including the tool-action ceiling.") + " " +
+      (turns > 0 ? t("It also stops after") + " " + turns + " " +
+                   t("model turns, a cap set outside this panel and kept as it is on save.")
+                 : t("No model-turn ceiling is set, so turns are not what ends this run."));
     $("autoReadRoots").value = (permissions.read_roots || []).join("\n");
     $("autoHosts").value = (permissions.network_hosts || []).join("\n");
     $("autoEnabled").checked = spec.enabled === true; $("autoExternal").checked = permissions.external_writes === true;
@@ -6797,6 +6840,7 @@
     $("autoSave").onclick = function () { activityPost("/api/automations/upsert",
       {spec:automationEditorSpec()}).then(function () { activityNotice("Automation saved.", false); loadActivity(); })
         .catch(function (e) { activityNotice(e.message, true); }); };
+    $("autoClose").onclick = function () { editor.remove(); };
   }
   function renderAutomations(data) {
     $("activityHealth").textContent = (data.specs || []).length + " configured";

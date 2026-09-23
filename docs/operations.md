@@ -54,9 +54,11 @@ An automation is bounded by its budget, and every key is frozen into the spec wh
 | `max_retries` | 1 | Reclaim attempts after a crashed read-only execution. 0 disables retries. |
 | `max_turns` | 0 | Optional hard ceiling on model turns. **0 = no turn ceiling.** |
 
-The first five are measured against observed usage and must be positive: they are what actually
-bounds an unattended run, so "unlimited turns" is only safe while they stay mandatory. Only
-`max_turns` and `max_retries` accept 0.
+The first five must be positive: they are what actually bounds an unattended run, so "unlimited
+turns" is only safe while they stay mandatory. Four of them — `max_wall_s`, `max_model_tokens`,
+`max_cost_usd` and `max_actions` — are metered against observed usage during the run. Metered is
+not the same as rate-limited: `max_runs_per_day` bounds how often the trigger may start a run and
+is never consumed inside one. Only `max_turns` and `max_retries` accept 0.
 
 A turn ceiling is different in kind. Nothing meters it and it is not reported in advance, so a run
 that hits it stops mid-task — `stop_reason: turn_limit`, status **Needs You** — with wall, tokens
@@ -65,6 +67,21 @@ Studio editor carries a stored cap through untouched instead of rewriting it. An
 already has an explicit positive cap keeps it exactly as written; nothing migrates existing values.
 An accepted cap is applied as written, including values above the Settings panel's interactive
 turn-cap range, which bounds keyboard surfaces rather than accepted automation budgets.
+
+The Automation Studio editor shows `max_runs_per_day`, `max_model_tokens`, `max_cost_usd`,
+`max_wall_s` and `max_actions`, and its help names every ceiling that can end a run — including a
+turn cap set outside the panel, with the number it carries. `max_actions` is a tool-call ceiling,
+not a turn ceiling: a run that exhausts it stops the same way, so it is editable rather than
+implied.
+
+Saving replaces the whole stored record, so the editor starts from the automation exactly as it was
+accepted and overlays only the fields the person changed. Everything the form does not show —
+`context`, `execution` (a plan automation stays a plan automation), `notifications`, workspace
+options, `permissions.write_roots`/`tools`/`desktop_targets`, the remaining budget keys, and the
+trigger's predicate and scheduling fields — is carried through unchanged. Choosing a different
+trigger type builds a trigger for that type instead of keeping the old target. Authority follows
+the choice that grants it: picking the current workspace or a webhook trigger authorizes it, and
+leaving either alone keeps exactly the authority that was accepted, neither widened nor dropped.
 
 Separately from all of this, the loop uses a **soft convergence target** (50 turns when no cap is
 set) to decide when to stop exploring, nudge toward a commit, and withdraw exploration tools. That
