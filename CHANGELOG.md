@@ -6,6 +6,16 @@
   that action once with the same payload. Other errors remain visible without automatic replay.
 - Open an automation's saved conversation from its execution history, including partial work
   that needs attention. Navigation does not restart the task or expose answers in health metadata.
+- Let an automation work until the task is done or one of its budgets runs out. New automations
+  have no turn ceiling; wall, token, cost, tool-action and runs-per-day budgets stay mandatory
+  and are what bound the run. An explicit turn cap is now honored exactly as written, including
+  values above the Settings panel's interactive range, and existing caps are left unchanged.
+  Automation Studio now shows the tool-action budget as an editable field and says which
+  ceilings can end a run, including a turn cap set outside the panel.
+- Keep everything the Automation Studio form does not show when an automation is edited: the
+  execution mode (a plan automation is no longer promoted to a writable project run), context
+  policy, notification choices, permissions, trigger predicate and the rest of the budget.
+  Opening a second editor replaces the first instead of duplicating the form.
 - Show healthy automatic follow-ups as task progress instead of requests for a decision.
   Keep stopped or unconfirmed starts visible, and show the next retry time consistently.
 - Count verification evidence only for checks that actually reached the tool. Refused or
