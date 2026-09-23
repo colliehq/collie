@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Show the operations panel only answers for the screen that asked for them. A refresh that
+  finishes after a tab change, a newer refresh or a panel close no longer replaces current
+  content, health or messages, and no longer paints over an automation draft opened since.
+  Failures for the tab you are on are still reported.
+- Confirm a saved automation after its refresh finishes, so the message is readable, and send
+  one upsert per Save gesture. A refused save keeps the filled form and the usable button.
+- Answer a save on the form it was typed in. Leaving the automation editor, switching tabs or
+  closing the panel before the save lands no longer refreshes someone else's tab, carries the
+  confirmation onto the next screen, or re-enables a second editor mid-save. The write itself
+  still counts. A form stops taking edits only while its own save is in flight, and takes them
+  again if the save is refused.
+
 - Refresh an expired process token when an operations-panel action is refused, then retry
   that action once with the same payload. Other errors remain visible without automatic replay.
 - Open an automation's saved conversation from its execution history, including partial work

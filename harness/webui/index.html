@@ -6529,6 +6529,7 @@
     detail.textContent = text; row.appendChild(detail);
   }
   function activityNotice(message, bad) {
+    activityNoticeSeq++;
     var node = $("activityNotice"); if (!node) return;
     node.textContent = message || ""; node.classList.toggle("bad", !!bad);
   }
@@ -6543,6 +6544,9 @@
     row.appendChild(button); return button;
   }
   var currentControlTab = "overview", controlData = {};
+  // A refresh answers the screen it was asked for. These let a late response say whether that
+  // screen is still there: a newer refresh, another tab or a closed panel retires an older one.
+  var activityRequestSeq = 0, activityNoticeSeq = 0;
   // Set by a conversation asking for ITS recovery item, and consumed by the next recovery render.
   var recoveryFocusSession = "";
   function renderOverview(activity, health, hooks, doctor) {
@@ -6746,6 +6750,23 @@
         external_writes:$("autoExternal").checked, current_workspace:current,
         webhook_ingest:provider === "webhook"} };
   }
+  // The editor on screen, as an identity rather than a yes/no. Two editors opened one after the
+  // other are two different screens even though their fields share element ids, so a callback
+  // that held on to the first one can tell it is looking at the second.
+  function currentControlEditor() {
+    var grid = $("activityGrid"); return grid ? grid.querySelector(".control-editor") : null;
+  }
+  // While a form's write is in flight its own fields stop taking input: the refresh that follows
+  // redraws the lane, and anything typed in between would disappear with it. Only this form, and
+  // only fields that were editable, so giving them back cannot enable something already off.
+  function lockControlFields(form) {
+    return Array.prototype.filter.call(form.querySelectorAll("input, select, textarea"),
+      function (field) { return !field.disabled; })
+      .map(function (field) { field.disabled = true; return field; });
+  }
+  function unlockControlFields(fields) {
+    fields.forEach(function (field) { field.disabled = false; });
+  }
   function showAutomationEditor(spec) {
     spec = spec || {automation_id:"",task:"",trigger:{provider:"timer",every_s:3600},
       workspace:{mode:"isolated"},budget:{},permissions:{},enabled:false};
@@ -6765,6 +6786,9 @@
       '<label><input id="autoExternal" type="checkbox"> Permit external writes</label></div>' +
       '<div class="control-actions"><button type="button" id="autoPreview">Dry run trigger</button>' +
       '<button type="button" class="primary" id="autoSave">Save automation</button></div></div>';
+    // One editor at a time. Opening another closes the one before it, so "this form" stays a
+    // single identity and the shared field ids always name the form the user is looking at.
+    var previous = currentControlEditor(); if (previous) previous.remove();
     $("activityGrid").prepend(editor);
     var trigger = spec.trigger || {}, permissions = spec.permissions || {}, budget = spec.budget || {};
     $("autoId").value = spec.automation_id || ""; $("autoTask").value = spec.task || "";
@@ -6781,9 +6805,32 @@
       {spec:automationEditorSpec()}).then(function (d) { activityNotice(d.fired ?
         "Trigger matches now; nothing was queued." : "Trigger does not match now; nothing was queued.", false); })
         .catch(function (e) { activityNotice(e.message, true); }); };
-    $("autoSave").onclick = function () { activityPost("/api/automations/upsert",
-      {spec:automationEditorSpec()}).then(function () { activityNotice("Automation saved.", false); loadActivity(); })
-        .catch(function (e) { activityNotice(e.message, true); }); };
+    // One upsert per gesture: a second click while the first is in flight would write again.
+    // The confirmation waits for the refresh, which otherwise clears it in the same tick.
+    // A save owns exactly one screen -- the form it was typed in, on the tab it was typed on,
+    // in a panel still open. The write itself stands either way, but once that screen is gone
+    // the answer has nothing to say about whatever replaced it: no message, no refresh of
+    // someone else's tab, and no touching another editor's button.
+    var save = $("autoSave");
+    save.onclick = function () {
+      if (save.disabled) return;
+      var tab = currentControlTab, locked = lockControlFields(editor);
+      save.disabled = true;
+      var mine = function () {
+        return editor.isConnected && tab === currentControlTab &&
+          !!activityPanel && !activityPanel.hidden;
+      };
+      return activityPost("/api/automations/upsert", {spec:automationEditorSpec()})
+        .then(function () {
+          return mine() ? loadActivity({confirmNotice:"Automation saved."}) : false; },
+          function (e) { if (mine()) activityNotice(e.message, true); return false; })
+        .then(function (applied) {
+          // Give the form back only if it is still this form: another editor's fields and
+          // button are not ours to re-enable, and enabling them would let a second upsert out.
+          if (editor.isConnected) { save.disabled = false; unlockControlFields(locked); }
+          return applied;
+        });
+    };
   }
   function renderAutomations(data) {
     $("activityHealth").textContent = (data.specs || []).length + " configured";
@@ -7204,32 +7251,57 @@
   }
   Array.prototype.forEach.call(document.querySelectorAll("[data-control-tab]"), function (button) {
     button.onclick = function () { setControlTab(button.dataset.controlTab); }; });
-  function loadActivity() {
-    if (!activityPanel || activityPanel.hidden) return Promise.resolve();
-    $("activityGrid").classList.toggle("online-dashboard", currentControlTab === "online");
+  function loadActivity(request) {
+    if (!activityPanel || activityPanel.hidden) return Promise.resolve(false);
+    var tab = currentControlTab, generation = ++activityRequestSeq;
+    // Which editor was on screen when this was asked for, not merely whether one was. An action
+    // asks for its own confirmation here; `.then(loadActivity)` hands over a response body, and
+    // a response body is not a message for the user.
+    var editorAtStart = currentControlEditor();
+    var pending = request && request.confirmNotice ? String(request.confirmNotice) : "";
+    $("activityGrid").classList.toggle("online-dashboard", tab === "online");
     $("activityHealth").textContent = "loading";
-    activityNotice(""); var requests, render;
-    if (currentControlTab === "overview") {
+    activityNotice(""); var requests, render, noticeSeq = activityNoticeSeq;
+    if (tab === "overview") {
       requests = Promise.all([activityGet("/api/activity"), activityGet("/api/healthz"),
         activityGet("/api/hooks"), activityGet("/api/doctor")]);
       render = function (values) { renderOverview(values[0],values[1],values[2],values[3]); };
-    } else if (currentControlTab === "recovery") {
+    } else if (tab === "recovery") {
       requests = activityGet("/api/recovery-center"); render = renderRecovery;
-    } else if (currentControlTab === "online") {
+    } else if (tab === "online") {
       requests = activityGet("/api/online"); render = renderOnline;
-    } else if (currentControlTab === "automations") {
+    } else if (tab === "automations") {
       requests = activityGet("/api/automations"); render = renderAutomations;
-    } else if (currentControlTab === "memory") {
+    } else if (tab === "memory") {
       requests = activityGet("/api/memory/claims"); render = renderMemory;
-    } else if (currentControlTab === "procedures") {
+    } else if (tab === "procedures") {
       requests = activityGet("/api/procedures"); render = renderProcedures;
-    } else if (currentControlTab === "budgets") {
+    } else if (tab === "budgets") {
       requests = activityGet("/api/budgets"); render = renderBudgets;
     } else { requests = activityGet("/api/security"); render = renderSecurity; }
-    return requests.then(function (value) { controlData[currentControlTab] = value; render(value); })
-      .catch(function (error) { $("activityHealth").textContent = error.message || "unavailable";
+    // The screen this answer was asked for: still the newest request, still that tab, still open.
+    var current = function () {
+      return generation === activityRequestSeq && tab === currentControlTab &&
+        !!activityPanel && !activityPanel.hidden;
+    };
+    return requests.then(function (value) {
+      if (!current()) return false;
+      // A different editor from the one this refresh was asked under holds text the user has not
+      // saved -- opened since, or opened in place of the one that was there. Either way the
+      // older answer must not paint over it. Refreshing with the same editor still redraws.
+      if (currentControlEditor() !== editorAtStart) return false;
+      controlData[tab] = value;
+      // Something else spoke to the user while this was in flight; leave its message alone.
+      var quiet = activityNoticeSeq === noticeSeq;
+      render(value);
+      if (pending && quiet) activityNotice(t(pending), false);
+      return true;
+    })
+      .catch(function (error) { if (!current()) return false;
+        $("activityHealth").textContent = error.message || "unavailable";
         $("activityHealth").classList.add("bad");
-        activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true); });
+        activityNotice("Activity could not refresh: " + (error.message || error || "unavailable"), true);
+        return false; });
   }
   var activityPageMode = "activity";
   function setActivityMode(mode) {
@@ -7272,7 +7344,10 @@
     setActivityOpen(false); if (typeof returnToPrimarySurface === "function") returnToPrimarySurface();
   };
   if ($("activityRefresh")) $("activityRefresh").onclick = loadActivity;
-  window.setInterval(function () { if (activityPanel && !activityPanel.hidden) loadActivity(); }, 10000);
+  // The background poll re-renders the whole grid, which would discard an open automation draft.
+  // Explicit refreshes, tab changes and the save itself still run.
+  window.setInterval(function () {
+    if (activityPanel && !activityPanel.hidden && !currentControlEditor()) loadActivity(); }, 10000);
 
   // ---- Library: exact installed bytes + authority, with explicit lifecycle actions ----
   var libraryPanel = $("libraryPanel");
