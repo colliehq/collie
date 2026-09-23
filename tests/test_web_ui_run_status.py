@@ -30,6 +30,12 @@ sync_playwright = playwright_api.sync_playwright
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEBUI = os.path.join(os.path.dirname(HERE), "harness", "webui")
 TOKEN = "fixture-token"
+# What `/api/verification` answers here. The real route resolves a directory with
+# `sessions.resolve_cwd` and returns it, or refuses (409/404) — a 200 always names an absolute,
+# non-empty one (tests/test_verification_scope_api.py). The catch-all `{}` below used to answer
+# this route too, so every page loaded by this fixture booted with a working folder the server
+# had never named: a fixture contradicting the route, which is not a contract to build on.
+PROJECT_CWD = os.path.dirname(HERE)
 
 # ---------------------------------------------------------------- staged runs
 # Each script is a list of (event, payload). The stream sends them in order and closes, which is
@@ -578,6 +584,10 @@ class _Fixture(BaseHTTPRequestHandler):
             return self._json(dict(state, session_id=sid))
         if path == "/api/stream":
             return self._stream(query)
+        if path == "/api/verification":
+            sid = (query.get("session") or [""])[0]
+            return self._json({"session": sid, "cwd": (query.get("cwd") or [""])[0] or PROJECT_CWD,
+                               "candidates": []})
         if path.startswith("/api/"):
             return self._json({})
         return self._json({}, 404)

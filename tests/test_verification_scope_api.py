@@ -1,5 +1,24 @@
+import os
+
 from harness import sessions
 from test_web_task_inbox import web, _get, _call
+
+
+def test_a_new_tasks_boot_question_is_answered_with_a_resolved_folder(web):
+    """The question a new tab asks before anything is typed: no thread, no chosen folder.
+
+    The page reads a 200 here as "this is where a new task runs" and lets Send start there, so
+    the route has to mean it: a 200 names one absolute, existing directory, and a root it cannot
+    resolve is a refusal rather than an answer with nothing in it.
+    """
+    base, token, state = web
+    code, data = _call(base + "/api/verification")
+    assert code == 200, data
+    assert isinstance(data["cwd"], str) and data["cwd"].strip(), \
+        "a 200 with no folder in it would be read as a settled working folder"
+    assert os.path.isabs(data["cwd"]) and os.path.isdir(data["cwd"])
+    assert data["cwd"] == os.path.abspath(data["cwd"]), "the answer is the resolved path"
+    assert _get(base, token, "/api/verification")[1]["cwd"] == data["cwd"]
 
 
 def test_new_folder_selection_is_authenticated_and_never_retargets_a_saved_thread(web):

@@ -43,6 +43,12 @@
   and are not retried on their own — including when it is the final spend tally that crosses
   the budget, which used to discard the finished run's whole receipt. A transcript that did
   not save is reported instead of being claimed as durable history.
+- Say when a new task's working folder has not been confirmed yet, retry that check a bounded
+  number of times, and settle it before Send starts anything. A failed first check no longer
+  leaves a blank folder and a request that runs wherever the server defaults to; the draft and
+  its attachments are kept with a visible reason instead. A check that is never answered now
+  gives up after ten seconds and says so rather than leaving Send waiting forever, and an answer
+  that names no folder is treated as no answer at all.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
