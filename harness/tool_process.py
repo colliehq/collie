@@ -301,13 +301,15 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
     command really stopped, and a still-draining test runner writing files would make that
     a lie. Only the group started by this call is ever signalled.
 
-    ``reap`` waits on our own direct child, and must run BEFORE the poll: a SIGKILLed child
-    that nobody has waited on is a zombie, a zombie is still a member of its process group,
-    and ``killpg(pgid, 0)`` therefore keeps succeeding — which would turn every clean POSIX
-    cancellation into a five-second wait ending in "could not be confirmed". The shell's own
-    descendants need no such care; they are reparented to init and reaped there.
+    Signal before reaping our direct child: an unreaped group leader can be the last
+    member preventing pgid reuse. Never send another destructive signal after reaping.
+    Reap before probing because our own zombie can otherwise keep the group present.
+    Darwin also returns EPERM to SIGKILL for a zombie-only group, then ESRCH after
+    reaping. A denied initial signal therefore still permits this cleanup and bounded
+    probe when a reaper is available. Only ESRCH confirms extinction.
     """
     import signal
+    initial_error = ""
     try:
         os.killpg(int(pgid), getattr(signal, "SIGKILL", 9))
     except ProcessLookupError:
@@ -315,11 +317,14 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
             reap()
         return True, ""
     except OSError as e:
-        return False, "%s: %s" % (type(e).__name__, e)
+        initial_error = "%s: %s" % (type(e).__name__, e)
+        if reap is None:
+            # Without a reaper there is no further child cleanup we can perform here.
+            return False, initial_error
     if reap is not None:
         reap()
     deadline = time.monotonic() + max(0.0, float(timeout_s))
-    probe_error = ""
+    probe_error = initial_error
     while True:
         try:
             os.killpg(int(pgid), 0)
@@ -332,7 +337,7 @@ def _kill_owned_group(pgid: int, timeout_s: float, reap=None):
             # EPERM nor a successful signal is itself proof of termination.
             probe_error = "%s: %s" % (type(e).__name__, e)
         if time.monotonic() >= deadline:
-            return False, (probe_error or
+            return False, (probe_error or initial_error or
                            "process group still had members %.0fs after SIGKILL" % timeout_s)
         time.sleep(.01)
 
@@ -434,7 +439,6 @@ class _Owner:
         elif plat.is_windows():
             confirmed, detail = self._terminate_windows_taskkill(timeout_s)
         elif self.pgid > 1:
-            self._reap_if_exited()
             confirmed, detail = _kill_owned_group(
                 self.pgid, timeout_s, reap=lambda: self._reap_direct(timeout_s))
         else:
@@ -487,26 +491,6 @@ class _Owner:
         if self._reap_direct(timeout_s):
             return False, ""
         return False, "the command did not exit after kill()"
-
-    def _reap_if_exited(self) -> None:
-        """Wait on the direct child IF it has already exited. Never blocks a live one.
-
-        Cancellation is checked before the command's exit is, and rightly so — but that
-        means a command which finished a moment before Stop arrives is killed as a tree
-        while its own leader is still an unreaped zombie of OURS. A zombie is a member of
-        its process group, so ``killpg(pgid, 0)`` keeps answering for it and Darwin can
-        answer even the SIGKILL with EPERM when the group holds nothing else. Collie is
-        the only process that can reap this one, so a group kept alive this way is a fact
-        about Collie's bookkeeping, not about the command — and spending the recovery
-        fence on it sends a human to inspect a process that has already exited.
-
-        ``poll()`` reaps an already-dead child and returns immediately for a running one,
-        so the kill keeps its place at the front of a real cancellation.
-        """
-        try:
-            self.proc.poll()
-        except Exception:
-            pass          # a caller's process double is not a reason to skip the kill
 
     def _reap_direct(self, timeout_s) -> bool:
         try:

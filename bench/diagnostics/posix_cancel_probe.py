@@ -17,12 +17,19 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 BASE = 'e542a3dacf3ced84f8fc4a20286dc74676bf8f80'
 variant = os.environ['DIAGNOSTIC_VARIANT']
-assert variant in ('baseline', 'reap-exited-first')
+assert variant in ('baseline', 'signal-first-reap')
 print(json.dumps({'platform': platform.platform(), 'machine': platform.machine(),
                   'python': sys.version, 'variant': variant}), flush=True)
 if variant == 'baseline':
-    original = subprocess.check_output(['git', 'show', BASE+':harness/tool_process.py'], cwd=ROOT)
-    (ROOT/'harness/tool_process.py').write_bytes(original)
+    for relative in ('harness/tool_process.py', 'harness/verification.py'):
+        original = subprocess.check_output(['git', 'show', BASE+':'+relative], cwd=ROOT)
+        (ROOT/relative).write_bytes(original)
+else:
+    # Run the ordering contracts on the actual candidate platform as well as
+    # repeating the end-to-end race below. Baseline is expected to fail these.
+    subprocess.run([sys.executable, '-m', 'pytest', '-q', '--no-header',
+                    'tests/test_posix_group_confirmation.py',
+                    'tests/test_nested_cancel_ownership.py'], cwd=ROOT, check=True, timeout=60)
 
 
 def group_answer(pgid, sig):
