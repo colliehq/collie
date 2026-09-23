@@ -909,6 +909,7 @@
   .control-form input,.control-form textarea,.control-form select { width:100%; border:1px solid var(--line);
     border-radius:7px; background:var(--surface); color:var(--ink); padding:7px; font:12px var(--sans); }
   .control-form textarea { min-height:66px; resize:vertical; }
+  .control-note { grid-column:1/-1; margin:0; color:var(--muted); font-size:10.5px; line-height:1.45; }
   .control-checks { grid-column:1/-1; display:flex; gap:12px; flex-wrap:wrap; }
   .control-checks label { flex-direction:row; align-items:center; }
   .control-actions { grid-column:1/-1; display:flex; gap:7px; align-items:center; }
@@ -3250,6 +3251,10 @@
     return "en";
   }
   var ZH = {
+    "Collie keeps working until the task is done or one of these budgets runs out. There is no separate turn limit.":
+      "Collie 会一直做到任务完成，或其中一项额度用尽为止；没有单独的轮数上限。",
+    "Collie keeps working until the task is done or one of these budgets runs out. This automation also stops after a fixed number of model turns, set outside this panel; saving keeps it.":
+      "Collie 会一直做到任务完成，或其中一项额度用尽为止。这条自动化还设有固定的模型轮数上限（在此面板之外设置）；保存时会保留该设置。",
     "Starting now — already submitted": "已提交，正在启动",
     "Automatic start stopped — start it when you're ready": "自动启动已停止，可随时手动开始",
     "Already submitted — starts after": "已提交，将在此时间后开始",
@@ -6720,18 +6725,27 @@
   }
   function controlList(value) { return String(value || "").split(/[\n,;]/).map(function (x) {
     return x.trim(); }).filter(Boolean); }
+  // The budget of the automation currently open in the editor. This form shows four of its
+  // keys; the rest (a turn cap, an action cap, a retry count, anything added later) belong to
+  // whoever set them, so an edit here carries them through untouched instead of rebuilding the
+  // budget from literals and silently resetting a deliberate choice.
+  var automationEditorBudget = {};
   function automationEditorSpec() {
     var provider = $("autoProvider").value, target = $("autoTarget").value.trim(), trigger = {provider:provider};
     if (provider === "timer") trigger.every_s = Math.max(1, Number(target || 3600));
     if (provider === "file") { trigger.path = target; trigger.predicate = {type:"changed"}; }
     if (provider === "page") { trigger.url = target; trigger.predicate = {type:"changed"}; }
     var current = $("autoWorkspace").value === "current";
+    var budget = Object.assign({}, automationEditorBudget);
+    // A new automation is bounded by the budgets on this form and runs as many turns as the
+    // work needs; 0 is "no hard turn ceiling". An existing cap is left exactly as stored.
+    if (!("max_turns" in budget)) budget.max_turns = 0;
+    budget.max_wall_s = Number($("autoWall").value || 1800);
+    budget.max_model_tokens = Number($("autoTokens").value || 200000);
+    budget.max_cost_usd = Number($("autoCost").value || 25);
+    budget.max_runs_per_day = Number($("autoRuns").value || 24);
     return { automation_id:$("autoId").value.trim(), task:$("autoTask").value.trim(), trigger:trigger,
-      context:{policy:"fresh"}, workspace:{mode:current ? "current" : "isolated"},
-      budget:{max_wall_s:Number($("autoWall").value || 1800),
-        max_model_tokens:Number($("autoTokens").value || 200000),
-        max_cost_usd:Number($("autoCost").value || 25), max_actions:100,
-        max_runs_per_day:Number($("autoRuns").value || 24), max_retries:1, max_turns:50},
+      context:{policy:"fresh"}, workspace:{mode:current ? "current" : "isolated"}, budget:budget,
       execution:{mode:"project"}, notifications:["failure","needs_you"], enabled:$("autoEnabled").checked,
       permissions:{read_roots:controlList($("autoReadRoots").value), write_roots:[],
         network_hosts:controlList($("autoHosts").value), tools:[], desktop_targets:[],
@@ -6751,6 +6765,7 @@
       '<label>Max model tokens<input id="autoTokens" type="number" min="1"></label>' +
       '<label>Max cost USD<input id="autoCost" type="number" min="0.01" step="0.01"></label>' +
       '<label>Max wall seconds<input id="autoWall" type="number" min="1"></label>' +
+      '<p class="control-note" id="autoBudgetHelp"></p>' +
       '<label>Readable roots (comma/newline)<textarea id="autoReadRoots"></textarea></label>' +
       '<label>Network hosts (comma/newline)<textarea id="autoHosts"></textarea></label>' +
       '<div class="control-checks"><label><input id="autoEnabled" type="checkbox"> Enabled</label>' +
@@ -6766,6 +6781,12 @@
     $("autoWorkspace").value = (spec.workspace || {}).mode || "isolated";
     $("autoRuns").value = budget.max_runs_per_day || 24; $("autoTokens").value = budget.max_model_tokens || 200000;
     $("autoCost").value = budget.max_cost_usd || 25; $("autoWall").value = budget.max_wall_s || 1800;
+    automationEditorBudget = budget;
+    // Say what stops the work. Only an automation that already carries a turn cap mentions one —
+    // there is no new field for it, and saving this form keeps whatever is stored.
+    $("autoBudgetHelp").textContent = Number(budget.max_turns || 0) > 0 ?
+      t("Collie keeps working until the task is done or one of these budgets runs out. This automation also stops after a fixed number of model turns, set outside this panel; saving keeps it.") :
+      t("Collie keeps working until the task is done or one of these budgets runs out. There is no separate turn limit.");
     $("autoReadRoots").value = (permissions.read_roots || []).join("\n");
     $("autoHosts").value = (permissions.network_hosts || []).join("\n");
     $("autoEnabled").checked = spec.enabled === true; $("autoExternal").checked = permissions.external_writes === true;

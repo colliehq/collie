@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Let an automation work until the task is done or a visible budget runs out. New automations
+  have no turn ceiling; wall, token, cost, action and runs-per-day budgets stay mandatory and
+  are what bound the run. An explicit turn cap is now honored exactly as written, including
+  values above the Settings panel's interactive range, and existing caps are left unchanged.
+  Editing an automation in Automation Studio no longer rewrites budget keys the form does not
+  show.
 - Show healthy automatic follow-ups as task progress instead of requests for a decision.
   Keep stopped or unconfirmed starts visible, and show the next retry time consistently.
 - Count verification evidence only for checks that actually reached the tool. Refused or

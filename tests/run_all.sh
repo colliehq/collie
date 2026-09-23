@@ -105,6 +105,7 @@ echo "── renderer tests (JS) ───────────────�
 if [ "$NODE_OK" = "1" ]; then
   node tests/render_test.js || rc=1
   node tests/mail_names_test.js || rc=1
+  node tests/automation_budget_test.js || rc=1
 else
   echo "  (node not found — skipping renderer suite)"
 fi

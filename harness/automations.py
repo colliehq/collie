@@ -262,9 +262,13 @@ class AutomationSpec:
         if workspace.get("mode", "isolated") == "current" and not permissions.current_workspace:
             raise ValueError("current workspace requires permissions.current_workspace=true")
         budget = object_field("budget", {})
+        # max_turns 0 = no hard turn ceiling: an automation is bounded by the budgets that
+        # actually meter consumption, and those stay mandatory and strictly positive. An
+        # explicit positive cap written by a person is kept exactly as written.
         defaults = {"max_wall_s": 1800.0, "max_model_tokens": 200000,
                     "max_cost_usd": 25.0, "max_actions": 100,
-                    "max_runs_per_day": 24, "max_retries": 1, "max_turns": 50}
+                    "max_runs_per_day": 24, "max_retries": 1, "max_turns": 0}
+        unbounded_ok = ("max_retries", "max_turns")
         for key, default in defaults.items():
             raw = budget.get(key, default)
             try:
@@ -277,7 +281,7 @@ class AutomationSpec:
                     raise ValueError
             except (TypeError, ValueError, OverflowError):
                 raise ValueError("budget.%s must be numeric" % key)
-            if number < 0 or (key != "max_retries" and number == 0):
+            if number < 0 or (key not in unbounded_ok and number == 0):
                 raise ValueError("budget.%s must be positive" % key)
             budget[key] = number
         execution = object_field("execution", {})
@@ -1289,8 +1293,14 @@ def _run_collie_request(request: dict) -> dict:
     authority_store = (AutomationStore(str(request.get("_authority_db")))
                        if request.get("_authority_db") else None)
     try:
-        harness.max_turns = min(harness.max_turns, int(budget.get("max_turns") or 50))
-        harness._max_turns_hard_cap = harness.max_turns
+        # The accepted budget is this run's turn authority, applied exactly: zero means no hard
+        # turn ceiling, and a positive cap is honoured whatever the ambient MAX_TURNS says and
+        # above the Settings panel's interactive range (make_harness clamps that to 120 for the
+        # keyboard surfaces, which is not a ceiling on what an automation was accepted with).
+        # Intersecting the two was wrong in both directions, because 0 means unlimited on each.
+        turn_cap = max(0, int(budget.get("max_turns") or 0))
+        harness.max_turns = turn_cap
+        harness._max_turns_hard_cap = turn_cap or None
         if hasattr(harness.provider, "max_tokens"):
             harness.provider.max_tokens = max(1, min(
                 int(harness.provider.max_tokens), int(budget.get("max_model_tokens") or 1)))
@@ -1374,7 +1384,11 @@ def _run_collie_request(request: dict) -> dict:
 
 
 class DefaultCollieRunner:
-    """Run native Collie in a killable child with hard wall/token/cost/turn/action caps."""
+    """Run native Collie in a killable child with hard wall/token/cost/action caps.
+
+    The exported COLLIE_MAX_TURNS is the accepted budget's own value, so the child's
+    receipt and its actual ceiling agree; 0 there means no hard turn ceiling.
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
