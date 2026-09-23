@@ -2,6 +2,11 @@
 
 ## v0.28.0 — Longer tasks and clearer recovery
 
+- Give the final no-tools request an explicit summary instruction when execution ends without
+  a usable answer. It names an exhausted turn limit when applicable and asks for observed work
+  and remaining steps, without inventing verification or conversation persistence. A returned
+  tool request and its accompanying prose fall back to a stopped-run message. No extra request
+  or retry is added, and the host's own "not finished" notice is unchanged.
 - Refuse unsupported providers when a caller explicitly requires subscription-only routing,
   before provider construction or plugin discovery. Codex OAuth also requires its first-party
   endpoint under that constraint. Ordinary provider selection is unchanged.

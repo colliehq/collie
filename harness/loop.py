@@ -765,6 +765,33 @@ ROLLBACK_NUDGE = (
     "turns, either (a) re-apply your earlier fix, corrected for whatever made you revert it, or "
     "(b) make the single smallest edit you are most confident addresses the issue. Then finish.")
 
+# A real capped run returned its next read_file call as prose during no-tools synthesis.
+# Tell the model that execution ended; merely removing the schemas leaves that ambiguous.
+def final_summary_instruction(turns_exhausted: bool, turn_cap: int = 0) -> str:
+    """Explain the final no-tools turn without inventing an unobserved stop reason."""
+    if turns_exhausted and turn_cap:
+        why = ("You have used all %d turns allowed for this task, so the host ended execution "
+               "here." % turn_cap)
+    elif turns_exhausted:
+        why = "The host ended execution here because this task's turn limit was reached."
+    else:
+        # This also covers a voluntary but empty answer, not just a host guard.
+        why = "Execution has ended without a usable final answer."
+    return (
+        "HOST NOTICE — EXECUTION HAS ENDED. %s\n\n"
+        "This turn is the FINAL SUMMARY of the work already shown above, written for the person "
+        "who asked. No tools are available on this turn and nothing you write will be executed: "
+        "you cannot read, edit, search or run anything further, and any tool call you emit now is "
+        "discarded, not run. Do not ask for permission, approval or another reply on this turn.\n\n"
+        "Write a short report, grounded ONLY in the tool results above:\n"
+        "- what you actually accomplished;\n"
+        "- what remains unfinished, including the step you were about to take.\n\n"
+        "Do not claim the task is complete. Only mention checks, tests or verification supported "
+        "by tool results. Do not claim this conversation or final report has been saved or "
+        "delivered; persistence happens after this response. You may describe files already "
+        "written by recorded tools. If nothing useful was accomplished, say so plainly." % why)
+
+
 _JUNK_UNTRACKED = ("__pycache__", ".pyc", "venv/", ".venv/", "node_modules/",
                    ".egg-info", ".dist-info", ".pytest_cache")
 
@@ -3556,6 +3583,14 @@ class Harness:
                         # the raw thread is the single most likely place to actually overflow.
                         _sys2, msgs2, _m2 = self.composer.build(
                             session, safe_user_msg, self.cwd, self.project, self.mode)
+                        # ...and tell the model that this is the summary turn and why the run
+                        # stopped. Without it the model reads an ordinary working thread and
+                        # answers with its next tool call (see final_summary_instruction).
+                        # Appended to the projection only — session["messages"] keeps the real
+                        # transcript, and the extra message costs no additional request.
+                        msgs2 = list(msgs2) + [{
+                            "role": "user", "source": "harness", "kind": "final_summary",
+                            "content": final_summary_instruction(turns_exhausted, turn_cap)}]
                         from .cancellation import complete as complete_cancelable
                         def _synthesis_text(piece):
                             interrupt_partial.append(piece)
@@ -3576,6 +3611,11 @@ class Harness:
                         elif fin.stop_reason == "error":   # don't let a failed synthesis become the answer
                             res.error = res.error or (fin.text or "provider error")[:300]
                             answer = _placeholder
+                        elif getattr(fin, "tool_calls", None):
+                            # An action request is not a final report, including prose promising
+                            # to perform it. No tools dispatch here and no extra retry is bought.
+                            answer = (_unfinished if turns_exhausted else
+                                      "(stopped without a final summary — see the tools above)")
                         else:
                             answer = (fin.text or "").strip() or _placeholder
                         del interrupt_partial[:]
