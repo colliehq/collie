@@ -59,15 +59,37 @@ def _queue(ui, text):
     expect(ui.page.locator('.task-queue-text').filter(has_text=text)).to_have_count(1)
 
 
+# What each row showed at a moment: {'text': ...} for a settled row, {'editing': ...} for a row
+# open in its inline editor. A row being edited has no .task-queue-text at all — its words live in
+# the textarea as an unsaved draft — so reading only .task-queue-text reports an open editor and a
+# row that vanished as the same empty list. Rows are read whole so the two cannot be confused.
+def _row(text):
+    return {'text': text}
+
+
+def _editing(text):
+    return {'editing': text}
+
+
 def _record(page):
     page.evaluate('''() => {
       window.__queuePollStates = [];
+      window.__queueReadRows = () => Array.from(document.querySelectorAll('#taskQueueList .task-queue-row')).map(row => {
+        const editor = row.querySelector('textarea');
+        if (editor) return {editing: editor.value};
+        const text = row.querySelector('.task-queue-text');
+        return {text: text ? text.textContent : null};
+      });
       if (window.__queuePollObserver) window.__queuePollObserver.disconnect();
       window.__queuePollObserver = new MutationObserver(() => {
-        window.__queuePollStates.push(Array.from(document.querySelectorAll('#taskQueueList .task-queue-text')).map(x => x.textContent));
+        window.__queuePollStates.push(window.__queueReadRows());
       });
       window.__queuePollObserver.observe(document.getElementById('taskQueueList'), {subtree:true, childList:true, characterData:true});
     }''')
+
+
+def _rows_now(page):
+    return page.evaluate('window.__queueReadRows()')
 
 
 @pytest.mark.parametrize('operation', ['edit', 'remove', 'accept'])
@@ -99,6 +121,7 @@ def test_late_poll_never_undoes_a_confirmed_queue_change(ui, operation):
     held.release()
     states = ui.page.evaluate('window.__queuePollStates')
     actual = ui.page.locator('#taskQueueList .task-queue-text').all_text_contents()
-    assert all(state == expected for state in states), 'A confirmed change was rolled back by a stale listing: ' + json.dumps(states)
+    rows = [_row(text) for text in expected]
+    assert all(state == rows for state in states), 'A confirmed change was rolled back by a stale listing: ' + json.dumps(states)
     assert actual == expected
     assert len(_Fixture.stream_requests) == 1 and not _Fixture.queue_starts
