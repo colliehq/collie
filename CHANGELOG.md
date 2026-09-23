@@ -18,6 +18,10 @@
   details and wrap long paths on phone screens.
 - Keep protocol-conformance fixtures alive until their transport owns the process, preventing
   intermittent Windows startup failures without weakening process-tree ownership checks.
+- Write files with the exact content supplied, so requested line endings survive on Windows
+  instead of being rewritten to CRLF (or doubled to CRCRLF), and report the real number of
+  bytes written rather than the character count. Editing an existing file still keeps that
+  file's own line endings.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 
