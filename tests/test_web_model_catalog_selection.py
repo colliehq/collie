@@ -57,7 +57,12 @@ def release(route, entries, current=CURRENT):
 
 
 def opened_with_a_held_refresh(picker):
-    """The picker reopened over the rows it already had, with its refresh still in flight."""
+    """The picker reopened over the rows it already had, with its refresh still in flight.
+
+    This is the window the race lives in, so the reopen may not wait for that refresh: it is held
+    here and released by hand, test by test. `Picker.open()` settles nothing for exactly that
+    reason — the first open below waits for its own answer itself, by the count it asserts.
+    """
     page = picker.page
     picker.reload().open()
     expect(picker.status).to_have_text("%d models available" % OPTION_COUNT)
@@ -149,7 +154,7 @@ def test_a_chosen_model_that_lost_its_credentials_is_never_the_one_submitted(pic
 def test_the_search_may_move_the_highlight_to_another_visible_entry(picker):
     """Filtering is the person's own act: it re-picks, and what it re-picks is what is submitted."""
     page = picker.page
-    picker.reload().open()
+    picker.reload().open().settled()                   # no held read here: the refresh may land first
     choose_below_current(picker)
 
     picker.field.fill("local")                         # the chosen model is still one of the rows
@@ -231,7 +236,7 @@ def test_a_catalog_answer_sent_before_a_switch_does_not_undo_it(picker):
 
     expect(page.locator("#modelTriggerLabel")).to_have_text("Local Llama")
     expect(picker.overlay).not_to_be_visible()
-    picker.open()
+    picker.open()                                      # its refresh is caught by the hold and stays there
     assert picker.active()["id"] == LLAMA, picker.active()
     assert picker.option(LLAMA).get_attribute("aria-selected") == "true"
     assert posts == [{"id": LLAMA}], posts
