@@ -501,6 +501,7 @@ class AutomationStore:
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
             started_at REAL NOT NULL DEFAULT 0, finished_at REAL NOT NULL DEFAULT 0,
             result_json TEXT NOT NULL DEFAULT '{}', last_error TEXT NOT NULL DEFAULT '',
+            attention_reviewed_at REAL NOT NULL DEFAULT 0,
             UNIQUE(automation_id,event_id));
           CREATE INDEX IF NOT EXISTS execution_due ON executions(state,created_at);
           CREATE TABLE IF NOT EXISTS usage(
@@ -513,13 +514,18 @@ class AutomationStore:
             event TEXT NOT NULL, decision TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
         """)
         execution_cols = {row[1] for row in self.db.execute("PRAGMA table_info(executions)")}
-        if "lease_token" not in execution_cols:
+        # Additive, defaulted columns only: an older database opens unchanged and every existing
+        # row keeps its state, error, receipt and history.  A zero default means "never reviewed".
+        for column, ddl in (("lease_token", "lease_token TEXT NOT NULL DEFAULT ''"),
+                            ("attention_reviewed_at",
+                             "attention_reviewed_at REAL NOT NULL DEFAULT 0")):
+            if column in execution_cols:
+                continue
             try:
-                self.db.execute(
-                    "ALTER TABLE executions ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''")
+                self.db.execute("ALTER TABLE executions ADD COLUMN " + ddl)
             except sqlite3.OperationalError:
                 # Another daemon/CLI opener may have won the same idempotent migration.
-                if "lease_token" not in {
+                if column not in {
                         row[1] for row in self.db.execute("PRAGMA table_info(executions)")}:
                     raise
         self.db.commit()
@@ -772,6 +778,45 @@ class AutomationStore:
                            {"error": str(error)[:500]}, execution_id=execution_id, now=now)
             self.db.commit()
         return changed.rowcount == 1
+
+    def mark_attention_reviewed(self, execution_id: str, *, now: float | None = None) -> dict:
+        """Acknowledge exactly one finished needs_you execution.
+
+        This is a projection-only receipt: state, last_error, result_json, the saved conversation
+        and the execution history row are all left exactly as the run left them.  Only the
+        attention projection stops counting this execution.  A run that is still pending, claimed
+        or running is refused — nothing here ends, retries or resumes work — and a later execution
+        of the same automation keeps its own, independent review.
+        """
+        now = float(time.time() if now is None else now)
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.db.execute(
+                    "SELECT automation_id,state,attention_reviewed_at FROM executions "
+                    "WHERE execution_id=?", (execution_id,)).fetchone()
+                if row is None:
+                    raise KeyError("automation execution is not recorded")
+                if row["state"] != NEEDS_YOU:
+                    raise ValueError(
+                        "only a finished needs_you execution can be marked reviewed")
+                # Scoped to this exact execution_id and idempotent: a second acknowledgement keeps
+                # the first receipt instead of rewriting it, and no other row is touched.
+                cur = self.db.execute(
+                    "UPDATE executions SET attention_reviewed_at=? WHERE execution_id=? "
+                    "AND state=? AND attention_reviewed_at<=0",
+                    (now, execution_id, NEEDS_YOU))
+                reviewed_at = now if cur.rowcount else float(row["attention_reviewed_at"])
+                if cur.rowcount:
+                    self.audit(row["automation_id"], "attention", "reviewed",
+                               {"reason": "operator marked this outcome reviewed"},
+                               execution_id=execution_id, now=now)
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+        return {"execution_id": execution_id, "automation_id": row["automation_id"],
+                "state": NEEDS_YOU, "attention_reviewed_at": reviewed_at}
 
     def add_usage(self, execution_id: str, *, model_tokens: int = 0,
                   cost_usd: float = 0, actions: int = 0, wall_s: float = 0,

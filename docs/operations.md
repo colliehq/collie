@@ -40,6 +40,16 @@ it is enabled. A crashed read-only execution can be reclaimed within its retry b
 lease that may have written externally moves to **Needs You**. Stale lease tokens cannot publish a
 late result.
 
+A finished execution in **Needs You** keeps asking until somebody says they read it. **Mark
+reviewed** — offered next to *Open automation* in the recovery lane and next to the run in
+Execution history — records that acknowledgement durably for that one execution
+(`POST /api/automations/review` with its `execution_id`; authenticated, no confirmation dialog,
+because it changes nothing outside Collie). It runs, retries and resumes nothing, and the run keeps
+its state, error, receipt, saved conversation and history row; only the attention projection stops
+counting it. Acknowledgement is per execution on purpose: two daily runs can strand two different
+pieces of work, so a later success never speaks for an earlier incident and each new **Needs You**
+arrives unreviewed. A run that is still pending, claimed or running cannot be marked reviewed.
+
 ### Automation budgets
 
 An automation is bounded by its budget, and every key is frozen into the spec when it is saved:
@@ -79,7 +89,7 @@ accepted and overlays only the fields the person changed. Everything the form do
 `context`, `execution` (a plan automation stays a plan automation), `notifications`, workspace
 options, `permissions.write_roots`/`tools`/`desktop_targets`, the remaining budget keys, and the
 trigger's predicate and scheduling fields — is carried through unchanged. Choosing a different
-trigger type builds a trigger for that type instead of keeping the old target. Authority follows
+trigger type replaces the entire trigger with that type's form values; old predicates and scheduling fields are discarded. Authority follows
 the choice that grants it: picking the current workspace or a webhook trigger authorizes it, and
 leaving either alone keeps exactly the authority that was accepted, neither widened nor dropped.
 

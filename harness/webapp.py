@@ -3246,14 +3246,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": str(exc)}, 400)
                 return self._send_json(value)
             if path in ("/api/automations/upsert", "/api/automations/preview",
-                        "/api/automations/enabled", "/api/automations/run"):
+                        "/api/automations/enabled", "/api/automations/run",
+                        "/api/automations/review"):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 body = self._read_json(262144)
                 if body is None:
                     return self._send_json({"error": "expected JSON object"}, 400)
-                from .controlcenter import (automation_preview, automation_run_now,
-                                            automation_set_enabled, automation_upsert)
+                from .controlcenter import (automation_preview, automation_review_execution,
+                                            automation_run_now, automation_set_enabled,
+                                            automation_upsert)
                 try:
                     if path == "/api/automations/upsert":
                         spec = body.get("spec")
@@ -3273,6 +3275,11 @@ class Handler(BaseHTTPRequestHandler):
                         value = automation_set_enabled(
                             str(body.get("automation_id") or "")[:80], body["enabled"],
                             _state_root())
+                    elif path == "/api/automations/review":
+                        # Acknowledging that a finished outcome was read is not a change to the
+                        # outside world, so it asks for no extra confirmation.
+                        value = automation_review_execution(
+                            str(body.get("execution_id") or "")[:200], _state_root())
                     else:
                         if "confirmed" in body and not isinstance(body.get("confirmed"), bool):
                             return self._send_json({"error": "confirmed must be boolean"}, 400)
