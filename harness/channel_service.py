@@ -691,8 +691,18 @@ class ChannelService:
                  "cwd": row["workspace"]},
                 provider=webapp._provider(), model=settings.get("MODEL", ""),
                 limits=limits.payload(), capabilities=capability_policy.freeze())
+            # ``recipient`` is the identity this message is being accepted *for*,
+            # frozen here with everything else and never re-read from settings
+            # afterwards.  Without it an answer produced minutes later is
+            # addressed to whoever the connection names at that moment, which is
+            # a private reply to a person the message was never accepted for.
+            # Additive under version 1 on purpose: ``channel_policy.resolve``
+            # compares only the fields it already knows, so an acceptance frozen
+            # by an earlier build still resolves and still runs — it simply
+            # cannot be answered automatically (see ``_authorized_recipient``).
             config["frozen"]["communication_policy"] = {"version": 1, "connection": connection,
-                                                          "event": event_id, "scope": "draft" if draft else "task"}
+                                                          "event": event_id, "scope": "draft" if draft else "task",
+                                                          "recipient": row["owner"]}
             target = comms.thread_session(connection, event["thread_key"], directory=self.directory)["session"]
             assets = self._snapshot_attachments(connection, event, target)
             if assets:
@@ -766,7 +776,9 @@ class ChannelService:
             if not credentials:
                 raise ChannelError("connect this account before sending")
         result = comms.get_result(connection, result_id, include_private=True, directory=self.directory)
-        if result and result.get("destination") != row["owner"]:
+        channel = self._channel(row)
+        if result and (comms._normalize_address(result.get("destination") or "", channel)
+                       != comms._normalize_address(row["owner"], channel)):
             raise ChannelError("this reply targets the previous owner address; prepare a new reply for the current owner")
         claim = comms.claim_send(connection, result_id, transport=row["kind"], directory=self.directory)
         payload = dict(claim, message_id=(claim.get("metadata") or {}).get("message_id", ""),
@@ -880,15 +892,57 @@ class ChannelService:
             return None
         return self._save_answer(connection, event_id, session, answers[-1])
 
+    @staticmethod
+    def _channel(row):
+        return "sms" if row["kind"] == "twilio" else "email"
+
+    def _authorized_recipient(self, connection, row, event_id, session):
+        """The address an *automatic* reply to this message may be addressed to.
+
+        Authority to answer privately comes from the acceptance, not from the
+        settings file as it reads now.  The acceptance pins the owner it was made
+        for; if the connection has since been pointed at somebody else, this
+        answer has no authority for that person and must not be prepared for
+        them — the work itself is already saved in the task and its journal, so
+        nothing is lost by refusing.  Compared with the same canonicalization the
+        inbox policy uses, so re-saving the same address in different casing is
+        still the same person.
+
+        An acceptance with no pin at all (frozen by a pre-pin build) is refused
+        for the same reason rather than read as "matches whatever is configured":
+        absence is not evidence, and guessing here is precisely the redirect.
+        """
+        event = comms.get_event(connection, event_id, include_private=True, directory=self.directory)
+        frozen = ((event or {}).get("acceptance_detail") or {}).get("config") or {}
+        pinned = ((frozen.get("frozen") or {}).get("communication_policy") or {}).get("recipient")
+        owner, channel = row.get("owner") or "", self._channel(row)
+        step = (" The task result is saved and readable in Collie task %s: open it and "
+                "prepare a reviewed reply." % session)
+        if not isinstance(pinned, str) or not pinned:
+            raise ChannelError("this message was accepted before the reply address was "
+                               "recorded, so it cannot be answered automatically." + step)
+        if comms._normalize_address(pinned, channel) != comms._normalize_address(owner, channel):
+            raise ChannelError("this message was accepted for a different owner address than "
+                               "the one now configured, so it cannot be answered "
+                               "automatically." + step)
+        return owner
+
     def _save_answer(self, connection, event_id, session, text):
-        row = self._row(connection)
-        if row["kind"] == "twilio" and len(text) > 1400:
-            text = text[:1150] + "\n\nExcerpt only. The full result is saved in Collie task " + session + "."
-        result_id = "result-" + _hash(connection + ":" + event_id)[:40]
-        existing = comms.get_result(connection, result_id, directory=self.directory)
-        if existing:
-            return existing
-        return self.prepare_reply(connection, result_id, text=text, event_id=event_id, automatic=True)
+        # Under the op lock for the whole check-then-create: ``configure`` takes
+        # the same lock, so an owner change cannot land between reading the
+        # pinned recipient and storing a reply addressed against it.  A change
+        # that lands just after still cannot deliver — ``_send_locked`` re-checks
+        # the stored destination against the owner of the moment.
+        with self._op_lock(connection):
+            row = self._row(connection)
+            result_id = "result-" + _hash(connection + ":" + event_id)[:40]
+            existing = comms.get_result(connection, result_id, directory=self.directory)
+            if existing:
+                return existing
+            self._authorized_recipient(connection, row, event_id, session)
+            if row["kind"] == "twilio" and len(text) > 1400:
+                text = text[:1150] + "\n\nExcerpt only. The full result is saved in Collie task " + session + "."
+            return self.prepare_reply(connection, result_id, text=text, event_id=event_id, automatic=True)
 
     def sweep(self, connection, older_than=SEND_CLAIM_TIMEOUT):
         """Abandoned send claims become ``unknown``.  Nothing is ever re-sent here.
@@ -1113,10 +1167,24 @@ class ChannelService:
             return out
         pending = comms.list_results(connection, states=["pending"], limit=comms.MAX_OPEN_OUTBOX,
                                      include_private=True, directory=self.directory)
+        previous_owner = False
         for result in pending:
             # Calls always require a direct invocation from the UI.
             if ((result.get("metadata") or {}).get("auto_eligible")
                     and not (result.get("metadata") or {}).get("speak")):
+                # A saved reply belongs to the owner it was prepared for. Keep
+                # it for review, without using a send slot or blocking newer
+                # replies addressed to the current owner. send() checks again
+                # under the operation lock if settings change during this pass.
+                channel = self._channel(row)
+                if (comms._normalize_address(result.get("destination") or "", channel)
+                        != comms._normalize_address(row["owner"], channel)):
+                    if not previous_owner and issues is not None:
+                        issues.append({"lane": "delivery", "error":
+                                       "Replies for a previous owner are kept in the outbox; "
+                                       "review them before preparing a reply for the current owner"})
+                    previous_owner = True
+                    continue
                 outcome = self.send(connection, result["id"])
                 out["attempted"] += 1
                 if outcome.get("state") == "submitted":

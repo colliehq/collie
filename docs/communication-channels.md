@@ -50,6 +50,10 @@ lookup; phone connections can query the provider's recorded status.
 Incoming task acceptance, queued input and outgoing results survive restarts.
 Reopening the page does not authorize a second send.
 
+Changing the result recipient does not retarget a task that was already accepted.
+Its answer remains in the original conversation. Review that answer and prepare a
+fresh reply when you intentionally want it sent to the newly configured recipient.
+
 ## Morning email
 
 Open [Daily Brief](daily-brief.md), expand **Email settings**, choose an existing

@@ -1130,9 +1130,14 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
     """
     outcome = getattr(handler, "_stream_outcome", None) or {}
     if ((entry or {}).get("metadata") or {}).get("communication"):
+        from .channel_service import ChannelError, ChannelService
         try:
-            from .channel_service import ChannelService
             ChannelService().capture_result(sid, entry, outcome)
+        except ChannelError as exc:
+            # An owner change needs a reviewed reply, not another recovery
+            # attempt. These messages are composed locally and name the next
+            # step without exposing transport bodies or credentials.
+            note_queue_error(sid, str(exc)[:500], entry_id=entry["id"], kind="communication")
         except Exception:
             # The input-tagged run receipt allows a later channel tick to finish
             # this local handoff. A notification failure must not repeat the task.

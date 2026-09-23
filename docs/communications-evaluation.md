@@ -87,3 +87,25 @@ After deployment, `collie-mail/2` reported both durable ledgers, retained the sa
 public key, and accepted a signed lookup for a nonexistent receipt (404 after auth).
 That check neither read mail nor sent it, and left the local identity file unchanged.
 Sending-domain entitlement remains unverified.
+
+## Production retention limits and concurrent storage
+
+A focused Windows run used the production constants, without monkeypatching:
+500 retained settled events, 500 retained outbox rows, a 24 MiB store bound,
+256 pending events and 1,000 unsettled acceptances.
+
+One accepted owner request was followed by 620 received-and-rejected messages.
+After 1,242 writes in 37.07 seconds, the original request still had identical text,
+digest and frozen configuration; 120 settled messages had become tombstones.
+Preparing its reply succeeded without a provider call. That transaction then
+compacted the now-answered original event while preserving its reply and thread.
+
+Four separate OS processes concurrently wrote 25 events and 25 results each into
+one connection. All 200 records survived, with unique sequence numbers 1–200,
+matching digests and a valid store after reopening. Wall time was 3.23 seconds;
+total final fixture state was 511,650 bytes.
+
+This is one local run, not a throughput guarantee. It exercises the real count
+threshold and concurrent writes. It does not saturate the 24 MiB byte limit or
+the 1,000-acceptance limit, and it does not test concurrent provider delivery.
+The transport adapter refused every network operation by construction.

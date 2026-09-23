@@ -577,3 +577,237 @@ def test_restricted_draft_rejects_model_tool_calls_in_the_real_loop(service, tmp
     assert all(not schemas for _, _, schemas in calls)
     assert "PRIVATE_PRIOR_TASK" not in str(calls)
     assert task_inbox.get(sid, entry["id"], directory=host.directory)["state"] == "consumed"
+
+
+# --- the owner an accepted message was accepted *for* ------------------------
+# A reply prepared automatically is private mail to one person.  The authority
+# to write it comes from the acceptance, so every test below asks the same
+# question: after the connection is pointed somewhere else, can the answer to a
+# message accepted for the old owner still reach the new one?
+
+NEW_OWNER = "newowner@example.test"
+ANSWER = "Private answer for the original owner only."
+
+
+def _finish(host, accepted, text=ANSWER):
+    """The tiny recorded answer a completed run leaves behind."""
+    sessions.append_run_receipt(accepted["session"],
+                                {"input_id": accepted["entry_id"], "completed": True,
+                                 "communication_answer": text}, directory=host.directory)
+    return task_inbox.get(accepted["session"], accepted["entry_id"], directory=host.directory)
+
+
+def _stored(host, result):
+    """The private outbox record; the public view withholds the destination."""
+    return comms.get_result("mail", result["id"], include_private=True, directory=host.directory)
+
+
+def _set_owner(host, owner=NEW_OWNER):
+    return host.configure("mail", kind="imap", config={"address": "collie@example.test"},
+                          owner=owner)
+
+
+def _answer_is_still_readable(host, accepted):
+    receipts = sessions.load_checked(accepted["session"],
+                                     directory=host.directory)["session"]["run_receipts"]
+    return [r["communication_answer"] for r in receipts
+            if r.get("input_id") == accepted["entry_id"]]
+
+
+def test_accept_freezes_the_owner_the_message_was_accepted_for(service):
+    host, _ = service
+    host.ingest("mail", message())
+    host.accept("mail", "one", start=False)
+    frozen = comms.get_event("mail", "one", include_private=True,
+                             directory=host.directory)["acceptance_detail"]
+    policy = frozen["config"]["frozen"]["communication_policy"]
+    assert policy["recipient"] == "owner@example.test"
+    assert policy["version"] == 1 and policy["scope"] == "draft"
+    # Re-accepting replays the reserved terms verbatim; the pin is not re-read
+    # from settings, so it still names the owner of the first acceptance.
+    _set_owner(host)
+    again = host.accept("mail", "one", start=False)
+    assert again["duplicate"]
+    replayed = comms.get_event("mail", "one", include_private=True,
+                               directory=host.directory)["acceptance_detail"]
+    assert replayed["config"]["frozen"]["communication_policy"]["recipient"] == "owner@example.test"
+
+
+def test_capture_after_owner_change_refuses_and_keeps_the_task_answer(service):
+    host, adapter = service
+    host.ingest("mail", message())
+    accepted = host.accept("mail", "one", start=False)
+    entry = _finish(host, accepted)
+    _set_owner(host)
+    with pytest.raises(ChannelError, match="different owner address"):
+        host.capture_result(accepted["session"], entry, {"completed": True})
+    # Nothing prepared, nothing sent, and the message is still openly owed a
+    # reply rather than quietly marked answered.
+    assert host.results("mail") == [] and adapter.sent == []
+    event = comms.get_event("mail", "one", include_private=True, directory=host.directory)
+    assert event["state"] == "accepted" and not event.get("settlement")
+    assert _answer_is_still_readable(host, accepted) == [ANSWER]
+    assert task_inbox.get(accepted["session"], accepted["entry_id"],
+                          directory=host.directory)["state"] == "pending"
+
+
+def test_refusal_names_the_task_to_open_and_the_next_step(service):
+    host, _ = service
+    host.ingest("mail", message())
+    accepted = host.accept("mail", "one", start=False)
+    entry = _finish(host, accepted)
+    _set_owner(host)
+    with pytest.raises(ChannelError) as caught:
+        host.capture_result(accepted["session"], entry, {"completed": True})
+    detail = str(caught.value)
+    assert accepted["session"] in detail and "reviewed reply" in detail
+    # A refusal a person reads is not a place to restate either address.
+    assert NEW_OWNER not in detail and "owner@example.test" not in detail
+
+
+def test_reconcile_after_owner_change_reports_it_and_auto_reply_sends_nothing(service):
+    host, adapter = service
+    host.ingest("mail", message("two"))
+    accepted = host.accept("mail", "two", start=False)
+    _finish(host, accepted)
+    _set_owner(host)
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    issues = []
+    assert host.reconcile("mail", issues) == 0
+    assert len(issues) == 1 and "different owner address" in issues[0]
+    assert host._delivery_lane("mail", host._row("mail")) == {"swept": 0, "sent": 0, "attempted": 0}
+    assert host.results("mail") == [] and adapter.sent == []
+    # Still recoverable work, not discarded work: the answer is in the journal.
+    assert _answer_is_still_readable(host, accepted) == [ANSWER]
+
+
+def test_acceptance_without_a_recorded_recipient_is_never_auto_routed(service):
+    """A message accepted by a build that froze no recipient (pre-v0.29 dev state)."""
+    from harness import capability_policy, settings, web_tasks, webapp
+    host, adapter = service
+    host.ingest("mail", message("legacy"))
+    row = host._row("mail")
+    config = web_tasks.freeze_config(
+        {"intent": "build", "quality": "balanced", "verification": "auto",
+         "workspace": "current", "strategy": "single", "runner": "collie",
+         "speed": "standard", "cwd": row["workspace"],
+         "explicit_axes": "intent,quality,verification,workspace,strategy,speed"},
+        provider=webapp._provider(), model=settings.get("MODEL", ""),
+        limits=settings.current_limits().payload(), capabilities=capability_policy.freeze())
+    config["frozen"]["communication_policy"] = {"version": 1, "connection": "mail",
+                                                "event": "legacy", "scope": "task"}
+    accepted = comms.accept_event("mail", "legacy", actor="desktop-user", config=config,
+                                  directory=host.directory)
+    entry = _finish(host, accepted)
+    # The owner never changed; absence of a pin is still not a match for it.
+    assert host._row("mail")["owner"] == "owner@example.test"
+    with pytest.raises(ChannelError, match="before the reply address was recorded"):
+        host.capture_result(accepted["session"], entry, {"completed": True})
+    assert host.results("mail") == [] and adapter.sent == []
+    assert _answer_is_still_readable(host, accepted) == [ANSWER]
+    # The work is not lost: a person may review it and reply explicitly.
+    host.prepare_reply("mail", "reviewed", text=ANSWER, event_id="legacy")
+    manual = comms.get_result("mail", "reviewed", include_private=True, directory=host.directory)
+    assert manual["destination"] == "owner@example.test"
+    assert host.send("mail", "reviewed")["state"] == "submitted"
+
+
+def test_unchanged_owner_still_captures_and_delivers_automatically(service):
+    host, adapter = service
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    host.ingest("mail", message("three"))
+    accepted = host.accept("mail", "three", start=False)
+    entry = _finish(host, accepted)
+    saved = _stored(host, host.capture_result(accepted["session"], entry, {"completed": True}))
+    assert saved["destination"] == "owner@example.test" and saved["metadata"]["auto_eligible"]
+    assert host._delivery_lane("mail", host._row("mail"))["sent"] == 1
+    assert [m["destination"] for m in adapter.sent] == ["owner@example.test"]
+
+
+def test_the_same_address_re_saved_in_different_casing_is_the_same_person(service):
+    host, adapter = service
+    host.ingest("mail", message("four"))
+    accepted = host.accept("mail", "four", start=False)
+    entry = _finish(host, accepted)
+    _set_owner(host, "Owner@Example.Test")
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    saved = _stored(host, host.capture_result(accepted["session"], entry, {"completed": True}))
+    assert comms._normalize_address(saved["destination"], "email") == "owner@example.test"
+    assert host._delivery_lane("mail", host._row("mail"))["sent"] == 1
+    assert len(adapter.sent) == 1
+
+
+def test_owner_change_racing_capture_never_delivers_to_the_new_owner(service, monkeypatch):
+    """A real interleaving: configure lands while capture is choosing a destination."""
+    import threading
+    host, adapter = service
+    host.ingest("mail", message("five"))
+    accepted = host.accept("mail", "five", start=False)
+    entry = _finish(host, accepted)
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+
+    changer = threading.Thread(target=_set_owner, args=(host,))
+    original, fired = comms.get_result, []
+
+    def racing(*args, **kwargs):
+        # The first call is the one inside _save_answer, under the op lock: it
+        # starts the owner change exactly inside the check-then-create window.
+        if not fired:
+            fired.append(True)
+            changer.start()
+            time.sleep(0.3)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(comms, "get_result", racing)
+    try:
+        saved = host.capture_result(accepted["session"], entry, {"completed": True})
+    except ChannelError as exc:
+        saved = None
+        assert "owner address" in str(exc)
+    finally:
+        monkeypatch.setattr(comms, "get_result", original)
+        changer.join(30)
+    assert fired and host._row("mail")["owner"] == NEW_OWNER
+    if saved is not None:
+        # Prepared for the owner it was accepted for, and fenced at the door.
+        stored = _stored(host, saved)
+        assert comms._normalize_address(stored["destination"], "email") == "owner@example.test"
+        with pytest.raises(ChannelError, match="previous owner"):
+            host.send("mail", saved["id"])
+    assert host._delivery_lane("mail", host._row("mail"))["sent"] == 0
+    assert adapter.sent == []
+
+
+def test_previous_owner_replies_do_not_block_current_owner_delivery(service):
+    host, adapter = service
+    for index in range(4):
+        host.prepare_reply("mail", "old-%d" % index, text=ANSWER, automatic=True)
+    _set_owner(host)
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    host.prepare_reply("mail", "current", text="For the current owner", automatic=True)
+    issues = []
+    outcome = host._delivery_lane("mail", host._row("mail"), issues)
+    assert outcome == {"swept": 0, "sent": 1, "attempted": 1}
+    assert [result["destination"] for result in adapter.sent] == [NEW_OWNER]
+    assert len(issues) == 1 and "previous owner" in issues[0]["error"]
+    for index in range(4):
+        saved = comms.get_result("mail", "old-%d" % index, include_private=True,
+                                 directory=host.directory)
+        assert saved["state"] == "pending" and saved["destination"] == "owner@example.test"
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_task_handoff_explains_recipient_fences_but_keeps_provider_errors_private(service, monkeypatch, known):
+    host, _ = service
+    notes = []
+    detail = "The reply address changed; open the saved task and prepare a reviewed reply."
+    def refuse(*args):
+        raise ChannelError(detail) if known else OSError("private transport credential")
+    monkeypatch.setattr(ChannelService, "capture_result", refuse)
+    monkeypatch.setattr(web_tasks, "note_queue_error", lambda sid, text, **kw: notes.append(text))
+    monkeypatch.setattr(web_tasks, "settle_run_claims", lambda *args: {"unreadable_journal": True})
+    entry = {"id": "input-one", "metadata": {"communication": True}}
+    assert web_tasks._settle_and_schedule(SimpleNamespace(), "task-one", None, entry) is False
+    assert notes[0] == (detail if known else
+                        "The task result is saved; its email or SMS reply is waiting for recovery")
+    assert "private transport credential" not in str(notes)

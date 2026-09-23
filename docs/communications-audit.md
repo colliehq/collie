@@ -254,11 +254,14 @@ tasks.
 * **Parser vs store.** `mail_messages.parse` was left as it is: refusing NUL and
   line breaks at the store covers every adapter at once, including ones that do
   not go through the mail parser at all.
-* **Retention is tested at a shrunken scale.** The retention tests monkeypatch
+* **Unit retention tests use a shrunken scale.** The retention tests monkeypatch
   `_COMPACTABLE` to keep five settled events rather than writing 500, and the
   store-full test shrinks `MAX_STORE_BYTES`. The rule under test
-  (`_retained_event`) is the real one, but the arithmetic at the production
-  constants is not exercised. `_reconcile_candidates`' pre-window filter is
+  (`_retained_event`) is the real one. A separate production-limit benchmark now
+  crosses the actual 500-record threshold with 620 settled messages and preserves
+  the earlier acceptance; see [evaluation](communications-evaluation.md).
+  The byte limit and 1,000-acceptance ceiling were not saturated.
+  `_reconcile_candidates`' pre-window filter is
   likewise pinned by calling it with a small explicit budget rather than by
   writing 500 accepted events.
 * **Not exercised:** live IMAP/SMTP/Twilio/relay transports, the browser UI
@@ -271,3 +274,20 @@ tasks.
   the same address normalization as the inbox allow-list. Parameterized tests cover
   received-message references and replies to an emailed Daily Brief with mixed-case
   owner addresses, while a different sender still cannot join the thread.
+
+## Recipient changes, repaired before release
+
+A separate acceptance-to-delivery experiment found that changing the configured
+owner while a task was running could route its later answer to the new owner.
+Acceptance now freezes its intended recipient. Capturing an automatic result
+checks that pin under the same operation lock used by configuration changes;
+a missing pin or changed recipient preserves the task answer and asks for a
+reviewed reply. Existing prepared replies are also checked again when sent.
+Address casing alone does not change the owner.
+
+Tests exercise capture, reconciliation, legacy acceptances without a pin, manual
+review and a real thread racing configuration against result capture. An older
+reply for a previous owner stays pending without consuming the automatic send
+budget or blocking replies addressed to the current owner. The task notification
+explains the required review instead of promising automatic recovery; unexpected
+transport errors still cannot expose credentials in that notification.
