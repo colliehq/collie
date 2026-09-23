@@ -18,6 +18,11 @@
   details and wrap long paths on phone screens.
 - Keep protocol-conformance fixtures alive until their transport owns the process, preventing
   intermittent Windows startup failures without weakening process-tree ownership checks.
+- Let the Windows Codex CLI and App Server routes start against Codex 0.156, which removed a
+  Windows sandbox setting that strict config then rejects. The setting is now sent only to the
+  older CLIs that measurably need it, decided from the executable actually resolved and re-checked
+  when it is replaced. An unreadable version keeps the setting rather than silently weakening the
+  sandbox. The optional Codex SDK route keeps its own pinned runtime and is unchanged.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 

@@ -343,7 +343,8 @@ class CodexAppServerRunner:
                  approval_callback: ApprovalCallback | None = None,
                  transport_factory: TransportFactory | None = None,
                  max_events: int = _MAX_EVENTS,
-                 event_callback: Callable[[RunnerEvent], Any] | None = None):
+                 event_callback: Callable[[RunnerEvent], Any] | None = None,
+                 cli_version_probe: Callable[[str], tuple[str, str]] | None = None):
         self.default_timeout_s = _finite_timeout(default_timeout_s, 900.0)
         runner_env.allowlist(env_policy)
         self.executable = executable
@@ -354,6 +355,10 @@ class CodexAppServerRunner:
         self.transport_factory = transport_factory
         self.max_events = max(1, int(max_events))
         self._event_callback = event_callback
+        # Same Windows config-schema seam as CodexExecRunner: the version gate
+        # must describe the binary this launch resolves, and a test must never
+        # reach the installed CLI to find it.
+        self._cli_version_probe = cli_version_probe
         self.last_env_receipt: dict[str, list[str]] = {"allowed": [], "stripped": []}
         self._run_lock = threading.Lock()
         self._active_lock = threading.RLock()
@@ -502,8 +507,9 @@ class CodexAppServerRunner:
         return resolved
 
     def _argv(self) -> list[str]:
+        executable = self._resolved_executable()
         argv = [
-            self._resolved_executable(), "app-server", "--stdio", "--strict-config",
+            executable, "app-server", "--stdio", "--strict-config",
             "-c", "mcp_servers={}",
             "-c", "plugins={}",
             "-c", 'web_search="disabled"',
@@ -513,7 +519,7 @@ class CodexAppServerRunner:
             "-c", "features.multi_agent=false",
             "-c", "features.apps=false",
         ]
-        argv += _windows_sandbox_override()
+        argv += _windows_sandbox_override(executable, self._cli_version_probe)
         return argv
 
     def _new_transport(self, argv: Sequence[str], root: str,
