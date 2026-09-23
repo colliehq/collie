@@ -32,6 +32,10 @@
   older CLIs that measurably need it, decided from the executable actually resolved and re-checked
   when it is replaced. An unreadable version keeps the setting rather than silently weakening the
   sandbox. The optional Codex SDK route keeps its own pinned runtime and is unchanged.
+- Write files with the exact content supplied, so requested line endings survive on Windows
+  instead of being rewritten to CRLF (or doubled to CRCRLF), and report the real number of
+  bytes written rather than the character count. Editing an existing file still keeps that
+  file's own line endings.
 
 ## v0.27.0 — Current agent runtimes and reliable release workflows
 

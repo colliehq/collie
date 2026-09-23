@@ -82,6 +82,85 @@ def test_edit_crlf_preserved():
     EditFileTool().run({"path": p, "old_string": "TARGET", "new_string": "FIXED"}, _ctx(d))
     assert open(p, "rb").read() == b"a\r\nFIXED\r\nc\r\n", "CRLF must be preserved"
 
+# ------------------------------------------------- write_file writes the bytes it was handed
+# write_file's contract differs from edit_file's: the caller supplies the FULL new content, so the
+# only correct output is that content's UTF-8 encoding. Text mode with the platform default
+# newline translation broke that on Windows — a supplied "\n" landed as "\r\n" (and a supplied
+# "\r\n" as "\r\r\n") — so a model that asked for LF had to re-write the file through bash.
+def test_write_file_lands_exact_utf8_bytes():
+    from harness.tools import WriteFileTool
+    d = tempfile.mkdtemp(); p = os.path.join(d, "NOTES.md")
+    content = "# Notes\n\n- alpha\n- omega\n"
+    WriteFileTool().run({"path": "NOTES.md", "content": content}, _ctx(d))
+    raw = open(p, "rb").read()
+    assert raw == content.encode("utf-8"), "on-disk bytes must be the requested content, got %r" % raw
+    assert b"\r" not in raw, "LF-only content must not acquire CR bytes: %r" % raw
+
+def test_write_file_explicit_crlf_is_not_doubled():
+    """A caller that deliberately asks for CRLF must get exactly one CR per line — not CRCRLF."""
+    from harness.tools import WriteFileTool
+    d = tempfile.mkdtemp(); p = os.path.join(d, "dos.txt")
+    content = "line1\r\nline2\r\n"
+    WriteFileTool().run({"path": "dos.txt", "content": content}, _ctx(d))
+    raw = open(p, "rb").read()
+    assert raw == content.encode("utf-8"), "requested CRLF must land verbatim, got %r" % raw
+    assert b"\r\r" not in raw, "CR must not be doubled: %r" % raw
+
+def test_write_file_reports_real_byte_count():
+    """The result line says 'wrote N bytes'; N must be the file's size on disk. Characters outside
+    ASCII (incl. a non-BMP one) encode to more than one byte each, so a character count is wrong."""
+    from harness.tools import WriteFileTool
+    d = tempfile.mkdtemp(); p = os.path.join(d, "u.txt")
+    content = "héllo — 🐕\n"
+    expected = len(content.encode("utf-8"))
+    assert expected != len(content), "fixture must actually be multi-byte to be worth asserting"
+    r = WriteFileTool().run({"path": "u.txt", "content": content}, _ctx(d))
+    assert os.path.getsize(p) == expected, "file must be exactly the UTF-8 payload"
+    assert "wrote %d bytes" % expected in r, "byte count must match the bytes on disk, got: %r" % r
+
+def test_write_file_rejects_unencodable_text_before_truncating():
+    from harness.tools import WriteFileTool
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "kept.txt")
+        with open(path, "wb") as stream:
+            stream.write(b"original\r\n")
+        result = WriteFileTool().run({"path": "kept.txt", "content": "bad\ud800text"}, _ctx(directory))
+        assert result.startswith("ERROR writing"), result
+        with open(path, "rb") as stream:
+            assert stream.read() == b"original\r\n"
+
+def test_write_file_overwrite_and_empty_content():
+    """Overwrite replaces the whole file (a CRLF file rewritten as LF becomes pure LF, with no
+    leftover tail), and empty content truncates to a genuinely empty file."""
+    from harness.tools import WriteFileTool
+    d = tempfile.mkdtemp(); p = os.path.join(d, "f.txt")
+    open(p, "wb").write(b"old\r\nlonger previous content\r\n")
+    r = WriteFileTool().run({"path": "f.txt", "content": "new\n"}, _ctx(d))
+    assert open(p, "rb").read() == b"new\n", "overwrite must leave only the new bytes"
+    assert "wrote 4 bytes" in r, r
+    r = WriteFileTool().run({"path": "f.txt", "content": ""}, _ctx(d))
+    assert open(p, "rb").read() == b"" and "wrote 0 bytes" in r, r
+
+def test_write_file_undo_restores_original_bytes():
+    """The pre-write checkpoint still stands, and restoring it gives back the ORIGINAL line
+    endings — undoing an LF write over a CRLF file must not leave a half-converted file."""
+    from harness.tools import WriteFileTool
+    from harness.checkpoint import UndoTool
+    import harness.checkpoint as CK, shutil
+    work = tempfile.mkdtemp(); cdir = tempfile.mkdtemp()
+    old = CK._DIR; CK._DIR = cdir; CK._STACKS.clear()
+    class C: cwd=work; project="wb"; memory=None; recorder=None
+    try:
+        ctx = C(); p = os.path.join(work, "f.txt")
+        open(p, "wb").write(b"a\r\nb\r\n")
+        WriteFileTool().run({"path": "f.txt", "content": "a\nb\n"}, ctx)
+        assert open(p, "rb").read() == b"a\nb\n"
+        assert "restored" in UndoTool().run({}, ctx)
+        assert open(p, "rb").read() == b"a\r\nb\r\n", "undo must give back the original bytes"
+    finally:
+        CK._DIR = old; CK._STACKS.clear()
+        shutil.rmtree(work, ignore_errors=True); shutil.rmtree(cdir, ignore_errors=True)
+
 def test_edit_nonunique_and_nomatch():
     from harness.tools import EditFileTool
     d = tempfile.mkdtemp(); p = os.path.join(d, "f.py")

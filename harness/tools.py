@@ -273,7 +273,8 @@ def _strip_linenums(text):
 
 class WriteFileTool(Tool):
     name = "write_file"
-    description = "Write text to a file (overwrites). Args: path, content."
+    description = ("Write UTF-8 text verbatim to a file (overwrites; preserves supplied line endings). "
+                   "Args: path, content.")
     schema = {"type": "object", "properties": {
         "path": {"type": "string"}, "content": {"type": "string"}},
         "required": ["path", "content"]}
@@ -287,13 +288,16 @@ class WriteFileTool(Tool):
         if not isinstance(content, str):
             return "ERROR: arg 'content' must be a string, got %s" % type(content).__name__
         try:
+            # Reject unencodable input before opening (and truncating) an existing file.
+            byte_count = len(content.encode("utf-8"))
             _snapshot(getattr(ctx, "checkpoint_scope", "") or ctx.project,
                       p, ctx.cwd) # checkpoint prior state so `undo` can restore it
             os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
+            # Full replacement preserves the supplied endings; edit_file preserves existing ones.
+            with open(p, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
             _touch_index(ctx.cwd)
-            return "wrote %d bytes to %s%s" % (len(content), path, _diag_suffix(p, ctx.cwd))
+            return "wrote %d bytes to %s%s" % (byte_count, path, _diag_suffix(p, ctx.cwd))
         except Exception as e:
             return "ERROR writing %s: %s" % (path, e)
 
