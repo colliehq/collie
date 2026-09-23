@@ -73,20 +73,10 @@ def main():
             # Home now opens Today; the task welcome belongs to New task.
             check("Today dashboard shown", pg.query_selector("#todayDashboard") is not None)
 
-            # --- first-run companion naming: adoption is a real step, not a hidden config key ---
-            try:
-                pg.wait_for_selector("#nameOverlay.open", timeout=8000)
-                name_appeared = True
-            except Exception:
-                name_appeared = False
-            check("first run offers a companion name", name_appeared)
-            if name_appeared:
-                check("naming starts from a calm editable default",
-                      pg.input_value("#nameInput") == "Rowan")
-                pg.fill("#nameInput", "Mochi")
-                pg.click("#nameContinue")
-                pg.wait_for_selector("#nameOverlay.open", state="detached", timeout=15000)
-                pg.wait_for_function("document.title.startsWith('Mochi ·')")
+            # The desktop starts as Collie. A display name is optional and can
+            # still be changed in Settings without blocking the first task.
+            check("first run does not require choosing a nickname",
+                  pg.query_selector("#nameOverlay.open") is None)
 
             # --- first run shows the onboarding, and it must be dismissable ---
             # This is why the suite broke: CI runs with COLLIE_PROVIDER=mock, so there is no working
@@ -115,9 +105,9 @@ def main():
 
             pg.click("#newChat")
             pg.wait_for_selector("#welcome", state="visible")
-            check("chosen name updates the task identity live",
-                  pg.text_content("[data-collie-name]") == "Mochi")
-            check("renamed avatar uses a versioned transparent endpoint",
+            check("the default desktop identity is Collie",
+                  pg.text_content("[data-collie-name]") == "Collie")
+            check("avatar uses a versioned transparent endpoint",
                   "/api/avatar.png?v=" in (pg.get_attribute("[data-collie-avatar]", "src") or ""))
 
             # --- CSRF token injected ---
@@ -347,8 +337,8 @@ def main():
             pg.wait_for_selector(".set-row", timeout=15000)   # rows render async after /api/settings resolves
             nrows = len(pg.query_selector_all(".set-row"))
             check("settings modal opens w/ rows", nrows >= 6, "rows=%d" % nrows)
-            check("My Collie keeps a permanent rename control",
-                  pg.is_visible("#set_COMPANION_NAME") and pg.input_value("#set_COMPANION_NAME") == "Mochi")
+            check("Settings keeps the optional display name editable",
+                  pg.is_visible("#set_COMPANION_NAME") and pg.input_value("#set_COMPANION_NAME") == "Collie")
             old_avatar = pg.get_attribute("[data-collie-avatar]", "src") or ""
             pg.fill("#set_COMPANION_NAME", "Nori")
             pg.press("#set_COMPANION_NAME", "Tab")

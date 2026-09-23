@@ -83,6 +83,22 @@ def test_unknown_send_has_explicit_state_and_repeated_post_cannot_send_again(web
     assert len(adapter.sent) == 1
 
 
+def test_retry_prepares_one_new_attempt_without_sending_it(web):
+    _, _, (host, adapter) = web
+    class Refused(RuntimeError):
+        delivery_unknown = False
+    host.prepare_reply("mail", "refused-draft", text="Reviewed result")
+    adapter.fail = Refused("provider refused")
+    assert request(web, body={"action": "send", "connection": "mail", "id": "refused-draft"})[1]["result"]["state"] == "failed"
+    retry = {"action": "retry", "connection": "mail", "id": "refused-draft"}
+    status, payload, _ = request(web, body=retry)
+    assert status == 200 and payload["result"]["state"] == "pending", payload
+    attempt = payload["result"]["id"]
+    assert attempt != "refused-draft"
+    assert request(web, body=retry)[1]["result"]["id"] == attempt
+    assert len(adapter.sent) == 1 and len(host.results("mail")) == 2
+
+
 def test_attachment_download_is_private_non_executable_and_byte_exact(web):
     import base64
     import hashlib

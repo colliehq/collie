@@ -4178,7 +4178,12 @@
     "Available when a task needs it.":"任务需要时即可使用。","Untitled task":"未命名任务",
     "Today":"今天","Yesterday":"昨天","Earlier":"更早","Your recent work will appear here.":"你最近的工作会显示在这里。",
     "Open thread":"打开对话","Rename":"重命名","Rename thread":"重命名对话","Delete":"删除","Delete thread":"删除对话",
-    "Task":"任务","Good morning.":"早上好。","Good noon.":"中午好。","Good afternoon.":"下午好。","Good evening.":"晚上好。",
+    "Task":"任务","Daily brief":"每日简报",
+    "A short view of what matters today":"今天值得关注的事",
+    "Review your priorities, schedule and Collie's progress. Hide or snooze items you have already considered.":"查看重点、日程和 Collie 的工作进展。已看过的事项可以忽略或稍后提醒。",
+    "Open daily brief":"打开每日简报",
+    "Connect your mailbox":"连接邮箱",
+    "Good morning.":"早上好。","Good noon.":"中午好。","Good afternoon.":"下午好。","Good evening.":"晚上好。",
     "Bringing today into focus…":"正在整理今天…","Checking…":"正在检查…","Refresh Today":"刷新今天",
     "Today's focus":"今日重点","Needs attention":"需要处理","For you":"为你准备","Kept deliberately short":"只保留重要内容",
     "Checking your day…":"正在查看今天…","Checking what needs you…":"正在查看哪些事情需要你…",
@@ -4416,7 +4421,11 @@
     "Available when a task needs it.":"任務需要時即可使用。","Untitled task":"未命名任務",
     "Today":"今天","Yesterday":"昨天","Earlier":"更早","Your recent work will appear here.":"你最近的工作會顯示在這裡。",
     "Open thread":"開啟對話","Rename":"重新命名","Rename thread":"重新命名對話","Delete":"刪除","Delete thread":"刪除對話",
-    "Task":"任務","Good morning.":"早安。","Good noon.":"午安。","Good afternoon.":"下午好。","Good evening.":"晚安。",
+    "Task":"任務","Daily brief":"每日簡報",
+    "A short view of what matters today":"今天值得關注的事",
+    "Review your priorities, schedule and Collie's progress. Hide or snooze items you have already considered.":"查看重點、行程和 Collie 的工作進展。已看過的事項可以隱藏或稍後提醒。",
+    "Open daily brief":"開啟每日簡報","Connect your mailbox":"連接信箱",
+    "Good morning.":"早安。","Good noon.":"午安。","Good afternoon.":"下午好。","Good evening.":"晚安。",
     "Bringing today into focus…":"正在整理今天…","Checking…":"正在檢查…","Refresh Today":"重新整理今天",
     "Today's focus":"今日重點","Needs attention":"需要處理","For you":"為你準備","Kept deliberately short":"只保留重要內容",
     "Checking your day…":"正在查看今天…","Checking what needs you…":"正在查看哪些事情需要你…",
@@ -4960,6 +4969,11 @@
     // the labels: the search text, caret, composition, focus, highlight, live-discovery box and the
     // current selection are left exactly as they are, and nothing is refetched or POSTed.
     if (typeof relabelModelPicker === "function") relabelModelPicker();
+    // Today's date, greeting, headline, source line and freshness are derived from the day,
+    // so the sweep above could only restore the placeholders they started as — and the
+    // settings answer usually lands after Today has already rendered. Re-state them from the
+    // facts that render derived; nothing is refetched and no row is rebuilt.
+    if (typeof renderTodayHeadline === "function") renderTodayHeadline();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -9860,10 +9874,51 @@
   function todayFreshness() {
     var node = $("todayUpdated"); if (!node || !todayLastLoaded) return;
     var age = Math.max(0, Date.now() - todayLastLoaded);
+    // An age is a counted string no single key stands for, so once one is written the
+    // placeholder source has to go — otherwise applyLang() restores "Checking…" over a
+    // panel that has already been checked.
+    node.removeAttribute("data-i18n");
     node.textContent = age < 60000 ? t("Updated just now") : t("Updated {n} min ago").replace("{n}", Math.floor(age / 60000));
   }
   function todayCount(n, singular, plural) {
     return t(n === 1 ? singular : plural).replace("{n}", n);
+  }
+  // The date, greeting, headline and source line are derived from the day's facts, not fixed
+  // strings; the markup carries placeholders only so a page that has not loaded yet still says
+  // something. The settings answer that picks the language lands *after* the first render, and
+  // applyLang()'s [data-i18n] sweep could only put those placeholders back — leaving "Bringing
+  // today into focus…" above a fully rendered attention list, in every language including
+  // English. So keep the facts the last render derived and re-state the lines from them each
+  // time the language changes. This reads state only: nothing is refetched or posted, and the
+  // timeline and attention rows are not rebuilt, so a row a person is on keeps its focus.
+  var todayHeadline = null;
+  function renderTodayHeadline(facts) {
+    if (facts) todayHeadline = facts;
+    var state = todayHeadline;
+    if (!state || document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return;
+    var now = new Date();  // the clock says which day and which greeting, not the load
+    $("todayDate").textContent = todayDateText(now);
+    // A greeting is a plain key, so it can stay a data-i18n source: the sweep then translates
+    // the hour we are actually in instead of restoring the morning onto an evening page.
+    var greeting = $("todayGreeting");
+    greeting.setAttribute("data-i18n", todayGreetingKey(now));
+    greeting.textContent = t(todayGreetingKey(now));
+    var sourceLine = $("todaySourceLine");
+    sourceLine.removeAttribute("data-i18n");
+    sourceLine.dataset.state = state.unavailable || !state.connected ? "partial" : "ready";
+    sourceLine.textContent = state.connected ?
+      todayCount(state.connected, "Private local brief · 1 connected source", "Private local brief · {n} connected sources") :
+      t("Private local brief · connect sources to make it richer");
+    // Work the server is already carrying is said as progress, not as a demand: the headline
+    // cannot claim something needs a person while the badge for it is hidden.
+    var summary = $("todaySummary");
+    summary.removeAttribute("data-i18n");
+    summary.textContent = state.unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : state.decisions ?
+      todayCount(state.decisions, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : state.moving ?
+      t("Automatic work is scheduled. Nothing needs your decision.") : state.timeline ?
+      todayCount(state.timeline, "1 item is in view. Nothing urgent is waiting.", "{n} items are in view. Nothing urgent is waiting.") :
+      t("You're clear for now. Collie will surface changes here without filling the page with noise.");
+    todayFreshness();
   }
   function renderToday(values) {
     if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return;
@@ -9882,8 +9937,6 @@
     var attentionUnavailable = !!personal.__unavailable || !!missionData.__unavailable || !!approvalData.__unavailable || !!queuedData.__unavailable;
     var now = new Date(), start = new Date(now); start.setHours(0,0,0,0);
     var end = new Date(start); end.setDate(end.getDate() + 1);
-    $("todayDate").textContent = todayDateText(now);
-    $("todayGreeting").textContent = t(todayGreetingKey(now));
 
     var timeline = [];
     var timelineKeys = {};
@@ -9975,14 +10028,9 @@
     var connected = sources.filter(function (source) { return source.enabled && source.permission_state === "granted"; });
     var upcoming = reminders.filter(function (reminder) { return reminder.state === "upcoming"; }).length;
     var activeEvents = events.filter(function (event) { return !/^(done|delivered|cancelled|paid)$/.test(event.status || ""); });
-    if (activeEvents.length || upcoming) {
-      todayBriefCard($("todayBrief"), "Personal updates", todayCount(activeEvents.length || upcoming, "1 tracked item", "{n} tracked items"),
-        t("Calendar, orders, bills, reservations, and follow-ups stay evidence-backed and local."), "Review connections", todayOpenConnections);
-    } else {
-      todayBriefCard($("todayBrief"), "News and updates", t("Build a brief around what matters to you"),
-        t("Choose topics and trusted sources. Collie keeps the result short, sourced, and separate from urgent items."), "Set up a brief",
-        function () { todayStartTask(t("Help me set up a concise daily briefing. Ask what topics and sources matter, recommend the smallest trusted connections, and do not connect anything without approval.")); });
-    }
+    todayBriefCard($("todayBrief"), "Daily brief", t("A short view of what matters today"),
+      t("Review your priorities, schedule and Collie's progress. Hide or snooze items you have already considered."),
+      "Open daily brief", function () { openEmbeddedSurface(t("Daily brief"), "/brief?embedded=1"); });
     var proposed = candidates.filter(function (candidate) { return candidate.status === "proposed"; })[0];
     if (proposed) {
       todayBriefCard($("todaySuggestion"), "Collie suggests", proposed.title || t("A routine worth reviewing"),
@@ -9993,18 +10041,10 @@
           t("Turn the open space into a short plan without filling every hour."), "Plan with Collie",
         function () { todayStartTask(t("Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.")); });
     }
-    var sourceLine = $("todaySourceLine");
-    sourceLine.dataset.state = unavailable || !connected.length ? "partial" : "ready";
-    sourceLine.textContent = connected.length ? todayCount(connected.length, "Private local brief · 1 connected source", "Private local brief · {n} connected sources") :
-      t("Private local brief · connect sources to make it richer");
-    // Work the server is already carrying is said as progress, not as a demand: the
-    // headline cannot claim something needs a person while the badge for it is hidden.
-    $("todaySummary").textContent = unavailable ? t("Part of today couldn't refresh. Nothing has been assumed clear.") : decisions ?
-      todayCount(decisions, "1 thing needs your attention. Everything else can wait.", "{n} things need your attention. Everything else can wait.") : moving ?
-      t("Automatic work is scheduled. Nothing needs your decision.") : timeline.length ?
-      todayCount(timeline.length, "1 item is in view. Nothing urgent is waiting.", "{n} items are in view. Nothing urgent is waiting.") :
-      t("You're clear for now. Collie will surface changes here without filling the page with noise.");
-    todayLastLoaded = Date.now(); todayFreshness();
+    // The hero lines are the derived facts, held so a later language answer can re-state them.
+    todayLastLoaded = Date.now();
+    renderTodayHeadline({unavailable:unavailable, decisions:decisions, moving:moving,
+      timeline:timeline.length, connected:connected.length});
   }
   function loadToday(force) {
     if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return Promise.resolve();
@@ -10042,6 +10082,9 @@
     detachRun(); currentSession = null; currentRun = null; currentTitle = ""; loadTaskQueue();
     rememberSession(null); rememberView("");
     clearTimeline(); setGate("idle"); NOW.reset(); setReceipt({});
+    // The shell comes back as placeholders with empty lists until loadToday() answers, so the
+    // facts from the last visit are forgotten rather than restated above rows that are gone.
+    todayHeadline = null;
     $("log").innerHTML = TODAY_HTML; applyLang(); renderCollieIdentity();
     setActivityOpen(false); setLibraryOpen(false); setMissionsOpen(false); setEmbeddedSurfaceOpen(false); setProductNav("today");
     if (userRequested && $("scroll")) $("scroll").scrollTop = 0;

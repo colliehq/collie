@@ -63,9 +63,7 @@ def perform(root, body):
         return comms.cancel_result(connection, body.get("id"), actor="desktop-user",
                                    expected_digest=body.get("digest"), directory=host.directory)
     if action == "retry":
-        host._row(connection)
-        return comms.retry(connection, body.get("id"), actor="desktop-user",
-                           reason="Retry requested in the desktop inbox", directory=host.directory)
+        return host.retry(connection, body.get("id"))
     if action == "resolve":
         host._row(connection)
         return comms.resolve_unknown(connection, body.get("id"), actor="desktop-user",

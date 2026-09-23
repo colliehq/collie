@@ -79,6 +79,30 @@ record, so ``enqueue`` answers ``duplicate=True`` and we settle the same task.
 No new session, no second copy of the input.  A retry that asks for a different
 mode, config or session is an ``AcceptanceConflict``: the payload is frozen at
 first acceptance and this module will not quietly re-decide it.
+
+Retention, and what may never be collapsed
+------------------------------------------
+Compaction bounds this file by collapsing an old record to an id+digest
+tombstone, which is everything the de-duplication checks need and nothing a
+reply can be recovered from.  What may be collapsed is decided by one rule:
+only a record nobody is owed anything for.  A ``pending`` event is owed a
+decision.  An ``accepted`` event is owed a **reply**, and is kept in full until
+it carries a durable settlement marker — either the id and digest of the outbox
+message that answers it (stamped by ``create_result(for_event=...)`` inside the
+same transaction that stores the reply) or an explicit terminal disposition a
+local person recorded through ``mark_event_settled``.
+
+The marker lives on the event, not in the outbox, on purpose: an answered
+message stays compactable long after the reply itself has been pruned, so one
+retained class cannot pin another.  It is also additive — it is not part of
+``_event_digest`` and not required by ``_validate_event`` — so a store written
+before it existed loads unchanged and a provider re-poll still de-duplicates.
+
+Bounded is not a licence to drop work.  When the byte budget cannot be met
+without shedding something still owed, ``_save`` raises ``StoreFull`` and
+writes nothing at all; ``accept_event`` refuses past
+``MAX_UNSETTLED_ACCEPTED`` for the same reason.  Backpressure a person can see
+is an honest answer; a reply quietly turned into a tombstone is not.
 """
 
 from __future__ import annotations
@@ -107,6 +131,11 @@ COMPOSE_VERSION = 1
 CHANNELS = ("email", "sms")
 EVENT_STATES = ("pending", "accepted", "rejected")
 ACCEPTANCE_STATES = ("enqueuing", "accepted")
+# How an accepted event stopped being work somebody is owed.  ``replied`` names
+# the outbox message that answers it; ``closed`` is a local person recording
+# that no reply is coming.  Either makes the event compactable; neither is ever
+# inferred from age, a missing journal, or the store filling up.
+EVENT_SETTLEMENTS = ("replied", "closed")
 # pending -> sending -> submitted | failed | unknown.  ``unknown`` is terminal
 # for this module: only a local operator who learned what actually happened may
 # resolve it, because the one thing we must never do is guess "not delivered".
@@ -134,6 +163,10 @@ MAX_POLICY_BYTES = 8 * 1024
 MAX_PENDING_EVENTS = 256          # events awaiting a local decision
 MAX_PENDING_EVENT_BYTES = 8 * 1024 * 1024
 MAX_RETAINED_EVENTS = 500         # settled events kept in full before compaction
+# Accepted events still owed a reply are exempt from that window, so they need a
+# ceiling of their own.  Reaching it refuses the *next acceptance* — loudly, with
+# what to do about it — rather than collapsing an answer somebody is waiting for.
+MAX_UNSETTLED_ACCEPTED = 1000
 MAX_OPEN_OUTBOX = 256
 MAX_RETAINED_OUTBOX = 500
 MAX_THREADS = 2000
@@ -614,7 +647,8 @@ def _save(doc, path):
             raise StoreFull(
                 "this connection's unfinished work alone encodes to %d bytes; the store "
                 "limit is %d and nothing was written, discarded or truncated. Settle or "
-                "reject waiting messages, or finish open sends, to make room."
+                "reject waiting messages, save or close the replies accepted messages "
+                "are still owed, or finish open sends, to make room."
                 % (size, MAX_STORE_BYTES))
     sessions._atomic_dump(doc, path)
 
@@ -688,7 +722,8 @@ def _validate_store(doc, cid):
         rows = doc.get(field)
         if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
             raise _corrupt(cid, "has malformed %s" % field)
-    if len(doc["events"]) > MAX_PENDING_EVENTS + MAX_RETAINED_EVENTS + 64:
+    if len(doc["events"]) > (MAX_PENDING_EVENTS + MAX_RETAINED_EVENTS
+                             + MAX_UNSETTLED_ACCEPTED + 64):
         raise _corrupt(cid, "holds %d events; more than compaction allows", len(doc["events"]))
     if len(doc["outbox"]) > MAX_OPEN_OUTBOX + MAX_RETAINED_OUTBOX + 64:
         raise _corrupt(cid, "holds %d outbox messages; more than compaction allows",
@@ -807,6 +842,11 @@ def _validate_event(event, cid, channel, next_seq, seqs, ids):
         _validate_acceptance(acceptance, cid, eid)
     elif event["state"] == "accepted":
         raise _corrupt(cid, "has accepted event %s with no acceptance record", eid)
+    # Additive, and read with ``.get``: a store written before settlement markers
+    # existed is a store this module could have written, and refusing it would
+    # turn "we added a field" into an unreadable record of somebody's mail.
+    if event.get("settlement") is not None:
+        _validate_settlement(event["settlement"], cid, eid, event["state"])
     rejection = event.get("rejection")
     if rejection is not None:
         if event["state"] != "rejected":
@@ -843,6 +883,34 @@ def _validate_acceptance(acceptance, cid, eid):
     _stored_time(acceptance.get("reserved"), cid, "acceptance")
     if acceptance.get("state") == "accepted":
         _stored_time(acceptance.get("settled"), cid, "acceptance")
+
+
+def _validate_settlement(settlement, cid, eid, state):
+    """The marker that says an accepted event is no longer owed anything.
+
+    Only an ``accepted`` event can carry one: on a ``pending`` event it would
+    claim a reply to work that was never handed over, and on a ``rejected`` one
+    it would describe an answer to a message nobody acted on.  A ``replied``
+    marker must name the outbox message and its digest, because that pair is
+    what a later reader has left once the reply itself is a tombstone.
+    """
+    if not isinstance(settlement, dict):
+        raise _corrupt(cid, "has event %s with a malformed settlement", eid)
+    if state != "accepted":
+        raise _corrupt(cid, "has %s event %s carrying a settlement marker", state, eid)
+    disposition = settlement.get("disposition")
+    if disposition not in EVENT_SETTLEMENTS:
+        raise _corrupt(cid, "has event %s settled as %r", eid, disposition)
+    _stored_time(settlement.get("at"), cid, "settlement")
+    try:
+        _check_actor(settlement.get("actor"))
+        if disposition == "replied":
+            _check_id(settlement.get("result"), "result_id")
+    except InvalidRequest as exc:
+        raise _corrupt(cid, "has event %s with an unusable settlement: %s",
+                       eid, exc) from None
+    if disposition == "replied" and not _is_digest(settlement.get("digest")):
+        raise _corrupt(cid, "has event %s settled against a reply with no digest", eid)
 
 
 def _validate_outbox(message, cid, channel, next_seq, seqs, ids):
@@ -1047,8 +1115,29 @@ def _require_connection(doc, cid):
     return conn
 
 
-_COMPACTABLE = (("event", "events", MAX_RETAINED_EVENTS, ("pending",)),
-                ("outbox", "outbox", MAX_RETAINED_OUTBOX, OUTBOX_OPEN))
+def _needs_reply(event):
+    """Is this an accepted message whose reply has not been secured yet?"""
+    return event["state"] == "accepted" and not event.get("settlement")
+
+
+def _retained_event(event):
+    """An event compaction may never collapse: somebody is still owed something.
+
+    ``pending`` is owed a decision.  ``accepted`` is owed a *reply*, and
+    tombstoning it loses the one thing a reply cannot be rebuilt without — the
+    original message ``capture_result`` composes the answer against.  The
+    settlement marker is how that debt is discharged, and it is the only way:
+    age, volume and a full disk are not evidence that a person got an answer.
+    """
+    return event["state"] == "pending" or _needs_reply(event)
+
+
+def _retained_message(message):
+    return message["state"] in OUTBOX_OPEN
+
+
+_COMPACTABLE = (("event", "events", MAX_RETAINED_EVENTS, _retained_event),
+                ("outbox", "outbox", MAX_RETAINED_OUTBOX, _retained_message))
 
 
 def _entomb(doc, kind, row, now):
@@ -1057,25 +1146,27 @@ def _entomb(doc, kind, row, now):
 
 
 def _compact(doc, *, budget=None):
-    """Bound the store without touching anything still awaiting a decision.
+    """Bound the store without touching anything somebody is still owed.
 
-    Settled events and finished outbox messages beyond the retention window
-    collapse to an id+digest tombstone, which is exactly what the idempotency
-    checks need.  ``pending`` events and open outbox messages are never
-    compacted: they are the ones somebody is still waiting on, and neither are
-    thread bindings, which decide where a reply lands.
+    Records past the retention window that nobody is owed anything for collapse
+    to an id+digest tombstone, which is exactly what the idempotency checks
+    need.  What is retained is ``_retained_event`` / ``_retained_message``:
+    pending events, accepted events with no settlement marker, and open outbox
+    messages.  Thread bindings are never compacted either — they decide where a
+    reply lands.
 
     ``budget`` adds the size half of the same rule.  Counts alone cannot bound a
     file — 500 retained messages of 64KiB each is 32MB — so when a byte budget is
-    given, settled records keep collapsing oldest-first until the document fits.
-    Each drop is estimated from that record's own encoded size and the total is
-    re-measured after a batch, rather than re-encoding the whole store per row.
+    given, compactable records keep collapsing oldest-first until the document
+    fits.  Each drop is estimated from that record's own encoded size and the
+    total is re-measured after a batch, rather than re-encoding the whole store
+    per row.  If only retained work is left the document simply does not shrink,
+    and ``_save`` refuses the write instead of buying room with a person's reply.
     """
     now = time.time()
-    for kind, field, keep, open_states in _COMPACTABLE:
+    for kind, field, keep, retain in _COMPACTABLE:
         rows = doc[field]
-        settled = sorted((r for r in rows if r["state"] not in open_states),
-                         key=lambda r: r["seq"])
+        settled = sorted((r for r in rows if not retain(r)), key=lambda r: r["seq"])
         excess = max(0, len(settled) - keep)
         if excess <= 0:
             continue
@@ -1090,10 +1181,16 @@ def _compact(doc, *, budget=None):
 
 
 def _compact_to_budget(doc, budget, now):
-    """Shed settled history, oldest first, until the encoded document fits."""
+    """Shed settled history, oldest first, until the encoded document fits.
+
+    Retained work is not a candidate at any pressure.  When the remainder still
+    does not fit, this returns having shed everything it was allowed to and the
+    caller reports a full store — the alternative is answering a size problem by
+    destroying the record a reply depends on.
+    """
     settled = sorted(
-        ((kind, field, row) for kind, field, _, open_states in _COMPACTABLE
-         for row in doc[field] if row["state"] not in open_states),
+        ((kind, field, row) for kind, field, _, retain in _COMPACTABLE
+         for row in doc[field] if not retain(row)),
         key=lambda item: item[2]["seq"])
     if not settled:
         return
@@ -1229,16 +1326,21 @@ def connection_status(connection_id, *, directory=None):
             outbox[message["state"]] += 1
         pending_bytes = sum(int(e.get("bytes") or 0) for e in doc["events"]
                             if e["state"] == "pending")
+        # The class that is exempt from the retention window, and therefore the
+        # one a surface has to be able to see filling up before it refuses.
+        awaiting_reply = sum(1 for e in doc["events"] if _needs_reply(e))
         return {
             "id": connection_id, "exists": exists,
             "channel": (conn or {}).get("channel"), "registered": bool(conn),
             "events": events, "outbox": outbox, "threads": len(doc["threads"]),
             "pending_event_bytes": pending_bytes, "tombstones": len(doc["tombstones"]),
+            "accepted_awaiting_reply": awaiting_reply,
             "updated": doc.get("updated") or 0.0,
             "limits": {"max_pending_events": MAX_PENDING_EVENTS,
                        "max_pending_event_bytes": MAX_PENDING_EVENT_BYTES,
                        "max_text_bytes": MAX_TEXT_BYTES,
-                       "max_open_outbox": MAX_OPEN_OUTBOX},
+                       "max_open_outbox": MAX_OPEN_OUTBOX,
+                       "max_unsettled_accepted": MAX_UNSETTLED_ACCEPTED},
         }
 
 
@@ -1355,22 +1457,103 @@ def get_event(connection_id, event_id, *, directory=None, include_private=False)
             "digest": tomb["digest"], "compacted": True}
 
 
+def _window(rows, limit, newest, reserve_oldest=0):
+    """The ``limit`` rows a caller asked for, from the front or from the end.
+
+    ``reserve_oldest`` keeps the first N rows of an over-full ``newest`` window
+    and fills the rest from the end.  A lane whose budget goes entirely to the
+    newest rows starves the oldest ones forever — and the oldest are exactly the
+    ones that have already failed to make progress several times — so the window
+    itself, not each caller, carries the fairness rule.
+    """
+    limit = max(0, int(limit))
+    if not limit:
+        return []
+    if len(rows) <= limit:
+        return rows
+    if not newest:
+        return rows[:limit]
+    keep = min(max(0, int(reserve_oldest)), limit)
+    if not keep:
+        return rows[-limit:]
+    return rows[:keep] + rows[len(rows) - (limit - keep):]
+
+
+# Bounded pre-window filters, so a lane's budget is spent on rows that can
+# actually make progress rather than on whatever happens to be newest.
+_EVENT_NEEDS = {
+    # An accepted message still owed a reply — the reconciliation lane's work.
+    "reply": _needs_reply,
+    # A reservation a crash left between enqueue and settle — recovery's work.
+    "reservation": lambda e: (e.get("acceptance") or {}).get("state") == "enqueuing",
+}
+
+
 def list_events(connection_id, *, states=None, limit=200, directory=None,
-                include_private=False):
-    """Received messages in arrival order, oldest first."""
+                include_private=False, newest=False, needs=None, reserve_oldest=0):
+    """Received messages in arrival order, oldest first.
+
+    ``limit`` slices from the front by default, so a caller reading a connection
+    from its beginning keeps the listing it always had.  ``newest=True`` keeps
+    that same oldest-first ordering but takes the window from the *end*: a
+    bounded lane on a connection carrying hundreds of settled events would
+    otherwise examine the same ancient rows on every pass and never reach the
+    message that just arrived.
+
+    ``states`` and ``needs`` both filter *before* the window is taken, which is
+    what stops history a lane cannot act on from crowding out the records it is
+    looking for; ``reserve_oldest`` then keeps the oldest of what is left from
+    being starved by the newest.  Both filters are a bounded scan of the
+    document this call already read — no secondary index, nothing to keep in
+    step with it.
+    """
     if states is not None:
         states = set(states)
         unknown = states - set(EVENT_STATES)
         if unknown:
             raise InvalidRequest("unknown state(s): %s" % ", ".join(sorted(unknown)))
+    if needs is not None and needs not in _EVENT_NEEDS:
+        raise InvalidRequest("needs must be one of %s" % ", ".join(sorted(_EVENT_NEEDS)))
+    wanted = _EVENT_NEEDS.get(needs)
     root = _root(directory)
     path = store_path(connection_id, root=root)
     with sessions._locked(path):
         doc = _load(path, connection_id)
-        rows = [e for e in doc["events"] if states is None or e["state"] in states]
+        rows = [e for e in doc["events"]
+                if (states is None or e["state"] in states)
+                and (wanted is None or wanted(e))]
     rows.sort(key=lambda e: e["seq"])
     return [public_event(e, include_private=include_private)
-            for e in rows[:max(0, int(limit))]]
+            for e in _window(rows, limit, newest, reserve_oldest)]
+
+
+def count_acceptances(connection_id, *, since=0.0, directory=None):
+    """How many acceptances this connection made at or after ``since``.
+
+    Counted by *when the acceptance was made* (``acceptance.reserved``), never
+    by where the message sits in arrival order.  A mailbox synced with
+    ``history="all"`` accepts mail that arrived years ago, and a throttle that
+    looked only at the newest few hundred events by sequence would not see those
+    acceptances at all — it would report zero for a connection that had just
+    started a hundred tasks.  The scan is over the events already retained, so
+    this stays one bounded read of the same document.
+
+    ``oldest`` is the earliest acceptance in the window, which is what a caller
+    needs to say when a rolling limit frees up again.
+    """
+    if isinstance(since, bool) or not isinstance(since, (int, float)):
+        raise InvalidRequest("since must be a POSIX timestamp")
+    since = float(since)
+    root = _root(directory)
+    path = store_path(connection_id, root=root)
+    with sessions._locked(path):
+        doc = _load(path, connection_id)
+        stamps = [float((e.get("acceptance") or {}).get("reserved") or 0.0)
+                  for e in doc["events"] if e.get("acceptance")]
+        examined = len(doc["events"])
+    recent = sorted(stamp for stamp in stamps if stamp >= since)
+    return {"connection": connection_id, "since": since, "count": len(recent),
+            "oldest": recent[0] if recent else 0.0, "examined": examined}
 
 
 def reject_event(connection_id, event_id, *, actor, reason="", directory=None):
@@ -1677,6 +1860,14 @@ def accept_event(connection_id, event_id, *, actor, mode="follow_up", config=Non
                 raise PolicyRefusal(
                     "session %s belongs to a different connection; a thread id cannot "
                     "move a task between connections" % target)
+            owed = sum(1 for e in doc["events"] if _needs_reply(e))
+            if owed >= MAX_UNSETTLED_ACCEPTED:
+                raise StoreFull(
+                    "%d accepted messages on connection %s are still owed a reply "
+                    "(limit %d), and none of them may be discarded to make room for "
+                    "another. Save or close their replies first; nothing was accepted "
+                    "and nothing was discarded" % (owed, connection_id,
+                                                   MAX_UNSETTLED_ACCEPTED))
             text = compose_task_text(conn, event)
             metadata = task_metadata(conn, event, config)
             _text_bytes(text, "composed task text", task_inbox.MAX_TEXT_BYTES)
@@ -1846,11 +2037,98 @@ def abandon_acceptance(connection_id, event_id, *, actor, reason="", directory=N
                 "actor": actor, "reason": reason, "released_entry": frozen["entry_id"]}
 
 
+# ------------------------------------------------------------ settling a reply
+
+def _mark_reply(event, result_id, digest, now, actor="comms-outbox"):
+    """Stamp, in the caller's transaction, the reply an accepted event now has.
+
+    Called from ``create_result`` so that storing the answer and recording that
+    the message has one are a single durable write.  A crash cannot land between
+    them; a crash *before* them leaves the event unmarked and the reply absent,
+    which is the state ``create_result`` re-runs into and repairs.
+
+    Returns whether anything changed, so a duplicate create can decide whether
+    it still has to write.  The first marker wins: re-marking would let a later
+    draft quietly rewrite which message answered what.
+    """
+    if event is None or event["state"] != "accepted" or event.get("settlement"):
+        return False
+    event["settlement"] = {"disposition": "replied", "result": result_id,
+                           "digest": digest, "at": now, "actor": actor,
+                           "source": "result", "reason": ""}
+    event["updated"] = now
+    return True
+
+
+def mark_event_settled(connection_id, event_id, *, disposition, actor, result_id="",
+                       reason="", directory=None):
+    """Record that an accepted message is no longer owed a reply.  Idempotent.
+
+    Two dispositions, and the difference is what the caller is asserting:
+
+    * ``replied`` — an outbox message answers this event.  Proof is required and
+      checked here: ``result_id`` must name a message this connection actually
+      holds, or a tombstone for one it held.  This is the repair path for an
+      answer that was stored before the marker existed, or by a process that
+      died in the one write between them; it asserts nothing the outbox does not
+      already say.
+    * ``closed`` — a local person recording that no reply is coming (the input
+      was cancelled, the task will never finish, the answer was given another
+      way).  It needs an actor and a reason, because it is the one route by
+      which a person's message stops being work, and "who decided, and why" is
+      the only question worth being able to answer afterwards.
+
+    Either marker makes the event compactable.  Neither is ever applied
+    automatically from age, volume or a full store.
+    """
+    actor = _check_actor(actor)
+    reason = _check_reason(reason)
+    if disposition not in EVENT_SETTLEMENTS:
+        raise InvalidRequest("disposition must be one of %s" % ", ".join(EVENT_SETTLEMENTS))
+    if disposition == "replied":
+        result_id = _check_id(result_id, "result_id")
+    elif not reason:
+        raise InvalidRequest("closing an accepted message without a reply needs a "
+                             "reason; it is the only record of why no answer was sent")
+    root = _root(directory)
+    path = store_path(connection_id, root=root)
+    with sessions._locked(path):
+        doc = _load(path, connection_id)
+        _require_connection(doc, connection_id)
+        event = _find(doc["events"], event_id)
+        if event is None:
+            raise UnknownRecord("no event %r on connection %s" % (event_id, connection_id))
+        if event["state"] != "accepted":
+            raise StateConflict("event %s is %s; only an accepted message is owed a "
+                                "reply to settle" % (event_id, event["state"]))
+        if event.get("settlement"):
+            return public_event(event)      # first marker wins
+        now = time.time()
+        if disposition == "replied":
+            reply = _find(doc["outbox"], result_id) or _tombstone(doc, "outbox", result_id)
+            if reply is None:
+                raise StateConflict(
+                    "no result %r is stored on connection %s, so there is no evidence "
+                    "event %s was answered; nothing was marked"
+                    % (result_id, connection_id, event_id))
+            event["settlement"] = {"disposition": "replied", "result": result_id,
+                                   "digest": reply["digest"], "at": now, "actor": actor,
+                                   "source": "repair", "reason": reason}
+        else:
+            event["settlement"] = {"disposition": "closed", "result": "", "digest": "",
+                                   "at": now, "actor": actor, "source": "operator",
+                                   "reason": reason}
+        event["updated"] = now
+        _compact(doc)
+        _save(doc, path)
+        return public_event(event)
+
+
 # ------------------------------------------------------------------- outbox
 
 def create_result(connection_id, result_id, *, destination, text, subject="",
                   thread_key="", in_reply_to="", session="", metadata=None,
-                  directory=None):
+                  for_event="", directory=None):
     """Store one outgoing message, immutably, before anything tries to send it.
 
     ``result_id`` is the caller's idempotency key: creating it twice with the
@@ -1858,17 +2136,29 @@ def create_result(connection_id, result_id, *, destination, text, subject="",
     different payload is an ``IdConflict``. ``revise_result`` creates a new draft
     id and cancels the old unsent draft atomically; it never changes sent text.
 
+    ``for_event`` names the received message this is the reply to, and is the
+    reason the two are one transaction: the outbox row and the event's
+    ``replied`` settlement marker are written together, so there is no window in
+    which an answer exists but the message it answers still counts as owed one.
+    A retry after a crash in that window re-enters here, finds the stored reply,
+    and stamps the marker then — the duplicate and tombstone branches below do
+    exactly that.  An event that is absent, compacted, not accepted, or already
+    settled is left alone; this never invents a marker it has no reply for.
+
     Destinations fail closed (``COLLIE_ONLINE_V1`` invariant 8): the address must
     be the connection's ``owner_reply_target`` or appear in
     ``allowed_destinations``.  A connection with neither configured cannot send
     at all, and says so.
     """
     result_id = _check_id(result_id, "result_id")
+    if for_event:
+        for_event = _check_token(for_event, "for_event", MAX_EVENT_ID_LEN)
     root = _root(directory)
     path = store_path(connection_id, root=root)
     with sessions._locked(path):
         doc = _load(path, connection_id)
         conn = _require_connection(doc, connection_id)
+        answered = _find(doc["events"], for_event) if for_event else None
         channel, policy = conn["channel"], conn["policy"]
         destination = _check_address(destination, "destination", channel, strict=True)
         targets = list(policy["allowed_destinations"])
@@ -1904,6 +2194,9 @@ def create_result(connection_id, result_id, *, destination, text, subject="",
             if existing["digest"] != message["digest"]:
                 raise IdConflict("result %s on connection %s already holds a different "
                                  "message" % (result_id, connection_id))
+            if _mark_reply(answered, result_id, existing["digest"], now):
+                _compact(doc)
+                _save(doc, path)            # the marker a crash lost, repaired
             out = public_result(existing)
             out["connection"] = connection_id
             out["duplicate"] = True
@@ -1913,6 +2206,9 @@ def create_result(connection_id, result_id, *, destination, text, subject="",
             if tomb["digest"] != message["digest"]:
                 raise IdConflict("result %s on connection %s was already used for a "
                                  "different message" % (result_id, connection_id))
+            if _mark_reply(answered, result_id, tomb["digest"], now):
+                _compact(doc)
+                _save(doc, path)
             return {"id": result_id, "connection": connection_id, "state": tomb["state"],
                     "digest": tomb["digest"], "duplicate": True, "compacted": True}
         open_rows = [m for m in doc["outbox"] if m["state"] in OUTBOX_OPEN]
@@ -1921,6 +2217,9 @@ def create_result(connection_id, result_id, *, destination, text, subject="",
                             "was discarded" % (len(open_rows), MAX_OPEN_OUTBOX))
         doc["next_seq"] += 1
         doc["outbox"].append(message)
+        # Before ``_compact``, so the event this answers becomes compactable in
+        # the same pass rather than waiting a write for its debt to clear.
+        _mark_reply(answered, result_id, message["digest"], now)
         _compact(doc)
         _save(doc, path)
         out = public_result(message)
@@ -2206,6 +2505,11 @@ def retry(connection_id, result_id, *, actor, reason="", directory=None):
         message = _find(doc["outbox"], result_id)
         if message is None:
             raise UnknownRecord("no result %r on connection %s" % (result_id, connection_id))
+        if (message.get("outcome") or {}).get("replacement"):
+            # ``retry_as`` already queued a fresh attempt for this message.
+            # Re-queuing this record too would send the same reply twice.
+            raise StateConflict("result %s was already retried as %s"
+                                % (result_id, message["outcome"]["replacement"]))
         if message["state"] != "failed":
             raise StateConflict(
                 "result %s is %s; only a failed send (where no delivery occurred) may be "
@@ -2220,6 +2524,83 @@ def retry(connection_id, result_id, *, actor, reason="", directory=None):
         _record_step(message, "pending", now, source="retry", actor=actor, detail=reason)
         _save(doc, path)
         return public_result(message)
+
+
+def retry_as(connection_id, result_id, new_id, *, actor, reason="", directory=None):
+    """Prepare a *new* attempt at a failed message, under a new result id.
+
+    ``retry`` re-queues the same record, which is right for a transport that
+    holds no memory of the request.  It is wrong for one that does: the Collie
+    Mail relay keys its delivery ledger on the result id, so a second submission
+    of an id it already settled as ``failed`` is answered from the ledger —
+    permanently, no matter what changed at this end.
+
+    So an explicit retry creates a fresh attempt instead.  The new record keeps
+    the text, subject, destination, thread, session and the approval those were
+    given, and deliberately keeps the *same* ``metadata.message_id``: the person
+    approved one reply to one message, and a recipient that sees both attempts
+    must see one message, not two.  The failed record keeps its own outcome and
+    history as evidence, and names its replacement so a second retry answers
+    with the attempt that already exists rather than queueing another one.
+
+    ``failed`` remains the only state this is allowed from.  ``unknown`` is a
+    delivery that might have happened, and nothing here will risk repeating it.
+    """
+    actor = _check_actor(actor)
+    reason = _check_reason(reason)
+    new_id = _check_id(new_id, "new result id")
+    if new_id == result_id:
+        raise InvalidRequest("a retry needs a new result id")
+    path = store_path(connection_id, root=_root(directory))
+    with sessions._locked(path):
+        doc = _load(path, connection_id)
+        conn = _require_connection(doc, connection_id)
+        old = _find(doc["outbox"], result_id)
+        if old is None:
+            raise UnknownRecord("no result %r on connection %s" % (result_id, connection_id))
+        replacement = (old.get("outcome") or {}).get("replacement")
+        if replacement:
+            existing = _find(doc["outbox"], replacement)
+            if existing is not None:
+                out = public_result(existing)
+                out["connection"] = connection_id
+                out["duplicate"] = True
+                return out
+            raise StateConflict("result %s was already retried as %s, which is no longer "
+                                "stored; nothing was queued again" % (result_id, replacement))
+        if old["state"] != "failed":
+            raise StateConflict(
+                "result %s is %s; only a failed send (where no delivery occurred) may be "
+                "retried" % (result_id, old["state"]))
+        if _find(doc["outbox"], new_id) is not None or _tombstone(doc, "outbox", new_id):
+            raise IdConflict("that retry id is already in use")
+        open_rows = [m for m in doc["outbox"] if m["state"] in OUTBOX_OPEN]
+        if len(open_rows) >= MAX_OPEN_OUTBOX:
+            raise StoreFull("%d results are already waiting to send (limit %d)"
+                            % (len(open_rows), MAX_OPEN_OUTBOX))
+        now = time.time()
+        attempt = _copy(old)
+        metadata = dict(attempt.get("metadata") or {})
+        # The attempt number lets a caller derive the next id deterministically,
+        # so clicking Retry twice asks for the attempt that already exists.
+        metadata.update(retry_of=result_id, attempt=int(metadata.get("attempt") or 1) + 1)
+        attempt.update(id=new_id, seq=doc["next_seq"], state="pending", metadata=metadata,
+                       created=now, updated=now, attempts=0, history=[], claim=None, outcome=None)
+        attempt["bytes"] = _measure_message(attempt, conn["channel"])
+        attempt["digest"] = _message_digest(attempt)
+        _record_step(attempt, "pending", now, source="retry", actor=actor, detail=reason,
+                     retry_of=result_id)
+        old["outcome"] = dict(old.get("outcome") or {}, replacement=new_id)
+        old["updated"] = now
+        _record_step(old, old["state"], now, source="retry", actor=actor, replacement=new_id)
+        doc["next_seq"] += 1
+        doc["outbox"].append(attempt)
+        _compact(doc)
+        _save(doc, path)
+        out = public_result(attempt)
+        out["connection"] = connection_id
+    out["duplicate"] = False
+    return out
 
 
 def next_sendable(connection_id, *, limit=8, directory=None):
@@ -2251,7 +2632,12 @@ def get_result(connection_id, result_id, *, directory=None, include_private=Fals
 
 
 def list_results(connection_id, *, states=None, limit=200, directory=None,
-                 include_private=False):
+                 include_private=False, newest=False):
+    """Outgoing messages in creation order, oldest first.
+
+    ``newest=True`` takes the window from the end, exactly as ``list_events``
+    does, for callers that must not be pinned to the oldest history.
+    """
     if states is not None:
         states = set(states)
         unknown = states - set(OUTBOX_STATES)
@@ -2264,7 +2650,7 @@ def list_results(connection_id, *, states=None, limit=200, directory=None,
         rows = [m for m in doc["outbox"] if states is None or m["state"] in states]
     rows.sort(key=lambda m: m["seq"])
     return [public_result(m, include_private=include_private)
-            for m in rows[:max(0, int(limit))]]
+            for m in _window(rows, limit, newest)]
 
 
 # --------------------------------------------------------- public projection
@@ -2345,6 +2731,14 @@ def public_event(event, *, include_private=False):
                              "attempts": acceptance.get("attempts"),
                              "reserved": acceptance.get("reserved"),
                              "settled": acceptance.get("settled")}
+    settlement = event.get("settlement")
+    if isinstance(settlement, dict):
+        out["settlement"] = {"disposition": settlement.get("disposition"),
+                             "result": settlement.get("result") or "",
+                             "at": settlement.get("at"),
+                             "actor": settlement.get("actor"),
+                             "reason": settlement.get("reason") or ""}
+    out["awaiting_reply"] = _needs_reply(event)
     rejection = event.get("rejection")
     if isinstance(rejection, dict):
         out["rejection"] = {"at": rejection.get("at"), "actor": rejection.get("actor"),

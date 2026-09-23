@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.29.0 — Email, phone and a shared Daily Brief
+
+- Start on the desktop without choosing a nickname. The name remains editable in
+  Settings, independently of a Collie Mail handle.
+- Add a desktop inbox for IMAP/SMTP email, Collie Mail and Twilio SMS, with optional
+  outbound voice readouts. Received messages, accepted work, attachments, drafts and
+  delivery attempts survive restarts. Credentials stay local and are never returned
+  by the connections API.
+- Draft replies in a restricted conversation without tools, hooks or earlier private
+  session history. Open a message as a project task explicitly when it needs tools.
+  Edit, discard and retry from the inbox; an unconfirmed send is never blindly replayed.
+- Add Daily Brief to Today and `/brief`: three priorities, the day's real appointments,
+  task progress and communication work, with source freshness and incomplete coverage
+  visible. Hide or snooze repeated items without completing them; changed items return.
+  Desktop and email use the same snapshot, including Chinese and local time zones.
+- Offer an optional morning email to the owner address of a saved mail connection.
+  Preserve its exact content for reply context, respect pauses and consent changes,
+  avoid catch-up bursts and distinguish provider acceptance from delivery.
+- Protect unfinished accepted messages from history cleanup and recover pending work
+  independently of mailbox connectivity. Retrying a known failure creates a new
+  attempt while preserving the old receipt.
+- Harden the Collie Mail relay with durable delivery and handle claims, bounded input,
+  verification throttles and public build artifacts. Provider provisioning remains
+  separate from app setup; phone reception means SMS, not incoming voice calls.
+- Fix a late Settings response replacing a loaded Today summary with its loading
+  placeholder. Preserve unsaved communication and email scheduling fields on refresh.
+
 ## v0.28.0 — Longer tasks and clearer recovery
 
 - Give the final no-tools request an explicit summary instruction when execution ends without

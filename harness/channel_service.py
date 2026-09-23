@@ -28,10 +28,32 @@ MAX_RECOVER = 10
 MAX_RECONCILE = 25
 MAX_DRAFTS = 10
 MAX_AUTO_SEND = 3
+# Of one reconcile budget, the slots reserved for the *oldest* work still
+# waiting.  The rest go to the newest, because that is the reply a person is
+# most likely waiting on — but an old one must still get its turn every pass.
+RECONCILE_OLDEST = 5
+# How much of the pending queue the drafting lane looks at.  It covers the whole
+# cap on purpose: pending events are already bounded, so a window this size
+# cannot leave an eligible message hidden behind ineligible ones in front of it.
+# (The hourly throttle does *not* use this window — see ``_draft_lane``.)
+DRAFT_WINDOW = comms.MAX_PENDING_EVENTS
+# Attempts at one reply.  A person who has hit this should edit the reply or
+# fix the connection rather than queue an eleventh identical message.
+MAX_SEND_ATTEMPTS = 10
 
 
 class ChannelError(ValueError):
     pass
+
+
+class PoisonMessage(ChannelError):
+    """This one message cannot be stored as it arrived; the cursor may pass it.
+
+    Only ever raised about the content of a single delivery.  A store that is
+    full, unreadable or holding a conflicting record is *not* this: those mean
+    the next poll should see the same messages again, so they propagate and
+    leave the cursor where it is.
+    """
 
 
 def _key(value):
@@ -244,10 +266,23 @@ class ChannelService:
         return {"connections": rows}
 
     def set_enabled(self, connection, enabled):
+        """Pause or resume a connection, and invalidate work already in flight.
+
+        The revision is bumped for the same reason ``configure`` bumps it: a
+        lane that started before this call holds a stale view of the connection
+        and its ``_status`` write must lose.  The op lock is deliberately *not*
+        taken — pausing must stay instant even while a send is mid-flight, and
+        the revision plus the enabled check in ``_status`` already order the
+        outcome correctly.
+        """
         if type(enabled) is not bool:
             raise ChannelError("enabled must be true or false")
         self._row(connection)
-        self._change(lambda rows: rows[connection].update(enabled=enabled, updated=time.time()))
+        def update(rows):
+            row = rows[connection]
+            row.update(enabled=enabled, updated=time.time(),
+                       revision=int(row.get("revision", 0)) + 1)
+        self._change(update)
         return self.connection(connection)
 
     def disconnect(self, connection):
@@ -265,11 +300,44 @@ class ChannelService:
         return self.connection(connection)
 
     def _status(self, connection, status, error="", *, revision=None, **fields):
+        """Publish what a lane observed, unless the connection has moved on.
+
+        Two guards, and both answer the same question — is this observation
+        still about the connection as it is now?
+
+        * ``revision`` is the optimistic one: ``configure`` and ``set_enabled``
+          bump it, so a lane that read the row before either lands writes
+          nothing.
+        * A disabled connection is never given a status at all.  A poll that
+          started before ``disconnect`` finishes afterwards, and re-publishing
+          ``connected`` over a connection whose credentials were just removed
+          tells a person the opposite of what they asked for.
+        """
         def update(rows):
             row = rows[connection]
             if revision is not None and row.get("revision") != revision:
                 return False
+            if not row.get("enabled"):
+                return False
             row.update(status=status, error=error, last_checked=time.time(), **fields)
+            return True
+        return self._change(update)
+
+    def _advance_cursor(self, connection, cursor, *, kind, config):
+        """Commit only the read position of a poll whose status write was stale.
+
+        The messages behind this cursor are already durably recorded, so moving
+        it is safe and re-reading them would only produce duplicates.  It is
+        still refused if the row now names a different account, because a
+        cursor belongs to the mailbox it was read from.
+        """
+        if not cursor:
+            return False
+        def update(rows):
+            row = rows[connection]
+            if row.get("kind") != kind or row.get("config") != config:
+                return False
+            row.update(cursor=cursor, last_checked=time.time())
             return True
         return self._change(update)
 
@@ -283,13 +351,25 @@ class ChannelService:
         self._status(connection, "connected")
         return result
 
-    def events(self, connection, *, limit=100):
-        self._row(connection)
-        return comms.list_events(connection, limit=limit, include_private=True, directory=self.directory)
+    def events(self, connection, *, limit=100, newest=True):
+        """This connection's received messages, newest window first, oldest-first within it.
 
-    def results(self, connection, *, limit=100):
+        ``newest`` defaults to True because every caller here is looking at
+        what is happening *now*: the desktop inbox, and thread matching for a
+        reply that quotes a recent message.  A connection retains up to 500
+        settled events, so a window taken from the front would freeze on the
+        first hundred messages a mailbox ever received and never show the one
+        that just arrived.  Pass ``newest=False`` to read from the beginning.
+        """
         self._row(connection)
-        return comms.list_results(connection, limit=limit, include_private=True, directory=self.directory)
+        return comms.list_events(connection, limit=limit, include_private=True,
+                                 newest=newest, directory=self.directory)
+
+    def results(self, connection, *, limit=100, newest=True):
+        """This connection's outgoing messages, newest window; see ``events``."""
+        self._row(connection)
+        return comms.list_results(connection, limit=limit, include_private=True,
+                                  newest=newest, directory=self.directory)
 
     def _store_attachments(self, connection, attachments):
         folder = os.path.join(self.root, "channel-assets", _key(connection))
@@ -297,11 +377,15 @@ class ChannelService:
         refs = []
         with sessions._locked(os.path.join(folder, "quota")):
             for index, attachment in enumerate(attachments):
-                encoded = attachment["data"]
-                raw = base64.b64decode(encoded, validate=True)
+                try:
+                    encoded = attachment["data"]
+                    raw = base64.b64decode(encoded, validate=True)
+                except (KeyError, TypeError, ValueError):
+                    # The delivery itself is unusable, not the store.
+                    raise PoisonMessage("attachment payload could not be decoded") from None
                 digest = hashlib.sha256(raw).hexdigest()
                 if digest != attachment["sha256"] or len(raw) != attachment["bytes"]:
-                    raise ChannelError("attachment integrity check failed")
+                    raise PoisonMessage("attachment integrity check failed")
                 path = os.path.join(folder, digest + ".json")
                 if not os.path.exists(path):
                     used = sum(item.stat().st_size for item in os.scandir(folder)
@@ -346,28 +430,81 @@ class ChannelService:
         return "mail-" + _hash(message.get("message_id") or message["event_id"])
 
     def ingest(self, connection, message):
-        """Record a normalized provider event before its transport cursor moves."""
-        self._row(connection)
+        """Record a normalized provider event before its transport cursor moves.
+
+        A message the parser accepted can still be one the durable store
+        refuses — a NUL in the body, a decoded subject carrying a line break.
+        Those are recorded as an explicit refusal under the same event id
+        instead of escaping to the caller, because an exception here is what
+        stops the cursor, and a stopped cursor hides every message that arrived
+        afterwards.  The content is never repaired into a task: a message
+        quietly altered on the way in is not the message the person received.
+        """
+        row = self._row(connection)
         if not isinstance(message, dict) or not message.get("event_id"):
             raise ChannelError("received message has no delivery identity")
         existing = comms.get_event(connection, message["event_id"], include_private=True, directory=self.directory)
-        thread = existing.get("thread_key", "") if existing else self._thread(connection, message)
         if existing and existing.get("compacted"):
             return dict(existing, duplicate=True)
-        refs = self._store_attachments(connection, message.get("attachments") or [])
-        event = comms.record_received(connection, message["event_id"], sender=message["sender"],
-                                      recipient=message.get("recipient", ""), text=message.get("text") or "(No text)",
-                                      subject=message.get("subject", ""), thread_key=thread, attachments=refs,
-                                      metadata={"message_id": message.get("message_id", ""),
-                                                "references": message.get("references") or [],
-                                                "automatic": bool(message.get("automatic")),
-                                                "input_error": message.get("error", "")},
-                                      received_at=message.get("received_at"), directory=self.directory)
+        # A missing sender is a message the store will refuse, not a crash.
+        message = dict(message, sender=message.get("sender") or "")
+        try:
+            thread = existing.get("thread_key", "") if existing else self._thread(connection, message)
+            refs = self._store_attachments(connection, message.get("attachments") or [])
+            event = comms.record_received(connection, message["event_id"], sender=message["sender"],
+                                          recipient=message.get("recipient") or "", text=message.get("text") or "(No text)",
+                                          subject=message.get("subject", ""), thread_key=thread, attachments=refs,
+                                          metadata={"message_id": message.get("message_id", ""),
+                                                    "references": message.get("references") or [],
+                                                    "automatic": bool(message.get("automatic")),
+                                                    "input_error": message.get("error", "")},
+                                          received_at=message.get("received_at"), directory=self.directory)
+        except (comms.InvalidRequest, PoisonMessage) as exc:
+            # Refused for what this delivery *is*.  StoreFull, IdConflict and
+            # StoreCorrupt are not caught here: those say the next poll should
+            # see these messages again, so they must reach the caller with the
+            # cursor untouched.
+            return self._record_unstorable(connection, row, message, exc)
         if not event.get("duplicate") and (message.get("automatic") or message.get("error")):
             event = comms.reject_event(connection, message["event_id"], actor="channel-intake",
                                reason="Automatic message" if message.get("automatic") else "Input could not be read completely",
                                directory=self.directory)
         return event
+
+    def _record_unstorable(self, connection, row, message, reason):
+        """Record "something arrived here that could not be kept" and settle it.
+
+        The placeholder carries no content from the message, only the fact of
+        it and a readable reason, so the person can find it in the account's own
+        inbox.  It is rejected immediately: it can never become a task.
+        """
+        channel = "sms" if row["kind"] == "twilio" else "email"
+        fallback = (row["config"].get("phone_number") or "+10000000000") if channel == "sms" \
+            else "unreadable@invalid.test"
+        sender = message.get("sender") or fallback
+        try:
+            comms._check_address(sender, "sender", channel, strict=True)
+        except comms.CommsError:
+            sender = fallback
+        detail = _detail(reason, "this message could not be stored as it arrived")[:300]
+        try:
+            event = comms.record_received(
+                connection, message["event_id"], sender=sender,
+                text="(This message could not be stored as it arrived; it was not opened.)",
+                subject="Unreadable message", thread_key="",
+                metadata={"message_id": "", "references": [], "automatic": False,
+                          "input_error": detail},
+                received_at=message.get("received_at"), directory=self.directory)
+        except comms.InvalidRequest as exc:
+            # Not even a refusal fits under this id — the id itself is the
+            # problem.  There is nothing durable to show, so the poll counts it
+            # and steps over it rather than stalling on it forever.
+            raise PoisonMessage(_detail(exc, "this message could not be recorded at all")) from None
+        if not event.get("duplicate"):
+            event = comms.reject_event(connection, message["event_id"], actor="channel-intake",
+                                       reason="Message could not be stored: " + detail,
+                                       directory=self.directory)
+        return dict(event, unstorable=True)
 
     def _anchor(self, connection, row):
         """Persist a "from now on" baseline before any message is read.
@@ -443,18 +580,27 @@ class ChannelService:
             else:
                 result = self._adapter(row["kind"]).poll(row["config"], channel_secrets.get(connection, state_dir=self.root),
                                                         cursor=row.get("cursor"), limit=25)
-            count = unreadable = 0
+            count = unreadable = unrecordable = 0
             for item in result["messages"]:
                 message = self._normalize(row, item)
-                if self.ingest(connection, message).get("duplicate"):
+                try:
+                    recorded = self.ingest(connection, message)
+                except PoisonMessage:
+                    # No event could be written for this delivery at all, so
+                    # there is nothing to show and nothing to re-read.  It is
+                    # counted with the messages the provider could not hand over.
+                    unrecordable += 1
+                    continue
+                if recorded.get("duplicate"):
                     continue
                 count += 1
-                if message.get("error"):
+                if message.get("error") or recorded.get("unstorable"):
                     unreadable += 1
             # Messages the provider could not hand over at all: gone between the
             # listing and the fetch (IMAP), or unusable rows the transport had to
             # step over.  They have no event, so the count is the only trace.
-            skipped = len(result.get("expunged") or []) + int(result.get("skipped") or 0)
+            skipped = (len(result.get("expunged") or []) + int(result.get("skipped") or 0)
+                       + unrecordable)
             warning = ""
             if unreadable or skipped:
                 warning = ("%d message(s) arrived unreadable and %d could not be retrieved at all; "
@@ -463,7 +609,17 @@ class ChannelService:
             # events and the durable store decides which already exist.
             if not self._status(connection, "connected", revision=row.get("revision"),
                                 cursor=result.get("cursor"), warning=warning):
-                raise ChannelError("connection settings changed during receipt; messages were kept and will be checked again")
+                # Settings changed while this poll ran — a pause, a disconnect, a
+                # re-save.  Everything read is durably recorded, so the read
+                # position still moves (re-reading would only produce
+                # duplicates), but the status this poll observed is stale and
+                # must not overwrite the one the person just asked for.
+                self._advance_cursor(connection, result.get("cursor"),
+                                     kind=row["kind"], config=row["config"])
+                return {"received": count, "more": bool(result.get("more")),
+                        "status": self._row(connection).get("status") or "", "settings_changed": True,
+                        "skipped": skipped, "unreadable": unreadable, "warning": warning,
+                        "history": row.get("history") or "all"}
             return {"received": count, "more": bool(result.get("more")), "status": "connected",
                     "skipped": skipped, "unreadable": unreadable, "warning": warning,
                     "history": row.get("history") or "all"}
@@ -499,6 +655,12 @@ class ChannelService:
                 contexts.append({"kind": "email_attachment", "label": ref["name"], "content": text})
             else:
                 raise ChannelError("this attachment type needs review; download it before accepting the message")
+        if len(contexts) < input_assets.MAX_CONTEXTS:
+            from . import daily_brief_reply
+            room = input_assets.MAX_CONTEXT_CHARS - sum(len(item["content"]) for item in contexts)
+            quoted = daily_brief_reply.reply_context(self, event, connection, max_chars=max(0, room))
+            if quoted:
+                contexts.append(quoted)
         return input_assets.save(session, images=images, contexts=contexts, directory=self.directory)
 
     def accept(self, connection, event_id, *, draft=True, start=True, approved=False):
@@ -564,13 +726,17 @@ class ChannelService:
                                         (row["config"].get("address") or row["config"].get("sender") or "mail@collie.run").split("@")[-1])
         subject = event.get("subject") or "Collie result"
         subject = subject if subject.lower().startswith("re:") else "Re: " + subject
+        # ``for_event`` makes storing the reply and recording that the received
+        # message now has one a single durable write, so no crash can leave an
+        # answered message still counted as owed an answer — or, worse, leave it
+        # looking answered when the answer was never stored.
         return comms.create_result(connection, result_id, destination=row["owner"], text=text, subject=subject,
                                     thread_key=event.get("thread_key", ""),
                                     in_reply_to=(event.get("metadata") or {}).get("message_id", ""),
                                     session=(event.get("acceptance") or {}).get("session", ""),
                                     metadata={"message_id": message_id, "speak": bool(speak), "auto_eligible": bool(automatic),
                                               "references": (event.get("metadata") or {}).get("references") or []},
-                                    directory=self.directory)
+                                    for_event=event_id or "", directory=self.directory)
 
     def send(self, connection, result_id):
         """Transmit one prepared reply.  Serialized against configure/disconnect.
@@ -622,6 +788,38 @@ class ChannelService:
         return comms.mark_submitted(connection, result_id, token=claim["token"],
                                      provider_message_id=str(receipt.get("provider_message_id") or ""),
                                      directory=self.directory)
+
+    def retry(self, connection, result_id):
+        """Queue a fresh attempt at a failed reply, under a new result id.
+
+        A retry that reuses the result id is answered by the relay's own
+        delivery ledger, which is keyed on it: once that ledger holds ``failed``
+        for an id, every later submission of the same id returns that failure,
+        so the reply can never leave this machine no matter what was fixed.
+
+        The new attempt keeps the approved text, subject, destination, thread
+        and the same ``Message-ID``, so the person sends the reply they approved
+        and the recipient sees one message.  The failed record keeps its
+        outcome and history, and names this attempt, so a second click of Retry
+        answers with the attempt that already exists instead of queueing
+        another one.  Serialized with ``send`` and ``disconnect``, so a new
+        attempt cannot be prepared underneath a claim on the old one.
+        """
+        with self._op_lock(connection):
+            self._row(connection)
+            result = comms.get_result(connection, result_id, include_private=True,
+                                      directory=self.directory)
+            if not result or result.get("compacted"):
+                raise ChannelError("this reply is no longer available to retry")
+            attempt = int((result.get("metadata") or {}).get("attempt") or 1) + 1
+            if attempt > MAX_SEND_ATTEMPTS:
+                raise ChannelError("this reply has been retried too many times; edit it and "
+                                   "send the revision, or check the connection first")
+            base = re.sub(r"-try[0-9]+\Z", "", result_id)
+            return comms.retry_as(connection, result_id, "%s-try%d" % (base, attempt),
+                                  actor="desktop-user",
+                                  reason="Retry requested in the desktop inbox",
+                                  directory=self.directory)
 
     def check_receipt(self, connection, result_id):
         """Read an authenticated relay receipt; never reissue the mail request."""
@@ -724,16 +922,35 @@ class ChannelService:
 
         One unrecoverable event is reported and stepped over, never allowed to
         starve the rest.
+
+        Both classes are selected by the store, before any window is taken.  A
+        window over "pending or accepted" would have spent this budget on
+        whatever arrived most recently and never reached a reservation sitting
+        behind a few hundred accepted messages — which is precisely the record
+        that names a task nothing else knows exists.  Reservations are taken
+        first for the same reason; what is left of the budget goes to resuming
+        accepted work, oldest slots reserved so a permanently stuck task cannot
+        hold the lane.
         """
         row = self._row(connection)
         out = {"settled": 0, "resumed": 0, "examined": 0, "issues": []}
         if not row.get("enabled"):
             out["issues"].append("connection is paused; acceptance recovery was skipped")
             return out
-        events = comms.list_events(connection, states=["pending", "accepted"], limit=200,
-                                   include_private=True, directory=self.directory)
-        reserved = [e for e in events if isinstance(e.get("acceptance_detail"), dict)]
-        for event in reserved[:max(0, int(limit))]:
+        budget = max(0, int(limit))
+        # Disjoint by construction: the store only allows an ``enqueuing``
+        # reservation on a pending event, and only an accepted event is owed a
+        # reply, so no record is examined twice.
+        reserved = comms.list_events(connection, needs="reservation", limit=budget,
+                                     newest=True, reserve_oldest=budget // 2,
+                                     include_private=True, directory=self.directory)
+        room = max(0, budget - len(reserved))
+        resumable = comms.list_events(connection, needs="reply", limit=room, newest=True,
+                                      reserve_oldest=min(RECONCILE_OLDEST, room),
+                                      include_private=True, directory=self.directory) if room else []
+        for event in reserved + resumable:
+            if not isinstance(event.get("acceptance_detail"), dict):
+                continue
             out["examined"] += 1
             frozen = event["acceptance_detail"]
             try:
@@ -784,6 +1001,27 @@ class ChannelService:
             return {"started": False, "reason": str(exc)[:300]}
         return {"started": bool(outcome.get("started")), "reason": ""}
 
+    def _reconcile_candidates(self, connection, limit=MAX_RECONCILE, oldest=RECONCILE_OLDEST):
+        """Accepted messages still owed a reply, already fairly windowed.
+
+        Eligibility is the store's own durable one — an accepted event with no
+        settlement marker — and it is applied *before* the window, not after.
+        That is the whole point: filtering afterwards meant a connection with
+        more accepted messages than the window could hide every task that
+        finished behind mail that had already been answered, and the lane would
+        examine the same replied rows forever.  The window then reserves slots
+        for the oldest of what is left, so a task that can never reconcile (its
+        input was cancelled, its journal cannot be read) cannot take the whole
+        budget every tick either.
+
+        One bounded read of the document the store already loads; no secondary
+        index to keep in step with it.
+        """
+        self._row(connection)
+        return comms.list_events(connection, needs="reply", limit=limit, newest=True,
+                                 reserve_oldest=oldest, include_private=True,
+                                 directory=self.directory)
+
     def reconcile(self, connection, issues=None):
         """Recover completed replies; never infer task success from an old answer.
 
@@ -792,14 +1030,24 @@ class ChannelService:
         """
         from . import task_inbox
         recovered = 0
-        for event in self.events(connection, limit=500)[:MAX_RECONCILE]:
+        for event in self._reconcile_candidates(connection):
             try:
                 acceptance = event.get("acceptance") or {}
                 sid, eid = acceptance.get("session"), acceptance.get("entry_id")
                 if not sid or not eid:
                     continue
-                existing = comms.get_result(connection, "result-" + _hash(connection + ":" + event["id"])[:40], directory=self.directory)
-                if existing:
+                result_id = "result-" + _hash(connection + ":" + event["id"])[:40]
+                if comms.get_result(connection, result_id, directory=self.directory):
+                    # The reply exists but the event does not say so: saved
+                    # before settlement markers existed, or by a process that
+                    # died in the one write between the two.  The outbox record
+                    # (or its tombstone) is the evidence, and stamping the event
+                    # from it is what lets the message compact later instead of
+                    # being re-examined on every pass forever.
+                    comms.mark_event_settled(connection, event["id"], disposition="replied",
+                                             result_id=result_id, actor="channel-reconcile",
+                                             reason="Reply was already saved",
+                                             directory=self.directory)
                     continue
                 checked = sessions.load_checked(sid, directory=self.directory)
                 if checked["status"] != "ok":
@@ -818,17 +1066,43 @@ class ChannelService:
                     exc, "this task's reply could not be recovered; open it in the inbox")))
         return recovered
 
-    def _draft_lane(self, connection):
-        """Offer allowed, attachment-free messages to the no-tools drafting template."""
-        drafted = 0
-        pending = comms.list_events(connection, states=["pending"], limit=MAX_DRAFTS,
+    def _draft_lane(self, connection, issues=None):
+        """Offer allowed, attachment-free messages to the no-tools drafting template.
+
+        Automatic drafting is capped at ``MAX_DRAFTS`` an hour.  Two things that
+        cap must not do: stop counting, and stop saying anything.
+
+        The hour is counted by *when each acceptance was made*, across every
+        acceptance the connection still retains — not by reading the newest N
+        events and hoping the hour is inside them.  Those are different
+        questions the moment a mailbox is synced with ``history="all"``: mail
+        that arrived years ago and was accepted this morning sits at the front
+        of the event list, so a window taken by arrival order would not see
+        today's acceptances at all and would report a busy connection as idle.
+
+        Whatever the cap defers is reported, with the time it resumes, so a
+        connection is never left looking healthy while new mail sits untouched.
+        Nothing is dropped — a deferred message stays pending and is offered
+        again on the next pass.
+        """
+        drafted, now = 0, time.time()
+        pending = comms.list_events(connection, states=["pending"], limit=DRAFT_WINDOW,
                                     include_private=True, directory=self.directory)
-        recent = [e for e in self.events(connection, limit=200)
-                  if e.get("acceptance") and e["acceptance"].get("reserved", 0) > time.time() - 3600]
-        for event in pending[:max(0, MAX_DRAFTS - len(recent))]:
-            if event.get("sender_allowed") and not event.get("attachment_refs"):
-                self.accept(connection, event["id"], draft=True)
-                drafted += 1
+        eligible = [e for e in pending
+                    if e.get("sender_allowed") and not e.get("attachment_refs")]
+        recent = comms.count_acceptances(connection, since=now - 3600, directory=self.directory)
+        budget = max(0, MAX_DRAFTS - recent["count"])
+        for event in eligible[:budget]:
+            self.accept(connection, event["id"], draft=True)
+            drafted += 1
+        deferred = len(eligible) - min(len(eligible), budget)
+        if deferred and issues is not None:
+            resumes = (time.strftime("%H:%M", time.localtime(recent["oldest"] + 3600))
+                       if recent["count"] else "")
+            issues.append(
+                "%d received message(s) are waiting: automatic drafting is limited to %d an hour "
+                "and resumes about %s. Nothing was discarded; open the inbox to reply now."
+                % (deferred, MAX_DRAFTS, resumes or "shortly"))
         return drafted
 
     def _delivery_lane(self, connection, row):
@@ -885,8 +1159,10 @@ class ChannelService:
             else:
                 entry.update(received)
             if row.get("mode") == "draft":
-                entry["drafted"] = lane("draft", lambda: self._draft_lane(connection),
+                deferrals = []
+                entry["drafted"] = lane("draft", lambda: self._draft_lane(connection, deferrals),
                                         "Drafting could not be started for this connection") or 0
+                issues.extend({"lane": "draft", "error": text} for text in deferrals)
             delivery = lane("delivery", lambda: self._delivery_lane(connection, row),
                             "Sending could not be completed; check the outbox")
             if delivery:
@@ -919,6 +1195,11 @@ def start_pump(state_dir=None, interval=60):
                     ChannelService(root).tick()
                 except Exception:
                     pass  # The connections API exposes a malformed settings file.
+                try:
+                    from . import daily_brief_schedule
+                    daily_brief_schedule.tick(root)
+                except Exception:
+                    pass  # Daily Brief settings expose their own failure; other lanes continue.
                 stop.wait(max(10, interval))
         thread = threading.Thread(target=run, name="collie-channels", daemon=True)
         _PUMPS[root] = (thread, stop)

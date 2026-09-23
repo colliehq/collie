@@ -593,8 +593,9 @@ def test_a_real_accepted_send_reports_submitted():
     socket_ = conversation(b"250 2.0.0 Ok: queued as ABC123\r\n")
     out = mt.send(CONFIG, CREDS, result(), smtp_factory=genuine_factory(socket_, []))
     assert out["status"] == "submitted" and out["recipients"] == 1
-    assert b"rcpt to:<owner@example.com>" in socket_.written   # one envelope recipient
-    assert socket_.written.count(b"rcpt to:") == 1
+    # SMTP commands are case-insensitive; Python versions choose different case.
+    assert b"rcpt to:<owner@example.com>" in socket_.written.lower()
+    assert socket_.written.lower().count(b"rcpt to:") == 1  # one envelope recipient
 
 
 def test_module_never_enables_client_debug_logging():

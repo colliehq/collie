@@ -1,7 +1,8 @@
 # Local communication store (`harness/communications.py`)
 
-Status: first bounded implementation batch. This module is storage only — the
-transports, surfaces and the run loop are integrated separately.
+This document describes the storage layer. For setup and everyday use, see
+[Email and phone](communication-channels.md). `channel_service` integrates this
+store with the desktop inbox, transports, task execution and Daily Brief.
 
 A durable, stdlib-only record of what arrived over email/SMS and what we sent
 back, plus a crash-safe hand-off of one received message to the existing
@@ -155,9 +156,9 @@ for the local trusted surface.
   `task_inbox`, nothing here can undo a tool call; the guarantee is that one
   received message becomes at most one accepted task, and that every accepted
   message has a truthful record of what happened to it.
-- **Not yet integrated.** No webapp/webui route, no dogmail or relay transport,
-  no scheduler wake-up. `next_sendable()` and `list_events(states=["pending"])`
-  are what a caller polls; this module starts nothing.
+- **Storage and execution are separate.** `channel_service` owns polling, recovery,
+  drafting and delivery; `channel_web` exposes the authenticated desktop actions.
+  This module itself starts no network call or scheduler.
 
 ## Tests
 
