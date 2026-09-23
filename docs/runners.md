@@ -8,14 +8,14 @@ Version 0.22.0 adds three reviewed routes: Codex App Server for interactive appr
 official Codex Python SDK in a sanitized background sidecar, and Pi RPC with shell disabled. Collie
 remains the control plane in all three.
 
-The 0.27.0 release checks Codex CLI/Python SDK 0.155.1 and Claude Agent SDK
+The 0.28.0 release retains Codex CLI/Python SDK 0.155.1 and Claude Agent SDK
 0.2.157. Windows installers include Claude Code 2.1.278. The Codex SDK route
 uses the native CLI distributed with its pinned Python dependency, so installing
 the `codex` extra does not also require a separate CLI on `PATH`. The `PATH`
 routes additionally tolerate Codex CLI 0.156's removed Windows sandbox setting —
 see [the version split](#windows-sandbox-and-the-codex-cli-version-split), which
 also records what that has and has not been verified against. See the
-[release review](release-0.27.0.md) for validation scope.
+[release review](release-0.28.0.md) for validation scope.
 
 ## Worker is not the same thing as brain
 
