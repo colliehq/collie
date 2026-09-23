@@ -3,7 +3,7 @@ import json
 from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect
-from test_web_ui_run_status import ui, server, browser, _Fixture, _hold_queue
+from test_web_ui_run_status import ui, server, browser, _Fixture, _hold_queue, PROJECT_CWD
 
 
 def read_thread(page):
@@ -86,7 +86,9 @@ def test_folder_selection_is_checked_before_send_and_changes_check_discovery(ui)
                 {'cwd':folder,'candidates':[{'command':'check '+folder,'source':'project'}]}))
     page.route('**/api/verification*',detect)
     page.reload(wait_until='load')
-    expect(page.locator('#taskWorkspacePath')).to_have_text('/default')
+    # The folder shown is the one a check answered with: the shared fixture named it on the first
+    # load (as the real route always does), and this reload's check confirms that same one.
+    expect(page.locator('#taskWorkspacePath')).to_have_text(PROJECT_CWD)
     page.locator('#taskWorkspace summary').click()
     page.locator('#taskFolder').fill('/missing')
     page.locator('#input').fill('Implement it')

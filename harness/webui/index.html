@@ -4112,7 +4112,10 @@
     "Continue in this folder":"从此目录继续","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目录已丢失，请恢复原目录或选择新位置。更改位置不会复制或恢复文件。",
     "Apply changes to main project":"将修改应用到主项目","Changes stay here until you apply them. Main project:":"应用前，修改保留在此目录。主项目：",
     "This conversation continues in its saved folder.":"这段对话会继续使用已保存的目录。","Select Use folder to check this location.":"请点击「使用此目录」检查位置。",
-    "not checked yet":"尚未检查","checking folder...":"正在检查目录…",
+    "not checked yet":"尚未检查","checking folder...":"正在检查目录…","folder not confirmed":"目录未确认",
+    "Could not check the working folder. Your draft is kept; Send checks again before it starts anything.":"无法检查工作目录。草稿已保留；发送前会再次检查，确认后才会开始。",
+    "The folder check did not answer in time.":"目录检查超时未响应。",
+    "The folder check did not answer with a folder.":"目录检查未返回任何目录。",
     "This draft is aimed here. Send checks this folder before it starts.":"这份草稿指向此目录。发送时会先检查该目录再开始。",
     "Checking folder...":"正在检查目录…","Applying changes...":"正在应用修改…","Changes applied. The isolated folder is kept.":"修改已应用，隔离目录已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已保存到隔离目录，可从「工作目录」应用修改。",
@@ -4313,7 +4316,10 @@
     "Continue in this folder":"從此目錄繼續","Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.":"目錄已遺失，請恢復原目錄或選擇新位置。變更位置不會複製或恢復檔案。",
     "Apply changes to main project":"將修改套用到主專案","Changes stay here until you apply them. Main project:":"套用前，修改保留在此目錄。主專案：",
     "This conversation continues in its saved folder.":"這段對話會繼續使用已儲存的目錄。","Select Use folder to check this location.":"請點擊「使用此目錄」檢查位置。",
-    "not checked yet":"尚未檢查","checking folder...":"正在檢查目錄…",
+    "not checked yet":"尚未檢查","checking folder...":"正在檢查目錄…","folder not confirmed":"目錄未確認",
+    "Could not check the working folder. Your draft is kept; Send checks again before it starts anything.":"無法檢查工作目錄。草稿已保留；傳送前會再次檢查，確認後才會開始。",
+    "The folder check did not answer in time.":"目錄檢查逾時未回應。",
+    "The folder check did not answer with a folder.":"目錄檢查未回傳任何目錄。",
     "This draft is aimed here. Send checks this folder before it starts.":"這份草稿指向此目錄。傳送時會先檢查該目錄再開始。",
     "Checking folder...":"正在檢查目錄…","Applying changes...":"正在套用修改…","Changes applied. The isolated folder is kept.":"修改已套用，隔離目錄已保留。",
     "Saved in the isolated folder. Apply changes from Working folder.":"成果已儲存到隔離目錄，可從「工作目錄」套用修改。",
@@ -12635,6 +12641,9 @@
     // on, and it is never silently replaced by somewhere else.
     var setupSession = null, setupCwd = "", pendingCwd = "", scopeRequest = 0,
         workspaceInfo = {}, workspaceMissing = false;
+    // New tasks need a server-confirmed folder before Send can dispatch them.
+    var rootKnown = false, rootTries = 0, rootTimer = null, ROOT_TRIES = 3;
+    var CHECK_TIMEOUT_MS = 10000;
     // Checking a folder is a read-only look at the disk, not a second thing to approve, so Send
     // performs it itself; `checkFlight` is the look that is open and `checkKey` the question it
     // answers, so everything asking that same question joins it. `destination` counts the times
@@ -12644,13 +12653,16 @@
     var folder = $("taskFolder"), folderUse = $("taskFolderUse"), workspaceApply = $("taskWorkspaceApply");
     function paintWorkspace() {
       var isolated = workspaceInfo.mode === "isolated", shown = pendingCwd || setupCwd;
+      // A failed boot check must remain visible when the folder panel is collapsed.
+      var unconfirmed = !setupSession && !rootKnown && !checking && !workspaceMissing && !pendingCwd;
       $("taskWorkspaceLabel").textContent = t(isolated ? "Isolated folder" : "Working folder");
       $("taskWorkspacePath").textContent = shown;
       $("taskWorkspacePath").title = shown;
       // Collapsed is the normal state of this panel, so an unchecked selection has to be legible
       // from the summary line rather than only from the note inside it.
-      $("taskWorkspacePending").hidden = !(pendingCwd || checking);
-      $("taskWorkspacePending").textContent = t(checking ? "checking folder..." : "not checked yet");
+      $("taskWorkspacePending").hidden = !(pendingCwd || checking || unconfirmed);
+      $("taskWorkspacePending").textContent = t(checking ? "checking folder..."
+        : unconfirmed ? "folder not confirmed" : "not checked yet");
       folder.readOnly = !!setupSession && !workspaceMissing; folder.disabled = setupLocked;
       folderUse.hidden = !!setupSession && !workspaceMissing; folderUse.disabled = setupLocked;
       folderUse.textContent = t(setupSession ? "Continue in this folder" : "Use folder");
@@ -12658,13 +12670,17 @@
       $("taskWorkspaceNote").textContent = workspaceMissing
         ? t("Folder missing. Restore it or choose its new location. Changing location does not copy or recover files.") : checking
         ? t("Checking folder...") : pendingCwd
-        ? t("This draft is aimed here. Send checks this folder before it starts.") : isolated
+        ? t("This draft is aimed here. Send checks this folder before it starts.") : unconfirmed
+        ? t("Could not check the working folder. Your draft is kept; Send checks again before it starts anything.") : isolated
         ? t("Changes stay here until you apply them. Main project:") + " " + (workspaceInfo.origin || "")
         : setupSession ? t("This conversation continues in its saved folder.") : "";
     }
     window.showTaskWorkspace = function (cwd, info) {
       // A workspace reported for this scope settles the question the selection was asking.
-      if (cwd) { setupCwd = cwd; pendingCwd = ""; folder.value = cwd; folder.setCustomValidity(""); }
+      if (cwd) {
+        setupCwd = cwd; pendingCwd = ""; folder.value = cwd; folder.setCustomValidity("");
+        rootKnown = true; stopRootRetry();
+      }
       workspaceInfo = info || {}; paintWorkspace(); saveSetup();
     };
     folder.addEventListener("input", function () {
@@ -12680,7 +12696,9 @@
     // What Send settles before starting a new task here. Only a new task's own folder is answered
     // this way: moving a conversation's workspace is still a relocation the person asks for.
     window.workspaceCheckNeeded = function () {
-      return !setupSession && (!!pendingCwd || workspaceMissing || !!folder.validationMessage);
+      // Existing conversations use their saved workspace and its separate relocation flow.
+      return !setupSession &&
+        (!!pendingCwd || !rootKnown || workspaceMissing || !!folder.validationMessage);
     };
     window.workspaceDestination = function () { return destination; };
     window.ensureWorkspaceChecked = function () {
@@ -12689,7 +12707,7 @@
         // Confirmed means the server said yes about the folder it was asked about, the draft is
         // still aimed at that same choice, and nothing objects to the field. (Settling the
         // requested path on its resolved spelling is not a change.)
-        return !!answered && destination === mark && !setupSession && !pendingCwd &&
+        return !!answered && destination === mark && !setupSession && !pendingCwd && rootKnown &&
           !workspaceMissing && !folder.validationMessage;
       });
     };
@@ -12776,6 +12794,8 @@
       folder.value = pendingCwd || setupCwd; destination++;   // this scope's aim, not the last one's
       folder.setCustomValidity(pendingCwd ? t("Select Use folder to check this location.") : "");
       workspaceInfo = {}; workspaceMissing = false;
+      // Remembered paths still need validation when this scope is restored.
+      rootKnown = false; stopRootRetry(); rootTries = 0;
       $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
       [verifyCommand, packCheck, $("packN")].forEach(function (el) { el.setCustomValidity(""); });
       paint();
@@ -12787,6 +12807,8 @@
         verify:config.verify_command, verifySource:config.verify_source,
         check:config.check, checkSource:"user", n:config.n});
       saveSetup();
+      // Restored submissions need the same folder validation as a scope switch.
+      window.refreshVerificationCandidates();
     };
     window.switchTaskSetup = function (sid) {
       sid = sid || null;
@@ -13046,27 +13068,62 @@
         capabilities = { reasoning_efforts: [], speed_tiers: ["standard"] }; reported = null; paint();
       });
     };
+    function stopRootRetry() { if (rootTimer) { clearTimeout(rootTimer); rootTimer = null; } }
+    function scheduleRootRetry(sid) {
+      // Retry transient boot failures with a bounded backoff. Send can retry after that.
+      stopRootRetry();
+      if (sid || rootKnown || workspaceMissing || setupSession !== sid || rootTries >= ROOT_TRIES) return;
+      var attempt = ++rootTries, asked = scopeRequest;
+      rootTimer = setTimeout(function () {
+        rootTimer = null;
+        // A newer question, a changed aim or a scope switch has already taken this over.
+        if (rootKnown || setupSession !== sid || scopeRequest !== asked) return;
+        window.refreshVerificationCandidates();
+      }, 250 * attempt);
+    }
     window.refreshVerificationCandidates = function () {
       var sid = setupSession, requestedFolder = !sid ? folder.value.trim() : "";
       // Asking again about the same choice is the same read-only look: joining the one already
       // open keeps a Send waiting on it, where a second question settles the first as stale.
       var watched = !!requestedFolder && (requestedFolder !== setupCwd || !!folder.validationMessage);
-      var key = watched ? destination + " " + requestedFolder : "";
+      // Coalesce boot checks too, including remembered paths that have not been confirmed.
+      var rootless = !sid && !rootKnown;
+      var key = (watched || rootless) ? destination + " " + requestedFolder : "";
       if (key && checkFlight && checkKey === key) return checkFlight;
+      stopRootRetry();
       var request = ++scopeRequest, beforeVerify = verifyCommand.value,
           beforeCheck = packCheck.value, beforeCwd = setupCwd;
       var path = "/api/verification" + (sid ? "?session=" + encodeURIComponent(sid) :
         requestedFolder ? "?cwd=" + encodeURIComponent(requestedFolder) : "");
-      if (watched) { folder.setCustomValidity(t("Checking folder...")); checking = true; paintWorkspace(); }
-      var flight = authenticatedFetch(path).then(function (r) {
-        return r.json().then(function (data) {
+      if (watched) folder.setCustomValidity(t("Checking folder..."));
+      if (watched || rootless) { checking = true; paintWorkspace(); }
+      // Bound authentication refresh and body parsing as well as response headers. The race
+      // works without AbortController; abort only releases this check's own fetch.
+      var stop = typeof AbortController === "function" ? new AbortController() : null;
+      var expired = false, deadline = null;
+      var silence = new Promise(function (_, refuse) {
+        deadline = setTimeout(function () {
+          expired = true; if (stop) stop.abort();
+          refuse(new Error(t("The folder check did not answer in time.")));
+        }, CHECK_TIMEOUT_MS);
+      });
+      var look = authenticatedFetch(path, stop ? {signal: stop.signal} : null).then(function (r) {
+        return r.json().then(function (body) {
+          // Treat malformed success bodies as an unconfirmed folder.
+          var data = body && typeof body === "object" ? body : {};
           if (!r.ok) {
             var error = new Error(data.error || "HTTP " + r.status);
             error.workspaceMissing = !!data.workspace_missing; throw error;
           }
+          if (typeof data.cwd !== "string" || !data.cwd.trim()) {
+            throw new Error(t("The folder check did not answer with a folder."));
+          }
           return data;
         });
-      }).then(function (data) {
+      });
+      // Late responses after timeout cannot update the folder or release a waiting Send.
+      var flight = Promise.race([look, silence]).then(function (data) {
+        clearTimeout(deadline);
         // Resolves to whether this look answered its own question: one that a later question
         // overtook settles nothing, least of all a Send waiting on it.
         if (request !== scopeRequest || setupSession !== sid) return false;
@@ -13076,8 +13133,9 @@
         }
         if (!sid && folder.value.trim() !== requestedFolder) return false;
         // The answer is about the folder that was asked for, so the selection is now checked.
-        setupCwd = data.cwd || ""; if (!sid) pendingCwd = "";
+        setupCwd = data.cwd; if (!sid) pendingCwd = "";
         folder.value = setupCwd; folder.setCustomValidity(""); workspaceMissing = false;
+        rootKnown = true; stopRootRetry(); rootTries = 0;
         $("taskWorkspaceStatus").textContent = ""; paintWorkspace();
         var first = (data.candidates || [])[0];
         if (!first) { saveSetup(); return true; }
@@ -13088,13 +13146,19 @@
         if (packCheck && !packCheck.value) { packCheck.value = first.command; packCheck.dataset.source = first.source || "detected"; }
         saveSetup(); return true;
       }).catch(function (error) {
+        clearTimeout(deadline);
         if (request !== scopeRequest || setupSession !== sid) return false;
-        workspaceMissing = !!error.workspaceMissing; paintWorkspace();
+        var reason = expired ? t("The folder check did not answer in time.")
+                             : error.message || String(error);
+        workspaceMissing = !!error.workspaceMissing;
+        $("taskWorkspaceStatus").textContent = reason;
+        if (!sid && requestedFolder) folder.setCustomValidity(reason);
+        scheduleRootRetry(sid);
+        paintWorkspace();
         if (workspaceMissing) $("taskWorkspace").open = true;
-        $("taskWorkspaceStatus").textContent = error.message || String(error);
-        if (!sid && requestedFolder) folder.setCustomValidity(error.message || String(error));
+        return false;
       });
-      if (watched) {
+      if (watched || rootless) {
         checkFlight = flight; checkKey = key;
         // Only the look that still owns the field may stop saying "checking".
         flight.then(function () {
