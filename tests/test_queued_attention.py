@@ -390,3 +390,172 @@ def test_an_unreadable_schedule_never_costs_the_row_its_visibility(web, monkeypa
     row = _row(payload, sid)
     assert row["scheduled_wait"] is None, "unknown reads as unscheduled, never as scheduled"
     assert row["pending"] == 1
+
+
+def _cancel(base, token, sid, entry_id, reason="no longer wanted"):
+    """The cancel a person actually presses: the authenticated API route."""
+    return _post(base, token, "/api/task-inbox/cancel",
+                 {"session": sid, "id": entry_id, "reason": reason})
+
+
+def test_withdrawing_the_bound_request_stops_speaking_for_the_ones_left_behind(web):
+    """The wait is bound to one accepted request.  Withdraw that request before
+    the reset and nothing re-reads the inbox for hours, so the schedule keeps
+    saying "starts after T" — about a request that is gone — while the *other*
+    accepted request, which nothing is going to start, inherits that claim of
+    progress and drops out of Needs You.  Cancelling one request must not change
+    how another is presented."""
+    base, token, state = web
+    from harness import sessions
+
+    sid = "withdrawn-bound"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "the one the reset was scheduled for")
+    _queue(base, token, sid, "req-2", "a different request with no automatic start")
+    assert quota_resume.record(sid, retry_at=2_000_000_000, entry_id="req-1") is not None
+
+    code, body = _cancel(base, token, sid, "req-1")
+    assert code == 200 and body["entry"]["state"] == "canceled"
+
+    code, payload = _get(base, token, "/api/task-inbox/pending")
+    assert code == 200
+    row = _row(payload, sid)
+    assert row["pending"] == 1, "req-2 is still accepted and still queued"
+    assert row["scheduled_wait"] is None, \
+        "req-2 never had a schedule; it must not inherit the withdrawn one"
+
+    # Retired, not deleted: "why did my queued request stop being scheduled?" is
+    # a question with an answer, and the record is where it lives.
+    left = quota_resume.read(sid)
+    assert left is not None and left["state"] == "retired"
+    assert left["reason"] == quota_resume.WITHDRAWN_REASON
+    assert left["entry"] == "req-1", "the binding is the evidence of which wait ended"
+    assert int(left["attempts"]) < quota_resume.MAX_ATTEMPTS, \
+        "nothing failed here, so this is not the 'stopped' alarm"
+
+
+def test_withdrawing_a_different_request_leaves_the_schedule_alone(web, monkeypatch):
+    """The negative half.  A cancel that is not about the bound request is not a
+    reason to cancel a start the person arranged — the wait keeps its nonce, its
+    state and its published schedule."""
+    base, token, state = web
+    from harness import sessions
+
+    sid = "withdrawn-other"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "the one the reset was scheduled for")
+    _queue(base, token, sid, "req-2", "withdrawn, and not what this wait is about")
+    before = quota_resume.record(sid, retry_at=2_000_000_000, entry_id="req-1")
+
+    code, _body = _cancel(base, token, sid, "req-2")
+    assert code == 200
+
+    after = quota_resume.read(sid)
+    assert after == before, "an unbound cancel must not touch the record at all"
+    _ticker(monkeypatch, now=PAST)
+    code, payload = _get(base, token, "/api/task-inbox/pending")
+    wait = _row(payload, sid)["scheduled_wait"]
+    assert wait["entry"] == "req-1" and wait["state"] == "waiting"
+    assert wait["progress"] == "scheduled"
+
+
+def test_a_withdrawal_never_retires_a_newer_wait(web):
+    """Between the failure that recorded a wait and the cancel of the request it
+    was bound to, a newer failing run can record its own.  The cancel carries no
+    authority over that one: the retire is a compare-and-set on the nonce of the
+    wait that was actually read, and the binding must match too."""
+    base, token, state = web
+    from harness import sessions
+
+    sid = "withdrawn-race"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "the one the first reset was scheduled for")
+    _queue(base, token, sid, "req-2", "what the newer failure is waiting on")
+    quota_resume.record(sid, retry_at=2_000_000_000, entry_id="req-1")
+    newer = quota_resume.record(sid, retry_at=2_000_000_100, entry_id="req-2")
+    assert newer is not None and newer["entry"] == "req-2"
+
+    code, _body = _cancel(base, token, sid, "req-1")
+    assert code == 200
+
+    after = quota_resume.read(sid)
+    assert after == newer, "the newer wait is nobody else's to retire"
+
+
+def test_a_claim_in_flight_keeps_its_wait_and_revalidates_under_the_lease(web, monkeypatch):
+    """Cancelling while an admission is already claimed does not reach in and
+    retire it.  That claim owns the record: it takes the session lease and reads
+    the inbox again before it starts anything, and it is the reading under the
+    lease that must decide.  What the surface may not do is keep calling it
+    progress once the claim is plainly not in flight."""
+    base, token, state = web
+    from harness import sessions
+
+    sid = "withdrawn-claimed"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "the one the reset was scheduled for")
+    _queue(base, token, sid, "req-2", "a different request with no automatic start")
+    quota_resume.record(sid, retry_at=PAST, entry_id="req-1")
+    held = quota_resume.claim(sid, now=PAST + 1)
+    assert held is not None and held["state"] == "admitting"
+
+    code, _body = _cancel(base, token, sid, "req-1")
+    assert code == 200
+    assert quota_resume.read(sid) == held, "the claim's record is the claim's to write"
+
+    now = PAST + quota_resume.CLAIM_GRACE + 10
+    _ticker(monkeypatch, now=now)
+    assert quota_resume.status(sid, now=now) is None, \
+        "no claim is in flight and the bound request is gone: nothing to advertise"
+
+
+def test_a_new_wait_recorded_between_withdrawal_read_and_retire_survives(web, monkeypatch):
+    from harness import sessions
+
+    base, token, state = web
+    sid = "withdrawn-cas-race"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "withdraw this request")
+    _queue(base, token, sid, "req-2", "a newer request")
+    original = quota_resume.record(sid, retry_at=2_000_000_000, entry_id="req-1")
+    retire = quota_resume.retire
+    observed = {}
+
+    def replace_before_retire(session, reason, *, nonce=None):
+        assert nonce == original["nonce"]
+        observed["newer"] = quota_resume.record(
+            session, retry_at=2_000_000_100, entry_id="req-2")
+        return retire(session, reason, nonce=nonce)
+
+    monkeypatch.setattr(quota_resume, "retire", replace_before_retire)
+    code, body = _cancel(base, token, sid, "req-1")
+    assert code == 200 and body["entry"]["state"] == "canceled"
+    assert observed["newer"]["nonce"] != original["nonce"]
+    assert quota_resume.read(sid) == observed["newer"]
+
+
+def test_a_cancellation_that_did_not_come_through_the_api_cannot_keep_lying(web, monkeypatch):
+    """Not every withdrawal is a browser pressing cancel — the terminal queue
+    calls the store directly.  The published projection is therefore the second
+    half of this: a wait whose bound request the inbox itself says was withdrawn
+    is not a schedule any surface may show, whoever withdrew it."""
+    base, token, state = web
+    from harness import sessions, task_inbox
+
+    sid = "withdrawn-direct"
+    sessions.append_exchange(sid, "hello", "hi", project="web", cwd=str(state))
+    _queue(base, token, sid, "req-1", "the one the reset was scheduled for")
+    _queue(base, token, sid, "req-2", "a different request with no automatic start")
+    before = quota_resume.record(sid, retry_at=2_000_000_000, entry_id="req-1")
+
+    task_inbox.cancel(sid, "req-1", reason="removed in terminal")
+    _ticker(monkeypatch, now=PAST)
+
+    code, payload = _get(base, token, "/api/task-inbox/pending")
+    assert code == 200
+    row = _row(payload, sid)
+    assert row["pending"] == 1 and row["scheduled_wait"] is None
+    code, single = _get(base, token, "/api/task-inbox?session=%s" % sid)
+    assert code == 200 and single["scheduled_wait"] is None
+    assert quota_resume.read(sid) == before, \
+        "a projection reads; the record is the admission path's to resolve"

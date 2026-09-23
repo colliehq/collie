@@ -1278,6 +1278,15 @@ def scheduled_wait(session):
         return None
 
 
+def withdraw_wait(session, entry_id):
+    """Retire the withdrawn entry's wait without failing an already-saved cancellation."""
+    try:
+        from . import quota_resume
+        return quota_resume.withdraw(session, entry_id)
+    except Exception:
+        return None
+
+
 def supersede_wait(session):
     """A run just took this conversation, so a scheduled wait is stale.
 
