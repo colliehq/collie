@@ -70,13 +70,11 @@ _injected = {k: os.environ[k] for k in _inherited if k in os.environ}
 # `hint` is the one-line help shown under the control — every knob gets one so nothing is a mystery.
 SCHEMA = [
     {"group": "Identity", "key": "COMPANION_NAME", "label": "Companion name",
-     "label_zh": "伙伴名字", "type": "text", "default": "", "max": "32",
-     "placeholder": "Rowan", "placeholder_zh": "Rowan",
-     "hint": "The personal name shown for this Collie across Home, phone and ambient desktop. "
-             "This does not rename Slack apps, @handles or mail addresses. An explicit web "
-             "--name selects a kennel dog and stays authoritative for that server.",
-     "hint_zh": "这只 Collie 在主页、手机和动态桌面上显示的名字。不会改动 Slack 应用、@用户名或邮件地址；"
-                "显式的 web --name 用来选择犬舍成员，并始终以该名字为准。"},
+     "label_zh": "显示名称（可选）", "type": "text", "default": "", "max": "32",
+     "placeholder": "Collie", "placeholder_zh": "Collie",
+     "hint": "Optional display name for desktop and phone. The default is Collie. "
+             "Email addresses, phone numbers and connected app identities are managed separately.",
+     "hint_zh": "桌面和手机上显示的名称，默认使用 Collie。邮箱地址、电话号码和已连接应用的身份单独管理。"},
     {"group": "Identity", "key": "PROFILE_AGE_BAND", "label": "Age eligibility",
      "label_zh": "年龄资格", "type": "select", "default": "unset",
      "options": [
