@@ -173,11 +173,17 @@ class Picker:
         return self
 
     def open(self):
+        """The dialog up and usable: overlay, the rows the page already held, and the search field.
+
+        An open deliberately does *not* wait for the refresh it starts — that read is the caller's
+        to time, and a test that holds it open would otherwise deadlock against its own fixture.
+        Anything that reads the count in one shot asks for `settled()` at the point it needs it.
+        """
         self.page.keyboard.press("Control+k")
         expect(self.overlay).to_be_visible()
         expect(self.page.locator(".model-option")).to_have_count(OPTION_COUNT)
         expect(self.field).to_be_focused()
-        return self.settled()
+        return self
 
     def settled(self):
         """Wait until no catalog read is still in flight, so the count speaks for an answered one.
@@ -245,9 +251,14 @@ def picker(ui):                                              # noqa: F811
 
 
 def in_language(picker, lang):
-    """A normal load whose saved language is `lang` — settings still answer over the network."""
+    """A normal load whose saved language is `lang` — settings still answer over the network.
+
+    These tests read the dialog once and compare every word of it, the count included, so the open
+    is settled here: nothing in this file holds a catalog read back, and the count may only be read
+    off an answer.
+    """
     picker.page.route("**/api/settings**", lambda route: _with_lang(route, lang))
-    return picker.reload().open()
+    return picker.reload().open().settled()
 
 
 def _with_lang(route, lang):
@@ -344,7 +355,7 @@ def prepare_open_picker(picker, query="o", caret=1):
     """The picker open, mid-search, with live discovery ticked and the highlight moved."""
     page = picker.page
     release = hold_settings(page)
-    picker.reload().open()
+    picker.reload().open().settled()     # the open's own read is let land before another is asked for
     expect(page.locator("html")).to_have_attribute("lang", "en")
     assert picker.chrome()["title"] == "Choose a model", "the fixture must actually hold the language"
 
@@ -352,7 +363,8 @@ def prepare_open_picker(picker, query="o", caret=1):
     # answer redraws the list on its own, so it has to land *before* the highlight is placed, or the
     # test would be reading a race rather than the effect of the language. Waiting for the answer
     # itself — the response, then the status line it settles — says that it has, which a wait for
-    # rows that were already on screen cannot.
+    # rows that were already on screen cannot. The read above is already answered, so the response
+    # waited for here is this tick's.
     with page.expect_response("**/api/models*"):
         page.check("#modelDiscover")
     assert "discover=1" in picker.catalog_reads[-1], picker.catalog_reads
@@ -430,7 +442,8 @@ def test_the_keys_still_do_what_they_say_after_a_late_language(picker, lang):
     assert picker.posts == []
 
     # …and the next deliberate Enter still switches, in the new language, to the highlighted model.
-    picker.open()
+    # The reopen's own refresh is let land first: this test is about the keys, not about a race.
+    picker.open().settled()
     page.keyboard.press("ArrowDown")
     chosen = picker.active()["id"]
     page.keyboard.press("Enter")
@@ -506,6 +519,12 @@ def test_the_count_is_never_a_catalog_read_that_has_not_answered(picker):
     what macOS CI caught (run 35799412332): the count itself was right, the read was early. Here
     the read that opening causes is held open, so that window is the test's to look at rather than
     the fixture's to decide, and the count has to wait for the answer.
+
+    This is also where the two halves of `Picker` are pinned against each other: `open()` has to
+    come back inside that window — over the rows the page already had, with the read still
+    unanswered — and `settled()` is the one that waits for the answer. An `open()` that waited
+    would hang here on a read only this test can release, which is exactly what it did to the
+    held-refresh race tests in test_web_model_catalog_selection (run 35803606484).
     """
     page = picker.page
     page.route("**/api/settings**", lambda route: _with_lang(route, "en"))
@@ -514,10 +533,7 @@ def test_the_count_is_never_a_catalog_read_that_has_not_answered(picker):
 
     held = []
     page.route("**/api/models*", lambda route: held.append(route))      # the open-time read is held
-    page.keyboard.press("Control+k")
-    expect(picker.overlay).to_be_visible()
-    expect(page.locator(".model-option")).to_have_count(OPTION_COUNT)
-    expect(picker.field).to_be_focused()
+    picker.open()                                # returns interactive, without waiting for the read
     assert held, "the fixture must actually hold the read that opening caused"
     mid_load = picker.status.inner_text()
     assert mid_load != ENGLISH["count"], "the count spoke for a read that had not answered"
