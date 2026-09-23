@@ -27,7 +27,7 @@ is touched, and no live discovery reaches anything.  The composition test uses C
 IME path (`Input.imeSetComposition`), which is not a physical OS IME and says nothing about Safari,
 Firefox or a real keyboard driver.
 """
-import time
+import re
 
 import pytest
 from playwright.sync_api import expect
@@ -126,6 +126,17 @@ ENGLISH = {
     "no_match": "No models match that search.",
 }
 
+# What the status line says while a catalog read is in flight, in every language the picker speaks.
+# Opening redraws the rows from the catalog the page already holds and only *then* asks for a fresh
+# one, so the overlay, the five rows and the focused field are all in place while the count is still
+# one of these sentences — a one-shot read of the count could land there instead of on the count.
+# Leaving this set is the state the count belongs to, and over an unchanged list it is the only thing
+# the answer changes, so it is also the only signal that the answer has landed and been drawn.
+IN_FLIGHT = re.compile("|".join(re.escape(sentence) for sentence in [
+    "Loading available models…", "Discovering authenticated providers…",
+    "正在加载可用模型…", "正在发现已登录的提供方…",
+    "正在載入可用模型…", "正在探索已登入的供應商…"]))
+
 
 class Picker:
     """The picker over an invented catalog, plus every model change and catalog read it caused."""
@@ -166,6 +177,15 @@ class Picker:
         expect(self.overlay).to_be_visible()
         expect(self.page.locator(".model-option")).to_have_count(OPTION_COUNT)
         expect(self.field).to_be_focused()
+        return self.settled()
+
+    def settled(self):
+        """Wait until no catalog read is still in flight, so the count speaks for an answered one.
+
+        The rows are no barrier: opening draws them from the catalog the page already has, before
+        the read that opening itself causes has answered.
+        """
+        expect(self.status).not_to_have_text(IN_FLIGHT)
         return self
 
     @property
@@ -330,15 +350,14 @@ def prepare_open_picker(picker, query="o", caret=1):
 
     # Ticking live discovery reloads the catalog (intercepted — no provider is contacted). That
     # answer redraws the list on its own, so it has to land *before* the highlight is placed, or the
-    # test would be reading a race rather than the effect of the language.
-    reads = len(picker.catalog_reads)
-    page.check("#modelDiscover")
-    deadline = time.time() + 5
-    while len(picker.catalog_reads) <= reads and time.time() < deadline:
-        page.wait_for_timeout(50)
+    # test would be reading a race rather than the effect of the language. Waiting for the answer
+    # itself — the response, then the status line it settles — says that it has, which a wait for
+    # rows that were already on screen cannot.
+    with page.expect_response("**/api/models*"):
+        page.check("#modelDiscover")
     assert "discover=1" in picker.catalog_reads[-1], picker.catalog_reads
     expect(page.locator(".model-option")).to_have_count(OPTION_COUNT)
-    page.wait_for_timeout(250)
+    picker.settled()
     picker.field.fill(query)
     page.keyboard.press("ArrowDown")
     page.evaluate("""caret => { const el = document.getElementById('modelSearch');
@@ -473,6 +492,46 @@ def test_a_backend_refusal_keeps_its_own_words_through_a_language_change(picker,
     assert picker.status.inner_text() == detail, "the backend reason was overwritten"
     assert page.get_attribute("#modelStatus", "class").endswith("err")
     assert picker.posts == [picker.posts[0]], "the refused switch was retried"
+
+
+# ------------------------------------------------------------------ what the count counts
+
+def test_the_count_is_never_a_catalog_read_that_has_not_answered(picker):
+    """The count says how many models are available, so it may only speak for an answered read.
+
+    Opening the picker redraws the rows from the catalog the page already holds and only then asks
+    for a fresh one, so the whole dialog — overlay, five rows, focused search field — is in place
+    while the new read is still in flight and the line where the count goes says the list is
+    loading. A one-shot read of the count taken at that moment reads the loading sentence, which is
+    what macOS CI caught (run 35799412332): the count itself was right, the read was early. Here
+    the read that opening causes is held open, so that window is the test's to look at rather than
+    the fixture's to decide, and the count has to wait for the answer.
+    """
+    page = picker.page
+    page.route("**/api/settings**", lambda route: _with_lang(route, "en"))
+    picker.reload()
+    expect(page.locator(".model-option")).to_have_count(OPTION_COUNT)   # the load-time read has drawn
+
+    held = []
+    page.route("**/api/models*", lambda route: held.append(route))      # the open-time read is held
+    page.keyboard.press("Control+k")
+    expect(picker.overlay).to_be_visible()
+    expect(page.locator(".model-option")).to_have_count(OPTION_COUNT)
+    expect(picker.field).to_be_focused()
+    assert held, "the fixture must actually hold the read that opening caused"
+    mid_load = picker.status.inner_text()
+    assert mid_load != ENGLISH["count"], "the count spoke for a read that had not answered"
+    assert IN_FLIGHT.search(mid_load), \
+        "the line says a read is in flight, and `settled()` waits for exactly that: " + mid_load
+
+    for route in held[:]:
+        route.fulfill(json={"current": CURRENT, "entries": ENTRIES})
+        held.remove(route)
+    picker.settled()
+    assert picker.status.inner_text() == ENGLISH["count"]
+    picker.field.fill("mock")                      # and the filtered count is the answer's too
+    expect(page.locator(".model-option")).to_have_count(1)
+    assert picker.status.inner_text() == ENGLISH["one_match"]
 
 
 @pytest.mark.parametrize("lang", ["zh", "zh-tw"])
