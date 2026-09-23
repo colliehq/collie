@@ -1053,11 +1053,23 @@ class AutomationExecutor:
             request["resolved_workspace"] = self.workspaces.prepare(request)
             self._notify(request, "start", "Automation %s started" % request["automation_id"])
             result = self.runner(request, guard) or {}
-            guard.check()
+            # Final accounting may exceed a ceiling. Preserve the finished child's receipt
+            # while making the execution terminal; replaying its effects is not a retry.
+            budget_error = ""
+            try:
+                guard.check()
+            except BudgetExceeded as exc:
+                budget_error = str(exc)
             status = str(result.get("status") or SUCCEEDED)
+            error = _join_reasons(str(result.get("error") or ""), budget_error)
             if status not in (SUCCEEDED, FAILED, NEEDS_YOU):
-                raise ValueError("runner returned invalid status %s" % status)
-            error = str(result.get("error") or "")
+                invalid_status = "runner returned invalid status %s" % status
+                if not budget_error:
+                    raise ValueError(invalid_status)
+                error = _join_reasons(error, invalid_status)
+            if budget_error:
+                status = NEEDS_YOU
+                result = dict(result, status=status, error=error)
         except (BudgetExceeded, PermissionDenied) as exc:
             status, result, error = NEEDS_YOU, {}, "%s: %s" % (type(exc).__name__, exc)
         except Exception as exc:
@@ -1186,6 +1198,69 @@ def _unscopable_unattended_tool(name: str, policy: PermissionPolicy | None = Non
             or name.startswith(("browser_", "mcp__", "mcpctl_")))
 
 
+def _join_reasons(*parts: str) -> str:
+    """Combine failures without repeating the runner and executor's shared budget reason."""
+    out = ""
+    for part in parts:
+        part = str(part or "").strip()
+        if part and part not in out:
+            out = "%s; %s" % (out, part) if out else part
+    return out
+
+
+def _save_automation_session(session_id: str, result, *, project: str, cwd: str,
+                             vault: dict | None = None) -> str:
+    """Save the thread and confirm readback; return a redacted error or an empty string.
+
+    sessions.save returns an id even if it did not write a file. Continued runs require
+    that file, so the receipt must not claim a resumable session without checking it.
+    """
+    from . import redact as _redact, sessions
+    try:
+        sessions.save(session_id, getattr(result, "messages", None) or [], project=project,
+                      cwd=cwd, answer=getattr(result, "answer", "") or "")
+        if not sessions.load(session_id):
+            return "automation transcript did not persist for session %s" % session_id
+    except Exception as exc:
+        text = "automation transcript save failed: %s: %s" % (type(exc).__name__, exc)
+        return _redact.redact(text, vault if vault is not None else {})[:2000]
+    return ""
+
+
+def _automation_outcome(result, counter: dict, save_error: str) -> tuple[str, str, str]:
+    """Map the host's stop reason to (stop_reason, status, error).
+
+    Turn/token/output ceilings may set no error. result.success also defaults to False
+    in older adapters, so neither field alone identifies a completed run.
+    """
+    from .recorder import note_host_error, run_stop_reason
+    stop = str(run_stop_reason(result) or "completed")
+    host_error = str(getattr(result, "error", "") or "")
+    if counter["cancelled"]:
+        # Keep independent host errors, but avoid repeating the standard cancellation text.
+        stop, status = "canceled", NEEDS_YOU
+        error = _join_reasons("automation wall/action budget exhausted",
+                              "" if host_error in ("canceled by user", "interrupted by user")
+                              else host_error)
+    elif stop == "error":
+        status, error = FAILED, host_error
+    elif stop == "canceled":
+        status, error = NEEDS_YOU, "automation run was canceled before it finished"
+    elif stop != "completed":
+        status, error = NEEDS_YOU, (
+            "automation stopped at its %s before finishing the task" % stop.replace("_", " "))
+    else:
+        status, error = SUCCEEDED, ""
+    if save_error:
+        # A failed save prevents completion; retain a more specific early stop reason.
+        if stop == "completed":
+            note_host_error(result, save_error)
+            stop = str(run_stop_reason(result) or "completed")
+        status = NEEDS_YOU if status == SUCCEEDED else status
+        error = _join_reasons(error, save_error)
+    return stop, status, error[:2000]
+
+
 def _run_collie_request(request: dict) -> dict:
     """Child-process body for :class:`DefaultCollieRunner`."""
     from . import sessions, settings
@@ -1271,15 +1346,15 @@ def _run_collie_request(request: dict) -> dict:
         harness.checkpoint_scope = "session:" + session_id
         result = harness.run("automation:" + request["execution_id"], request["task"],
                              history=history)
-        sessions.save(session_id, result.messages,
-                      project=str(execution.get("project") or request["automation_id"]),
-                      cwd=cwd, answer=result.answer or "")
+        save_error = _save_automation_session(
+            session_id, result, cwd=cwd,
+            project=str(execution.get("project") or request["automation_id"]),
+            vault=getattr(harness, "_secret_vault", None))
+        stop, status, error = _automation_outcome(result, counter, save_error)
         return {
-            "status": NEEDS_YOU if counter["cancelled"] else (
-                FAILED if result.error else SUCCEEDED),
-            "error": ("automation wall/action budget exhausted" if counter["cancelled"] else
-                      str(result.error or "")[:2000]),
-            "session_id": session_id, "summary": str(result.answer or "")[:4000],
+            "status": status, "error": error, "stop_reason": stop,
+            "session_saved": not save_error,
+            "session_id": session_id, "summary": str(getattr(result, "answer", "") or "")[:4000],
             "model": str(getattr(result, "model", "") or ""),
             "total_tokens": int(getattr(result, "total_tokens", 0) or 0),
             "cost_usd": float(getattr(result, "cost_usd", 0) or 0),
@@ -1368,12 +1443,19 @@ class DefaultCollieRunner:
                 if kind == "BudgetExceeded":
                     raise BudgetExceeded(str(result["exception"]))
                 raise AutomationError(str(result["exception"]))
-            guard.consume(
-                model_tokens=_runtime_number(
-                    result.get("total_tokens") or 0, "child total_tokens", integer=True),
-                cost_usd=_runtime_number(result.get("cost_usd") or 0, "child cost_usd"),
-                actions=_runtime_number(
-                    result.get("tool_calls") or 0, "child tool_calls", integer=True))
+            try:
+                guard.consume(
+                    model_tokens=_runtime_number(
+                        result.get("total_tokens") or 0, "child total_tokens", integer=True),
+                    cost_usd=_runtime_number(result.get("cost_usd") or 0, "child cost_usd"),
+                    actions=_runtime_number(
+                        result.get("tool_calls") or 0, "child tool_calls", integer=True))
+            except BudgetExceeded as exc:
+                # add_usage already persisted the child's spend. Keep its receipt and
+                # report the budget limit without replaying the finished child.
+                result["status"] = NEEDS_YOU
+                result["stop_reason"] = str(result.get("stop_reason") or "") or "budget_limit"
+                result["error"] = _join_reasons(str(result.get("error") or ""), str(exc))
             return result
         finally:
             with self._lock:
