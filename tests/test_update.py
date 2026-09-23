@@ -113,8 +113,15 @@ def test_refuses_a_tampered_image():
     with open(good, "rb") as a, open(bad, "wb") as b:
         b.write(a.read())
     with open(bad, "r+b") as f:
-        f.seek(os.path.getsize(bad) // 2)
-        f.write(b"\x00" * 64)
+        offset = os.path.getsize(bad) // 2
+        f.seek(offset)
+        original = f.read(64)
+        assert len(original) == 64, "the release image must contain the tamper sample"
+        f.seek(offset)
+        # Zero-filling can leave padding byte-identical. Flip every sampled bit
+        # so this remains a tampering test for zero-filled regions too.
+        f.write(bytes(value ^ 0xff for value in original))
+    assert up.sha256_of(bad) != up.sha256_of(good), "the damaged image must actually differ"
     ok2, _why2 = up.verify_macos(bad)
     check(not ok2, "the same dmg with 64 bytes changed is refused")
 

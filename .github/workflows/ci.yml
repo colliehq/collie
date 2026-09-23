@@ -72,5 +72,9 @@ jobs:
             python -m playwright install chromium
           fi
 
+      - name: Check macOS updater trust before the full suite
+        if: runner.os == 'macOS'
+        run: python -m pytest -q -s tests/test_update.py
+
       - name: Run test suite
         run: bash tests/run_all.sh

@@ -962,13 +962,15 @@ def _run_detached(sink, session, owner, entry):
 def _await_run_id(session, timeout=1.0):
     """The run id of a just-scheduled turn, if it exists yet.  Never waits long."""
     from .webapp import Handler
-    deadline = time.time() + max(0.0, float(timeout))
+    # Wall-clock adjustments (and frozen clocks in callers' tests) must not
+    # extend this acknowledgement wait or make it expire early.
+    deadline = time.monotonic() + max(0.0, float(timeout))
     while True:
         with Handler._runs_lock:
             row = Handler._runs.get(session)
             if row is not None and row.get("ended") is None and row.get("run"):
                 return row["run"]
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             return ""
         time.sleep(0.01)
 
