@@ -2405,7 +2405,7 @@ STALE_PUMP = {"id": "service:notification-pump", "kind": "service", "identity": 
               "detail": "No fresh heartbeat for about 300 seconds", "actions": ["inspect_doctor"]}
 
 
-def _open_recovery_tab(page):
+def _open_recovery_tab(page, decision_label="need a decision"):
     """Open the control panel on the recovery tab, the way a person reaches it from the toolbar."""
     page.click("#topbarMore > summary")
     page.click("#activityBtn")
@@ -2413,8 +2413,8 @@ def _open_recovery_tab(page):
     page.wait_for_selector("#activityPanel:not([hidden])", timeout=8000)
     page.click('[data-control-tab="recovery"]')
     page.wait_for_function(
-        "() => document.getElementById('controlSummary').textContent.includes('need a decision')",
-        timeout=8000)
+        "label => document.getElementById('controlSummary').textContent.includes(label)",
+        arg=decision_label, timeout=8000)
     page.wait_for_timeout(150)
 
 
@@ -2574,7 +2574,9 @@ def test_the_optional_section_speaks_the_reader_s_language(server, browser):
     try:
         page.goto(server + "/?token=" + TOKEN, wait_until="load")
         page.wait_for_selector("#input", timeout=8000)
-        _open_recovery_tab(page)
+        # The summary is translated too; waiting for English would time out on
+        # a correctly rendered Chinese panel before its contents are inspected.
+        _open_recovery_tab(page, decision_label="需要决定")
         summary = page.text_content(".optional-lane summary")
         assert "可选检查" in summary and "无需决定" in summary and "(1)" in summary
         page.click(".optional-lane summary")

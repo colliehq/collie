@@ -369,8 +369,14 @@ def test_a_busy_thread_still_queues_a_follow_up_rather_than_starting_a_run(ui):
     ui.select_folder(ROOTS["b"], confirm=False)
     ui.send("Hold queue fixture")                     # the fixture keeps this run open
     sent(page)
+    # Stop and a live composer are painted when the send *begins*, before the request is even
+    # opened — so on a new task they are both true while the page still has no thread: the run's
+    # `start` frame is what names one.  Queueing needs that thread (there is no inbox to post to
+    # without a session), so wait for the page to actually hold it.  `start` adopts the session
+    # into the address bar in the same handler that records it, and a new task starts with none.
     page.wait_for_function("() => document.getElementById('send').classList.contains('stop') && "
-                           "!document.getElementById('input').disabled", timeout=8000)
+                           "!document.getElementById('input').disabled && "
+                           "new URLSearchParams(location.search).get('session')", timeout=8000)
     assert len(streams()) == 1
     page.fill("#input", "One more thing once you are free")
     page.press("#input", "Enter")
