@@ -34,6 +34,22 @@ def test_pre_tool_hook_can_deny_with_auditable_reason(tmp_path):
     assert result.receipts[0]["exit_code"] == 0
 
 
+def test_non_ascii_payload_reaches_the_hook_intact_in_any_code_page(tmp_path):
+    # The payload travels through a text pipe in the system code page; as raw UTF-8 text it came
+    # out as "?" where that code page cannot spell it. Escaped, it is ASCII on the wire.
+    command = _script(tmp_path,
+        "import json,sys\n"
+        "raw=sys.stdin.buffer.read()\n"
+        "p=json.loads(raw.decode('ascii'))\n"
+        "print(json.dumps({'decision':'deny','reason':p['tool_input']['command']}))\n")
+    hooks = HookManager(str(tmp_path), [_config("PreToolUse", command, "bash")])
+    result = hooks.dispatch("PreToolUse", {"tool_name": "bash",
+                                           "tool_input": {"command": "echo 提交说明 café"}},
+                            subject="bash")
+    assert result.receipts[0]["exit_code"] == 0, result.receipts
+    assert result.reason == "echo 提交说明 café"
+
+
 def test_matcher_and_additional_context(tmp_path):
     command = _script(tmp_path,
         "import json,sys\njson.load(sys.stdin)\n"

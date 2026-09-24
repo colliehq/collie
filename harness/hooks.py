@@ -272,8 +272,11 @@ class HookManager:
             timeout = 30.0
         argv, use_shell = plat.shell_argv(command)
         try:
+            # ensure_ascii: the payload goes through a text pipe in the system code page, which on
+            # Windows is often not UTF-8 -- non-ASCII text arrived as "?" (or failed to encode).
+            # \uXXXX escapes are the same JSON to every parser, in every code page.
             proc = subprocess.run(
-                argv, shell=use_shell, input=json.dumps(payload, ensure_ascii=False),
+                argv, shell=use_shell, input=json.dumps(payload, ensure_ascii=True),
                 text=True, errors="replace", capture_output=True, timeout=timeout, cwd=self.cwd,
                 **plat.no_window_kwargs())
             stdout = (proc.stdout or "")[:_MAX_OUTPUT]
