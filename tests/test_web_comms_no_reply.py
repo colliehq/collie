@@ -106,3 +106,46 @@ def test_cancelling_the_prompt_leaves_the_message_owed(inbox, chromium):
         assert comms.get_event("mail", "req-1", directory=host.directory)["awaiting_reply"] is True
     finally:
         context.close()
+
+
+def test_inside_the_shell_the_inbox_hands_open_task_to_it(inbox, chromium):
+    """Embedded, the page hides its own way back and asks the shell to open the task."""
+    base, host = inbox
+    session = comms.get_event("mail", "req-1", directory=host.directory)["acceptance"]["session"]
+    context = chromium.new_context(viewport={"width": 1200, "height": 850})
+    try:
+        page = context.new_page()
+        page.goto(base + "/communications", wait_until="load")
+        # A same-origin stand-in for the desktop shell that records what the inbox asks of it.
+        page.evaluate("""() => {
+            window.__asked = [];
+            window.addEventListener('message', e => window.__asked.push(e.data));
+            document.body.innerHTML = '<iframe id="shellFrame" style="width:1100px;height:800px" src="/communications?embedded=1"></iframe>';
+        }""")
+        frame = page.frame_locator("#shellFrame")
+        expect(frame.locator("header .head")).to_be_hidden()
+        expect(frame.locator("#addTop")).to_be_visible()
+        frame.locator("#connections .connection").first.click()
+        frame.locator("#messages .message", has_text="Report summary").click()
+        frame.get_by_role("link", name="Open task").click()
+        page.wait_for_function("() => window.__asked.length > 0")
+        assert page.evaluate("() => window.__asked") == [{"type": "collie:open-session", "session": session}]
+        # The frame stayed on the inbox rather than loading the whole app inside itself.
+        expect(frame.locator("#detail h2")).to_have_text("Report summary")
+    finally:
+        context.close()
+
+
+def test_opened_directly_the_inbox_keeps_its_header_and_plain_links(inbox, chromium):
+    base, _host = inbox
+    context = chromium.new_context()
+    try:
+        page = context.new_page()
+        page.goto(base + "/communications?embedded=1", wait_until="load")
+        expect(page.locator("header .head")).to_be_hidden()      # embedded styling applies
+        page.locator("#connections .connection").first.click()
+        page.locator("#messages .message", has_text="Report summary").click()
+        link = page.get_by_role("link", name="Open task")
+        assert (link.get_attribute("href") or "").startswith("/?session=")
+    finally:
+        context.close()

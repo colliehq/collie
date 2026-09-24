@@ -14,6 +14,9 @@
   the notice but not install. macOS, Homebrew and pip copies show the exact command to run.
 - `collie update --expect <version>` installs only that exact newer release (exit 3 otherwise), and
   the update journal now records the version being installed.
+- Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
+  from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
+  check. *Open task* from the inbox opens the task in the same window.
 - Mark an accepted message as *No reply needed* in the inbox, with a short reason kept beside it.
   It stops counting as owed in the inbox and Daily Brief, and a task that finishes afterwards keeps
   its result without preparing or sending an automatic reply. The task itself is not changed.
