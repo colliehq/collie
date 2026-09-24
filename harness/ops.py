@@ -675,7 +675,7 @@ def slack_queue_health(state_dir: str | None = None) -> dict:
 
 def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = None,
                      state_dir: str | None = None, now: float | None = None,
-                     probe_services: bool = True) -> dict:
+                     probe_services: bool = True, web_port: int | None = None) -> dict:
     """Build the safe JSON object the Web layer can return from ``/api/healthz``."""
     now = float(time.time() if now is None else now)
     beats = store.heartbeats(now=now)
@@ -692,7 +692,10 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
     services = {}
     if probe_services:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8787/api/ver", timeout=1.0) as r:
+            # The web server moves to the next free port when 8787 is taken; the one answering
+            # this very request passes its own, so it cannot report itself unreachable.
+            url = "http://127.0.0.1:%d/api/ver" % int(web_port or 8787)
+            with urllib.request.urlopen(url, timeout=1.0) as r:
                 services["web"] = {"ok": r.status == 200}
         except Exception:
             services["web"] = {"ok": False}

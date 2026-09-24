@@ -2123,7 +2123,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(_public_activity(activity(_state_root(), limit=250)))
                 if path == "/api/healthz":
                     from .controlplane import health
-                    report = _public_health(health(_state_root()))
+                    report = _public_health(health(
+                        _state_root(), web_port=self.server.server_address[1]))
                     report["mission_scheduler"] = mission_ticker_status()
                     return self._send_json(report)
                 if path == "/api/doctor":

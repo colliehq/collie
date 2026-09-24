@@ -77,7 +77,8 @@ def activity(path: str | None = None, *, limit: int = 100) -> dict:
     return out
 
 
-def health(path: str | None = None, *, probe_services: bool = True) -> dict:
+def health(path: str | None = None, *, probe_services: bool = True,
+           web_port: int | None = None) -> dict:
     """Aggregate supervisor facts plus durable work that requires human recovery."""
     root = state_dir(path)
     from .ops import OpsStore, aggregate_health
@@ -100,7 +101,8 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
         supervised = bool(supervisor_info.get("installed") or
                           "supervisor" in store.heartbeats())
         report = aggregate_health(store, desired_workers=desired if supervised else [],
-                                  state_dir=root, probe_services=probe_services)
+                                  state_dir=root, probe_services=probe_services,
+                                  web_port=web_port)
     report["supervisor"] = supervisor_info
     report["supervised"] = supervised
     work = activity(root, limit=250)
