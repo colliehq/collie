@@ -39,6 +39,16 @@
   is reported as held up in the page, not as a missing extension. A browser tool also stops
   waiting for a refused connection when no bridge is running (about 2 s on Windows), and the
   bridge probe made while setting up each run takes at most 0.15 s instead of 0.5 s there.
+- Let onboarding see the browser extension connect. The *Connect your browser* step polls
+  `/api/browser/status`, which answered 500 on every request (a name the handler used was bound
+  only in another branch), so the step kept saying "Waiting for the extension to connect…" after
+  it had connected.
+- Stop waiting on local services that are not running (Windows). A connection to a loopback port
+  nobody listens on is refused there only after about two seconds, so each probe waited out its
+  timeout: `/api/healthz` 1.0 s for a stopped web server and 1.5 s for a stopped browser bridge,
+  the onboarding browser poll 1.5 s, and the desktop app's launch 0.8 s per probe before the
+  server was up. A 0.15 s connect check now answers first. Health and `collie doctor` also look for
+  the bridge on the port the browser tools use (`COLLIE_BROWSER_BRIDGE_PORT`).
 - Keep the test suite away from the developer's real browser. Two tests reached the browser bridge
   on its fixed port (one read the form in a Collie tab, one listed tabs six times), so every suite
   run on a machine with the bridge running sent commands to its signed-in browser; the bridge

@@ -76,3 +76,77 @@ def test_health_reports_the_bridge_on_the_port_the_tools_use(tmp_path, monkeypat
         assert doctor.report(str(tmp_path))["runtime"]["browser_bridge"]["ok"] is True
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=3)
+
+
+def test_the_desktop_launch_probe_does_not_wait_on_a_server_that_is_not_there():
+    from harness import wallpaper
+    dead = _dead_port()
+    t0 = time.monotonic()
+    assert wallpaper.server_up(dead) is False
+    assert time.monotonic() - t0 < 0.4
+
+    class Ver(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("content-length", "6")
+            self.end_headers()
+            self.wfile.write(b"0.30.0")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Ver)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert wallpaper.server_up(server.server_address[1]) is True
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+
+
+def test_onboarding_browser_status_is_quick_while_no_bridge_runs(tmp_path, monkeypatch):
+    import json
+    import urllib.request
+    from harness import webapp
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COLLIE_BROWSER_BRIDGE_PORT", str(_dead_port()))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = "http://127.0.0.1:%d/api/browser/status?token=%s" % (server.server_address[1],
+                                                                 webapp.TOKEN)
+        t0 = time.monotonic()
+        with urllib.request.urlopen(url, timeout=10) as response:
+            status = json.loads(response.read())
+        took = time.monotonic() - t0
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+    assert status.get("extension_connected") in (False, None)
+    assert took < 1.0, "the onboarding poll waited %.2fs on a bridge that is not running" % took
+
+
+def test_onboarding_browser_status_answers_with_the_bridge_connected(tmp_path, monkeypatch):
+    """It answered 500 on every poll (a NameError in the handler), so onboarding never saw the
+    extension connect."""
+    import json
+    import urllib.request
+    from harness import webapp
+    health = ThreadingHTTPServer(("127.0.0.1", 0), _Health)
+    web = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (health, web)]
+    for t in threads:
+        t.start()
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COLLIE_BROWSER_BRIDGE_PORT", str(health.server_address[1]))
+    try:
+        url = "http://127.0.0.1:%d/api/browser/status?token=%s" % (web.server_address[1],
+                                                                 webapp.TOKEN)
+        with urllib.request.urlopen(url, timeout=10) as response:
+            status = json.loads(response.read())
+    finally:
+        for s in (health, web):
+            s.shutdown(); s.server_close()
+    assert status["extension_connected"] is True
+    assert status["bridge_running"] is True and status["ext_path"].endswith("browser_ext")
+    assert isinstance(status["browsers"], list)

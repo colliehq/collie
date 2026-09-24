@@ -2437,9 +2437,17 @@ class Handler(BaseHTTPRequestHandler):
                 # where's the extension folder, and which Chromium browsers are installed.
                 import shutil
                 from . import browserbridge as bb
+                # Bound here as well: `plat` is a local of do_GET (imported in other branches), so
+                # _found below read an unassigned name and every status poll answered 500 -- the
+                # onboarding step kept saying "Waiting for the extension" after it connected.
+                from . import plat
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 health = {}
                 try:
+                    # Polled every 2.5 s while onboarding waits for a bridge that is usually not
+                    # running yet; on Windows a probe of a closed port waits out its timeout.
+                    if not bb._listening(bb._port()):
+                        raise OSError("bridge not running")
                     with urllib.request.urlopen("http://127.0.0.1:%d/health" % bb._port(), timeout=1.5) as r:
                         health = _strict_json_loads(r.read())
                 except Exception:

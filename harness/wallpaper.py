@@ -82,6 +82,11 @@ def free_port(preferred: int = 8787) -> int:
 
 
 def server_up(port: int) -> bool:
+    # A cold start probes before anything listens: without this, each probe waited out its 0.8 s
+    # (Windows reports a refused loopback connection only after about two seconds).
+    from .httpserver import loopback_listening
+    if not loopback_listening(port):
+        return False
     try:
         urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()
         return True
