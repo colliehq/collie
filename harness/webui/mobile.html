@@ -753,6 +753,9 @@ function refreshRunCapabilities(){var epoch=++runCapabilityEpoch;fetch(api('/api
 // are re-read at the moment a person opens them rather than only once at boot. One gesture, one
 // read — not a poll — and a read overtaken by a later one is dropped by the epoch above.
 $("runSetup").addEventListener("toggle",function(){if(this.open)refreshRunCapabilities();});
+// A phone left open is often put away while the desktop changes model or worker; coming back to
+// the page re-reads what the next run can use. The epoch drops any answer a later read overtook.
+document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")refreshRunCapabilities();});
 var verificationScope=null, verificationEpoch=0;
 function refreshVerification(){
   var sid=currentSession||'',epoch=++verificationEpoch;
