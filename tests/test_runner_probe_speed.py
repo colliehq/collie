@@ -72,3 +72,25 @@ def test_probe_all_is_as_slow_as_its_slowest_runner_not_their_sum(monkeypatch):
     took = time.monotonic() - t0
     assert list(out) == keys and all(out[k].key == k for k in keys)
     assert took < 0.8, "%d probes of 0.3 s took %.2fs" % (len(keys), took)
+
+
+def test_the_host_compat_report_is_applied_before_any_parallel_probe_reads_it(monkeypatch):
+    """autoload marks itself done before it applies the report, so a probe racing it on another
+    thread would build a row without the host's recorded downgrades."""
+    applied = []
+
+    def slow_autoload():
+        time.sleep(0.1)
+        applied.append(True)
+        return {}
+
+    seen = []
+
+    def probe(key, **_kw):
+        seen.append(bool(applied))
+        return types.SimpleNamespace(key=key)
+
+    monkeypatch.setattr(runner_registry, "autoload_compat_report", slow_autoload)
+    monkeypatch.setattr(runner_registry, "probe", probe)
+    runner_registry.probe_all(keys=list(runner_registry.SPECS)[:4])
+    assert seen and all(seen)

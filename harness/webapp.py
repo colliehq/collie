@@ -2348,14 +2348,11 @@ class Handler(BaseHTTPRequestHandler):
                 # observed host state so it can disable a missing/login-blocked
                 # worker instead of waiting for a run to fail.
                 from . import runner_registry as runner_reg
-                from . import runner_signals
-                # The Codex quota read (its own child process, ~0.8 s) does not depend on the
-                # probes, so it starts first; collect() below then finds it in its cache.
-                quota_read = threading.Thread(
-                    target=lambda: runner_signals.read_codex_quota(), daemon=True)
-                quota_read.start()
+                # Not overlapped with the Codex quota read below: that starts `codex app-server`,
+                # which may refresh the login and rewrite ~/.codex/auth.json while the Codex
+                # probes are reading it.
                 probes = runner_reg.probe_all(keys=runner_reg.option_keys())
-                quota_read.join(timeout=12)
+                from . import runner_signals
                 from .cli import _paths as _cli_paths
                 signal_set = runner_signals.collect(
                     runner_reg.option_keys(), probes, runs_db=_cli_paths()[1],

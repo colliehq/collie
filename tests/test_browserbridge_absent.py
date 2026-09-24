@@ -178,3 +178,56 @@ def test_a_listening_bridge_is_still_found(monkeypatch):
         assert bb._bridge_live(port) is True
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=3)
+
+
+def test_a_browser_closed_with_a_command_in_hand_is_reported_absent_in_the_end(home):
+    """The command it took is never answered and no poll ever comes to clear it; past the longest
+    a caller may wait plus the absence window, that is an absent extension, not a busy one."""
+    bridge = bb._Bridge()
+    bridge.taken["c9"] = time.time() - bb._Bridge.TAKEN_STALE_S - 5
+    bridge.last_poll = time.time() - bb._Bridge.TAKEN_STALE_S - 5
+    t0 = time.monotonic()
+    res = bridge.enqueue({"action": "spaces"}, timeout=5)
+    assert time.monotonic() - t0 < 1.0
+    assert res.get("extension_connected") is False
+    fresh = bb._Bridge()
+    fresh.taken["c1"] = time.time() - 120      # still within what a caller could be waiting for
+    fresh.last_poll = time.time() - 120
+    assert fresh.absent_for() is None
+
+
+def test_a_poll_whose_extension_went_away_hands_its_command_to_the_next_poll(monkeypatch):
+    """A worker suspended mid-poll leaves its request waiting in next_cmd; the next command used to
+    be written into that dead socket and lost, its caller waiting out the whole timeout."""
+    import http.client
+    import socket as _socket
+    from harness.httpserver import ThreadingHTTPServer
+    monkeypatch.setenv("COLLIE_BRIDGE_DANGEROUSLY_OMIT_AUTH", "1")
+    bridge = bb._Bridge()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), bb._handler(bridge))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        dead = _socket.create_connection(("127.0.0.1", port))
+        dead.sendall(b"GET /poll HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Collie-Bridge: 1\r\n\r\n")
+        deadline = time.time() + 3
+        while not bridge.polling and time.time() < deadline:
+            time.sleep(0.02)
+        assert bridge.polling == 1
+        dead.close()                               # the worker is gone; its poll is still waiting
+        time.sleep(0.2)
+        got = {}
+        caller = threading.Thread(target=lambda: got.setdefault(
+            "res", bridge.enqueue({"action": "read"}, timeout=10)), daemon=True)
+        caller.start()
+        time.sleep(0.3)                            # the orphaned poll takes it first...
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/poll", headers={"X-Collie-Bridge": "1"})
+        cmd = json.loads(conn.getresponse().read())
+        assert cmd.get("action") == "read", "...and hands it back for the live one: %r" % cmd
+        bridge.deliver(cmd["id"], {"text": "page"})
+        caller.join(5)
+        assert got["res"] == {"ok": True, "data": {"text": "page"}}
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)

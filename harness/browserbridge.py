@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
-from .httpserver import ThreadingHTTPServer, loopback_listening
+from .httpserver import CLIENT_GONE, ThreadingHTTPServer, loopback_listening
 
 from . import plat
 from .tools import Tool
@@ -238,6 +238,11 @@ class _Bridge:
     # closed, a form read waited 60 s and each origin check 4 s, and all any of them said was "did
     # not respond" (the developer's bridge audit holds runs of these, 140 in a row one day).
     ABSENT_AFTER_S = 90.0
+    # A command the extension took counts as "it is busy" only for as long as any caller could wait
+    # for one (enqueue allows at most 300 s) plus that window. Past it, with no poll since, the
+    # browser was closed with the command in hand -- and a set that is only emptied by the next
+    # poll would otherwise keep a closed browser looking busy for good.
+    TAKEN_STALE_S = 300.0 + ABSENT_AFTER_S
 
     def __init__(self):
         self.pending = queue.Queue()          # commands waiting for the extension to pick up
@@ -248,7 +253,7 @@ class _Bridge:
         self.started = time.time()
         self.last_poll = 0.0                   # when the extension last polled (connection health)
         self.polling = 0                       # polls held open right now
-        self.taken = set()                     # ids the extension took and has not answered yet
+        self.taken = {}                        # id -> when the extension took it, until answered
         self.ext_version = ""                  # manifest version the loaded extension reports
         self.meta = {}                         # id -> what to write to the audit log when it ends
         self.dialogs = {}                      # id -> the page dialogs answered while it ran
@@ -270,7 +275,9 @@ class _Bridge:
     def absent_for(self, now=None):
         """Seconds since the extension was last there, or None while it is (or may yet be)."""
         now = time.time() if now is None else now
-        if self.polling or self.taken:
+        if self.polling:
+            return None
+        if any(now - at < self.TAKEN_STALE_S for at in list(self.taken.values())):
             return None
         idle = now - (self.last_poll or self.started)
         return idle if idle > self.ABSENT_AFTER_S else None
@@ -349,7 +356,7 @@ class _Bridge:
                 # event): a reconnecting extension must NOT execute a stale click/type/eval against
                 # the live tab.
                 if cmd.get("id") in self.events:
-                    self.taken.add(cmd.get("id"))
+                    self.taken[cmd.get("id")] = time.time()
                     return cmd
         finally:
             with self.lock:
@@ -359,7 +366,7 @@ class _Bridge:
     def deliver(self, cid, data, dialogs=None):
         # store the result ONLY if the caller is still waiting; a late result for a timed-out
         # command would otherwise accumulate in self.results forever (unbounded growth).
-        self.taken.discard(cid)
+        self.taken.pop(cid, None)
         ev = self.events.pop(cid, None)
         if ev:
             self.results[cid] = data
@@ -367,6 +374,28 @@ class _Bridge:
             if cleaned:
                 self.dialogs[cid] = cleaned
             ev.set()
+
+
+    def requeue(self, cmd):
+        """Put a command back at the front: the poll that took it has no one left to answer."""
+        self.taken.pop(cmd.get("id"), None)
+        with self.pending.mutex:
+            self.pending.queue.appendleft(cmd)
+            self.pending.unfinished_tasks += 1
+            self.pending.not_empty.notify()
+
+
+def _peer_gone(sock):
+    """True when the other end of this connection has closed it (a finished long poll's socket)."""
+    import select
+    import socket as _socket
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return False
+        return sock.recv(1, _socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
 
 
 def _clean_dialogs(value):
@@ -514,7 +543,20 @@ def _handler(bridge, enforce_host=True):
                     if kv.startswith("v="):
                         bridge.ext_version = urllib.parse.unquote(kv[2:])
                 cmd = bridge.next_cmd()
-                return self._json(cmd or {})       # {} == nothing pending, poll again
+                # A poll outlives the fetch that made it when the worker is suspended or the browser
+                # closes, and the thread still waiting in next_cmd took the next command. Written to
+                # that socket, the command was lost and its caller waited out the whole timeout.
+                if cmd and _peer_gone(self.connection):
+                    bridge.requeue(cmd)
+                    self.close_connection = True
+                    return None
+                try:
+                    return self._json(cmd or {})       # {} == nothing pending, poll again
+                except CLIENT_GONE:
+                    if cmd:
+                        bridge.requeue(cmd)
+                    self.close_connection = True
+                    return None
             if self.path.startswith("/health"):
                 # Deliberately open: it is a liveness probe with no control attached, and the popup
                 # has to be able to say "bridge up but your token is wrong" — which it cannot do if
@@ -1046,6 +1088,8 @@ def _ensure_server(port):
 
 _CURRENT_SPACE = [None]
 _DIALOGS = contextvars.ContextVar("collie_browser_dialogs", default=None)
+_PENDING_DIALOGS = {}                  # space -> dialogs answered while no tool was reporting
+_PENDING_LOCK = threading.Lock()
 _SPACE_CONTEXT = contextvars.ContextVar("collie_browser_space", default="")
 _SPACE_ACTIVITY = contextvars.ContextVar("collie_browser_space_activity", default=None)
 
@@ -1138,12 +1182,20 @@ def _call(cmd, timeout=60):
         return _apple_events(cmd, timeout) or {
             "ok": False, "error": "bridge unreachable (%s). Is the collie extension loaded "
             "in Chrome? chrome://extensions -> Load unpacked -> harness/browser_ext/" % e}
-    if isinstance(res, dict) and res.get("extension_connected") is False:
-        # A bridge with no extension behind it is no more use than no bridge.
-        return _apple_events(cmd, timeout) or res
-    seen = _DIALOGS.get()
-    if seen is not None and isinstance(res, dict) and isinstance(res.get("dialogs"), list):
-        seen.extend(res["dialogs"])
+    # Not handed to Apple Events when the bridge answers "not connected": that route acts in the
+    # front tab of the front window, with none of the extension's per-space tab ownership, and a
+    # bridge is up precisely where the extension is the expected way in.
+    if isinstance(res, dict) and isinstance(res.get("dialogs"), list) and res["dialogs"]:
+        seen = _DIALOGS.get()
+        if seen is not None:
+            seen.extend(res["dialogs"])
+        else:
+            # Answered during a call no tool is reporting on (the approval gate's origin check
+            # runs one first): kept for the next browser tool in this space to say.
+            with _PENDING_LOCK:
+                held = _PENDING_DIALOGS.setdefault(str(cmd.get("space") or "")[:40], [])
+                held.extend(res["dialogs"])
+                del held[:-10]
     return res
 
 
@@ -1178,7 +1230,8 @@ def _dialog_note(seen):
         elif d.get("stale"):
             how = ("answered Cancel -- it came up after the previous action had returned, so no "
                    "later action may say OK to it; if OK was wanted, redo the step that brought it "
-                   "up with dialog=\"accept\"")
+                   "up with dialog=\"accept\", and if it again appears only after the step "
+                   "returns, ask the user to answer it in the browser")
         else:
             how = ("answered Cancel -- repeat the action with dialog=\"accept\" to answer OK "
                    "instead")
@@ -1204,8 +1257,15 @@ def _with_dialog_notes(tool):
             seen = _DIALOGS.get()
         finally:
             _DIALOGS.reset(token)
-        note = _dialog_note(seen)
-        return note + out if note and isinstance(out, str) else out
+        with _PENDING_LOCK:
+            held = _PENDING_DIALOGS.pop(_space()[:40], [])
+        note = _dialog_note(held + list(seen or []))
+        if not note or not isinstance(out, str):
+            return out
+        # The loop and the hooks read a result that starts with ERROR/DENIED as a failure.
+        if out.startswith(("ERROR", "DENIED")):
+            return out + "\n" + note
+        return note + out
 
     tool.run = wrapped
     return tool
@@ -1294,6 +1354,10 @@ _FENCE_TAIL = "[END UNTRUSTED WEB CONTENT]"
 def _fence(text):
     if os.environ.get("COLLIE_NO_CONTENT_FENCE") == "1":
         return text
+    # A page that writes the closing marker itself would end the fence early and have whatever
+    # follows read as outside it; its copies are defused (a page alert's text lands here too).
+    text = str(text).replace(_FENCE_TAIL, "[END-UNTRUSTED marker written by the page]") \
+                    .replace(_FENCE_HEAD, "[BEGIN-UNTRUSTED marker written by the page]")
     return "%s\n%s\n%s" % (_FENCE_HEAD, text, _FENCE_TAIL)
 
 

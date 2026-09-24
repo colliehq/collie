@@ -173,3 +173,23 @@ def test_dialogs_are_answered_and_reported_without_freezing_the_bridge(browser):
 
     slow = [t for t in took if t[2] > 12]
     assert not slow, "a dialog held the bridge up: %r" % slow
+
+
+def test_a_box_left_on_another_spaces_tab_is_cancelled_and_reported_to_that_space(browser):
+    """Moving the debugger to another space's tab used to strand a leftover box on the first
+    tab: never answered, and reported to nobody."""
+    tools, base = browser
+    bb._CURRENT_SPACE[0] = "space-a"
+    assert "untouched" in tools["browser_open"].run({"url": base + "/page"}, None)
+    tools["browser_click"].run({"selector": "#lc"}, None)     # confirm comes up 1.5 s later
+    time.sleep(2.5)
+    bb._CURRENT_SPACE[0] = "space-b"
+    tools["browser_open"].run({"url": base + "/page"}, None)
+    t0 = time.monotonic()
+    out_b = tools["browser_click"].run({"selector": "#n"}, None)
+    assert time.monotonic() - t0 < 12 and "noop-clicked" in out_b
+    assert "Confirm payment" not in out_b, "space B is not told about space A's box"
+    bb._CURRENT_SPACE[0] = "space-a"
+    out_a = tools["browser_read"].run({}, None)
+    assert "Confirm payment of $500?" in out_a and "came up after the previous action" in out_a
+    assert "late-confirm:false" in out_a

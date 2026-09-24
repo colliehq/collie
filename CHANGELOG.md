@@ -31,6 +31,10 @@
   a box that came up after the previous action returned is only ever cancelled, and
   `browser_open` may accept nothing but "leave this page?". Needs the reloaded extension (4.1)
   and its debugger access, which the default build has.
+- Keep a page from closing the untrusted-content fence itself. Page text, and now dialog text, is
+  wrapped in markers that tell the model it is data; a page that wrote the closing marker could end
+  the fence early and have what followed read as outside it. Copies of the markers inside the
+  content are now defused.
 - Say at once when the browser extension is not connected. With the browser closed, each browser
   command waited out its full timeout (60 s for a form read, 4 s for each origin check) and then
   said only "did not respond". When the extension has not been heard from for 90 seconds and holds

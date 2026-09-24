@@ -1548,10 +1548,17 @@ if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onDetach.addListener((src, reason) 
 async function ensureAttached(tabId) {
   if (pausedTabs.has(tabId)) throw new Error("Collie is paused on this tab");
   if (dbgTab === tabId) return;
-  if (dbgTab != null) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
+  if (dbgTab != null) {
+    const old = dbgTab;
+    // A box left open on the tab being let go could not be answered once the debugger is off it.
+    if (openDialogs.has(old)) await answerLeftover(old);
+    dbgTab = null; await dbgDetach(old);
+  }
   await dbgAttach(tabId);
   dbgTab = tabId;
-  try { await dbgSend(tabId, "Page.enable", {}); } catch (e) {}   // so its dialogs are seen (below)
+  // So its dialogs are seen (below). Bounded: on a page already held by a dialog nobody saw open,
+  // Page.enable waits on the very renderer the dialog holds.
+  try { await Promise.race([dbgSend(tabId, "Page.enable", {}), sleep(3000)]); } catch (e) {}
 }
 
 // --- page dialogs: alert, confirm, prompt, "leave this page?" -----------------------------------
@@ -1575,6 +1582,7 @@ async function ensureAttached(tabId) {
 // background tabs), so the case left open is a foreground tab Collie was never attached to.
 const openDialogs = new Map();       // tabId -> {type, message, defaultPrompt} showing there now
 let dialogWatch = null;              // the command in flight: {space, policy, seen: []}
+const dialogReports = new Map();     // space -> answered while another space's command ran
 
 function dialogTab(watch) {
   const rec = spaces && watch ? spaces[watch.space] : null;
@@ -1603,13 +1611,41 @@ async function answerDialog(tabId, watch, info, stale) {
     await dbgSend(tabId, "Page.handleJavaScriptDialog", params);
     openDialogs.delete(tabId);
   } catch (e) {
+    const why = String((e && e.message) || e);
+    if (/no dialog is showing|not attached|no tab with/i.test(why)) {
+      openDialogs.delete(tabId);     // already gone (closed with the debugger, or by hand)
+      return null;
+    }
     d.answering = false;
     entry.answered = "failed";
-    entry.error = String((e && e.message) || e).slice(0, 200);
+    entry.error = why.slice(0, 200);
   }
   if (watch.seen.length < 10) watch.seen.push(entry);
   return entry;
 }
+
+function spaceOfTabNow(tabId) {
+  for (const [name, rec] of Object.entries(spaces || {})) if (rec && rec.tabId === tabId) return name;
+  return "";
+}
+
+// A box on a tab that is not the current command's: never accepted, and reported to the next
+// command of the space that owns the tab rather than to whoever happened to be running.
+async function answerLeftover(tabId) {
+  const report = { space: spaceOfTabNow(tabId), action: "", policy: "dismiss", seen: [] };
+  const entry = await answerDialog(tabId, report, null, true);
+  if (entry && report.space) {
+    const held = dialogReports.get(report.space) || [];
+    held.push(entry);
+    dialogReports.set(report.space, held.slice(-10));
+  }
+  return entry;
+}
+
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onDetach.addListener((src) => {
+  if (src && src.tabId != null) openDialogs.delete(src.tabId);
+});
+chrome.tabs.onRemoved.addListener((tabId) => { openDialogs.delete(tabId); });
 
 if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onEvent.addListener((src, method, params) => {
   if (!src || src.tabId == null || src.sessionId) return;
@@ -3181,6 +3217,7 @@ async function handle(cmd) {
   // the presence message below would wait behind it.
   const waiting = dialogWatch && dialogTab(dialogWatch);
   if (waiting != null && openDialogs.has(waiting)) await answerDialog(waiting, dialogWatch, null, true);
+  for (const other of [...openDialogs.keys()]) if (other !== waiting) await answerLeftover(other);
   if (cmd.action === "pause") return await pauseSpace(curSpace, cmd.reason || "Paused from Collie");
   if (cmd.action === "resume") return await resumeSpace(curSpace);
   if (cmd.action === "status") {
@@ -3501,6 +3538,8 @@ async function pollOnce() {
         let data;
         const watch = { space: spaceOf(cmd), action: String(cmd.action || ""),
                         policy: cmd.dialog === "accept" ? "accept" : "dismiss", seen: [] };
+        const heldForSpace = dialogReports.get(watch.space);
+        if (heldForSpace) { watch.seen.push(...heldForSpace); dialogReports.delete(watch.space); }
         dialogWatch = watch;
         try { data = await handle(cmd); }
         finally { dialogWatch = null; keepAlive(false); }

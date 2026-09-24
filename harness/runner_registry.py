@@ -1007,6 +1007,9 @@ def probe_all(keys: Iterable[str] | None = None, *, live: bool = False,
         return {key: probe(key, live=live, now=now, provider=provider,
                            status_runner=status_runner)
                 for key in wanted}
+    # Before the pool: autoload marks itself done and then applies the report, so a probe racing
+    # it could build a row without the host's recorded downgrades.
+    autoload_compat_report()
     # External probes wait on child processes (a CLI's --version, its auth check), so they are
     # made side by side: the web run menu's list is as slow as its slowest runner, not their sum.
     from concurrent.futures import ThreadPoolExecutor
