@@ -755,7 +755,7 @@ class Supervisor:
 def _current_sid(runner=subprocess.run) -> str:
     try:
         result = runner(["whoami.exe", "/user", "/fo", "csv", "/nh"],
-                        capture_output=True, text=True, timeout=10)
+                        capture_output=True, text=True, errors="replace", timeout=10)
         row = next(csv.reader(io.StringIO(result.stdout or "")))
         if len(row) >= 2 and row[1].startswith("S-"):
             return row[1]
@@ -844,7 +844,7 @@ def install_windows(*, root: str | None = None, config: str | None = None,
     write_xml(include_boot)
     try:
         result = runner(["schtasks.exe", "/Create", "/TN", TASK_NAME, "/XML", xml_path, "/F"],
-                        capture_output=True, text=True, timeout=30)
+                        capture_output=True, text=True, errors="replace", timeout=30)
         if result.returncode == 0:
             return {"ok": True, "mode": "scheduled_task", "task": TASK_NAME,
                     "config": cfg, "boot": bool(include_boot),
@@ -857,7 +857,7 @@ def install_windows(*, root: str | None = None, config: str | None = None,
             write_xml(False)
             retry = runner(
                 ["schtasks.exe", "/Create", "/TN", TASK_NAME, "/XML", xml_path, "/F"],
-                capture_output=True, text=True, timeout=30)
+                capture_output=True, text=True, errors="replace", timeout=30)
             if retry.returncode == 0:
                 return {"ok": True, "mode": "scheduled_task", "task": TASK_NAME,
                         "config": cfg, "boot": False, "degraded": True,
@@ -894,9 +894,9 @@ def uninstall_windows(*, root: str | None = None, runner=subprocess.run,
             # /End is a bounded fallback after the cooperative stop window. If the process already
             # exited, Task Scheduler simply reports that the task is not running.
             runner(["schtasks.exe", "/End", "/TN", TASK_NAME],
-                   capture_output=True, text=True, timeout=20)
+                   capture_output=True, text=True, errors="replace", timeout=20)
             result = runner(["schtasks.exe", "/Delete", "/TN", TASK_NAME, "/F"],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, errors="replace", timeout=30)
             if result.returncode == 0:
                 removed.append(TASK_NAME)
             elif "cannot find" not in (result.stderr or result.stdout or "").lower():
@@ -924,7 +924,7 @@ def query_windows(*, root: str | None = None, runner=subprocess.run) -> dict:
     if plat.is_windows():
         try:
             result = runner(["schtasks.exe", "/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"],
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, errors="replace", timeout=20)
             scheduled = result.returncode == 0
             detail = (result.stdout if scheduled else result.stderr or result.stdout or "")[:4000]
         except Exception as exc:

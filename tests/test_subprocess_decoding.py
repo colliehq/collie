@@ -39,12 +39,28 @@ def _text_captures(tree):
             yield n, kw
 
 
+def _any_text_captures(tree):
+    """Also calls through an alias (`runner=subprocess.run`, a local `_run`): any call that asks
+    for text mode and captures output is a subprocess read for this purpose."""
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        kw = {k.arg: k.value for k in n.keywords if k.arg}
+        text = kw.get("text")
+        if (((isinstance(text, ast.Constant) and text.value) or "universal_newlines" in kw)
+                and any(k in kw for k in ("capture_output", "stdout", "stderr"))):
+            yield n, kw
+
+
 def test_every_text_capture_says_what_to_do_with_bad_bytes():
     missing = []
     for path in sorted(ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        missing += ["%s:%d" % (path.relative_to(ROOT).as_posix(), n.lineno)
-                    for n, kw in _text_captures(tree) if "errors" not in kw]
+        seen = set()
+        for n, kw in list(_text_captures(tree)) + list(_any_text_captures(tree)):
+            if "errors" not in kw and n.lineno not in seen:
+                seen.add(n.lineno)
+                missing.append("%s:%d" % (path.relative_to(ROOT).as_posix(), n.lineno))
     assert not missing, ("pass errors= (usually \"replace\") to these text-mode subprocess "
                          "calls: " + ", ".join(missing))
 

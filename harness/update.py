@@ -668,7 +668,7 @@ def setup_running(runner=subprocess.run):
         return False
     try:
         out = runner(["tasklist.exe", "/FI", "IMAGENAME eq Collie-Setup.exe", "/NH", "/FO", "CSV"],
-                     capture_output=True, text=True, timeout=10, **plat.no_window_kwargs()).stdout
+                     capture_output=True, text=True, errors="replace", timeout=10, **plat.no_window_kwargs()).stdout
     except Exception:
         return False
     return "collie-setup.exe" in (out or "").lower()
