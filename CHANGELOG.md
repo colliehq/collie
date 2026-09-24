@@ -56,8 +56,8 @@
 - Open the run menu's worker list faster. Its capability read probed each installed worker CLI one
   after another, and Pi alone was started four times in a row (`--version` and an auth check per
   provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read
-  after a minute took 5.5 s; the probes and Pi's checks now run side by side, with the Codex quota
-  read started alongside them, and the same read takes 1.5 s. The probe results are unchanged.
+  after a minute took 5.5 s; the probes and Pi's checks now run side by side and the same read
+  takes about 2.2 s. The probe results are unchanged.
 - Disclose, and let you turn off, the wallpaper clock's weather line. It asks `ipapi.co` for an
   approximate location from your network address and `api.open-meteo.com` for the weather there,
   about every 30 minutes, which the privacy policy did not mention. `"weather": false` under
