@@ -32,6 +32,7 @@ only ever called on explicit user action, and reports exactly what it did.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -78,15 +79,15 @@ def _git(cwd: str, args, env=None, check=True, timeout=120) -> str:
 
 def available(cwd: str) -> tuple:
     """(ok, reason). Checkpoints need a git work tree; say plainly when there isn't one."""
+    # One git call for both questions: each costs ~30 ms on Windows, and this runs before every
+    # task (a checkpoint capture made 14 of them, 0.43 s of a 1.1 s run).
     try:
-        inside = _git(cwd, ["rev-parse", "--is-inside-work-tree"], check=False)
+        lines = _git(cwd, ["rev-parse", "--is-inside-work-tree", "HEAD"], check=False).split()
     except (OSError, subprocess.SubprocessError) as e:
         return False, "git is not usable here: %s" % e
-    if inside != "true":
+    if not lines or lines[0] != "true":
         return False, "%s is not inside a git repository, so there is nothing to rewind to" % cwd
-    try:
-        _git(cwd, ["rev-parse", "HEAD"])
-    except CheckpointError:
+    if len(lines) < 2 or not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", lines[1]):
         return False, "this repository has no commits yet — make one commit and checkpoints work"
     return True, ""
 
@@ -144,17 +145,15 @@ def capture(cwd: str, session: str, n: int, label: str = "") -> Checkpoint:
         if not untracked:
             ref, kind = stash, "stash"
         else:
-            tree = _git(cwd, ["rev-parse", stash + "^{tree}"])
-            base = _git(cwd, ["rev-parse", stash + "^1"])
-            index_parent = _git(cwd, ["rev-parse", stash + "^2"])
+            tree, base, index_parent = _git(
+                cwd, ["rev-parse", stash + "^{tree}", stash + "^1", stash + "^2"]).split()
             ref = _git(cwd, ["commit-tree", tree, "-p", base, "-p", index_parent,
                              "-p", untracked, "-m", msg]) or stash
             kind = "stash"
     elif untracked:
         # Tracked tree clean. Still synthesize a snapshot: the untracked parent records the exact
         # set present now (possibly none), which is what lets restore delete whatever appears later.
-        head = _git(cwd, ["rev-parse", "HEAD"])
-        head_tree = _git(cwd, ["rev-parse", "HEAD^{tree}"])
+        head, head_tree = _git(cwd, ["rev-parse", "HEAD", "HEAD^{tree}"]).split()
         index_parent = _git(cwd, ["commit-tree", head_tree, "-p", head, "-m", _MARKER + "index"])
         ref = _git(cwd, ["commit-tree", head_tree, "-p", head, "-p", index_parent,
                          "-p", untracked, "-m", msg])
