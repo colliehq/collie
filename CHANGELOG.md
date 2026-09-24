@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Show new Collie releases on the desktop. Settings → General → Updates checks GitHub when you
+  press *Check for updates*, or about once a day after you turn on *Check for updates
+  automatically* (off by default). A small dot on the Settings button marks a newer release, and
+  its notes are shown as plain text. A failed check says so and keeps the last answer; it is never
+  reported as "up to date".
+- Install an update with one press on Windows installer copies. Collie downloads the release you
+  were shown, verifies its published digest and Authenticode signature, closes, runs Setup and
+  starts the same pieces again; the page reconnects by itself. If a newer release appears before you
+  press Install, nothing is installed and the card asks you to check again. A paired phone can read
+  the notice but not install. macOS, Homebrew and pip copies show the exact command to run.
+- `collie update --expect <version>` installs only that exact newer release (exit 3 otherwise), and
+  the update journal now records the version being installed.
+- Mark an accepted message as *No reply needed* in the inbox, with a short reason kept beside it.
+  It stops counting as owed in the inbox and Daily Brief, and a task that finishes afterwards keeps
+  its result without preparing or sending an automatic reply. The task itself is not changed.
+
 ## v0.29.1 — Bound startup waits when the clock changes
 
 - Use elapsed time for the short wait that acknowledges a newly started background

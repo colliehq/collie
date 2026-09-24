@@ -874,3 +874,64 @@ def test_task_handoff_explains_recipient_fences_but_keeps_provider_errors_privat
     assert notes[0] == (detail if known else
                         "The task result is saved; its email or SMS reply is waiting for recovery")
     assert "private transport credential" not in str(notes)
+
+
+# --- "No reply needed" -------------------------------------------------------
+# A person can record that an accepted message will not be answered: the task was cancelled, or
+# the answer went another way. That note is the only record of why nobody got a reply, so it needs
+# a reason; and it has to hold afterwards -- a task that finishes later must not answer anyway.
+
+def test_closing_an_accepted_message_records_who_and_why(service):
+    host, _ = service
+    host.ingest("mail", message("close-one"))
+    host.accept("mail", "close-one", start=False)
+    closed = host.close_event("mail", "close-one", "  Answered by phone  ")
+    assert closed["awaiting_reply"] is False
+    assert closed["settlement"]["disposition"] == "closed"
+    assert closed["settlement"]["actor"] == "desktop-user"
+    assert closed["settlement"]["reason"] == "Answered by phone"
+    owed = comms.list_events("mail", needs="reply", directory=host.directory)
+    assert "close-one" not in [e["id"] for e in owed]
+
+
+@pytest.mark.parametrize("reason", ["", "   ", None])
+def test_closing_without_a_reason_is_refused_and_changes_nothing(service, reason):
+    host, _ = service
+    host.ingest("mail", message("close-two"))
+    host.accept("mail", "close-two", start=False)
+    with pytest.raises(ChannelError, match="why no reply is needed"):
+        host.close_event("mail", "close-two", reason)
+    assert comms.get_event("mail", "close-two", directory=host.directory)["awaiting_reply"] is True
+
+
+def test_a_message_that_was_never_accepted_cannot_be_closed(service):
+    host, _ = service
+    host.ingest("mail", message("close-three"))
+    with pytest.raises(comms.StateConflict):
+        host.close_event("mail", "close-three", "Not needed")
+
+
+def test_a_task_finishing_after_close_keeps_its_answer_and_sends_nothing(service):
+    host, adapter = service
+    host._change(lambda rows: rows["mail"].update(auto_reply=True))
+    host.ingest("mail", message("close-four"))
+    accepted = host.accept("mail", "close-four", start=False)
+    host.close_event("mail", "close-four", "The request was withdrawn")
+    entry = _finish(host, accepted)
+    assert host.capture_result(accepted["session"], entry, {"completed": True}) is None
+    assert host._delivery_lane("mail", host._row("mail"))["sent"] == 0
+    assert adapter.sent == []
+    assert _answer_is_still_readable(host, accepted) == [ANSWER]
+    # The first marker wins: the message stays closed rather than turning into "replied".
+    event = comms.get_event("mail", "close-four", directory=host.directory)
+    assert event["settlement"]["disposition"] == "closed"
+
+
+def test_closing_is_reachable_from_the_desktop_action(service):
+    from harness import channel_web
+    host, _ = service
+    host.ingest("mail", message("close-five"))
+    host.accept("mail", "close-five", start=False)
+    closed = channel_web.perform(host.root, {"action": "close", "connection": "mail",
+                                             "event": "close-five", "reason": "Handled in person"})
+    assert closed["settlement"]["reason"] == "Handled in person"

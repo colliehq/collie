@@ -70,6 +70,8 @@ def perform(root, body):
         return host.accept(connection, body.get("event"), draft=action == "draft", approved=True)
     if action == "reject":
         return host.reject(connection, body.get("event"))
+    if action == "close":
+        return host.close_event(connection, body.get("event"), body.get("reason"))
     if action == "prepare":
         if type(body.get("speak", False)) is not bool:
             raise ChannelError("speak must be true or false")
