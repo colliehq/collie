@@ -232,7 +232,8 @@ def build_engine(force: bool = False) -> "str | None":
            "/reference:Microsoft.Web.WebView2.Core.dll",
            "/reference:Microsoft.Web.WebView2.WinForms.dll", "Program.cs"]
     try:
-        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=120, **_quiet())
+        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True,
+                           errors="replace", timeout=120, **_quiet())
     except Exception:
         try:
             if os.path.exists(tmp):

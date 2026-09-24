@@ -69,7 +69,8 @@ def _git(cwd: str, args, env=None, check=True, timeout=120) -> str:
     identity = (["-c", "user.name=Collie Checkpoint", "-c",
                  "user.email=checkpoint@collie.local"]
                 if args and args[0] in {"commit-tree", "stash"} else [])
-    p = subprocess.run(["git"] + identity + ["-C", cwd] + list(args), capture_output=True, text=True,
+    p = subprocess.run(["git"] + identity + ["-C", cwd] + list(args), capture_output=True,
+                       encoding="utf-8", errors="replace",
                        env=env, timeout=timeout, **plat.no_window_kwargs())
     if check and p.returncode != 0:
         raise CheckpointError("git %s failed (%d): %s"
@@ -101,7 +102,7 @@ def _untracked_parent(cwd: str) -> str:
     from . import plat as _plat
     listing = subprocess.run(["git", "-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
                              **_plat.no_window_kwargs(),
-                             capture_output=True, text=True, timeout=300)
+                             capture_output=True, encoding="utf-8", errors="replace", timeout=300)
     files = [f for f in (listing.stdout or "").split("\0") if f]
     # NOTE the empty case still produces a commit, holding an EMPTY tree. "There were no untracked
     # files" is complete knowledge, not missing knowledge: it means every untracked file present at

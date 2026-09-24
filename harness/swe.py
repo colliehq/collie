@@ -26,7 +26,7 @@ from . import plat
 
 
 def _git(args, cwd=None, capture=False, check=True, timeout=600):
-    return subprocess.run(["git"] + args, cwd=cwd, text=True, check=check,
+    return subprocess.run(["git"] + args, cwd=cwd, encoding="utf-8", errors="replace", check=check,
                           capture_output=capture, timeout=timeout)
 
 
@@ -710,7 +710,8 @@ def _run_cli(cmd, workdir, extra_env=None, timeout=1800, stdin_text=None):
                     "argv[%d] of %r contains a newline; on Windows cmd.exe would truncate it "
                     "there and the agent would receive only a fragment. Pass it via stdin_text."
                     % (i, cmd[0]))
-    return subprocess.run([exe] + list(cmd[1:]), cwd=workdir, env=env, text=True, check=False,
+    return subprocess.run([exe] + list(cmd[1:]), cwd=workdir, env=env, text=True,
+                          errors="replace", check=False,
                           timeout=timeout, capture_output=True, input=stdin_text)
 
 

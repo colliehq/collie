@@ -34,7 +34,8 @@ def _git(args, cwd, timeout=60):
     try:
         from . import plat
         p = subprocess.run(["git"] + list(args), cwd=cwd, timeout=timeout,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           encoding="utf-8", errors="replace",
                            **plat.no_window_kwargs())
         return p.returncode == 0, (p.stdout or "").strip()
     except (OSError, subprocess.SubprocessError) as e:

@@ -177,7 +177,7 @@ def _default_runner(argv: tuple[str, ...], environ: Mapping[str, str], provider:
         raise FileNotFoundError(argv[0])
     command = [executable, *argv[1:]]
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, timeout=10, check=False, env=child_env,
+                          text=True, errors="replace", timeout=10, check=False, env=child_env,
                           **plat.no_window_kwargs())
 
 

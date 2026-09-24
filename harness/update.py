@@ -402,7 +402,7 @@ def verify_macos(path):
     try:
         r = subprocess.run(["spctl", "-a", "-vv", "-t", "open",
                             "--context", "context:primary-signature", path],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, errors="replace", timeout=120)
     except Exception as e:
         return False, "could not run spctl: %s" % e
     out = (r.stdout or "") + (r.stderr or "")
@@ -412,7 +412,7 @@ def verify_macos(path):
         return False, "not notarised: " + out.strip().replace("\n", " ")[:180]
     try:
         c = subprocess.run(["codesign", "-dv", "--verbose=2", path],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, errors="replace", timeout=60)
         blob = (c.stdout or "") + (c.stderr or "")
     except Exception as e:
         return False, "could not read the signature: %s" % e
@@ -457,7 +457,7 @@ def _restart_slack_agents(labels):
         target = "gui/%d/%s" % (uid, label)
         try:
             r = subprocess.run(["launchctl", "kickstart", "-k", target],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, errors="replace", timeout=30)
             if r.returncode == 0:
                 continue
             # A loaded job can disappear during the app swap. Re-bootstrap its
@@ -465,7 +465,7 @@ def _restart_slack_agents(labels):
             plist = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % label)
             subprocess.run(["launchctl", "bootout", target], capture_output=True, timeout=15)
             r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, plist],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, errors="replace", timeout=30)
             if r.returncode != 0:
                 failures.append(label)
         except (OSError, subprocess.SubprocessError):
@@ -484,7 +484,7 @@ def apply_macos(dmg, on_note=print):
     mnt = tempfile.mkdtemp(prefix="collie-update-")
     try:
         r = subprocess.run(["hdiutil", "attach", dmg, "-nobrowse", "-quiet", "-mountpoint", mnt],
-                           capture_output=True, text=True, timeout=180)
+                           capture_output=True, text=True, errors="replace", timeout=180)
         if r.returncode != 0:
             return False, "could not mount the disk image: " + (r.stderr or "").strip()[:160]
         src = os.path.join(mnt, "Collie.app")
@@ -494,13 +494,14 @@ def apply_macos(dmg, on_note=print):
         # Check the app itself, not just its container: notarisation of the dmg says nothing about
         # what someone may have put inside a repackaged one.
         a = subprocess.run(["spctl", "-a", "-vv", "-t", "exec", src],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, errors="replace", timeout=120)
         if "accepted" not in ((a.stdout or "") + (a.stderr or "")):
             return False, "the app inside the image is not accepted by Gatekeeper"
 
         staged = APP_PATH + ".new"
         shutil.rmtree(staged, ignore_errors=True)
-        c = subprocess.run(["ditto", src, staged], capture_output=True, text=True, timeout=600)
+        c = subprocess.run(["ditto", src, staged], capture_output=True, text=True,
+                           errors="replace", timeout=600)
         if c.returncode != 0:
             return False, "copy failed: " + (c.stderr or "").strip()[:160]
 
@@ -564,7 +565,7 @@ def running_parts(root):
           " | ForEach-Object { $_.CommandLine }")
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
-                             capture_output=True, text=True, timeout=25,
+                             capture_output=True, text=True, errors="replace", timeout=25,
                              **plat.no_window_kwargs()).stdout or ""
     except Exception:
         out = ""
@@ -721,7 +722,7 @@ def apply_windows(exe, digest, on_note=print, target_version=""):
         except Exception as exc:
             return False, "could not record the update recovery journal: %s" % exc
         r = subprocess.run([exe, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
-                           capture_output=True, text=True, timeout=1800,
+                           capture_output=True, text=True, errors="replace", timeout=1800,
                            **plat.no_window_kwargs())
         if r.returncode != 0:
             record_update_handoff(ok=False, detail="installer exited %d" % r.returncode)
@@ -769,7 +770,7 @@ def apply_pip(wheel_url, on_note=print):
     """Upgrade the installed package straight from the release wheel (collie is not on PyPI)."""
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", wheel_url]
     on_note("  %s" % " ".join(cmd[-3:]))
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=900,
                        **plat.no_window_kwargs())
     if r.returncode != 0:
         return False, (r.stderr or r.stdout or "pip failed").strip().splitlines()[-1][:180]
@@ -779,7 +780,8 @@ def apply_pip(wheel_url, on_note=print):
 def apply_brew(on_note=print):
     if not shutil.which("brew"):
         return False, "brew is not on PATH"
-    r = subprocess.run(["brew", "upgrade", "collie"], capture_output=True, text=True, timeout=900)
+    r = subprocess.run(["brew", "upgrade", "collie"], capture_output=True, text=True,
+                       errors="replace", timeout=900)
     if r.returncode != 0:
         return False, (r.stderr or "").strip().splitlines()[-1][:180] if r.stderr else "brew failed"
     return True, "upgraded"

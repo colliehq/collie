@@ -7420,7 +7420,7 @@ def _macos_firewall_on():
     try:
         import subprocess
         out = subprocess.run(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"],
-                             capture_output=True, text=True, timeout=4).stdout
+                             capture_output=True, text=True, errors="replace", timeout=4).stdout
         return "State = 1" in out or "enabled" in out.lower()
     except Exception:
         return False

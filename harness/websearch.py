@@ -118,7 +118,7 @@ def _chrome_search(query, k, chrome):
            "--user-data-dir=" + _winpath(prof, chrome), "--dump-dom", url]
     try:
         from . import plat as _plat
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60,
                            **_plat.no_window_kwargs())
         return _parse_bing(p.stdout or "", k)
     finally:

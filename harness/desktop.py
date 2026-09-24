@@ -282,7 +282,7 @@ def _mac_icns(app_path):
     name = ""
     try:
         out = subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Print CFBundleIconFile", plist],
-                             capture_output=True, text=True, timeout=10)
+                             capture_output=True, text=True, errors="replace", timeout=10)
         name = (out.stdout or "").strip()
     except Exception:
         name = ""
@@ -322,7 +322,7 @@ def _mac_media(cmd):
             r = subprocess.run(
                 ["osascript", "-e",
                  'tell application "System Events" to (name of processes) contains "%s"' % app],
-                capture_output=True, text=True, timeout=5)
+                capture_output=True, text=True, errors="replace", timeout=5)
             if (r.stdout or "").strip() == "true":
                 subprocess.run(["osascript", "-e", 'tell application "%s" to %s' % (app, act)],
                                timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -375,7 +375,7 @@ if($s){ $p=AW ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSy
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                            **plat.no_window_kwargs(), timeout=6,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, errors="replace")
         out = (r.stdout or "").strip()
         v = json.loads(out) if out.startswith("{") else None
         if v and not (v.get("title") or v.get("artist")):

@@ -151,7 +151,8 @@ def _profile_hint():
 
 
 def _run_osascript(script, timeout=45):
-    p = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
+                       errors="replace", timeout=timeout)
     out, err = p.stdout.strip(), p.stderr.strip()
     if p.returncode != 0:
         # -1723 is the specific, actionable one: Apple Events reached the
@@ -183,7 +184,8 @@ def running_browser():
     try:
         running = subprocess.run(["osascript", "-e",
                                   'tell application "System Events" to get name of every process'],
-                                 capture_output=True, text=True, timeout=10).stdout
+                                 capture_output=True, text=True,
+                                 errors="replace", timeout=10).stdout
     except Exception:
         return None
     names = {n.strip() for n in running.split(",")}

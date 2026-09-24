@@ -678,7 +678,8 @@ class RunInEnvTool(Tool):
         cmd = args.get("command", "")
         try:
             diff = subprocess.run(["git", "-C", ctx.cwd, "diff", "--no-color"],
-                                  capture_output=True, text=True, timeout=30,
+                                  capture_output=True,
+                                  encoding="utf-8", errors="replace", timeout=30,
                                   **plat.no_window_kwargs()).stdout
         except Exception:
             diff = ""
@@ -695,7 +696,8 @@ class RunInEnvTool(Tool):
             docker = ["docker", "run", "--rm", "-v", pf.name + ":/tmp/e.patch:ro",
                       image, "bash", "-lc", inner]
             try:
-                p = subprocess.run(docker, capture_output=True, text=True, timeout=timeout + 40,
+                p = subprocess.run(docker, capture_output=True, text=True,
+                                   errors="replace", timeout=timeout + 40,
                                    **plat.no_window_kwargs())
                 o = (p.stdout or "") + (("\n[stderr] " + p.stderr) if p.stderr else "")
                 return p.returncode, (o.strip() or "(no output)")

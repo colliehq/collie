@@ -803,9 +803,12 @@ def _tree_diff(cwd):
         # windowless like every other spawn: this one runs on EVERY turn, so under pythonw it was
         # a console window per turn on top of one per shell command.
         from . import plat as _plat
-        r = subprocess.run(["git", "diff", "HEAD"], cwd=cwd, capture_output=True,
-                           text=True, timeout=30, **_plat.no_window_kwargs())
-        return r.stdout if r.returncode == 0 else ""
+        # Bytes, decoded here: _apply_diff may re-apply this, so it must come back exactly. Text
+        # mode lost it -- one byte that is not UTF-8 made stdout None on Windows, and reading
+        # folded CRLF to LF, so a CRLF file's diff no longer matched the file.
+        r = subprocess.run(["git", "diff", "HEAD"], cwd=cwd, capture_output=True, timeout=30,
+                           **_plat.no_window_kwargs())
+        return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -818,7 +821,7 @@ def _tree_empty(cwd):
     try:
         from . import plat as _plat
         r = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
-                           capture_output=True, text=True, timeout=30,
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=30,
                            **_plat.no_window_kwargs())
         return not [p for p in r.stdout.splitlines()
                     if p.strip() and not any(j in p for j in _JUNK_UNTRACKED)]
@@ -828,11 +831,14 @@ def _tree_empty(cwd):
 
 def _apply_diff(cwd, diff):
     """Re-apply a captured diff; --3way fallback for drifted context. True on success."""
+    # As bytes: in text mode Windows wrote every "\n" as "\r\n", so no patch of an LF file ever
+    # applied there (and the rollback reported FAILED).
+    patch = diff.encode("utf-8", "surrogateescape")
     for extra in ([], ["--3way"]):
         try:
             from . import plat as _plat
             r = subprocess.run(["git", "apply", "--whitespace=nowarn"] + extra, cwd=cwd,
-                               input=diff, capture_output=True, text=True, timeout=60,
+                               input=patch, capture_output=True, timeout=60,
                                **_plat.no_window_kwargs())
             if r.returncode == 0:
                 return True
@@ -3456,7 +3462,10 @@ class Harness:
                         and (not getattr(self, "max_model_calls", 0) or
                              model_calls < int(self.max_model_calls))
                         and not shared_exhausted and not local_exhausted):
-                    _cdiff = _tree_diff(self.cwd)
+                    # For reading, not re-applying: bytes that are not UTF-8 become U+FFFD here
+                    # rather than lone surrogates, which a request body cannot encode.
+                    _cdiff = _tree_diff(self.cwd).encode("utf-8", "surrogateescape").decode(
+                        "utf-8", "replace")
                     if _cdiff:
                         _ok, _obj = (self.critic_fn(self.critic_issue, _cdiff, self.cwd)
                                      if self.critic_fn else

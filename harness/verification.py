@@ -478,7 +478,8 @@ def _git_snapshot(cwd: str) -> dict:
            "snapshot_kind": "filesystem"}
     try:
         commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True,
+            ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True,
+            encoding="utf-8", errors="replace",
             timeout=10, **plat.no_window_kwargs())
         if commit.returncode != 0:
             out.update(_filesystem_snapshot(cwd))

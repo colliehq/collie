@@ -1134,7 +1134,7 @@ def _open_window_wsl(url, kiosk):
     try:
         from . import plat as _plat
         r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, text=True, timeout=25,
+                           capture_output=True, text=True, errors="replace", timeout=25,
                            **_plat.no_window_kwargs())
     except Exception as e:
         return False, "launch error: %s" % e
@@ -1473,7 +1473,7 @@ def _collie_procs():
             script = ("Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | "
                       "ConvertTo-Json -Compress")
             r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                               capture_output=True, text=True, timeout=15,
+                               capture_output=True, text=True, errors="replace", timeout=15,
                                **plat.no_window_kwargs())
             if r.returncode != 0:
                 return []
@@ -1486,7 +1486,8 @@ def _collie_procs():
                         and _ours(cmd):
                     out.append((pid, cmd.strip()))
             return out
-        r = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True,
+                           errors="replace", timeout=10)
         for line in (r.stdout or "").splitlines()[1:]:
             pid, _, cmd = line.strip().partition(" ")
             if _ours(cmd) and "uninstall" not in cmd.lower() \
@@ -1503,7 +1504,7 @@ def _stop_collie_proc(pid):
         pid = int(pid)
         if plat.is_windows():
             r = subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"],
-                               capture_output=True, text=True, timeout=20,
+                               capture_output=True, text=True, errors="replace", timeout=20,
                                **plat.no_window_kwargs())
             if r.returncode != 0:
                 detail = (r.stderr or r.stdout or "taskkill failed").strip()

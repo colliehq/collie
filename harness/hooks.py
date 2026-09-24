@@ -274,7 +274,7 @@ class HookManager:
         try:
             proc = subprocess.run(
                 argv, shell=use_shell, input=json.dumps(payload, ensure_ascii=False),
-                text=True, capture_output=True, timeout=timeout, cwd=self.cwd,
+                text=True, errors="replace", capture_output=True, timeout=timeout, cwd=self.cwd,
                 **plat.no_window_kwargs())
             stdout = (proc.stdout or "")[:_MAX_OUTPUT]
             stderr = (proc.stderr or "")[:_MAX_OUTPUT]

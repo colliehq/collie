@@ -54,7 +54,7 @@ def _process_identity(pid: int) -> str:
         except FileNotFoundError:
             return subprocess.check_output(
                 ["ps", "-o", "lstart=", "-p", str(int(pid))],
-                text=True, timeout=2).strip()
+                text=True, errors="replace", timeout=2).strip()
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
         return ""
 

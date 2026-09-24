@@ -194,13 +194,14 @@ def fingerprint() -> str:
     try:
         if sys.platform == "darwin":
             out = subprocess.run(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                                 capture_output=True, text=True, timeout=5).stdout
+                                 capture_output=True, text=True, errors="replace", timeout=5).stdout
             m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
             raw = m.group(1) if m else ""
         elif sys.platform == "win32":
             from . import plat as _plat
             out = subprocess.run(["reg", "query", r"HKLM\SOFTWARE\Microsoft\Cryptography",
-                                  "/v", "MachineGuid"], capture_output=True, text=True, timeout=5,
+                                  "/v", "MachineGuid"], capture_output=True, text=True,
+                                  errors="replace", timeout=5,
                                  **_plat.no_window_kwargs()).stdout
             m = re.search(r"MachineGuid\s+REG_SZ\s+(\S+)", out)
             raw = m.group(1) if m else ""
@@ -592,7 +593,7 @@ def _process_identity(pid: int) -> str:
             # text, so invoking ps directly is bounded and shell-free.
             return subprocess.check_output(
                 ["ps", "-o", "lstart=", "-p", str(int(pid))],
-                text=True, timeout=2).strip()
+                text=True, errors="replace", timeout=2).strip()
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
         return ""
 
@@ -2212,11 +2213,12 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
     # bootout first: without it, re-running this leaves the OLD arguments running and the new plist
     # loaded but inert, which reads as "the flag I just changed did nothing".
     subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, label)],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, errors="replace")
     r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, errors="replace")
     if r.returncode != 0:                       # older macOS, or a session launchctl cannot address
-        r = subprocess.run(["launchctl", "load", "-w", path], capture_output=True, text=True)
+        r = subprocess.run(["launchctl", "load", "-w", path], capture_output=True, text=True,
+                           errors="replace")
     if r.returncode != 0:
         print("wrote %s but launchctl refused it: %s"
               % (path, (r.stderr or r.stdout or "").strip()), file=sys.stderr)
@@ -2230,7 +2232,7 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
 def _uninstall_launch_agent(name: str) -> int:
     label, path = _agent_label(name), _agent_path(name)
     subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), label)],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, errors="replace")
     try:
         if os.path.exists(path):
             os.remove(path)

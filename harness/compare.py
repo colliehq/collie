@@ -109,14 +109,14 @@ def reset_sandbox(root: str) -> dict:
 
 def _run_py(cwd, code, timeout=30):
     r = subprocess.run([__import__("sys").executable, "-c", code], cwd=cwd, capture_output=True,
-                       text=True, timeout=timeout)
+                       text=True, errors="replace", timeout=timeout)
     return (r.stdout + r.stderr).strip(), r.returncode
 
 
 def _pytest_passes(cwd, target, timeout=60):
     try:
         r = subprocess.run([__import__("sys").executable, "-m", "pytest", "-q", target], cwd=cwd,
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, errors="replace", timeout=timeout)
         return r.returncode == 0
     except Exception:
         return False
@@ -239,7 +239,8 @@ def run_cc(recorder: Recorder, task: dict, cwd: str, model: str = "",
     if model:
         cmd += ["--model", model]
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           errors="replace", timeout=timeout)
         data = _parse_cc_json(r.stdout)
         u = data.get("usage", {}) or {}
         res.input_tokens = u.get("input_tokens", 0)

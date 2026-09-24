@@ -939,7 +939,8 @@ def claude_credentials():
             import subprocess
             out = subprocess.run(["security", "find-generic-password",
                                   "-s", "Claude Code-credentials", "-w"],
-                                 capture_output=True, text=True, timeout=10).stdout.strip()
+                                 capture_output=True, text=True,
+                                 errors="replace", timeout=10).stdout.strip()
             if out:
                 return json.loads(out)
         except Exception:
@@ -1395,7 +1396,8 @@ class ClaudeCliProvider(ModelProvider):
                 if not request_id:
                     raise RuntimeError("claude CLI model request reservation denied")
             try:
-                r = subprocess.run(full_cmd, capture_output=True, text=True, input=prompt,
+                r = subprocess.run(full_cmd, capture_output=True, text=True,
+                                   errors="replace", input=prompt,
                                    timeout=self.timeout, env=env, **_plat.no_window_kwargs())
             except Exception:
                 if request_id and callable(request_complete):

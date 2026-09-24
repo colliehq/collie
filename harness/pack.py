@@ -168,7 +168,7 @@ def _init_external_git(cwd):
                  "user.email=pack@localhost", "commit", "--quiet", "--allow-empty",
                  "-m", "collie pack baseline"])
     for argv in commands:
-        done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+        done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, errors="replace",
                               timeout=120, **plat.no_window_kwargs())
         if done.returncode:
             raise RuntimeError("could not create external-worker Pack baseline: %s" %

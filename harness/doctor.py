@@ -29,7 +29,7 @@ def _command_version(path: str, timeout: float = 5.0) -> dict:
         return {"path": "", "version": "", "ok": False, "error": "not found on PATH"}
     try:
         result = subprocess.run(
-            [path, "--version"], capture_output=True, text=True, timeout=timeout,
+            [path, "--version"], capture_output=True, text=True, errors="replace", timeout=timeout,
             stdin=subprocess.DEVNULL, **plat.no_window_kwargs())
         output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
         return {"path": os.path.abspath(path), "version": _version(output),

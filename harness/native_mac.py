@@ -42,7 +42,7 @@ def _osa(script, timeout=_TIMEOUT):
     'execution error -1719' tells a user nothing about what to do next."""
     try:
         r = subprocess.run(["/usr/bin/osascript", "-e", script],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, errors="replace", timeout=timeout)
     except Exception as e:
         return False, "could not run osascript: %s" % e
     out = ((r.stdout or "") + (r.stderr or "")).strip()

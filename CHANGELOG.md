@@ -152,6 +152,17 @@
   the save stayed on disk unchecked and the editor was sent an error. A new test reads the source
   for this kind of mistake (a function-local import that some path reaches before it has run),
   which had also caused the 0.29.1 browser-status 500s.
+- Keep a program's output when it contains a byte that is not valid text. Collie read most tool
+  output as text with no fallback, and one such byte (a latin-1 or GBK source file, say) cost the
+  whole read: on Windows the output silently came back empty, elsewhere the call failed. Code
+  search then reported no matches at all when any match was in such a file, and a coding run's
+  worktree diff came back empty and then crashed the check that looks for a reverted fix. Output
+  is now decoded with a replacement character where needed; git, ripgrep and MCP servers (whose
+  stdio is UTF-8 by the spec) are read as UTF-8 whatever the Windows code page is.
+- Re-apply a reverted fix on Windows. When a coding run in SWE mode undid all of its edits, Collie
+  restores its best diff, but the diff was written to `git apply` in text mode, which turned every
+  line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
+  and re-applied as bytes and comes back exactly.
 
 ## v0.29.1 — Bound startup waits when the clock changes
 

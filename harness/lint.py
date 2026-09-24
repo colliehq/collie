@@ -31,7 +31,8 @@ _CHECKERS = {
 def _run(argv, cwd):
     try:
         from . import plat
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=20,
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                           errors="replace", timeout=20,
                            **plat.no_window_kwargs())
     except Exception:
         return ""

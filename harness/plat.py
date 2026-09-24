@@ -748,7 +748,7 @@ def ask_allow_deny(title: str, message: str, allow: str = "Allow", deny: str = "
                 % (_as_str(message), _as_str(title), _as_str(deny), _as_str(allow),
                    _as_str(allow), timeout))
             out = subprocess.run(["osascript", "-e", script], capture_output=True,
-                                 text=True, timeout=timeout + 15)
+                                 text=True, errors="replace", timeout=timeout + 15)
             if out.returncode != 0:
                 return None                       # cancelled, no window server, or no one there
             # osascript answers `button returned:Allow, gave up:false`. Compare with the spaces
@@ -820,7 +820,8 @@ def to_host_path(p: str) -> str:
     if not is_wsl():
         return p
     try:
-        out = subprocess.run(["wslpath", "-w", p], capture_output=True, text=True).stdout.strip()
+        out = subprocess.run(["wslpath", "-w", p], capture_output=True, text=True,
+                             errors="replace").stdout.strip()
         return out or p
     except Exception:
         return p
