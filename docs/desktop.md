@@ -123,6 +123,14 @@ and `Host`. Its bearer token is distinct from the local Web UI token; the side p
 over loopback rather than exposing the Web token to page JavaScript. Untrusted page content Collie
 reads is fenced as data (prompt-injection defense).
 
+## Updating
+
+*Settings → General → Updates* shows the version you are running and checks GitHub for a newer one
+when you ask (or daily, if you turn that on). On an installer copy, *Install and restart* verifies
+the download, closes Collie, runs Setup silently and brings back the window, wallpaper, browser
+bridge and background services that were running. The page reconnects by itself when Collie is
+back. See [Staying up to date](install.md#staying-up-to-date).
+
 ## Uninstalling
 
 The installer's *Uninstall* entry (or *Add or remove programs*) stops the wallpaper, removes both
