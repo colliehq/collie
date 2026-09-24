@@ -566,10 +566,38 @@ def _jwt_exp(token: str) -> float:
         return 0.0
 
 
+#: Providers that read one of these credential files themselves. Everything else either uses an
+#: API key, or runs a CLI that owns its own login -- on macOS Claude Code keeps it in the Keychain,
+#: so the file below is absent on every Mac whether or not the person is signed in.
+_READS_CREDENTIAL = {
+    "claude-oauth": ("anthropic-oauth", "claude-sub"),
+    "codex-oauth": ("codex-oauth", "codex-sub", "codex"),
+}
+
+
+def _needed_credentials(provider=None) -> set:
+    """Which listed credentials the configured provider cannot work without."""
+    if provider is None:
+        try:
+            from . import settings
+            provider = settings.get("PROVIDER", "") or ""
+        except Exception:
+            provider = ""
+    provider = str(provider or "").strip().lower()
+    return {name for name, readers in _READS_CREDENTIAL.items() if provider in readers}
+
+
 def credential_health(*, now: float | None = None, claude_path: str | None = None,
-                      codex_path: str | None = None) -> list[dict]:
-    """Return credential *metadata* only.  Access/refresh token values never leave this function."""
+                      codex_path: str | None = None, provider: str | None = None) -> list[dict]:
+    """Return credential *metadata* only.  Access/refresh token values never leave this function.
+
+    Both logins are always listed. ``needed`` says whether the configured provider reads that
+    file itself; only a needed credential that is missing or expired makes Collie unhealthy. A
+    person on one subscription used to see "Needs attention" and a recurring "claude-oauth is
+    missing" alert forever for the one they never signed into.
+    """
     now = float(time.time() if now is None else now)
+    needed = _needed_credentials(provider)
     claude_path = claude_path or os.path.expanduser("~/.claude/.credentials.json")
     codex_path = codex_path or os.path.expanduser("~/.codex/auth.json")
     out = []
@@ -605,6 +633,8 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
     else:
         out.append(CredentialStatus(
             "codex-oauth", "missing", action="run `codex login`").as_dict())
+    for row in out:
+        row["needed"] = row["name"] in needed
     return out
 
 
@@ -678,7 +708,8 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
               "notifications": store.notification_health(now=now)}
     failing = [name for name, row in workers.items()
                if not row["fresh"] or row["state"] in ("dead", "failed", "circuit_open")]
-    expired = [row["name"] for row in credentials if row["state"] in ("expired", "missing")]
+    expired = [row["name"] for row in credentials
+               if row.get("needed", True) and row["state"] in ("expired", "missing")]
     notification_pump = beats.get("notification-pump") or {}
     notification_stalled = bool(
         queues["notifications"].get("stale") and
@@ -748,6 +779,8 @@ def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int
     # Notification delivery failures stay in the local doctor/control-center view.  Sending an
     # alert about a broken notification transport through that same transport is self-referential.
     for cred in report.get("credentials") or []:
+        if cred.get("needed") is False:
+            continue          # listed for the operations view; nothing configured reads it
         remaining = cred.get("seconds_remaining")
         if cred.get("state") in ("expired", "missing", "expiring") or (
                 remaining is not None and remaining <= credential_warning_s):

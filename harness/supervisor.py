@@ -588,7 +588,7 @@ def startup_self_check(config: dict, store: OpsStore) -> dict:
         errors.append("worker names are not unique")
     credentials = credential_health()
     for row in credentials:
-        if row["state"] in ("expired", "expiring"):
+        if row.get("needed", True) and row["state"] in ("expired", "expiring"):
             warnings.append("%s is %s" % (row["name"], row["state"]))
     try:
         store.beat("startup-self-check", "failed" if errors else "ok",

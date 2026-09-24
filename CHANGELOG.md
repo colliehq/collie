@@ -17,6 +17,11 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Stop reporting a login you do not use as a problem. Health counted a missing Claude or Codex
+  subscription login as degraded whichever provider was configured, so someone on one subscription
+  (and every Mac, where Claude Code keeps its login in the Keychain) saw *Needs attention* and a
+  recurring "claude-oauth is missing" alert. Only the login the configured provider reads itself
+  now affects health and alerts; both are still listed.
 - Name the reasoning effort an unchosen run will use. With a Default reasoning effort saved in
   Settings, the run menu (desktop and phone) said "Auto by task" while every run used the saved
   level; it now shows *Saved default: High* (or the level saved), refreshes right after that setting

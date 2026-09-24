@@ -235,3 +235,61 @@ def test_remote_notification_survives_disconnect_and_drains_after_reconnect(tmp_
         assert store.db.execute(
             "SELECT state FROM notifications WHERE notification_id=?", (nid,)
         ).fetchone()["state"] == "delivered"
+
+
+# --- only the login the configured provider reads can make Collie unhealthy -------------------
+
+def _creds(tmp_path, *, claude=None, codex=None):
+    claude_path, codex_path = tmp_path / "claude.json", tmp_path / "codex.json"
+    if claude is not None:
+        claude_path.write_text(json.dumps({"claudeAiOauth": claude}), encoding="utf-8")
+    if codex is not None:
+        codex_path.write_text(json.dumps({"tokens": codex}), encoding="utf-8")
+    return str(claude_path), str(codex_path)
+
+
+@pytest.mark.parametrize("provider,needed", [
+    ("codex-oauth", {"codex-oauth"}), ("anthropic-oauth", {"claude-oauth"}),
+    ("claude-agent-sdk", set()), ("claude-cli", set()), ("anthropic", set()), ("", set()),
+])
+def test_credentials_are_marked_needed_only_for_the_provider_that_reads_them(tmp_path, provider, needed):
+    claude, codex = _creds(tmp_path)
+    rows = credential_health(now=1000, claude_path=claude, codex_path=codex, provider=provider)
+    assert {row["name"] for row in rows} == {"claude-oauth", "codex-oauth"}   # both still listed
+    assert {row["name"] for row in rows if row["needed"]} == needed
+
+
+def test_an_unused_missing_login_neither_degrades_health_nor_raises_an_alert(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    claude, codex = _creds(tmp_path, codex={"access_token": _jwt(10_000), "refresh_token": "r"})
+    monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("worker:web", "running", {}, ttl=10, now=100)
+        report = aggregate_health(store, desired_workers=["web"], state_dir=str(tmp_path),
+                                  now=105, probe_services=False)
+        assert report["ok"] is True and report["status"] == "ok"
+        assert any(row["name"] == "claude-oauth" and row["state"] == "missing"
+                   for row in report["credentials"])
+        enqueue_health_alerts(store, report, now=105)
+        kinds = [row["kind"] for row in store.db.execute("SELECT kind FROM notifications")]
+        assert "credential_expiry" not in kinds
+
+
+def test_the_login_the_provider_reads_still_degrades_and_alerts_when_missing(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    claude, codex = _creds(tmp_path)
+    monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("worker:web", "running", {}, ttl=10, now=100)
+        report = aggregate_health(store, desired_workers=["web"], state_dir=str(tmp_path),
+                                  now=105, probe_services=False)
+        assert report["ok"] is False and report["status"] == "degraded"
+        enqueue_health_alerts(store, report, now=105)
+        rows = list(store.db.execute("SELECT kind, body FROM notifications"))
+        assert [row[1] for row in rows if row[0] == "credential_expiry"] == ["codex-oauth is missing"]
