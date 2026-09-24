@@ -1470,10 +1470,11 @@ def _collie_procs():
         if plat.is_windows():
             # ps is absent in ordinary Windows installs (and a WSL ps cannot see native pythonw
             # processes). CIM is the native source of command lines, including windowless apps.
-            script = ("Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | "
-                      "ConvertTo-Json -Compress")
+            script = plat.PS_UTF8_OUTPUT + (
+                "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | "
+                "ConvertTo-Json -Compress")
             r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                               capture_output=True, text=True, errors="replace", timeout=15,
+                               capture_output=True, encoding="utf-8", errors="replace", timeout=15,
                                **plat.no_window_kwargs())
             if r.returncode != 0:
                 return []

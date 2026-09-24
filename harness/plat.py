@@ -137,6 +137,14 @@ def pid_alive(pid) -> bool:
         return False
 
 
+# First line of any Windows PowerShell script whose output Collie reads (after a script file's
+# param() block). Windows PowerShell writes to a pipe in [Console]::OutputEncoding, which starts as
+# the OEM code page (936 on Chinese Windows, 437 on English), not UTF-8 -- so a Chinese window title
+# read back as UTF-8 came out as debris. Measured under a 936 console: "微信 - 窗口标题" arrived as
+# b'\xce\xa2\xd0\xc5 - ...' before this line, and as UTF-8 after it.
+PS_UTF8_OUTPUT = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
+
+
 def no_window_kwargs() -> dict:
     """Popen kwargs that keep a child from flashing a console window.
 

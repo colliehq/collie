@@ -359,7 +359,7 @@ def nowplaying():
     if now - _NP_CACHE["t"] < 3.0:
         return _NP_CACHE["v"]
     _NP_CACHE["t"] = now
-    ps = r'''
+    ps = plat.PS_UTF8_OUTPUT + r'''
 $ErrorActionPreference='SilentlyContinue'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
 function AW($op,$t){ $m=[System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'GetAwaiter' -and $_.GetParameters().Count -eq 1}|select -First 1
@@ -375,7 +375,7 @@ if($s){ $p=AW ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSy
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                            **plat.no_window_kwargs(), timeout=6,
-                           capture_output=True, text=True, errors="replace")
+                           capture_output=True, encoding="utf-8", errors="replace")
         out = (r.stdout or "").strip()
         v = json.loads(out) if out.startswith("{") else None
         if v and not (v.get("title") or v.get("artist")):

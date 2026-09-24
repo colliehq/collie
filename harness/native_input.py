@@ -59,6 +59,7 @@ SMTO_ABORTIFHUNG = 0x0002
 
 _NOWIN = 0x08000000
 _MSAA_PS = r'''
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)   # plat.PS_UTF8_OUTPUT
 $ErrorActionPreference = "Stop"
 $src = @"
 using System;

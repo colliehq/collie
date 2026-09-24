@@ -62,6 +62,7 @@ param(
   [string]$Dock = "None",
   [int]$Max = 60
 )
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)   # plat.PS_UTF8_OUTPUT
 $ErrorActionPreference = "Stop"
 try {
   Add-Type -AssemblyName UIAutomationClient
@@ -480,6 +481,8 @@ def _run(action, match="", pid=0, hwnd=0, index=-1, aid="", name="", control_typ
 def _ps(script, timeout=10):
     """Run a PowerShell snippet, return its trimmed stdout (or '')."""
     try:
+        from . import plat
+        script = plat.PS_UTF8_OUTPUT + script
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
                            creationflags=_NOWIN, timeout=timeout, capture_output=True, text=True,
                            encoding="utf-8", errors="ignore")

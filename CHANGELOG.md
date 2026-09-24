@@ -181,6 +181,12 @@
   running (measured: 20 s for a `sleep 20 &`; forever for a background server). The whole process
   tree is ended now, and the wait after that is bounded. Hook input is also sent as ASCII JSON, so
   non-ASCII text no longer arrives as `?` on Windows code pages that cannot spell it.
+- Read Chinese window titles and control names on Chinese Windows. The desktop tools get window
+  titles, UI Automation names and values from Windows PowerShell, which writes to a pipe in the
+  console's OEM code page (936 there) while Collie reads UTF-8. So every Chinese title came back
+  as debris, and a window such as "微信" could not be found by its name. The same applied to the
+  now-playing title on the wallpaper and to process command lines with non-ASCII paths. These
+  scripts now write UTF-8. Machines whose code page is already UTF-8 were not affected.
 - Find localized cameras and microphones for recording on Windows. ffmpeg prints device names as
   UTF-8, and Collie read them in the system code page, so under the Chinese code page a device
   such as "麦克风 (Realtek(R) Audio)" was listed garbled and could not be opened by that name.
