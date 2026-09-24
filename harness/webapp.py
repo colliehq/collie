@@ -4980,8 +4980,13 @@ class Handler(BaseHTTPRequestHandler):
         # with this header — used to withhold the embedded CSRF token from pages sent to a phone.
         try:
             # Every value, not the first: a relayed phone request must not untag itself by sending
-            # its own X-Collie-Relay ahead of the relay's.
-            return "1" in [str(v).strip() for v in (self.headers.get_all("X-Collie-Relay") or [])]
+            # its own X-Collie-Relay ahead of the relay's. A plain mapping has only the one value.
+            headers = self.headers
+            if hasattr(headers, "get_all"):
+                values = headers.get_all("X-Collie-Relay") or []
+            else:
+                values = [headers.get("X-Collie-Relay")]
+            return "1" in [str(v).strip() for v in values if v is not None]
         except Exception:
             return False
 
