@@ -44,6 +44,12 @@
   Settings, the run menu (desktop and phone) said "Auto by task" while every run used the saved
   level; it now shows *Saved default: High* (or the level saved), refreshes right after that setting
   is saved, and a phone refreshes run options when it is brought back to the screen.
+- Deliver an early refusal instead of a reset connection. The web server answered token and size
+  checks before reading the request body and then closed with that body unread, which resets the
+  connection; on Windows the reset also discards the answer, so a 403 (for example after a restart
+  changed the page token) could reach the browser as a network error. The unread body is now read
+  (up to 8 MB, 2 s) before the connection closes. This was the intermittent `ConnectionAbortedError`
+  (10053) in the full Windows test suite.
 - Load the semantic-memory model from the local cache without asking Hugging Face first. Each
   process that loaded it (every `collie -p` run and Slack task, and a server's first run) made two
   revision checks against huggingface.co (0.2-0.6 s measured, and a wait for a timeout on a slow or

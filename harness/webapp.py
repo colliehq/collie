@@ -1801,6 +1801,33 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_html(body, code, "application/json; charset=utf-8")
 
+    # A request body the handler did not read is still read before the socket closes (see
+    # finish). Closing with unread input makes the OS reset the connection, and on Windows a reset
+    # discards whatever the client had not read yet -- so a 403 answered before the body was read
+    # (every token check comes first) could reach the browser as a network error instead. Measured
+    # as the intermittent ConnectionAbortedError (10053) in the full Windows suite on 2026-09-14.
+    _DRAIN_BODY_MAX = 8 * 1024 * 1024
+    _DRAIN_BODY_TIMEOUT_S = 2.0
+
+    def finish(self):
+        try:
+            declared = int((self.headers.get("content-length") if getattr(self, "headers", None)
+                            else 0) or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        left = declared - int(getattr(self, "_body_consumed", 0) or 0)
+        if 0 < left <= self._DRAIN_BODY_MAX:
+            try:
+                self.connection.settimeout(self._DRAIN_BODY_TIMEOUT_S)
+                while left > 0:
+                    chunk = self.rfile.read(min(left, 65536))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+            except (OSError, ValueError):
+                pass
+        super().finish()
+
     def _read_json(self, maxlen: int = 8192):
         """Read + parse a JSON POST body, or None on any problem (missing/oversize/parse)."""
         try:
@@ -1810,7 +1837,9 @@ class Handler(BaseHTTPRequestHandler):
         if n <= 0 or n > maxlen:
             return None
         try:
-            body = _strict_json_loads(self.rfile.read(n).decode("utf-8") or "{}")
+            raw = self.rfile.read(n)
+            self._body_consumed = n
+            body = _strict_json_loads(raw.decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError):
             return None
         return body if isinstance(body, dict) else None
@@ -1842,12 +1871,15 @@ class Handler(BaseHTTPRequestHandler):
                     drain -= len(chunk)
             except OSError:
                 pass
+            self._body_consumed = n           # drained here, or closed below: finish() must not wait
             if n > 8 * 1024 * 1024:
                 self.close_connection = True
             return None, ("this request is %d bytes; the limit is %d and nothing was "
                           "truncated or accepted" % (n, maxlen)), 413
         try:
-            body = _strict_json_loads(self.rfile.read(n).decode("utf-8") or "{}")
+            raw = self.rfile.read(n)
+            self._body_consumed = n
+            body = _strict_json_loads(raw.decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError):
             return None, "expected a JSON object", 400
         if not isinstance(body, dict):
@@ -1866,6 +1898,7 @@ class Handler(BaseHTTPRequestHandler):
             value = self.rfile.read(n)
         except OSError:
             return None
+        self._body_consumed = n
         return value if len(value) == n else None
 
     def _sse_open(self):

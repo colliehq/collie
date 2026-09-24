@@ -1000,3 +1000,23 @@ def test_public_health_passes_reason_codes_and_nothing_else():
     assert report["credentials"][0]["needed"] is False
     assert report["supervised"] is False
     assert "must not cross" not in json.dumps(report) and "secret task" not in json.dumps(report)
+
+
+def test_an_early_refusal_still_reaches_a_client_sending_a_large_body(web_server):
+    """A 403 answered before the body was read must arrive as a 403, not a reset connection."""
+    import http.client
+    base, _token, _ = web_server
+    host, port = base.rsplit("/", 1)[-1].split(":")
+    body = b'{"action":"x","pad":"' + b"a" * (1024 * 1024) + b'"}'
+    statuses = []
+    for _ in range(8):
+        conn = http.client.HTTPConnection(host, int(port), timeout=15)
+        try:
+            conn.request("POST", "/api/doctor/repair", body=body,
+                         headers={"Content-Type": "application/json"})
+            statuses.append(conn.getresponse().status)
+        except (ConnectionError, OSError) as exc:
+            statuses.append(type(exc).__name__)
+        finally:
+            conn.close()
+    assert statuses == [403] * 8
