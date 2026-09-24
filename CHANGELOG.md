@@ -32,6 +32,12 @@
   `browser_open` may accept nothing but "leave this page?", and that only in a tab Collie opened
   (never discarding unsaved work in a tab you handed over). Needs the reloaded extension (4.1)
   and its debugger access, which the default build has.
+- Say why a browser action failed when the extension in Chrome is older than Collie. Chrome keeps
+  running an unpacked extension until it is reloaded, so after an update each new action came back
+  as a bare "unknown action" -- Live Copilot's page view failed that way on every tick of a session
+  (1706 times in one bridge log). The error now names both versions and says to reload the
+  extension from `chrome://extensions`; Live notes it once, uses a window screenshot, and asks again
+  after ten minutes.
 - Keep a page from closing the untrusted-content fence itself. Page text, and now dialog text, is
   wrapped in markers that tell the model it is data; a page that wrote the closing marker could end
   the fence early and have what followed read as outside it. Copies of the markers inside the

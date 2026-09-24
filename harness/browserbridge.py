@@ -1023,9 +1023,13 @@ def live_tab_observation(timeout=6, max_text=16_000, max_dim=1280):
     if not _bridge_live(timeout=min(timeout, .5)):
         return {}
     try:
-        data = _data(_call({"action": "live_observation",
-                            "max_text": max(1_000, min(int(max_text), 32_000)),
-                            "max_dim": max(640, min(int(max_dim), 1568))}, timeout=timeout)) or {}
+        res = _call({"action": "live_observation",
+                     "max_text": max(1_000, min(int(max_text), 32_000)),
+                     "max_dim": max(640, min(int(max_dim), 1568))}, timeout=timeout)
+        raw = res.get("data") if isinstance(res, dict) else None
+        if isinstance(raw, dict) and raw.get("stale_extension"):
+            return {"unsupported": True, "detail": str(raw.get("error") or "")[:400]}
+        data = _data(res) or {}
     except (TypeError, ValueError):
         return {}
     except Exception:
@@ -1182,6 +1186,10 @@ def _call(cmd, timeout=60):
         return _apple_events(cmd, timeout) or {
             "ok": False, "error": "bridge unreachable (%s). Is the collie extension loaded "
             "in Chrome? chrome://extensions -> Load unpacked -> harness/browser_ext/" % e}
+    data = res.get("data") if isinstance(res, dict) else None
+    if isinstance(data, dict) and str(data.get("error") or "").startswith("unknown action"):
+        data["error"] = _stale_extension_error(str(data["error"]))
+        data["stale_extension"] = True
     # Not handed to Apple Events when the bridge answers "not connected": that route acts in the
     # front tab of the front window, with none of the extension's per-space tab ownership, and a
     # bridge is up precisely where the extension is the expected way in.
@@ -1197,6 +1205,29 @@ def _call(cmd, timeout=60):
                 held.extend(res["dialogs"])
                 del held[:-10]
     return res
+
+
+def _shipped_extension_version():
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext",
+                               "manifest.json"), encoding="utf-8") as fh:
+            return str(json.load(fh).get("version") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _stale_extension_error(error):
+    """An extension that does not know an action is older than this Collie: say how to fix it.
+
+    Chrome keeps running an unpacked extension until it is reloaded, so after an update every new
+    action came back as a bare "unknown action ..." -- Live Copilot's page view failed that way on
+    every tick of a whole session (1706 times in the developer's bridge log) without a word.
+    Starts with the original text, which browser_reload_extension recognises."""
+    loaded = str(_health(timeout=1).get("extension_version") or "") or "an older version"
+    shipped = _shipped_extension_version() or "a newer version"
+    return ("%s: the Collie extension running in Chrome is %s, and this Collie ships %s. Chrome "
+            "keeps running an unpacked extension until it is reloaded -- open chrome://extensions "
+            "and press the reload arrow on the Collie card." % (error.rstrip(". "), loaded, shipped))
 
 
 _DIALOG_KIND = {"alert": "an alert", "confirm": "a confirm box", "prompt": "a prompt box",
