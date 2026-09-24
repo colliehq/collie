@@ -114,7 +114,8 @@ drag Collie to Applications, and open it normally.
 **Staying current.** *Settings → General → Updates* checks GitHub for a newer release when you ask
 (or daily, once you turn that on) and shows its notes. On Windows it installs with one press after
 verifying the download; elsewhere it tells you how (the release page for the macOS app,
-`brew upgrade collie`, or `collie update --yes` for pip).
+`brew upgrade collie`, or `collie update --yes` for pip). Reload the Collie browser extension once in
+`chrome://extensions` afterwards; Chrome keeps the old copy until then, and Settings says so.
 
 **Linux and developers — pip.** The core is stdlib-only, so the base install is tiny:
 
