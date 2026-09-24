@@ -5483,6 +5483,10 @@
       if (mine !== updateSeq || updateWait) return;   // a newer read, or the restart watch, owns it
       updateRender(d);
       if (d.checking) setTimeout(function () { if (mine === updateSeq) updateLoad(); }, 4000);
+      // Installing from another window: the server only reports these states for an install it
+      // is running itself, so this page rides out the same restart instead of going stale.
+      var st = (d.install || {}).state;
+      if (st === "running" || st === "handed_off") updateWatchRestart(d.current);
     }).catch(function () {});
   }
   function updatePost(action, body) {

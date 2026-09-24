@@ -192,3 +192,12 @@ def test_the_mac_app_is_pointed_at_the_release_page_not_a_missing_command(ui):
     s.general()
     expect(s.box).to_contain_text("Download it from the release page and replace Collie in Applications.")
     expect(s.box.locator(".upd-cmd")).to_have_count(0)
+
+
+def test_a_second_window_follows_an_install_started_elsewhere(ui):
+    handed = answer(install={"state": "handed_off", "target": "0.30.0"})
+    s = Updates(ui, handed)
+    s.gets = [handed, handed, "down", (403, {"error": "forbidden"})]
+    s.open()
+    # No click here: the page saw an install in progress and waits for the restart by itself.
+    ui.page.wait_for_function("() => !window.__stillTheSamePage", timeout=15000)
