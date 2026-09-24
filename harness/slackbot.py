@@ -2186,7 +2186,7 @@ def _plist(label: str, argv: list, cwd: str, log: str) -> str:
 
 
 def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str = "",
-                          autonomy: str = "", presence_url: str = "") -> int:
+                          autonomy: str = "", presence_url: str = "", allow: str = "") -> int:
     """The macOS half: a LaunchAgent, which is what a per-user background job is here.
 
     No wrapper script, unlike Windows: launchd takes an argv and two log paths directly, so the
@@ -2196,8 +2196,8 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
     label, path = _agent_label(name), _agent_path(name)
     log = os.path.expanduser("~/.collie/slack-%s.log" % _agent_label(name).rsplit(".", 1)[-1])
     argv = [sys.executable, "-m", "harness.cli", "slack", "--name", name, "--cwd", cwd]
-    for flag, v in (("--channels", channels), ("--provider", provider), ("--autonomy", autonomy),
-                    ("--presence-url", presence_url)):
+    for flag, v in (("--channels", channels), ("--allow", allow), ("--provider", provider),
+                    ("--autonomy", autonomy), ("--presence-url", presence_url)):
         if v:
             argv += [flag, v]
     # Announce on every start would post a greeting on every wake and every crash-restart. The
@@ -2244,7 +2244,7 @@ def _uninstall_launch_agent(name: str) -> int:
 
 
 def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "",
-                      autonomy: str = "", presence_url: str = "") -> int:
+                      autonomy: str = "", presence_url: str = "", allow: str = "") -> int:
     """Bring this dog back after a restart.
 
     A dog started from a terminal dies with the terminal, which is how one sat silent through a
@@ -2262,7 +2262,8 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     from . import plat
     if not plat.is_windows():
         if sys.platform == "darwin":
-            return _install_launch_agent(name, cwd, channels, provider, autonomy, presence_url)
+            return _install_launch_agent(name, cwd, channels, provider, autonomy, presence_url,
+                                         allow)
         print("collie slack --install-autostart has no Linux form yet "
               "(a systemd --user unit is the shape it wants).", file=sys.stderr)
         return 2
@@ -2271,6 +2272,10 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     argv = ["slack", "--name", name, "--cwd", cwd]
     if channels:
         argv += ["--channels", channels]
+    # Who may command this dog. Leaving it out of the launcher widened a dog restricted to one
+    # person to "anyone in them" at the next logon, silently -- the same hole autonomy had.
+    if allow:
+        argv += ["--allow", allow]
     if provider:
         argv += ["--provider", provider]
     # Autonomy too, when it was stated. Every other flag the person typed is written into the
@@ -2362,7 +2367,7 @@ def main(argv=None) -> int:
         return uninstall_autostart(args.name or "collie")
     if args.install_autostart:
         return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider,
-                                 args.autonomy, args.presence_url)
+                                 args.autonomy, args.presence_url, args.allow)
 
     # The kennel first, the environment second. A pack means several dogs with several pairs of
     # tokens, and one pair of environment variables cannot hold them — but an env var still wins

@@ -305,13 +305,20 @@ def load_config(path: str | None = None, *, python: str | None = None) -> dict:
     # releases can add privacy-idle workers such as ambient. Merge only missing
     # generated workers, preserving every existing worker setting.
     root = state_dir(value.get("state_dir") or os.path.dirname(path))
-    known = {item["name"] for item in value["workers"]}
+    known = {item["name"]: item for item in value["workers"]}
     generated = default_config(root, python or sys.executable)
     for item in generated["workers"]:
         if ((item["name"].startswith("slack-") or item["name"] == "ambient") and
                 item["name"] not in known):
             value["workers"].append(item)
-            known.add(item["name"])
+            known[item["name"]] = item
+        elif item["name"].startswith("slack-") and item["argv"] != known[item["name"]]["argv"]:
+            # The dog's launcher is where `collie slack --install-autostart` records what the
+            # person asked for; this copy was taken once, when supervisor.json was created. A
+            # launcher re-installed with --allow afterwards left the supervised dog answering
+            # "anyone in them" (measured on the developer machine). Follow the launcher's command
+            # line; every other setting of the worker stays as it is.
+            known[item["name"]]["argv"] = list(item["argv"])
     return value
 
 

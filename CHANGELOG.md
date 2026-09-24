@@ -18,6 +18,11 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Keep a Slack dog restricted to the people you named after a restart. `collie slack
+  --install-autostart` dropped `--allow` from the launcher (Windows) and LaunchAgent (macOS), and the
+  supervisor kept the command line it copied from a launcher when `supervisor.json` was first
+  created, so a dog re-installed with `--allow` could come back answering anyone in its channels.
+  The launcher now records `--allow`, and the supervised dog follows its current launcher.
 - Say why the runtime needs attention. Settings → General now names the first reason (a login
   that is missing or expired with the command that fixes it, a background service that stopped or
   is not reporting, work waiting for a recovery decision) and how many more, with *Details*
