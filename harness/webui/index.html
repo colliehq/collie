@@ -4151,6 +4151,11 @@
     "Use the reasoning level selected in Settings":"使用设置中选择的推理强度",
     "Inbox":"收件箱","{n} waiting":"{n} 项待处理",
     // Collie updates (Settings → General)
+    "updates can only be installed from this computer":"更新只能在这台电脑上安装",
+    "this copy of Collie is updated with a command: collie update --yes":"这份 Collie 需要用命令更新：collie update --yes",
+    "the release shown is no longer the latest; check again first":"显示的版本已不是最新版，请先重新检查",
+    "an update is already being installed":"已有一个更新正在安装",
+    "the installer is already waiting to run; Collie will restart":"安装程序已在等待运行，Collie 会自行重启",
     "checked just now":"刚刚检查过",
     "checked {n} min ago":"{n} 分钟前检查",
     "checked {n} h ago":"{n} 小时前检查",
@@ -4424,6 +4429,11 @@
     "Use the reasoning level selected in Settings":"使用設定中選擇的推理強度",
     "Inbox":"收件匣","{n} waiting":"{n} 項待處理",
     // Collie updates (Settings → General)
+    "updates can only be installed from this computer":"更新只能在這台電腦上安裝",
+    "this copy of Collie is updated with a command: collie update --yes":"這份 Collie 需要用命令更新：collie update --yes",
+    "the release shown is no longer the latest; check again first":"顯示的版本已不是最新版，請先重新檢查",
+    "an update is already being installed":"已有一個更新正在安裝",
+    "the installer is already waiting to run; Collie will restart":"安裝程式已在等待執行，Collie 會自行重新啟動",
     "checked just now":"剛剛檢查過",
     "checked {n} min ago":"{n} 分鐘前檢查",
     "checked {n} h ago":"{n} 小時前檢查",
@@ -5414,7 +5424,7 @@
     }).then(function (res) {
       if (mine !== updateSeq) return null;
       if (!res.ok) {
-        updateRender(res.d && res.d.update, (res.d && res.d.error) || t("could not apply"));
+        updateRender(res.d && res.d.update, (res.d && res.d.error) ? t(res.d.error) : t("could not apply"));
         return null;
       }
       updateRender(res.d);

@@ -173,3 +173,15 @@ def test_turning_on_automatic_checks_saves_and_rereads_the_notice(ui):
     expect(s.status).to_have_class("set-status ok")
     assert s.posts == [{"UPDATE_CHECK": "on"}]
     expect(s.line).to_have_text("Checking for updates…")
+
+
+def test_a_refused_install_reads_in_chinese_too(ui):
+    s = Updates(ui, NEWER)
+    s.values["LANG"] = "zh"
+    s.open()
+    s.general()
+    s.post_answers["install"] = (409, {"error": "the release shown is no longer the latest; check again first",
+                                       "update": answer(latest="0.30.1")})
+    s.box.get_by_role("button", name="安装 0.30.0 并重启").click()
+    expect(s.line).to_have_text("显示的版本已不是最新版，请先重新检查")
+    expect(s.box.get_by_role("button", name="安装 0.30.1 并重启")).to_be_visible()
