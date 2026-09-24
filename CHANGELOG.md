@@ -40,7 +40,8 @@
   after ten minutes.
 - Retry a model request whose connection Windows reports as reset. The retry patterns knew the
   POSIX wording only, so "An existing connection was forcibly closed by the remote host" (WinError
-  10054) and the 10053 abort were read as unrecognised and fatal; a real run stopped on the first.
+  10054), the 10053 abort and the 10060 connect timeout were read as unrecognised and fatal; a real
+  run stopped on the first.
 - Say what an overflow failure was. A run whose conversation was still too long after its one
   shrink-and-retry ended with the note meant for unrecognised errors ("matches no known pattern");
   it now says the conversation was still too long after it was shrunk, or that recovery is off.
