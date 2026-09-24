@@ -117,3 +117,59 @@ def test_file_hooks_require_exact_hash_review(monkeypatch, tmp_path):
     hook_file.write_text(hook_file.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     changed = HookManager(str(tmp_path))
     assert not changed.active and changed.pending, "changed hook bytes must require re-review"
+
+
+def _count(path):
+    return path.read_text(encoding="utf-8").count("alive") if path.exists() else 0
+
+
+def test_a_timed_out_hook_ends_what_outlived_its_shell(tmp_path):
+    # When the shell has already exited, taskkill /T cannot find what it left behind; the Job
+    # (Windows) or the process group (POSIX) still owns it.
+    import time
+    from harness import plat
+    if plat.is_windows() and not plat.posix_shell():
+        import pytest
+        pytest.skip("needs a POSIX shell to background a process")
+    marker = tmp_path / "marker.txt"
+    command = "(sleep 3; echo alive >> '%s') & exit 0" % str(marker).replace("\\", "/")
+    hooks = HookManager(str(tmp_path), [_config("PreToolUse", command, "bash", timeout=1)])
+    result = hooks.dispatch("PreToolUse", {"tool_name": "bash"}, subject="bash")
+    assert result.receipts[0]["timed_out"] is True
+    time.sleep(4.5)
+    assert _count(marker) == 0, "a process the timed-out hook left behind kept running"
+
+
+def test_an_interrupted_hook_is_not_left_running(tmp_path, monkeypatch):
+    # subprocess.run killed its child on any exception; a bare Popen did not, so Ctrl-C during a
+    # hook left the hook running (and, in its own session, out of the terminal's reach).
+    import subprocess
+    import pytest
+    from harness import hooks as hooks_mod
+    started = []
+
+    class Interrupted(subprocess.Popen):
+        def communicate(self, *a, **kw):
+            if not started:
+                started.append(self)
+                raise KeyboardInterrupt
+            return super().communicate(*a, **kw)
+
+    monkeypatch.setattr(hooks_mod.subprocess, "Popen", Interrupted)
+    command = _script(tmp_path, "import time\ntime.sleep(30)\n")
+    hooks = HookManager(str(tmp_path), [_config("PreToolUse", command, "bash", timeout=60)])
+    with pytest.raises(KeyboardInterrupt):
+        hooks.dispatch("PreToolUse", {"tool_name": "bash"}, subject="bash")
+    assert started and started[0].poll() is not None, "the hook is still running"
+
+
+def test_a_payload_that_cannot_be_sent_starts_nothing(tmp_path):
+    marker = tmp_path / "ran.txt"
+    command = _script(tmp_path, "open(%r, 'w').write('ran')\n" % str(marker))
+    hooks = HookManager(str(tmp_path), [_config("PostToolUse", command, "bash")])
+    result = hooks.dispatch("PostToolUse", {"tool_name": "bash", "bad": object()},
+                            subject="bash")
+    assert "hook failed" in result.receipts[0]["reason"]
+    import time
+    time.sleep(2)                     # long enough for a hook that did start to have written
+    assert not marker.exists(), "the hook ran although its payload could not be sent"

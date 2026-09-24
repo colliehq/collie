@@ -118,13 +118,17 @@ class _Utf8ElseAnsiDecoder(codecs.IncrementalDecoder):
             out.append(_decode_line(rest, self.errors))
             rest = b""
         elif len(rest) >= _LONG_LINE_BYTES:
-            utf8 = codecs.getincrementaldecoder("utf-8")()
-            try:
-                out.append(utf8.decode(rest))
-                rest = utf8.getstate()[0]           # an incomplete character waits for the rest
-            except UnicodeDecodeError:
-                out.append(rest.decode(_ansi(), self.errors))
-                rest = b""
+            # Cut on a character boundary in whichever encoding the piece is in: a double-byte
+            # (936, 932) lead byte left at the cut used to become U+FFFD and pair every later
+            # byte of the line with the wrong neighbour.
+            for encoding, errors in (("utf-8", "strict"), (_ansi(), self.errors)):
+                piece = codecs.getincrementaldecoder(encoding)(errors)
+                try:
+                    out.append(piece.decode(rest))
+                except UnicodeDecodeError:
+                    continue
+                rest = piece.getstate()[0]          # an incomplete character waits for the rest
+                break
         self._pending = rest
         return "".join(out)
 

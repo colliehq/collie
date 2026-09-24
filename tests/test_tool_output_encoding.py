@@ -87,3 +87,14 @@ def test_a_real_command_mixing_both(monkeypatch, tmp_path):
     assert out.status == tp.OK, out
     assert out.stdout.replace("\r\n", "\n") == ZH + " utf8\n" + ZH + " gbk\n"
     assert out.stderr.replace("\r\n", "\n") == ZH + " err\n"
+
+
+def test_a_huge_line_in_a_double_byte_code_page_stays_paired(monkeypatch):
+    # Past 64 KB a line is released in pieces; a GBK lead byte left at a cut became U+FFFD and
+    # paired every later byte of the line with the wrong neighbour (7233 of 40002 characters).
+    monkeypatch.setattr(tp, "_ansi", lambda: "gbk")
+    d = codecs.getincrementaldecoder(tp.OUTPUT_CODEC)("replace")
+    line = ("中" * 20001 + "兄" * 20001).encode("gbk") + b"\n"
+    got = [d.decode(line[i:i + 8191]) for i in range(0, len(line), 8191)]
+    got.append(d.decode(b"", final=True))
+    assert "".join(got) == "中" * 20001 + "兄" * 20001 + "\n"

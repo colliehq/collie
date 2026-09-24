@@ -796,7 +796,7 @@ _JUNK_UNTRACKED = ("__pycache__", ".pyc", "venv/", ".venv/", "node_modules/",
                    ".egg-info", ".dist-info", ".pytest_cache")
 
 
-def _tree_diff(cwd):
+def _tree_diff(cwd, binary=True):
     """Net worktree diff vs HEAD (tracked files — the shape of a code fix). '' on non-git/error,
     which also disarms the whole guard: no snapshot -> no nudge -> no restore."""
     try:
@@ -808,8 +808,11 @@ def _tree_diff(cwd):
         # folded CRLF to LF, so a CRLF file's diff no longer matched the file.
         # Pinned format, whatever the user's config says: color.diff=always, an external diff
         # tool or diff.noprefix all produced a "diff" git apply could not take back.
-        r = subprocess.run(["git", "diff", "--no-color", "--no-ext-diff", "--binary",
-                            "--src-prefix=a/", "--dst-prefix=b/", "HEAD"],
+        # binary: what _apply_diff needs to restore a binary file; a reader (the critic, which
+        # sees the first 9000 characters) is better off without the base85.
+        r = subprocess.run(["git", "diff", "--no-color", "--no-ext-diff"]
+                           + (["--binary"] if binary else [])
+                           + ["--src-prefix=a/", "--dst-prefix=b/", "HEAD"],
                            cwd=cwd, capture_output=True, timeout=30,
                            **_plat.no_window_kwargs())
         return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else ""
@@ -3468,7 +3471,8 @@ class Harness:
                         and not shared_exhausted and not local_exhausted):
                     # For reading, not re-applying: bytes that are not UTF-8 become U+FFFD here
                     # rather than lone surrogates, which a request body cannot encode.
-                    _cdiff = _tree_diff(self.cwd).encode("utf-8", "surrogateescape").decode(
+                    _cdiff = _tree_diff(self.cwd, binary=False).encode(
+                        "utf-8", "surrogateescape").decode(
                         "utf-8", "replace")
                     if _cdiff:
                         _ok, _obj = (self.critic_fn(self.critic_issue, _cdiff, self.cwd)

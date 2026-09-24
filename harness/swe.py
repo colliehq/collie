@@ -118,12 +118,19 @@ def make_patch(workdir: str, max_len: int = 200_000) -> str:
     *.py hunks only if something still bloated the diff.
     """
     def _staged_diff():
-        # Bytes, decoded strictly and with no newline translation: the prediction is scored by
-        # applying it, so a CRLF folded to LF or a byte turned into U+FFFD would score a patch
-        # the agent never wrote. A diff that is not UTF-8 fails loudly instead.
-        r = subprocess.run(["git", "diff", "--cached", "--no-color", "--no-ext-diff"],
+        # Bytes, with no newline translation: the prediction is scored by applying it, so a CRLF
+        # folded to LF would score a patch the agent never wrote. A diff that is not UTF-8 cannot
+        # be a str exactly; refusing it left the instance with no prediction on every retry, so
+        # it is kept with U+FFFD for those bytes, and said so.
+        r = subprocess.run(["git", "diff", "--cached", "--no-color", "--no-ext-diff",
+                            "--src-prefix=a/", "--dst-prefix=b/"],
                            cwd=workdir, capture_output=True, check=True, timeout=600)
-        return r.stdout.decode("utf-8")
+        try:
+            return r.stdout.decode("utf-8")
+        except UnicodeDecodeError as e:
+            print("  WARN make_patch: the diff is not UTF-8 (%s); bytes that are not are "
+                  "replaced with U+FFFD in the prediction" % e, flush=True)
+            return r.stdout.decode("utf-8", "replace")
 
     _git(["add", "-A", "--", "."] + _JUNK_PATHSPEC, cwd=workdir, check=False)
     patch = _staged_diff()

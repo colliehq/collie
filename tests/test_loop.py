@@ -252,7 +252,7 @@ def test_successful_critic_review_allows_completion(monkeypatch):
     from harness.providers import Completion, ToolCall
 
     reviews = []
-    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd: "diff --git a/result.txt b/result.txt\n")
+    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd, **_kw: "diff --git a/result.txt b/result.txt\n")
     with tempfile.TemporaryDirectory(prefix="critic_success_") as cwd:
         path = os.path.join(cwd, "result.txt")
         h = make_harness(cwd, provider="mock", project="critic_success", embed="hash")

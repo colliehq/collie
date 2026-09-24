@@ -466,6 +466,27 @@ def test_execute_code_routes_recursion_guard_through_broker():
     assert [name for name, _args in brokered] == ["execute_code", "delegate"], (
         "nested amplification denials must traverse the auditable host broker")
 
+def test_execute_code_writes_its_script_as_utf8(monkeypatch):
+    # Python reads a source file as UTF-8; the script was written in the locale code page, so
+    # under 1252 a non-ASCII script failed to write and under 936 it was a SyntaxError.
+    import tempfile as _tf
+    from harness import progtool
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    assert all(ord(c) < 128 for c in progtool._PREAMBLE), "keep the preamble ASCII"
+    seen, real = [], _tf.NamedTemporaryFile
+
+    def recording(*a, **kw):
+        seen.append(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(progtool.tempfile, "NamedTemporaryFile", recording)
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    out = reg.get("execute_code").run({"code": '# 注释\nprint("ok 中文")', "timeout": 20},
+                                      _ctx(os.getcwd()))
+    assert "ok 中文" in out and seen and seen[-1].get("encoding") == "utf-8", (out, seen)
+
 def test_execute_code_prints_non_ascii_whatever_the_code_page():
     # The host reads the script's pipes as UTF-8, and -I ignores PYTHONIOENCODING, so the script
     # used the ANSI code page: "中文" came back as U+FFFD under 936 and raised

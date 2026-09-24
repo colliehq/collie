@@ -179,7 +179,8 @@
 - Stop a timed-out hook from stalling the run. On a timeout only the hook's shell was killed, and
   on Windows Collie then waited for its output for as long as anything the hook had started kept
   running (measured: 20 s for a `sleep 20 &`; forever for a background server). The whole process
-  tree is ended now, and the wait after that is bounded. Hook input is also sent as ASCII JSON, so
+  tree is ended now (on Windows through a Job, which also reaches what outlived the hook's shell),
+  on a timeout and when the wait is interrupted, and the wait after that is bounded. Hook input is also sent as ASCII JSON, so
   non-ASCII text no longer arrives as `?` on Windows code pages that cannot spell it.
 - Read Chinese window titles and control names on Chinese Windows. The desktop tools get window
   titles, UI Automation names and values from Windows PowerShell, which writes to a pipe in the
@@ -201,7 +202,7 @@
   line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
   and re-applied as bytes and comes back exactly, whatever the user's diff settings. `run_in_env`
   had the same problem with the patch it hands the container, and a SWE prediction patch now keeps
-  its line endings and bytes, or fails, instead of being quietly changed.
+  its line endings, and says so when bytes that are not UTF-8 had to be replaced.
 
 ## v0.29.1 — Bound startup waits when the clock changes
 

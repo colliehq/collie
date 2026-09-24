@@ -9,8 +9,8 @@ by a test that only takes the common path, so this reads the source instead.
 
 A use counts as safe when an import (or assignment) of the name comes before it in the same
 statement list or an enclosing one; when it sits in the true branch of an `if` (or a conditional
-expression) with the same test as the `if` whose true branch holds the import, and that `if` is a
-later sibling of the import's; or when it is in an except clause, one that cannot catch the
+expression) with the same test as the `if` whose true branch holds the import, and that `if` is,
+or sits inside, a later sibling of the import's; or when it is in an except clause, one that cannot catch the
 import's own failure, of a `try` whose first statement is the import. It does not notice the
 guard's variable being reassigned in between.
 """
@@ -139,10 +139,20 @@ def _guard_of(imp, fn, parent):
 
 
 def _same_guard(stmt, test, guards, parent):
-    """Is stmt a later sibling of an `if` with this same test that imported the name?"""
-    slot = _slot(stmt, parent)
-    return bool(slot) and any(g[0] == test and g[1] is slot[0] and slot[1] > g[2]
-                              for g in guards)
+    """Does stmt sit in (or inside) a later sibling of an `if` with this same test that imported
+    the name? Inside, because `for x in xs: if a: plat.x(x)` after `if a: import plat` is safe."""
+    for g in guards:
+        if g[0] != test:
+            continue
+        node = stmt
+        while node in parent:
+            slot = _slot(node, parent)
+            if slot and slot[0] is g[1]:
+                if slot[1] > g[2]:
+                    return True
+                break
+            node = parent[node]
+    return False
 
 
 _CATCHES_IMPORT = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
@@ -265,6 +275,9 @@ def test_checker_accepts_the_safe_shapes():
           "        n = _dt.now()\n"
           "    if a.b != 'x':\n"
           "        return t(n)\n"
+          "    for x in s:\n"
+          "        if a.b != 'x':\n"
+          "            t(x)\n"
           "    def g(plat):\n"
           "        return plat\n")
     assert unsafe_uses(ok) == []

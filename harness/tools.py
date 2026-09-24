@@ -680,7 +680,8 @@ class RunInEnvTool(Tool):
         # `git apply` in the container never applied the edits being tested.
         try:
             diff = subprocess.run(["git", "-C", ctx.cwd, "diff", "--no-color", "--no-ext-diff",
-                                   "--binary"], capture_output=True, timeout=30,
+                                   "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+                                  capture_output=True, timeout=30,
                                   **plat.no_window_kwargs()).stdout or b""
         except Exception:
             diff = b""

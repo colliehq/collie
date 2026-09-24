@@ -180,9 +180,11 @@ def test_swe_prediction_patch_is_exact_or_refused(tmp_path):
     subprocess.run(["git", "-C", str(tmp_path), "apply", "-"], input=patch.encode("utf-8"),
                    check=True, capture_output=True)
     assert f.read_bytes() == b"x = 1\r\ny = 2\r\n"
+    # Not UTF-8: kept, with U+FFFD for those bytes and a warning. Refusing it left the
+    # instance with no prediction on every retry.
     f.write_bytes(b"x = 1\r\n# caf\xe9\r\n")
-    with pytest.raises(UnicodeDecodeError):
-        swe.make_patch(str(tmp_path))
+    patch = swe.make_patch(str(tmp_path))
+    assert "+# caf\ufffd\r\n" in patch
 
 
 def test_run_in_env_hands_the_container_the_exact_diff(tmp_path, monkeypatch):
@@ -215,3 +217,20 @@ def test_run_in_env_hands_the_container_the_exact_diff(tmp_path, monkeypatch):
     tools.RunInEnvTool().run({"command": "python -c 'print(1)'"},
                              types.SimpleNamespace(cwd=str(tmp_path)))
     assert handed and handed[-1] == expected and b"\r\n" not in handed[-1]
+
+
+def test_the_critic_reads_source_hunks_not_base85(tmp_path):
+    # The critic sees the first 9000 characters; a changed binary file ahead of the source used
+    # to fill them with base85. The restore copy still carries it.
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    (tmp_path / "a.bin").write_bytes(bytes(range(256)) * 40)
+    (tmp_path / "src.py").write_bytes(b"x = 1\n")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    (tmp_path / "a.bin").write_bytes(bytes(reversed(range(256))) * 40)
+    (tmp_path / "src.py").write_bytes(b"x = 2\n")
+    assert "GIT binary patch" in loop._tree_diff(str(tmp_path))
+    reading = loop._tree_diff(str(tmp_path), binary=False)
+    assert "GIT binary patch" not in reading and "+x = 2" in reading[:9000]
