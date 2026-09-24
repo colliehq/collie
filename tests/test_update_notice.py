@@ -407,3 +407,38 @@ def test_the_cli_installs_one_update_at_a_time(monkeypatch, tmp_path, capsys):
     finally:
         held.close()
     assert "Another Collie update is already running" in capsys.readouterr().err
+
+
+def test_the_cli_refuses_while_collie_setup_is_already_running(monkeypatch, tmp_path, capsys):
+    from harness import cli
+    monkeypatch.setenv("USERPROFILE", str(tmp_path)); monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(update, "check", lambda channel: {
+        "current": "0.29.1", "latest": "0.30.0", "newer": True, "channel": "stable",
+        "kind": "setup", "notes": "", "url": "", "assets": {"Collie-Setup.exe": "x"}, "digests": {}})
+    monkeypatch.setattr(update, "setup_running", lambda: True)
+    monkeypatch.setattr(update, "_download", lambda *a, **k: pytest.fail("downloaded"))
+    assert cli.cmd_update(_cli_args()) == 4
+    assert "Collie Setup is already running" in capsys.readouterr().err
+
+
+def test_each_download_gets_its_own_folder(monkeypatch, tmp_path):
+    from harness import cli
+    monkeypatch.setenv("USERPROFILE", str(tmp_path)); monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(update, "check", lambda channel: {
+        "current": "0.29.1", "latest": "0.30.0", "newer": True, "channel": "stable",
+        "kind": "setup", "notes": "", "url": "", "assets": {"Collie-Setup.exe": "x"}, "digests": {}})
+    monkeypatch.setattr(update, "setup_running", lambda: False)
+    dests = []
+    monkeypatch.setattr(update, "_download", lambda url, dest, progress=None: dests.append(dest))
+    monkeypatch.setattr(update, "apply_windows", lambda *a, **k: (False, "stop here"))
+    cli.cmd_update(_cli_args()); cli.cmd_update(_cli_args())
+    assert len(dests) == 2 and dests[0] != dests[1]
+    assert all(os.path.basename(d) == "Collie-Setup.exe" for d in dests)
+
+
+def test_setup_running_reads_the_process_list(monkeypatch):
+    monkeypatch.setattr("harness.plat.is_windows", lambda: True)
+    found = lambda *a, **k: types.SimpleNamespace(stdout='"Collie-Setup.exe","4242","Console"\n')
+    none = lambda *a, **k: types.SimpleNamespace(stdout="INFO: No tasks are running which match.\n")
+    assert update.setup_running(runner=found) is True
+    assert update.setup_running(runner=none) is False

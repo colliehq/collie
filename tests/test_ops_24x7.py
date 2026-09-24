@@ -8,6 +8,12 @@ from harness.ops import (NotificationPump, OpsStore, OutboxFull, RotatingLog,
                          remote_notification_sender)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_claude_token(monkeypatch):
+    # A token sign-in in the environment running these tests would change what counts as missing.
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+
 def _jwt(exp):
     enc = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
     return "%s.%s.x" % (enc({"alg": "none"}), enc({"exp": exp}))
@@ -361,4 +367,19 @@ def test_on_macos_the_keychain_login_is_not_judged_by_a_file(tmp_path, monkeypat
     claude, codex = _creds(tmp_path)
     rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
                                                      provider="claude-agent-sdk")}
+    assert rows["claude-oauth"]["needed"] is False
+
+
+def test_a_token_sign_in_or_the_macos_keychain_is_not_a_missing_login(tmp_path, monkeypatch):
+    from harness import ops
+    claude, codex = _creds(tmp_path)
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-setup-token")
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="claude-cli")}
+    assert rows["claude-oauth"]["state"] == "missing" and rows["claude-oauth"]["needed"] is False
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    monkeypatch.setattr(ops.sys, "platform", "darwin")
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="anthropic-oauth")}
     assert rows["claude-oauth"]["needed"] is False

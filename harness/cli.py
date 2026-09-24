@@ -1247,7 +1247,9 @@ def _install_update(up, info, kind, assets, digests):
     """The download-verify-install half of cmd_update, run under its update lock."""
 
     def _fetch(name):
-        dest = os.path.join(tempfile.gettempdir(), name)
+        # A folder of its own: the lock ends when this process hands off, while Setup may still be
+        # about to run the file it verified -- a later download must never overwrite that file.
+        dest = os.path.join(tempfile.mkdtemp(prefix="collie-update-"), name)
         print("\n  downloading %s …" % name)
         last = [0]
 
@@ -1260,6 +1262,10 @@ def _install_update(up, info, kind, assets, digests):
         up._download(assets[name], dest, prog)
         return dest
 
+    if kind == "setup" and up.setup_running():
+        print("Collie Setup is already running; nothing installed. Try again when it finishes.",
+              file=sys.stderr)
+        return 4
     if kind == "brew":
         ok, why = up.apply_brew()
     elif kind == "setup":

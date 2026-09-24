@@ -661,6 +661,18 @@ def _restart_script(part, root):
     return ""
 
 
+def setup_running(runner=subprocess.run):
+    """Whether a Collie Setup process is running now (Windows; False elsewhere or if unknown)."""
+    if not plat.is_windows():
+        return False
+    try:
+        out = runner(["tasklist.exe", "/FI", "IMAGENAME eq Collie-Setup.exe", "/NH", "/FO", "CSV"],
+                     capture_output=True, text=True, timeout=10, **plat.no_window_kwargs()).stdout
+    except Exception:
+        return False
+    return "collie-setup.exe" in (out or "").lower()
+
+
 def apply_windows(exe, digest, on_note=print, target_version=""):
     """Re-run Collie-Setup.exe over the existing install. Returns (ok, detail).
 

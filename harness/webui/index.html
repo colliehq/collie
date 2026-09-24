@@ -5531,7 +5531,7 @@
         if (!d) return;
         if (d.current !== from) { location.reload(); return; }
         var st = (d.install || {}).state;
-        if (st === "failed" || st === "unconfirmed" || st === "none") {
+        if (st === "failed" || st === "unconfirmed" || st === "none" || st === "installed") {
           clearInterval(updateWait); updateWait = null; updateRender(d); return;
         }
         updateRender(d, seenDown ? t("Installing… Collie is restarting.") : "");

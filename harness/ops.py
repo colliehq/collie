@@ -655,6 +655,11 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
         row["needed"] = row["name"] in needed or row["name"] in self_refreshing
         if row["name"] in self_refreshing:
             row["self_refreshing"] = True
+        if row["name"] == "claude-oauth" and row["state"] == "missing" and (
+                sys.platform == "darwin" or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")):
+            # Absent file, not absent login: macOS keeps Claude's sign-in in the Keychain, and
+            # `claude setup-token` signs in through CLAUDE_CODE_OAUTH_TOKEN with no file at all.
+            row["needed"] = False
     return out
 
 
