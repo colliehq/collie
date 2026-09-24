@@ -11,8 +11,89 @@ before the test runs, so modules stay isolated regardless of import order.
 import functools
 import inspect
 import os
+import shutil
+import tempfile
 
 import pytest
+
+#: The suite's home directory, set before any test module imports harness. More than a dozen
+#: harness modules resolve paths under ~/.collie at import time (checkpoints, MCP tokens, Slack
+#: identity, the UIA driver, the settings file...), most with no env override, so a suite run
+#: wrote into the real one: 10,753 checkpoint files had piled up in a developer's
+#: ~/.collie/checkpoints, and a web test rewrote the desktop star-map's last-opened repository.
+#: A copy of the real ~/.gitconfig keeps git's behaviour (core.autocrlf and the like) without
+#: letting a test write to it.
+REAL_HOME = os.path.expanduser("~")
+TEST_HOME = tempfile.mkdtemp(prefix="collie-test-home-")
+# Caches the suite reads but must not re-download: Playwright's browsers live under the home on
+# macOS and Linux (Windows keeps them in %LOCALAPPDATA%, which does not move), and so does the
+# Hugging Face model cache everywhere. Pin their real locations before the home moves.
+if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ and os.name != "nt":
+    import sys as _sys
+    _pw = (os.path.join(REAL_HOME, "Library", "Caches", "ms-playwright") if _sys.platform == "darwin"
+           else os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(REAL_HOME, ".cache"),
+                             "ms-playwright"))
+    if os.path.isdir(_pw):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _pw
+if "HF_HOME" not in os.environ:
+    _hf = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(REAL_HOME, ".cache"),
+                       "huggingface")
+    if os.path.isdir(_hf):
+        os.environ["HF_HOME"] = _hf
+_gitconfig = os.path.join(REAL_HOME, ".gitconfig")
+if os.path.isfile(_gitconfig):
+    shutil.copyfile(_gitconfig, os.path.join(TEST_HOME, ".gitconfig"))
+os.environ["HOME"] = os.environ["USERPROFILE"] = TEST_HOME
+
+
+def pytest_sessionfinish(session, exitstatus):
+    shutil.rmtree(TEST_HOME, ignore_errors=True)
+
+
+def _script_only(path):
+    """A standalone suite: no test_* function or Test* class, only an `if __name__` entry point."""
+    import ast
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return False
+    tests = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
+                or isinstance(n, ast.ClassDef) and n.name.startswith("Test") for n in tree.body)
+    entry = any(isinstance(n, ast.If) and "__main__" in ast.unparse(n.test) for n in tree.body)
+    return entry and not tests
+
+
+class _ScriptSuite(pytest.Item):
+    """Run one standalone suite in its own interpreter; its exit status is the verdict.
+
+    33 test files are scripts with a main() and no test functions: pytest collected nothing from
+    them, so `pytest tests/` skipped them silently and only tests/run_all.sh ran them. A child
+    process keeps what a script does to its interpreter (sys.path, os.environ, module globals)
+    out of the rest of the suite, and it inherits this session's isolated home.
+    """
+
+    def runtest(self):
+        import subprocess
+        import sys
+        run = subprocess.run([sys.executable, str(self.path)], cwd=str(self.path.parent.parent),
+                             capture_output=True, timeout=900)
+        if run.returncode != 0:
+            tail = (run.stdout + run.stderr).decode("utf-8", "replace")[-6000:]
+            raise AssertionError("%s exited %d:\n%s" % (self.path.name, run.returncode, tail))
+
+    def reportinfo(self):
+        return self.path, None, "script %s" % self.path.name
+
+
+class _ScriptFile(pytest.File):
+    def collect(self):
+        yield _ScriptSuite.from_parent(self, name="script")
+
+
+def pytest_collect_file(parent, file_path):
+    if (file_path.suffix == ".py" and file_path.name.startswith("test_")
+            and file_path.parent.name == "tests" and _script_only(file_path)):
+        return _ScriptFile.from_parent(parent, path=file_path)
 
 
 def _module_env(mod):
