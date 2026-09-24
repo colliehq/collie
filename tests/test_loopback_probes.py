@@ -4,6 +4,7 @@ Windows reports a refused loopback connection only after about two seconds, so e
 stopped service waited out its whole HTTP timeout: /api/healthz spent 1.0 s on the web probe and
 1.5 s on the browser bridge before answering, whenever either was down.
 """
+import json
 import socket
 import threading
 import time
@@ -150,3 +151,40 @@ def test_onboarding_browser_status_answers_with_the_bridge_connected(tmp_path, m
     assert status["extension_connected"] is True
     assert status["bridge_running"] is True and status["ext_path"].endswith("browser_ext")
     assert isinstance(status["browsers"], list)
+
+
+def _bridge_reporting(version):
+    class Health(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = json.dumps({"ok": True, "extension_connected": True,
+                               "extension_version": version}).encode()
+            self.send_response(200)
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    return ThreadingHTTPServer(("127.0.0.1", 0), Health)
+
+
+def test_health_says_when_chrome_runs_an_older_extension(tmp_path, monkeypatch):
+    """Chrome keeps running an unpacked extension until it is reloaded; after an update the browser
+    tools ran the old one and nothing on the desktop said so."""
+    monkeypatch.setattr(ops, "_shipped_extension_version", lambda: "4.1")
+    for loaded, stale in (("3.2", True), ("4.1", False), ("9.0", False)):
+        server = _bridge_reporting(loaded)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("COLLIE_BROWSER_BRIDGE_PORT", str(server.server_address[1]))
+            with ops.OpsStore(str(tmp_path / ("ops-%s.db" % loaded))) as store:
+                report = ops.aggregate_health(store, desired_workers=[], state_dir=str(tmp_path),
+                                              web_port=server.server_address[1])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=3)
+        codes = [r["code"] for r in report["reasons"]]
+        assert ("browser_extension_stale" in codes) is stale, (loaded, codes)
+        if stale:
+            reason = [r for r in report["reasons"] if r["code"] == "browser_extension_stale"][0]
+            assert reason["subject"] == "3.2" and report["ok"] is False

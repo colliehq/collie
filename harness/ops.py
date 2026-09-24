@@ -663,6 +663,20 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
     return out
 
 
+def _shipped_extension_version() -> str:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext",
+                               "manifest.json"), encoding="utf-8") as fh:
+            return str(json.load(fh).get("version") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _version_tuple(value) -> tuple:
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", str(value or ""))[:4])
+
+
 def _bridge_health_url() -> str:
     # The port the browser tools use, which is the one worth reporting on.
     return "http://127.0.0.1:%s/health" % (os.environ.get("COLLIE_BROWSER_BRIDGE_PORT") or 8677)
@@ -741,6 +755,14 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
             "extension_connected": bool(bridge.get("extension_connected")),
             "last_poll_secs_ago": bridge.get("last_poll_secs_ago"),
         }
+        # Chrome keeps running an unpacked extension until it is reloaded, so after an update the
+        # browser tools run the old one -- without the fixes, and refusing new actions -- and
+        # nothing on the desktop said so. Only an OLDER copy counts: a developer's newer one is fine.
+        loaded, shipped = str(bridge.get("extension_version") or ""), _shipped_extension_version()
+        if (bridge.get("extension_connected") and loaded and shipped
+                and _version_tuple(loaded) < _version_tuple(shipped)):
+            services["browser"].update(extension_version=loaded, extension_expected=shipped,
+                                       extension_stale=True)
 
     credentials = credential_health(now=now)
     queues = {"slack": slack_queue_health(state_dir),
@@ -762,8 +784,9 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
                     or queues["slack"]["dead_letters"]
                     or queues["notifications"].get("dead", 0)
                     or notification_stalled)
+    extension_stale = bool((services.get("browser") or {}).get("extension_stale"))
     if probe_services:
-        degraded = degraded or not services.get("web", {}).get("ok", False)
+        degraded = degraded or not services.get("web", {}).get("ok", False) or extension_stale
     # Why, in the order a person should look. Codes and names only: a surface words them in its
     # own language, and "Needs attention" alone never said what to look at.
     reasons = []
@@ -784,6 +807,10 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
     if queues["notifications"].get("dead", 0) or notification_stalled:
         reasons.append({"code": "notifications_failing", "subject": "notifications",
                         "count": int(queues["notifications"].get("dead", 0) or 0)})
+    if extension_stale:
+        reasons.append({"code": "browser_extension_stale",
+                        "subject": services["browser"]["extension_version"],
+                        "action": "chrome://extensions"})
     return {
         "ok": not degraded, "status": "degraded" if degraded else "ok", "at": now,
         "workers": workers, "services": services, "credentials": credentials,

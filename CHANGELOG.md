@@ -32,6 +32,11 @@
   `browser_open` may accept nothing but "leave this page?", and that only in a tab Collie opened
   (never discarding unsaved work in a tab you handed over). Needs the reloaded extension (4.1)
   and its debugger access, which the default build has.
+- Say on the desktop when Chrome is running an older Collie extension. After an update Chrome keeps
+  the old copy until it is reloaded, so the browser tools run without its fixes; Settings → General
+  now says *Chrome is running an older Collie extension (…); reload it in chrome://extensions*,
+  and `/api/healthz` carries it as `browser_extension_stale`. A newer copy (a developer's) is not
+  flagged.
 - Say why a browser action failed when the extension in Chrome is older than Collie. Chrome keeps
   running an unpacked extension until it is reloaded, so after an update each new action came back
   as a bare "unknown action" -- Live Copilot's page view failed that way on every tick of a session

@@ -46,3 +46,11 @@ def test_an_unknown_reason_code_falls_back_to_the_plain_notice(ui):
                           "reasons": [{"code": "something_new", "subject": "x"}]}).open().general()
     expect(status).to_contain_text("Needs attention")
     expect(status).not_to_contain_text("something_new")
+
+
+def test_an_older_extension_in_chrome_is_named_with_where_to_reload_it(ui):
+    status = Runtime(ui, {"ok": False, "status": "degraded", "reasons": [
+        {"code": "browser_extension_stale", "subject": "3.2",
+         "action": "chrome://extensions"}]}).open().general()
+    expect(status).to_contain_text(
+        "Chrome is running an older Collie extension (3.2); reload it in chrome://extensions")
