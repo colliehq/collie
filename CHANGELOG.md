@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.30.0 — Updates on the desktop, the inbox in the sidebar, and health you can act on
 
 - Show new Collie releases on the desktop. Settings → General → Updates checks GitHub when you
   press *Check for updates*, or about once a day after you turn on *Check for updates
