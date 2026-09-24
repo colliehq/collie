@@ -100,10 +100,16 @@ def _untracked_parent(cwd: str) -> str:
     index to take a snapshot would corrupt whatever they had staged.
     """
     from . import plat as _plat
+    # Bytes, never decoded: the names go straight back to git below. Read as text in the locale's
+    # code page, a UTF-8 name that did not decode made stdout None on Windows -- and an unreadable
+    # listing must not become "there were none", because restore then runs `git clean -fd` and
+    # deletes files that existed when this snapshot was taken.
     listing = subprocess.run(["git", "-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
-                             **_plat.no_window_kwargs(),
-                             capture_output=True, encoding="utf-8", errors="replace", timeout=300)
-    files = [f for f in (listing.stdout or "").split("\0") if f]
+                             **_plat.no_window_kwargs(), capture_output=True, timeout=300)
+    if listing.returncode != 0 or listing.stdout is None:
+        raise CheckpointError("git ls-files failed (%s): %s" % (
+            listing.returncode, (listing.stderr or b"").decode("utf-8", "replace").strip()[:300]))
+    files = [f for f in listing.stdout.split(b"\0") if f]
     # NOTE the empty case still produces a commit, holding an EMPTY tree. "There were no untracked
     # files" is complete knowledge, not missing knowledge: it means every untracked file present at
     # restore time appeared afterwards and is safe to remove. Cline stops at a HEAD-only fallback
@@ -115,7 +121,7 @@ def _untracked_parent(cwd: str) -> str:
         if files:
             spec = os.path.join(tmp, "pathspec")
             with open(spec, "wb") as f:                   # NUL-delimited: no argv length limit
-                f.write(("\0".join(files) + "\0").encode("utf-8"))
+                f.write(b"\0".join(files) + b"\0")
             _git(cwd, ["add", "--force", "--pathspec-from-file", spec, "--pathspec-file-nul"],
                  env=env)
         tree = _git(cwd, ["write-tree"], env=env)         # empty tree when there were none

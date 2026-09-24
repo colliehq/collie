@@ -159,6 +159,14 @@
   worktree diff came back empty and then crashed the check that looks for a reverted fix. Output
   is now decoded with a replacement character where needed; git, ripgrep and MCP servers (whose
   stdio is UTF-8 by the spec) are read as UTF-8 whatever the Windows code page is.
+- Stop a checkpoint restore from deleting untracked files it never saved. A checkpoint lists your
+  untracked files so that restoring can put them back, and restoring then clears untracked files
+  (`git clean -fd`) because the snapshot holds the complete set. On Windows that list was read in
+  the system code page: with the default Chinese code page (936) a single file with a Chinese name
+  made the whole list unreadable, which was recorded as "no untracked files", and restoring then
+  deleted every untracked file that existed before the run (reproduced with 0.29.1's code). A
+  failed listing (git exiting with an error) was taken as empty the same way. The names are now
+  passed back to git as raw bytes, and a checkpoint whose listing cannot be read fails instead.
 - Re-apply a reverted fix on Windows. When a coding run in SWE mode undid all of its edits, Collie
   restores its best diff, but the diff was written to `git apply` in text mode, which turned every
   line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
