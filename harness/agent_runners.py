@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import errno
 import inspect
 import json
 import math
@@ -749,6 +750,13 @@ class SubprocessRunner:
                 # Match communicate(): stderr/exit status explains a gate that
                 # died before accepting its request.
                 pass
+            except OSError as exc:
+                # communicate() also ignores EINVAL: Windows reports a child
+                # that exited before reading stdin that way (bpo-19612), not as
+                # a broken pipe. Raising it replaced the CLI's own stderr and
+                # exit code with a bare "[Errno 22] Invalid argument".
+                if exc.errno != errno.EINVAL:
+                    raise
             finally:
                 try:
                     proc.stdin.close()

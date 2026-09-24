@@ -80,7 +80,7 @@ def _scope(cwd: str) -> str:
     from .memory import project_scope
     return project_scope(cwd)
 from http.server import BaseHTTPRequestHandler
-from .httpserver import ThreadingHTTPServer
+from .httpserver import CLIENT_GONE, ThreadingHTTPServer
 
 from .recorder import note_host_error
 
@@ -2888,7 +2888,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_remote_qr()
             self._send_html(b"not found", 404, "text/plain; charset=utf-8")
-        except BrokenPipeError:
+        except CLIENT_GONE:
             pass
         except Exception as e:                       # never take the server down on one bad request
             try:
@@ -4513,7 +4513,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"resolved": False, "error": "need session + id"}, 400)
                 return self._send_json({"resolved": Handler._inbox_answer(sid, item, answer)})
             self._send_json({"error": "not found"}, 404)
-        except BrokenPipeError:
+        except CLIENT_GONE:
             pass
         except Exception as e:
             try:
@@ -5075,7 +5075,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(svg)
-        except BrokenPipeError:
+        except CLIENT_GONE:
             pass
 
     def _serve_sessions(self, qs=None):
@@ -6715,7 +6715,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not canceled:
                     Handler._notify_done(sid, res, wall_ms=res.wall_ms)
                 _tx("done", done_d)
-            except BrokenPipeError:
+            except CLIENT_GONE:
                 error = "client went away"
                 Handler._run_end(sid, error=error, run_id=run_id)
                 done_d = {"session": sid, "run": run_id, "answer": "",
@@ -7088,7 +7088,7 @@ class Handler(BaseHTTPRequestHandler):
             if not canceled:
                 Handler._notify_done(sid, res, wall_ms=res.wall_ms)
             _tx("done", done_d)
-        except BrokenPipeError:
+        except CLIENT_GONE:
             # Only reachable now from a write outside h.emit; the run's own emits swallow it.
             Handler._run_end(sid, error="client went away", run_id=run_id)
         except Exception as e:

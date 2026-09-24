@@ -64,3 +64,13 @@ def test_every_shared_server_class_carries_the_rule():
         assert issubclass(cls, httpserver._QuietClientDisconnects)
     from harness import webapp
     assert issubclass(webapp.CollieHTTPServer, httpserver._QuietClientDisconnects)
+
+
+def test_web_handlers_do_not_guard_client_departure_with_broken_pipe_alone():
+    """On Windows the same departure is ConnectionAbortedError/ConnectionResetError."""
+    import inspect
+    from harness import webapp
+    source = inspect.getsource(webapp)
+    assert "except BrokenPipeError:" not in source
+    assert source.count("except CLIENT_GONE:") >= 5
+    assert {ConnectionAbortedError, ConnectionResetError, BrokenPipeError} <= set(httpserver.CLIENT_GONE)
