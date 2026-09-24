@@ -44,6 +44,10 @@
   Settings, the run menu (desktop and phone) said "Auto by task" while every run used the saved
   level; it now shows *Saved default: High* (or the level saved), refreshes right after that setting
   is saved, and a phone refreshes run options when it is brought back to the screen.
+- Load the semantic-memory model from the local cache without asking Hugging Face first. Each
+  process that loaded it (every `collie -p` run and Slack task, and a server's first run) made two
+  revision checks against huggingface.co (0.2-0.6 s measured, and a wait for a timeout on a slow or
+  blocked network) even when the model was already on disk.
 - Label Daily Brief sources that have nothing connected. Calendar and Email & phone used to
   read "read just now" even with no calendar imported and no account connected; they now say
   *not connected* on the page and in the morning email's sources line, while still counting as

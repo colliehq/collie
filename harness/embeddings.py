@@ -112,6 +112,21 @@ def _hf_endpoint(url: str):
         pass
 
 
+def _hf_file(repo: str, filename: str) -> str:
+    """A model file from the local Hugging Face cache when it is there; the Hub only otherwise.
+
+    ``hf_hub_download`` without ``local_files_only`` asks the Hub for the latest revision on every
+    call, even for a file already cached: two HEAD requests (measured 0.2-0.6 s) each time an
+    embedder or reranker is built, which is every run -- and on a slow or blocked network, a wait
+    for each request to time out before the cached copy is used.
+    """
+    from huggingface_hub import hf_hub_download
+    try:
+        return hf_hub_download(repo, filename, local_files_only=True)
+    except Exception:
+        return hf_hub_download(repo, filename)
+
+
 def _hf_build(make, what: str):
     """Run `make()` (a fastembed model load — downloads weights on first use). On failure
     with the DEFAULT endpoint, retry once via hf-mirror.com. A missing fastembed install
@@ -220,13 +235,12 @@ class OnnxEmbedding(EmbeddingProvider):
 
         def mk():
             import numpy as np
-            from huggingface_hub import hf_hub_download
             from tokenizers import Tokenizer
             import onnxruntime as ort
             if data_file:                                  # external-weights models (e.g. bge-m3)
-                hf_hub_download(repo, data_file)
-            mp = hf_hub_download(repo, onnx_file)
-            tp = hf_hub_download(repo, tok_file)
+                _hf_file(repo, data_file)
+            mp = _hf_file(repo, onnx_file)
+            tp = _hf_file(repo, tok_file)
             self._np = np
             self._tok = Tokenizer.from_file(tp)
             self._tok.enable_truncation(max_length=512)
@@ -420,16 +434,15 @@ class OnnxReranker(Reranker):
 
         def mk():
             import numpy as np
-            from huggingface_hub import hf_hub_download
             from tokenizers import Tokenizer
             import onnxruntime as ort
             self._np = np
-            self._tok = Tokenizer.from_file(hf_hub_download(repo, tok_file))
+            self._tok = Tokenizer.from_file(_hf_file(repo, tok_file))
             self._tok.enable_truncation(max_length=512)
             so = ort.SessionOptions()
             _t = os.environ.get("COLLIE_EMBED_THREADS")
             so.intra_op_num_threads = int(_t) if _t else min(8, os.cpu_count() or 8)
-            self._sess = ort.InferenceSession(hf_hub_download(repo, onnx_file), sess_options=so,
+            self._sess = ort.InferenceSession(_hf_file(repo, onnx_file), sess_options=so,
                                               providers=["CPUExecutionProvider"])
             self._inputs = {i.name for i in self._sess.get_inputs()}
             return True
