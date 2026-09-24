@@ -147,11 +147,15 @@ def health(path: str | None = None, *, probe_services: bool = True,
                               automation_recovery),
     }
     report["activity_errors"] = work["errors"]
+    reasons = report.setdefault("reasons", [])
     if config_error:
         report["activity_errors"]["supervisor_config"] = config_error
         report["ok"] = False
         if report.get("status") == "ok":
             report["status"] = "degraded"
+        reasons.append({"code": "supervisor_config_unreadable", "subject": "supervisor"})
     if report["work"]["recovery_required"]:
         report["ok"], report["status"] = False, "needs_you"
+        reasons.insert(0, {"code": "recovery_required", "subject": "work",
+                           "count": len(report["work"]["recovery_required"])})
     return report

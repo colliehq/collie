@@ -983,3 +983,20 @@ def test_health_probes_the_port_this_server_is_listening_on(web_server, monkeypa
     assert code == 200
     assert "http://127.0.0.1:%d/api/ver" % port in probed
     assert report["services"]["web"]["ok"] is True
+
+
+def test_public_health_passes_reason_codes_and_nothing_else():
+    from harness.webapp import _public_health
+    report = _public_health({"ok": False, "status": "degraded", "reasons": [
+        {"code": "login_missing", "subject": "codex-oauth", "action": "run `codex login`",
+         "private": "must not cross"},
+        {"code": "slack_needs_review", "subject": "slack", "count": 3, "text": "secret task"},
+        {"code": 7}, "not a row"],
+        "credentials": [{"name": "claude-oauth", "state": "missing", "needed": False}],
+        "supervised": False})
+    assert report["reasons"] == [
+        {"code": "login_missing", "subject": "codex-oauth", "action": "run `codex login`"},
+        {"code": "slack_needs_review", "subject": "slack", "count": 3}]
+    assert report["credentials"][0]["needed"] is False
+    assert report["supervised"] is False
+    assert "must not cross" not in json.dumps(report) and "secret task" not in json.dumps(report)

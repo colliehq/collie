@@ -102,3 +102,17 @@ def test_a_supervisor_that_ran_here_counts_even_when_not_installed_as_a_task(tmp
     assert report["supervised"] is True
     assert report["workers"]["jobd"]["state"] == "missing"
     assert report["status"] == "degraded"
+
+
+def test_recovery_work_is_the_first_reason_given(tmp_path, monkeypatch):
+    from harness import sessions
+    from harness.controlplane import health
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COLLIE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    _quiet_credentials(monkeypatch)
+    sessions.checkpoint("uncertain", [{"role": "user", "content": "send it"}], run_id="r1",
+                        state="external_action", detail={"tool_name": "publish", "tool_call_id": "c1"})
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": False, "mode": "none"})
+    report = health(str(tmp_path), probe_services=False)
+    assert report["reasons"][0] == {"code": "recovery_required", "subject": "work", "count": 1}

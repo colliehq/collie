@@ -442,9 +442,21 @@ def _public_health(raw):
         }
     credentials = [{k: row.get(k) for k in
                     ("name", "state", "expires_at", "seconds_remaining",
-                     "refresh_available", "refresh_owner", "action")
+                     "refresh_available", "refresh_owner", "action", "needed")
                     if row.get(k) is not None}
                    for row in (raw.get("credentials") or []) if isinstance(row, dict)]
+    # Reason codes and the names they are about; any other field a future reason carries stays
+    # server-side. Counts are numbers or nothing.
+    reasons = []
+    for row in (raw.get("reasons") or [])[:20]:
+        if not isinstance(row, dict) or not isinstance(row.get("code"), str):
+            continue
+        item = {"code": row["code"][:60], "subject": str(row.get("subject") or "")[:60]}
+        if isinstance(row.get("action"), str) and row["action"]:
+            item["action"] = row["action"][:160]
+        if isinstance(row.get("count"), int) and not isinstance(row.get("count"), bool):
+            item["count"] = row["count"]
+        reasons.append(item)
     queues_raw = raw.get("queues") if isinstance(raw.get("queues"), dict) else {}
     queues = {}
     for name in ("slack", "notifications"):
@@ -465,6 +477,7 @@ def _public_health(raw):
                  "recovery_required": recovery},
         "activity_errors": {str(k): "unavailable" for k in (raw.get("activity_errors") or {})},
         "issues": [str(x)[:120] for x in (raw.get("issues") or [])],
+        "reasons": reasons, "supervised": raw.get("supervised") is not False,
     }
 
 

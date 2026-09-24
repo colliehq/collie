@@ -293,3 +293,23 @@ def test_the_login_the_provider_reads_still_degrades_and_alerts_when_missing(tmp
         enqueue_health_alerts(store, report, now=105)
         rows = list(store.db.execute("SELECT kind, body FROM notifications"))
         assert [row[1] for row in rows if row[0] == "credential_expiry"] == ["codex-oauth is missing"]
+
+
+def test_health_says_why_it_is_not_ok(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    claude, codex = _creds(tmp_path)
+    monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("worker:web", "running", {}, ttl=10, now=100)
+        store.beat("worker:automations", "circuit_open", {}, ttl=10, now=100)
+        report = aggregate_health(store, desired_workers=["web", "jobd", "automations"],
+                                  state_dir=str(tmp_path), now=105, probe_services=False)
+    codes = [(row["code"], row["subject"]) for row in report["reasons"]]
+    assert codes == [("login_missing", "codex-oauth"), ("worker_not_reporting", "jobd"),
+                     ("worker_stopped", "automations")]
+    assert report["reasons"][0]["action"] == "run `codex login`"
+    # An unused login is listed in credentials but never given as a reason.
+    assert all(row["subject"] != "claude-oauth" for row in report["reasons"])

@@ -17,6 +17,10 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Say why the runtime needs attention. Settings → General now names the first reason (a login
+  that is missing or expired with the command that fixes it, a background service that stopped or
+  is not reporting, work waiting for a recovery decision) and how many more, with *Details*
+  opening System activity. `/api/healthz` carries these as `reasons` codes.
 - Stop reporting background workers as missing where nothing is meant to run them. The macOS app
   and a pip `collie web` have no supervisor, yet health listed its five default workers as having no
   heartbeat and showed *Needs attention* for good. Workers are expected only where the supervisor is

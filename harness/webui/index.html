@@ -444,6 +444,8 @@
              margin: 6px 0; overflow-wrap: anywhere; }
   .upd-cmd { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; user-select: all; }
   .mcp-acts button.upd-install { background: var(--pine); color: var(--on-accent); border-color: var(--pine); }
+  .set-inline-link { margin-left: 8px; padding: 0; border: 0; background: none; color: var(--pine);
+                     font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
   .mcp-empty { font-size: 12.5px; color: var(--faint); padding: 4px 0 8px; }
   .mcp-addbtn {
     width: 100%; font-size: 12.5px; padding: 9px; border-radius: 11px; border: 1px dashed var(--line);
@@ -4148,6 +4150,17 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    // Settings → Runtime reasons
+    "{n} items need you to decide how to recover":"{n} 项需要你决定如何恢复",
+    "The web service did not answer its health check":"Web 服务没有响应健康检查",
+    "{name} is not signed in":"{name} 未登录",
+    "{name} sign-in has expired":"{name} 登录已过期",
+    "{name} is not reporting":"{name} 没有上报状态",
+    "{name} has stopped":"{name} 已停止",
+    "{n} Slack tasks need review":"{n} 个 Slack 任务需要处理",
+    "Notifications are not being delivered":"通知没有送达",
+    "Background service settings could not be read":"无法读取后台服务设置",
+    "(+{n} more)":"（还有 {n} 项）",
     "Use the reasoning level selected in Settings":"使用设置中选择的推理强度",
     "Inbox":"收件箱","{n} waiting":"{n} 项待处理",
     // Collie updates (Settings → General)
@@ -4426,6 +4439,17 @@
     "Dry run trigger":"试运行触发条件","Save automation":"保存自动化"
   });
   Object.assign(ZHTW, {
+    // Settings → Runtime reasons
+    "{n} items need you to decide how to recover":"{n} 項需要你決定如何復原",
+    "The web service did not answer its health check":"Web 服務沒有回應健康檢查",
+    "{name} is not signed in":"{name} 未登入",
+    "{name} sign-in has expired":"{name} 登入已過期",
+    "{name} is not reporting":"{name} 沒有回報狀態",
+    "{name} has stopped":"{name} 已停止",
+    "{n} Slack tasks need review":"{n} 個 Slack 任務需要處理",
+    "Notifications are not being delivered":"通知沒有送達",
+    "Background service settings could not be read":"無法讀取背景服務設定",
+    "(+{n} more)":"（還有 {n} 項）",
     "Use the reasoning level selected in Settings":"使用設定中選擇的推理強度",
     "Inbox":"收件匣","{n} waiting":"{n} 項待處理",
     // Collie updates (Settings → General)
@@ -5318,6 +5342,24 @@
     }).catch(function () { b.disabled = false; alert(t("Could not reach Collie.")); });
   });
 
+  // The server lists why it is not healthy as codes and names; this words the first one. "Needs
+  // attention" on its own never said what to look at or where.
+  function healthReasonText(r) {
+    var name = String((r && r.subject) || ""), n = String((r && r.count) || 0);
+    var action = r && r.action ? " · " + r.action : "";
+    switch (r && r.code) {
+      case "recovery_required": return t("{n} items need you to decide how to recover").replace("{n}", n);
+      case "web_unreachable": return t("The web service did not answer its health check");
+      case "login_missing": return t("{name} is not signed in").replace("{name}", name) + action;
+      case "login_expired": return t("{name} sign-in has expired").replace("{name}", name) + action;
+      case "worker_not_reporting": return t("{name} is not reporting").replace("{name}", name);
+      case "worker_stopped": return t("{name} has stopped").replace("{name}", name);
+      case "slack_needs_review": return t("{n} Slack tasks need review").replace("{n}", n);
+      case "notifications_failing": return t("Notifications are not being delivered");
+      case "supervisor_config_unreadable": return t("Background service settings could not be read");
+    }
+    return "";
+  }
   function loadSettingsOverview() {
     var node = document.getElementById("settingsRuntimeStatus");
     if (!node) return;
@@ -5325,7 +5367,22 @@
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     }).then(function (d) {
-      node.textContent = d && d.ok === true ? t("Ready · runtime responding") : t("Needs attention");
+      node.textContent = "";
+      if (d && d.ok === true) { node.textContent = t("Ready · runtime responding"); return; }
+      var reasons = ((d && d.reasons) || []).filter(function (r) { return healthReasonText(r); });
+      var text = t("Needs attention");
+      if (reasons.length) {
+        text += " · " + healthReasonText(reasons[0]);
+        if (reasons.length > 1) text += " " + t("(+{n} more)").replace("{n}", reasons.length - 1);
+      }
+      node.appendChild(document.createTextNode(text));
+      var more = document.createElement("button");
+      more.type = "button"; more.className = "set-inline-link"; more.id = "settingsRuntimeDetails";
+      more.textContent = t("Details");
+      more.onclick = function () {
+        requestCloseSettings().then(function (closed) { if (closed) $("navActivity").click(); });
+      };
+      node.appendChild(more);
     }).catch(function () { node.textContent = t("Unavailable"); });
   }
 

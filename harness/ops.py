@@ -727,10 +727,30 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
                     or notification_stalled)
     if probe_services:
         degraded = degraded or not services.get("web", {}).get("ok", False)
+    # Why, in the order a person should look. Codes and names only: a surface words them in its
+    # own language, and "Needs attention" alone never said what to look at.
+    reasons = []
+    if probe_services and not services.get("web", {}).get("ok", False):
+        reasons.append({"code": "web_unreachable", "subject": "web"})
+    for row in credentials:
+        if row["name"] in expired:
+            reasons.append({"code": "login_" + row["state"], "subject": row["name"],
+                            "action": row.get("action", "")})
+    for name in failing:
+        state = workers[name]["state"]
+        reasons.append({"code": "worker_stopped" if state in ("dead", "failed", "circuit_open")
+                        else "worker_not_reporting", "subject": name, "state": state})
+    if queues["slack"]["dead_letters"] or queues["slack"]["unresolved"]:
+        reasons.append({"code": "slack_needs_review", "subject": "slack",
+                        "count": int(queues["slack"]["dead_letters"] or 0) +
+                                 int(queues["slack"]["unresolved"] or 0)})
+    if queues["notifications"].get("dead", 0) or notification_stalled:
+        reasons.append({"code": "notifications_failing", "subject": "notifications",
+                        "count": int(queues["notifications"].get("dead", 0) or 0)})
     return {
         "ok": not degraded, "status": "degraded" if degraded else "ok", "at": now,
         "workers": workers, "services": services, "credentials": credentials,
-        "queues": queues, "heartbeats": beats, "issues": issues,
+        "queues": queues, "heartbeats": beats, "issues": issues, "reasons": reasons,
     }
 
 
