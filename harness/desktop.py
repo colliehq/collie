@@ -29,7 +29,9 @@ def _is_mac():
 DEFAULT_CONFIG = {
     "widgets": {
         "brand":    {"on": True,  "slot": "center"},
-        "clock":    {"on": True,  "slot": "tr"},
+        # weather: the clock's weather line asks ipapi.co where this IP address is and then
+        # api.open-meteo.com for the weather there (see docs/privacy.md); false turns both off.
+        "clock":    {"on": True,  "slot": "tr", "weather": True},
         # Off on macOS: the Dock already is the app launcher, always visible and always in the same
         # place, so a second row of the same icons on the wallpaper is clutter. Windows has no
         # equivalent for a behind-the-icons desktop, so it keeps it.

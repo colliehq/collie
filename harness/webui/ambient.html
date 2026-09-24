@@ -826,6 +826,9 @@
   }
   function loadWeather(){
     var el = $("wWx"); if (!el) return;
+    // Off in desktop.json ("clock": {"weather": false}): then neither weather service is asked.
+    var clock = curConfig && curConfig.widgets && curConfig.widgets.clock;
+    if (clock && clock.weather === false) { el.textContent = ""; return; }
     fetch("https://ipapi.co/json/").then(function(r){return r.json();}).then(function(g){
       if (g && (g.country_code === "CN" || g.country === "CN")) MUSIC_REGION = "CN";   // refine music source region
       if (!g || g.latitude == null) return;

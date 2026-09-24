@@ -54,6 +54,10 @@
   provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read
   after a minute took 5.5 s; the probes and Pi's checks now run side by side, with the Codex quota
   read started alongside them, and the same read takes 1.5 s. The probe results are unchanged.
+- Disclose, and let you turn off, the wallpaper clock's weather line. It asks `ipapi.co` for an
+  approximate location from your network address and `api.open-meteo.com` for the weather there,
+  about every 30 minutes, which the privacy policy did not mention. `"weather": false` under
+  `"clock"` in `~/.collie/desktop.json` now stops both requests and keeps the clock.
 - Put the time on every line a supervised worker writes to its log (`09-23 17:39:02 [slack] …`).
   The supervisor stamped only its own lines, so a Slack dog's 278 "connection lost" lines could not
   be told apart from one another or matched to anything else on the machine.

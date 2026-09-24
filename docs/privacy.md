@@ -60,6 +60,11 @@ feature inherently requires:
   your network address as with any web request. The answer is kept in
   `~/.collie/update-status.json`. Installing always waits for you to press *Install* or run
   `collie update --yes`, and downloads only the release you were shown, from GitHub.
+- **Weather on the live wallpaper (opt-in wallpaper).** While the desktop wallpaper runs with its
+  clock showing, the clock's weather line asks `ipapi.co` for an approximate location from your
+  network address, then `api.open-meteo.com` for the current weather at that point, about every 30
+  minutes. Nothing about you or your work is sent. Set `"weather": false` under `"clock"` in
+  `~/.collie/desktop.json` to stop both requests; the clock stays.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
