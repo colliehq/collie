@@ -238,6 +238,12 @@ def _apply_history_cache(msgs, stable_upto):
     bp = (stable_upto - 1) if (stable_upto and stable_upto > 0) else (n - 1)
     bp = max(0, min(bp, n - 1))
     msgs[bp] = _mark_cache_block(msgs[bp])
+    # And the final message. The elision boundary now moves in steps (context.ELIDE_STEP), so the
+    # recent window after it stays byte-stable for a few turns; marked, the next turn reads it from
+    # the cache instead of paying for it again. With a boundary that moved every turn this would
+    # only have bought cache writes nobody read. System + boundary + final = 3 of the 4 allowed.
+    if stable_upto and stable_upto > 0 and bp < n - 1:
+        msgs[n - 1] = _mark_cache_block(msgs[n - 1])
 
 
 def _openai_content(content):

@@ -46,9 +46,12 @@ def test_history_cache_breakpoint_placement():
     msgs = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": str(i), "content": "x"}]}
             for i in range(6)]
     _apply_history_cache(msgs, 3)
-    assert n_bp(msgs) == 1, "exactly one history breakpoint"
+    assert n_bp(msgs) == 2, "the elision boundary and the end of the history"
     assert msgs[2]["content"][-1].get("cache_control"), "breakpoint must sit at stable_upto-1"
-    assert not msgs[5]["content"][-1].get("cache_control"), "the volatile tail must NOT be marked"
+    # The boundary moves in steps (context.ELIDE_STEP), so the tail is stable for a few turns and
+    # worth caching; nothing in between is marked.
+    assert msgs[5]["content"][-1].get("cache_control"), "the end of the history is marked too"
+    assert not any(msgs[i]["content"][-1].get("cache_control") for i in (0, 1, 3, 4))
 
     # short/un-elided thread (stable_upto<=0) -> mark the final message; string content is promoted
     m2 = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "there"}]

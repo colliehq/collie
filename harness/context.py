@@ -160,6 +160,10 @@ class TokenBudgeter:
         return {k: est_tokens(v) for k, v in sections.items()}
 
 
+#: How far the elision boundary moves at once (see ContextComposer.build).
+ELIDE_STEP = 6
+
+
 class ContextComposer:
     def __init__(self, memory, registry, budgeter: TokenBudgeter | None = None,
                  identity: str = "", auto_prefetch: bool = True, prefetch_k: int = 4):
@@ -423,6 +427,14 @@ class ContextComposer:
         msgs, meta.compaction = project_messages(session.get("messages", []),
                                                  session.get("_compaction"))
         keep_from = len(msgs) - window
+        # The boundary moves in steps of ELIDE_STEP messages, not one message at a time. Stubbing
+        # an output rewrites a message the provider already cached, so everything after it is
+        # read again: a boundary that moved every turn cost the whole recent window each turn --
+        # 1651 of 4467 recorded turns missed the cache that way, 11.3M tokens re-read, about 6.9k
+        # a turn. In steps, the prefix holds for ELIDE_STEP/2 turns and the window keeps up to
+        # ELIDE_STEP-1 more full outputs, which are cached reads. Overflow recovery stays tight.
+        if not shrink and keep_from > 0:
+            keep_from -= keep_from % ELIDE_STEP
         meta.elide_from = keep_from
         meta.pre_elision = msgs
         provider_messages = []

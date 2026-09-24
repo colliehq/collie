@@ -67,6 +67,13 @@
   the onboarding browser poll 1.5 s, and the desktop app's launch 0.8 s per probe before the
   server was up. A 0.15 s connect check now answers first. Health and `collie doctor` also look for
   the bridge on the port the browser tools use (`COLLIE_BROWSER_BRIDGE_PORT`).
+- Keep the prompt cache through long runs. The composer stubs tool outputs older than its recent
+  window, and that boundary moved with every new message, so each turn rewrote a message the
+  provider had cached and re-read everything after it (1651 of 4467 turns in one machine's run log,
+  11.3M tokens). It now moves six messages at a time. Replayed on the Codex subscription route,
+  the share of input served from cache over turns 10-24 went from 25% to 64%, and the input
+  processed afresh fell 45%. The Anthropic route also caches the end of the history, which now
+  stays stable for a few turns. Details in `bench/experiments/2026-09-24-elision-step`.
 - Open the run menu's worker list faster. Its capability read probed each installed worker CLI one
   after another, and Pi alone was started four times in a row (`--version` and an auth check per
   provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read

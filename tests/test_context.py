@@ -493,7 +493,10 @@ def test_context_trimming_preserves_pairing():
         msgs.append({"role": "tool", "tool_call_id": "tc%d" % i, "name": "read_file", "content": "X" * 500})
     system, pmsgs, meta = h.composer.build({"messages": msgs}, "next", os.getcwd(), "ctxtest")
     assert len(pmsgs) == len(msgs), "trimming must NOT drop messages (would orphan tool_use/result)"
-    old_tool = [m for m in pmsgs[:len(pmsgs) - 14] if m.get("role") == "tool"]
+    # The boundary moves in steps (context.ELIDE_STEP), so up to ELIDE_STEP-1 outputs just past the
+    # 14-message window may still be full; everything older is stubbed.
+    from harness.context import ELIDE_STEP
+    old_tool = [m for m in pmsgs[:len(pmsgs) - 14 - (ELIDE_STEP - 1)] if m.get("role") == "tool"]
     assert old_tool and all("elided" in m["content"] for m in old_tool), "old tool outputs must be stubbed"
     recent_tool = [m for m in pmsgs[len(pmsgs) - 14:] if m.get("role") == "tool"]
     assert all("elided" not in m["content"] for m in recent_tool), "recent tool outputs must stay full"
