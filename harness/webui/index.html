@@ -432,6 +432,10 @@
   .mcp-acts button.danger { color: #c0392b; }
   .mcp-acts button[disabled] { opacity: .5; cursor: default; }
   /* Collie updates (Settings → General) and the quiet dot on the Settings button. */
+  .upd-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+              background: var(--surface-2); }
+  .upd-top { display: flex; align-items: center; gap: 8px; }
+  .upd-name { font-size: 13.5px; font-weight: 600; color: var(--ink); }
   #settingsBtn { position: relative; }
   #settingsBtn .upd-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%;
                           background: var(--pine); box-shadow: 0 0 0 2px var(--surface); pointer-events: none; }
@@ -5435,9 +5439,11 @@
     var box = document.getElementById("updateBox"); if (!box || !d || !d.current) return;
     var inst = d.install || {}, st = inst.state || "none";
     var busy = !!d.checking || st === "running" || st === "handed_off" || !!updateWait;
-    var badge = d.newer ? '<span class="mcp-badge warn">' + setEsc(t("update available")) + "</span>"
-      : (d.checked_at && !d.error ? '<span class="mcp-badge">' + setEsc(t("up to date")) + "</span>" : "");
-    var html = '<div class="mcp-item upd-item"><div class="mcp-top"><span class="mcp-name">Collie '
+    // Its own classes: the MCP pane and its checks find connected servers by .mcp-item/.mcp-name,
+    // and a card reusing them in the (hidden) General pane was the first match they waited on.
+    var badge = d.newer ? '<span class="mcp-badge warn upd-badge">' + setEsc(t("update available")) + "</span>"
+      : (d.checked_at && !d.error ? '<span class="mcp-badge upd-badge">' + setEsc(t("up to date")) + "</span>" : "");
+    var html = '<div class="upd-item"><div class="upd-top"><span class="upd-name">Collie '
       + setEsc(d.current) + "</span>" + badge + "</div>"
       + '<div class="upd-line" role="status">' + setEsc(updateLine(d, localNote)) + "</div>";
     if (d.newer && d.notes) {
@@ -5452,7 +5458,7 @@
         + setEsc(tail) + "</pre>"
         + '<div class="set-hint">' + setEsc(inst.installer_log || inst.log || "") + "</div></details>";
     }
-    html += '<div class="mcp-acts"><button type="button" data-update="check"' + (busy ? " disabled" : "") + ">"
+    html += '<div class="mcp-acts upd-acts"><button type="button" data-update="check"' + (busy ? " disabled" : "") + ">"
       + setEsc(t("Check for updates")) + "</button>";
     if (d.one_press && !busy)
       html += '<button type="button" class="upd-install" data-update="install" data-version="' + setEsc(d.latest) + '">'

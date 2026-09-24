@@ -50,7 +50,8 @@ def test_first_party_surfaces_share_versioned_transparent_identity_contract():
 
     assert 'id="nameOverlay"' in index and 'id="nameInput"' in index
     assert "Slack apps, @handles and mail addresses keep their existing identities" in index
-    assert '["COMPANION_NAME"]' in index
+    # General holds the display name (and, since 0.30, the update check beside it).
+    assert 'kind: "overview", keys: ["COMPANION_NAME", "UPDATE_CHECK"]' in index
     assert 'avatar.png(name, size=256, plate=False)' in webapp
     assert '"avatar": "/api/avatar.png?v=" + avatar_key' in webapp
     for page in (index, mobile, remote, ambient):

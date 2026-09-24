@@ -93,7 +93,7 @@ def test_a_newer_release_is_visible_before_settings_is_opened(ui):
     expect(ui.page.locator("#settingsBtn")).to_have_attribute("aria-label", "Settings · Update available")
     s.general()
     expect(s.line).to_have_text("Collie 0.30.0 is available.")
-    expect(s.box.locator(".mcp-name")).to_have_text("Collie 0.29.1")
+    expect(s.box.locator(".upd-name")).to_have_text("Collie 0.29.1")
     s.box.locator("summary", has_text="What's new in 0.30.0").click()
     # Release notes are text: markup in them is shown, never parsed.
     expect(s.box.locator(".upd-notes")).to_contain_text('<img src=x onerror="window.__updateXss=1">')
@@ -126,13 +126,13 @@ def test_a_failed_check_never_reads_as_up_to_date(ui):
     expect(ui.page.locator("#settingsBtn .upd-dot")).to_have_count(0)
     s.general()
     expect(s.line).to_have_text("Could not check for updates: URLError: the network is unreachable")
-    expect(s.box.locator(".mcp-badge")).to_have_count(0)
+    expect(s.box.locator(".upd-badge")).to_have_count(0)
     expect(s.box.get_by_role("button", name="Install 0.30.0 and restart")).to_have_count(0)
     s.post_answers["check"] = (200, answer(latest="0.29.1", newer=False, notes="", one_press=False,
                                            checked_at=3000.0, checked_age_s=4.0))
     s.box.get_by_role("button", name="Check for updates").click()
     expect(s.line).to_have_text("You have the latest version. · checked just now")
-    expect(s.box.locator(".mcp-badge")).to_have_text("up to date")
+    expect(s.box.locator(".upd-badge")).to_have_text("up to date")
     assert s.post_bodies == [("check", {})]
 
 
