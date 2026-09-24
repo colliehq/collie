@@ -94,3 +94,30 @@ def test_the_host_compat_report_is_applied_before_any_parallel_probe_reads_it(mo
     monkeypatch.setattr(runner_registry, "probe", probe)
     runner_registry.probe_all(keys=list(runner_registry.SPECS)[:4])
     assert seen and all(seen)
+
+
+def test_concurrent_reads_of_one_runner_share_a_single_probe(monkeypatch):
+    """A page load asks for the run options from several places at once; each used to probe every
+    runner itself, so three concurrent reads took 3.1-3.7 s each against 2.1 s for one."""
+    runner_registry.reset_cache()
+    calls = []
+
+    def slow(spec, now, live, provider, status_runner):
+        calls.append(spec.key)
+        time.sleep(0.3)
+        return runner_registry.RunnerProbe(key=spec.key, installed=True, probed_at=now,
+                                           ttl_s=runner_registry.PROBE_TTL_S)
+
+    monkeypatch.setattr(runner_registry, "_probe_uncached", slow)
+    got = []
+    threads = [threading.Thread(target=lambda: got.append(runner_registry.probe("codex-exec")))
+               for _ in range(3)]
+    t0 = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert calls == ["codex-exec"], calls
+    assert len(got) == 3 and all(g is got[0] for g in got)
+    assert time.monotonic() - t0 < 0.8
+    runner_registry.reset_cache()

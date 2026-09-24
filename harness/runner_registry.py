@@ -425,6 +425,10 @@ _COMPAT: dict[str, dict[str, Any]] = {}
 _LOCK = threading.RLock()
 # (key, live, provider) -> RunnerProbe
 _CACHE: dict[tuple[str, bool, str], RunnerProbe] = {}
+# One probe per runner in flight. A desktop page load asks for the run options from several places
+# at once; each used to probe every runner itself -- Pi alone is four Node processes -- so three
+# concurrent reads took 3.1-3.7 s each against 2.1 s for one, and far longer under a busy page load.
+_INFLIGHT: dict[tuple[str, bool, str], threading.Lock] = {}
 
 
 # Where `collie runners compat` leaves a report for the selector to read back.
@@ -958,13 +962,29 @@ def probe(key: str, *, live: bool = False, now: float | None = None,
             provider = ""
     cache_key = (spec.key, bool(live), provider if spec.key == "collie" else "")
     cacheable = status_runner is None
-    if cacheable:
-        with _LOCK:
+    if not cacheable:
+        return _probe_uncached(spec, now, live, provider, status_runner)
+    with _LOCK:
+        cached = _CACHE.get(cache_key)
+        age = now - cached.probed_at if cached is not None else -1.0
+        if cached is not None and 0 <= age < cached.ttl_s:
+            return cached
+        flight = _INFLIGHT.setdefault(cache_key, threading.Lock())
+    with flight:
+        with _LOCK:                          # the probe this caller waited for may have landed
             cached = _CACHE.get(cache_key)
-            age = now - cached.probed_at if cached is not None else -1.0
-            if cached is not None and 0 <= age < cached.ttl_s:
+            age = now - cached.probed_at if cached is not None else None
+            # That probe may have stamped a moment after this caller's `now`; seconds apart only.
+            if cached is not None and -5.0 <= age < cached.ttl_s:
                 return cached
+        result = _probe_uncached(spec, now, live, provider, status_runner)
+        with _LOCK:
+            _CACHE[cache_key] = result
+        return result
 
+
+def _probe_uncached(spec: HarnessSpec, now: float, live: bool, provider: str,
+                    status_runner: Callable[[tuple[str, ...]], Any] | None) -> RunnerProbe:
     try:
         if spec.phase > CURRENT_PHASE:
             result = _placeholder_probe(spec, now)
@@ -981,10 +1001,6 @@ def probe(key: str, *, live: bool = False, now: float | None = None,
             capabilities=_capabilities_for(spec), compat=compat_status(spec.key),
             probed_at=now, ttl_s=PROBE_TTL_S,
             detail="could not probe %s: %s: %s" % (spec.key, type(exc).__name__, exc))
-
-    if cacheable:
-        with _LOCK:
-            _CACHE[cache_key] = result
     return result
 
 

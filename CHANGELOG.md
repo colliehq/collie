@@ -83,7 +83,8 @@
   after another, and Pi alone was started four times in a row (`--version` and an auth check per
   provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read
   after a minute took 5.5 s; the probes and Pi's checks now run side by side and the same read
-  takes about 2.2 s. The probe results are unchanged.
+  takes about 2.2 s. The probe results are unchanged. Reads that arrive together (a page load asks
+  from several places) now share one probe per runner instead of each running all of them.
 - Disclose, and let you turn off, the wallpaper clock's weather line. It asks `ipapi.co` for an
   approximate location from your network address and `api.open-meteo.com` for the weather there,
   about every 30 minutes, which the privacy policy did not mention. `"weather": false` under
