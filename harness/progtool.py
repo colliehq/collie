@@ -40,6 +40,14 @@ import json as _json, os as _os, sys as _sys, urllib.request as _u
 # owner. User code therefore cannot win the Windows Popen -> AssignProcessToJobObject race.
 if _sys.stdin.buffer.read(1) != b"G":
     raise SystemExit("execute_code start gate was not released")
+# The host reads these pipes as UTF-8. Left alone they use the ANSI code page on Windows (-I
+# ignores PYTHONIOENCODING): print("中文") came back as U+FFFD under 936, and raised
+# UnicodeEncodeError in the user's code under 1252.
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
 _PORT = _os.environ["COLLIE_RPC_PORT"]
 _TOKEN = _os.environ.get("COLLIE_RPC_TOKEN", "")
 def tool(name, **args):

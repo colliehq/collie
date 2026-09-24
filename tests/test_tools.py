@@ -466,6 +466,21 @@ def test_execute_code_routes_recursion_guard_through_broker():
     assert [name for name, _args in brokered] == ["execute_code", "delegate"], (
         "nested amplification denials must traverse the auditable host broker")
 
+def test_execute_code_prints_non_ascii_whatever_the_code_page():
+    # The host reads the script's pipes as UTF-8, and -I ignores PYTHONIOENCODING, so the script
+    # used the ANSI code page: "中文" came back as U+FFFD under 936 and raised
+    # UnicodeEncodeError under 1252 (a GitHub Windows runner's code page).
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    out = reg.get("execute_code").run(
+        {"code": 'import sys\nprint("中文 café", sys.stdout.encoding)\n'
+                 'print("错误信息", file=sys.stderr)\nsys.exit(3)', "timeout": 20},
+        _ctx(os.getcwd()))
+    assert "中文 café utf-8" in out, out
+    assert "[exit 3] 错误信息" in out, out
+
 def test_execute_code_rpc_rejects_nonfinite_arguments_before_broker():
     from harness.tools import default_registry
     from harness.progtool import register_execute_code

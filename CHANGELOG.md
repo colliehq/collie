@@ -174,6 +174,10 @@
   similar commands therefore reached the model garbled. Each line is now read as UTF-8 when it is
   valid UTF-8, and in the system code page otherwise. Machines already on UTF-8 (code page 65001)
   are unchanged.
+- Let `execute_code` scripts print any text on Windows. The script's output was written in the
+  system code page but read as UTF-8, so under the Chinese code page `print("中文")` came back as
+  replacement characters, and under 1252 it raised `UnicodeEncodeError` in the script itself.
+  Scripts now write UTF-8.
 - Re-apply a reverted fix on Windows. When a coding run in SWE mode undid all of its edits, Collie
   restores its best diff, but the diff was written to `git apply` in text mode, which turned every
   line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
