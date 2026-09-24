@@ -1206,6 +1206,14 @@ def cmd_update(args):
 
     print("collie %s   latest %s   (channel %s, installed via %s)"
           % (info["current"], info["latest"] or "?", info["channel"], info["kind"]))
+    expect = str(getattr(args, "expect", "") or "").strip().lstrip("vV")
+    if expect and (expect != info["latest"] or not info["newer"]):
+        # The desktop's Install button passes the version it showed. A release published since
+        # then is a different download than the one the person agreed to; ask again instead.
+        # Exit 0 is reserved for "installed or handed off", so this is never mistaken for one.
+        print("the latest release is %s, not the newer %s that was confirmed; nothing installed."
+              % (info["latest"] or "unknown", expect), file=sys.stderr)
+        return 3
     if not info["newer"]:
         print("already up to date." if info["latest"] else "no published release found.")
         return 0
@@ -1247,7 +1255,8 @@ def cmd_update(args):
         except Exception as e:
             print("download failed: %s" % e, file=sys.stderr)
             return 1
-        ok, why = up.apply_windows(exe, digests.get(name, ""), on_note=print)
+        ok, why = up.apply_windows(exe, digests.get(name, ""), on_note=print,
+                                   target_version=info["latest"])
     elif kind == "app":
         name = next((n for n in assets if n.endswith(".dmg")), "")
         if not name:
@@ -5522,6 +5531,8 @@ def main(argv=None):
     pup.add_argument("--channel", choices=["stable", "beta"], default=None,
                      help="stable excludes prereleases; beta includes them (default: stable)")
     pup.add_argument("--yes", action="store_true", help="install it, not just report it")
+    pup.add_argument("--expect", default="", metavar="VERSION",
+                     help="install only if the latest release is still exactly this version")
     pup.set_defaults(fn=cmd_update)
 
     pu = sub.add_parser("uninstall", help="remove collie: the app bundle, ~/.collie, and the "

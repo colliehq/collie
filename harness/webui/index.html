@@ -430,6 +430,19 @@
   .mcp-acts button:hover { border-color: var(--muted); }
   .mcp-acts button.danger { color: #c0392b; }
   .mcp-acts button[disabled] { opacity: .5; cursor: default; }
+  /* Collie updates (Settings → General) and the quiet dot on the Settings button. */
+  #settingsBtn { position: relative; }
+  #settingsBtn .upd-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%;
+                          background: var(--pine); box-shadow: 0 0 0 2px var(--surface); pointer-events: none; }
+  .upd-line { font-size: 12.5px; color: var(--muted); margin-top: 5px; line-height: 1.45; overflow-wrap: anywhere; }
+  .upd-more { margin-top: 8px; font-size: 12px; }
+  .upd-more summary { cursor: pointer; color: var(--ink); }
+  .upd-notes { white-space: pre-wrap; max-height: 180px; overflow: auto; margin: 6px 0; color: var(--muted);
+               line-height: 1.5; overflow-wrap: anywhere; }
+  .upd-log { white-space: pre-wrap; max-height: 160px; overflow: auto; font-family: var(--mono); font-size: 11px;
+             margin: 6px 0; overflow-wrap: anywhere; }
+  .upd-cmd { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; user-select: all; }
+  .mcp-acts button.upd-install { background: var(--pine); color: var(--on-accent); border-color: var(--pine); }
   .mcp-empty { font-size: 12.5px; color: var(--faint); padding: 4px 0 8px; }
   .mcp-addbtn {
     width: 100%; font-size: 12.5px; padding: 9px; border-radius: 11px; border: 1px dashed var(--line);
@@ -4130,6 +4143,34 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    // Collie updates (Settings → General)
+    "checked just now":"刚刚检查过",
+    "checked {n} min ago":"{n} 分钟前检查",
+    "checked {n} h ago":"{n} 小时前检查",
+    "checked {n} days ago":"{n} 天前检查",
+    "Update available":"有可用更新",
+    "Downloading and verifying Collie {v}…":"正在下载并校验 Collie {v}…",
+    "Verified. Collie will close, install {v} and start again by itself.":"校验通过。Collie 会关闭、安装 {v}，然后自行重新启动。",
+    "The update was not installed.":"更新没有安装。",
+    "Collie did not confirm the update. This copy is still {v}.":"Collie 没有确认更新结果，当前仍是 {v}。",
+    "Updated to {v}.":"已更新到 {v}。",
+    "Checking for updates…":"正在检查更新…",
+    "Could not check for updates:":"无法检查更新：",
+    "Collie {v} is available.":"Collie {v} 已发布。",
+    "You have the latest version.":"已是最新版本。",
+    "Not checked yet. Checking asks api.github.com for the latest release.":"尚未检查。检查时会向 api.github.com 查询最新版本。",
+    "update available":"有更新",
+    "up to date":"已是最新",
+    "What's new in {v}":"{v} 的更新内容",
+    "Release page":"发布页面",
+    "Details":"详情",
+    "Check for updates":"检查更新",
+    "Install {v} and restart":"安装 {v} 并重启",
+    "Collie closes while it installs and opens again afterwards. A task that is running at that moment is interrupted.":"安装期间 Collie 会关闭，装完再打开。那时正在运行的任务会被中断。",
+    "Updates are installed from Collie on this computer.":"更新需要在这台电脑上的 Collie 里安装。",
+    "Install it from a terminal:":"请在终端中安装：",
+    "Collie has not come back after the update. The installer log is collie-update.log in your temporary folder.":"更新后 Collie 还没有重新启动。安装日志是临时文件夹里的 collie-update.log。",
+    "Installing… Collie is restarting.":"正在安装… Collie 正在重启。",
     "More models": "更多模型",
     "{n} older or less common, found live": "实时发现的 {n} 个较旧或不常用模型",
     "Automatic task progress is temporarily blocked":"自动推进任务暂时受阻",
@@ -4373,6 +4414,34 @@
     "Dry run trigger":"试运行触发条件","Save automation":"保存自动化"
   });
   Object.assign(ZHTW, {
+    // Collie updates (Settings → General)
+    "checked just now":"剛剛檢查過",
+    "checked {n} min ago":"{n} 分鐘前檢查",
+    "checked {n} h ago":"{n} 小時前檢查",
+    "checked {n} days ago":"{n} 天前檢查",
+    "Update available":"有可用更新",
+    "Downloading and verifying Collie {v}…":"正在下載並驗證 Collie {v}…",
+    "Verified. Collie will close, install {v} and start again by itself.":"驗證通過。Collie 會關閉、安裝 {v}，然後自行重新啟動。",
+    "The update was not installed.":"更新沒有安裝。",
+    "Collie did not confirm the update. This copy is still {v}.":"Collie 沒有確認更新結果，目前仍是 {v}。",
+    "Updated to {v}.":"已更新到 {v}。",
+    "Checking for updates…":"正在檢查更新…",
+    "Could not check for updates:":"無法檢查更新：",
+    "Collie {v} is available.":"Collie {v} 已發布。",
+    "You have the latest version.":"已是最新版本。",
+    "Not checked yet. Checking asks api.github.com for the latest release.":"尚未檢查。檢查時會向 api.github.com 查詢最新版本。",
+    "update available":"有更新",
+    "up to date":"已是最新",
+    "What's new in {v}":"{v} 的更新內容",
+    "Release page":"發布頁面",
+    "Details":"詳情",
+    "Check for updates":"檢查更新",
+    "Install {v} and restart":"安裝 {v} 並重新啟動",
+    "Collie closes while it installs and opens again afterwards. A task that is running at that moment is interrupted.":"安裝期間 Collie 會關閉，裝完再開啟。那時正在執行的任務會被中斷。",
+    "Updates are installed from Collie on this computer.":"更新需要在這台電腦上的 Collie 裡安裝。",
+    "Install it from a terminal:":"請在終端機中安裝：",
+    "Collie has not come back after the update. The installer log is collie-update.log in your temporary folder.":"更新後 Collie 還沒有重新啟動。安裝記錄檔是暫存資料夾裡的 collie-update.log。",
+    "Installing… Collie is restarting.":"正在安裝… Collie 正在重新啟動。",
     "More models": "更多模型",
     "{n} older or less common, found live": "即時找到的 {n} 個較舊或不常用模型",
     "Automatic task progress is temporarily blocked":"自動推進任務暫時受阻",
@@ -4825,7 +4894,7 @@
     }
   };
   var GROUPS_I18N = {
-    zh: { "Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程", "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能" },
+    zh: { "Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程", "Retrieval": "检索", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能", "Updates": "更新" },
     ja: { "General": "一般", "Model": "モデル", "Tools": "ツール", "Desktop": "デスクトップ", "Remote": "リモート", "Retrieval": "検索", "Limits": "制限", "Privacy": "プライバシー", "Reliability": "信頼性", "Skills": "スキル" },
     ko: { "General": "일반", "Model": "모델", "Tools": "도구", "Desktop": "데스크톱", "Remote": "원격", "Retrieval": "검색", "Limits": "제한", "Privacy": "개인정보", "Reliability": "안정성", "Skills": "스킬" },
     es: { "General": "General", "Model": "Modelo", "Tools": "Herramientas", "Desktop": "Escritorio", "Remote": "Remoto", "Retrieval": "Recuperación", "Limits": "Límites", "Privacy": "Privacidad", "Reliability": "Fiabilidad", "Skills": "Habilidades" },
@@ -4998,7 +5067,7 @@
   // schema's implementation groups. Every key is still rendered from the server schema, so types,
   // bounds and provider-owned defaults remain authoritative.
   var SET_CATS = [
-    { id: "overview", label: "General", zh: "通用", kind: "overview", keys: ["COMPANION_NAME"] },
+    { id: "overview", label: "General", zh: "通用", kind: "overview", keys: ["COMPANION_NAME", "UPDATE_CHECK"] },
     { id: "brains", label: "Brains & routing", zh: "模型与路由",
       keys: ["PROVIDER", "MODEL", "REASONING_EFFORT", "INTERACTIVE_SPEED", "RUNNER", "RUNNER_POOL"] },
     { id: "caps", label: "Capabilities", zh: "能力",
@@ -5104,6 +5173,7 @@
         if (hn) html += '<div class="set-hint">' + setEsc(hn) + "</div>";
         if (lockedName) html += '<div class="set-hint">' + setEsc(t("This runtime was started with an authoritative name. Restart it without --name or COLLIE_COMPANION_NAME to rename the first-party display identity here.")) + "</div>";
       });
+      if (g === "Updates") html += '<div id="updateBox"></div>';
       return html + "</div>";
     }
 
@@ -5172,6 +5242,7 @@
     if (box) box.oninput = function () { setFilter(box.value); };
     if (typeof renderCollieIdentity === "function") renderCollieIdentity();
     loadSettingsOverview();
+    updateRender(); updateLoad();
     workIdentityLoad();
   }
 
@@ -5226,6 +5297,157 @@
       node.textContent = d && d.ok === true ? t("Ready · runtime responding") : t("Needs attention");
     }).catch(function () { node.textContent = t("Unavailable"); });
   }
+
+  // ---- Collie updates (Settings → General) --------------------------------
+  // GET /api/update reads what the server last learned and never waits on the network. Only the
+  // "Check for updates" button, or UPDATE_CHECK once the person turns it on, reaches the release
+  // feed. Install appears only where the server says one press is supported, and it names the
+  // version on screen so a newer release published meanwhile is not installed in its place.
+  var updateInfo = null, updateSeq = 0, updateWait = null;
+  function updateAge(sec) {
+    if (sec == null) return "";
+    sec = Math.max(0, Math.floor(sec));
+    if (sec < 90) return t("checked just now");
+    if (sec < 5400) return t("checked {n} min ago").replace("{n}", Math.round(sec / 60));
+    if (sec < 129600) return t("checked {n} h ago").replace("{n}", Math.round(sec / 3600));
+    return t("checked {n} days ago").replace("{n}", Math.round(sec / 86400));
+  }
+  function updateDot(d) {
+    var btn = $("settingsBtn"); if (!btn) return;
+    var dot = btn.querySelector(".upd-dot"), show = !!(d && d.newer);
+    if (show && !dot) {
+      dot = document.createElement("span"); dot.className = "upd-dot"; dot.setAttribute("aria-hidden", "true");
+      btn.appendChild(dot);
+    } else if (!show && dot) dot.remove();
+    var label = show ? t("Settings") + " · " + t("Update available") : t("Settings");
+    btn.setAttribute("aria-label", label); btn.title = label;
+  }
+  function updateLine(d, local) {
+    var inst = d.install || {}, st = inst.state || "none", target = inst.target || d.latest || "";
+    if (local) return local;
+    if (st === "running") return t("Downloading and verifying Collie {v}…").replace("{v}", target);
+    if (st === "handed_off") return t("Verified. Collie will close, install {v} and start again by itself.").replace("{v}", target);
+    if (st === "failed") return t("The update was not installed.") + (inst.detail ? " " + inst.detail : "");
+    if (st === "unconfirmed") return t("Collie did not confirm the update. This copy is still {v}.").replace("{v}", d.current);
+    if (st === "installed" && target === d.current && !d.newer) return t("Updated to {v}.").replace("{v}", d.current);
+    var failedLast = d.error && (!d.checked_at || (d.error_at || 0) >= d.checked_at);
+    if (d.checking) return t("Checking for updates…");
+    if (failedLast) return t("Could not check for updates:") + " " + d.error;
+    if (d.newer) return t("Collie {v} is available.").replace("{v}", d.latest);
+    if (d.checked_at) return t("You have the latest version.") + " · " + updateAge(d.checked_age_s);
+    return t("Not checked yet. Checking asks api.github.com for the latest release.");
+  }
+  function updateRender(d, localNote) {
+    if (d) updateInfo = d;
+    d = updateInfo; updateDot(d);
+    var box = document.getElementById("updateBox"); if (!box || !d || !d.current) return;
+    var inst = d.install || {}, st = inst.state || "none";
+    var busy = !!d.checking || st === "running" || st === "handed_off" || !!updateWait;
+    var badge = d.newer ? '<span class="mcp-badge warn">' + setEsc(t("update available")) + "</span>"
+      : (d.checked_at && !d.error ? '<span class="mcp-badge">' + setEsc(t("up to date")) + "</span>" : "");
+    var html = '<div class="mcp-item upd-item"><div class="mcp-top"><span class="mcp-name">Collie '
+      + setEsc(d.current) + "</span>" + badge + "</div>"
+      + '<div class="upd-line" role="status">' + setEsc(updateLine(d, localNote)) + "</div>";
+    if (d.newer && d.notes) {
+      html += '<details class="upd-more"><summary>' + setEsc(t("What's new in {v}").replace("{v}", d.latest)) + "</summary>"
+        + '<div class="upd-notes">' + setEsc(d.notes) + "</div>"
+        + (d.url ? '<a href="' + setEsc(d.url) + '" target="_blank" rel="noopener noreferrer">' + setEsc(t("Release page")) + "</a>" : "")
+        + "</details>";
+    }
+    var tail = inst.log_tail || inst.installer_log_tail || "";
+    if ((st === "failed" || st === "unconfirmed") && tail) {
+      html += '<details class="upd-more"><summary>' + setEsc(t("Details")) + '</summary><pre class="upd-log">'
+        + setEsc(tail) + "</pre>"
+        + '<div class="set-hint">' + setEsc(inst.installer_log || inst.log || "") + "</div></details>";
+    }
+    html += '<div class="mcp-acts"><button type="button" data-update="check"' + (busy ? " disabled" : "") + ">"
+      + setEsc(t("Check for updates")) + "</button>";
+    if (d.one_press && !busy)
+      html += '<button type="button" class="upd-install" data-update="install" data-version="' + setEsc(d.latest) + '">'
+        + setEsc(t("Install {v} and restart").replace("{v}", d.latest)) + "</button>";
+    html += "</div>";
+    if (d.one_press && !busy)
+      html += '<div class="set-hint">' + setEsc(t("Collie closes while it installs and opens again afterwards. A task that is running at that moment is interrupted.")) + "</div>";
+    else if (d.newer && !d.one_press && d.local === false)
+      html += '<div class="set-hint">' + setEsc(t("Updates are installed from Collie on this computer.")) + "</div>";
+    else if (d.newer && !d.one_press)
+      html += '<div class="set-hint">' + setEsc(t("Install it from a terminal:")) + ' <code class="upd-cmd">' + setEsc(d.command) + "</code></div>";
+    box.innerHTML = html + "</div>";
+  }
+  function updateLoad() {
+    var mine = ++updateSeq;
+    return fetch("/api/update?token=" + encodeURIComponent(CT)).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      if (mine !== updateSeq || updateWait) return;   // a newer read, or the restart watch, owns it
+      updateRender(d);
+      if (d.checking) setTimeout(function () { if (mine === updateSeq) updateLoad(); }, 4000);
+    }).catch(function () {});
+  }
+  function updatePost(action, body) {
+    var mine = ++updateSeq;
+    return fetch("/api/update/" + action + "?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {})
+    }).then(function (r) {
+      return r.json().then(function (d) { return { ok: r.ok, d: d }; });
+    }).then(function (res) {
+      if (mine !== updateSeq) return null;
+      if (!res.ok) {
+        updateRender(res.d && res.d.update, (res.d && res.d.error) || t("could not apply"));
+        return null;
+      }
+      updateRender(res.d);
+      return res.d;
+    }).catch(function () {
+      if (mine === updateSeq) updateRender(null, t("network error"));
+      return null;
+    });
+  }
+  // After the installer takes over, this server is closed and a new one starts with a new page
+  // token. The watch rides that out: unreachable means restarting, a 403 means a new process owns
+  // the port, and either a 403 or a changed version reloads the page onto it.
+  function updateWatchRestart(from) {
+    if (updateWait) return;
+    var started = Date.now(), seenDown = false;
+    updateWait = setInterval(function () {
+      if (Date.now() - started > 15 * 60 * 1000) {
+        clearInterval(updateWait); updateWait = null;
+        updateRender(null, t("Collie has not come back after the update. The installer log is collie-update.log in your temporary folder."));
+        return;
+      }
+      fetch("/api/update?token=" + encodeURIComponent(CT), { cache: "no-store" }).then(function (r) {
+        if (r.status === 403) { location.reload(); return null; }
+        return r.ok ? r.json() : null;
+      }).then(function (d) {
+        if (!d) return;
+        if (d.current !== from) { location.reload(); return; }
+        var st = (d.install || {}).state;
+        if (st === "failed" || st === "unconfirmed" || st === "none") {
+          clearInterval(updateWait); updateWait = null; updateRender(d); return;
+        }
+        updateRender(d, seenDown ? t("Installing… Collie is restarting.") : "");
+      }).catch(function () {
+        seenDown = true; updateRender(null, t("Installing… Collie is restarting."));
+      });
+    }, 2000);
+  }
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest ? e.target.closest("#updateBox [data-update]") : null;
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    if (btn.getAttribute("data-update") === "check") {
+      updateRender(Object.assign({}, updateInfo || {}, { checking: true }));
+      updatePost("check");
+      return;
+    }
+    var from = updateInfo && updateInfo.current;
+    updatePost("install", { version: btn.getAttribute("data-version") || "" }).then(function (d) {
+      if (d && d.install && (d.install.state === "running" || d.install.state === "handed_off")) updateWatchRestart(from);
+    });
+  });
+  updateLoad();
+  setInterval(function () { if (!updateWait) updateLoad(); }, 60 * 60 * 1000);
 
   // ---- MCP control plane (inside the settings modal) --------------------
   var mcpPollTimer = null;
@@ -5848,6 +6070,8 @@
             // after an accepted save, preserving explicit per-task choices and Pack's standard
             // speed through the same adoption rules used for a model change.
             if (window.refreshRunCapabilities) window.refreshRunCapabilities();
+          } else if (key === "UPDATE_CHECK") {
+            updateLoad();         // turning it on is what lets the server start its first check
           }
           return true;
         }).catch(function () {

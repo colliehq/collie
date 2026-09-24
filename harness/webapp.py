@@ -2098,6 +2098,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(capability_snapshot(_state_root(), os.getcwd()))
                 except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     return self._send_json({"error": str(exc)}, 409)
+            if path == "/api/update":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import update_notice
+                # Contacts the release feed only when the person enabled automatic checks, and
+                # then in the background: this answer is always the file, never a network wait.
+                update_notice.maybe_background_check()
+                return self._send_json(update_notice.status(local=self._update_local()))
             if path == "/api/comfy":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -3275,6 +3283,24 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     lease.release()
                 return self._send_json(reply, status)
+            if path in ("/api/update/check", "/api/update/install"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(4096)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import update_notice
+                local = self._update_local()
+                if path == "/api/update/check":
+                    return self._send_json(update_notice.check_now(local=local))
+                try:
+                    value = update_notice.start_install(str(body.get("version") or ""),
+                                                        local=local)
+                except update_notice.UpdateRefused as exc:
+                    return self._send_json({"error": str(exc),
+                                            "update": update_notice.status(local=local)},
+                                           exc.status)
+                return self._send_json(value)
             if path == "/api/doctor/repair":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -4891,6 +4917,11 @@ class Handler(BaseHTTPRequestHandler):
     def _peer_is_loopback(self) -> bool:
         peer = (self.client_address[0] if self.client_address else "") or ""
         return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1") or peer.startswith("127.")
+
+    def _update_local(self) -> bool:
+        """Installing an update closes and restarts Collie on this computer. That is decided by
+        someone sitting at it: a paired phone or a relayed request may read the notice, not act."""
+        return self._peer_is_loopback() and not self._is_relay()
 
     def _is_relay(self) -> bool:
         # the relay client replays a phone's request from 127.0.0.1 (so it looks loopback) but tags it

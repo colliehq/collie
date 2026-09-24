@@ -71,6 +71,23 @@ pip install -e ".[local,tui,search]"
     Without the `local` extra, memory runs on **BM25 keyword recall** — it works out of the box, it
     just isn't semantic. Collie never silently falls back to a low-quality embedder.
 
+## Staying up to date
+
+Open **Settings → General → Updates** and press **Check for updates**, or turn on *Check for
+updates automatically* to have Collie ask GitHub about once a day (off by default; see
+[Privacy](privacy.md)). When a newer release exists, a small dot appears on the Settings button and
+the Updates card shows its release notes.
+
+- **Windows installer copies** get **Install and restart**: Collie downloads the release you were
+  shown, checks its published digest and Authenticode signature, closes, runs Setup silently and
+  starts the same pieces again. A task that is running at that moment is interrupted. If a newer
+  release appears between reading the notice and pressing Install, nothing is installed and the
+  card asks you to check again.
+- **macOS, Homebrew and pip installs** show the command to run: `collie update --yes` (it verifies
+  a macOS download with Gatekeeper and the signing team before replacing the app).
+
+From a terminal, `collie update` reports the latest release and `collie update --yes` installs it.
+
 ## Verify it works
 
 ```bash

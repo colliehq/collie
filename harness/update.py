@@ -661,7 +661,7 @@ def _restart_script(part, root):
     return ""
 
 
-def apply_windows(exe, digest, on_note=print):
+def apply_windows(exe, digest, on_note=print, target_version=""):
     """Re-run Collie-Setup.exe over the existing install. Returns (ok, detail).
 
     The digest GitHub publishes is checked first. Collie-Setup.exe IS Authenticode-signed now (Azure
@@ -704,6 +704,7 @@ def apply_windows(exe, digest, on_note=print):
         # and report the real outcome.
         try:
             begin_update_journal(artifact=exe, mode="windows-direct",
+                                 target_version=target_version,
                                  artifact_sha256=sha256_of(exe))
         except Exception as exc:
             return False, "could not record the update recovery journal: %s" % exc
@@ -720,6 +721,7 @@ def apply_windows(exe, digest, on_note=print):
     parts = running_parts(root)
     try:
         begin_update_journal(artifact=exe, mode="windows-handoff", parts=parts,
+                             target_version=target_version,
                              artifact_sha256=sha256_of(exe))
     except Exception as exc:
         return False, "could not record the update recovery journal: %s" % exc
