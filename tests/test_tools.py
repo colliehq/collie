@@ -75,6 +75,38 @@ def test_webedit_write_checked():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+
+def test_webedit_write_checked_without_pytest():
+    # The desktop install's bundled Python has no pytest, so its editor takes the run-each-file
+    # path -- which read a helper imported only on the pytest path, raised UnboundLocalError after
+    # the write, and so neither verified nor reverted it.
+    from harness import webedit
+    import shutil
+    d = tempfile.mkdtemp(prefix="webedit_nopytest_")
+    saved = sys.modules.get("pytest")
+    try:
+        os.makedirs(os.path.join(d, "tests"))
+        modp = os.path.join(d, "mod.py")
+        open(modp, "w").write("def add(a, b):\n    return a + b\n")
+        open(os.path.join(d, "tests", "test_mod.py"), "w").write(
+            "import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))\n"
+            "from mod import add\n"
+            "def test_add(): assert add(2, 3) == 5\n"
+            "if __name__ == '__main__':\n    test_add(); print('OK')\n")
+        sys.modules["pytest"] = None          # `import pytest` now raises ImportError
+        r = webedit.write_checked(d, "mod.py", "def add(a, b):\n    return a + b  # ok\n")
+        assert r["ok"] and r["tests"] and "# ok" in open(modp).read(), r
+        before = open(modp).read()
+        r = webedit.write_checked(d, "mod.py", "def add(a, b):\n    return a - b\n")
+        assert (not r["ok"]) and r["stage"] == "test" and r.get("reverted"), r
+        assert open(modp).read() == before
+    finally:
+        if saved is not None:
+            sys.modules["pytest"] = saved
+        else:
+            sys.modules.pop("pytest", None)
+        shutil.rmtree(d, ignore_errors=True)
+
 def test_edit_crlf_preserved():
     from harness.tools import EditFileTool
     d = tempfile.mkdtemp(); p = os.path.join(d, "f.txt")

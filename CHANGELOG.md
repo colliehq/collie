@@ -146,6 +146,12 @@
 - Mark an accepted message as *No reply needed* in the inbox, with a short reason kept beside it.
   It stops counting as owed in the inbox and Daily Brief, and a task that finishes afterwards keeps
   its result without preparing or sending an automatic reply. The task itself is not changed.
+- Check and revert editor saves on installs without pytest. The desktop code editor keeps a save
+  only if the tests that cover the file still pass, but on the path used when pytest is missing
+  (the Windows install's bundled Python has none) the check crashed after the file was written:
+  the save stayed on disk unchecked and the editor was sent an error. A new test reads the source
+  for this kind of mistake (a function-local import that some path reaches before it has run),
+  which had also caused the 0.29.1 browser-status 500s.
 
 ## v0.29.1 — Bound startup waits when the clock changes
 
