@@ -180,11 +180,24 @@ class PiRpcRunner:
         evidence: dict[str, Any] = {"source": "pi auth check --no-refresh",
                                     "providers_checked": []}
         env, _receipt = runner_env.child_env(self.env_policy)
+
+        def _run(argv):
+            return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=10.0, env=env,
+                                  **plat.no_window_kwargs())
+
+        # Each of these starts Pi (a Node CLI), about a second apiece on Windows, and they were run
+        # one after another: 4.5 s of the web run menu's first capability read. They only read
+        # local metadata (--no-refresh), so they run side by side and are read back in order.
+        providers = ("openai-codex", "anthropic", "google")
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1 + len(providers)) as pool:
+            version_run = pool.submit(_run, [resolved, "--version"])
+            auth_runs = [(provider, pool.submit(
+                _run, [resolved, "auth", "check", "--provider", provider, "--json",
+                       "--no-refresh"])) for provider in providers]
         try:
-            completed = subprocess.run(
-                [resolved, "--version"], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=10.0, env=env,
-                **plat.no_window_kwargs())
+            completed = version_run.result()
             if completed.returncode == 0:
                 version = (completed.stdout or completed.stderr).strip().splitlines()[0][:200]
             else:
@@ -192,13 +205,9 @@ class PiRpcRunner:
         except Exception as exc:
             detail = "could not run Pi --version: %s" % type(exc).__name__
         reasons: list[str] = []
-        for provider in ("openai-codex", "anthropic", "google"):
+        for provider, auth_run in auth_runs:
             try:
-                auth = subprocess.run(
-                    [resolved, "auth", "check", "--provider", provider, "--json",
-                     "--no-refresh"], capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=10.0, env=env,
-                    **plat.no_window_kwargs())
+                auth = auth_run.result()
                 value = json.loads(auth.stdout or "{}",
                                    parse_constant=lambda raw: (_ for _ in ()).throw(
                                        ValueError("non-finite JSON number: " + raw)))

@@ -49,6 +49,11 @@
   the onboarding browser poll 1.5 s, and the desktop app's launch 0.8 s per probe before the
   server was up. A 0.15 s connect check now answers first. Health and `collie doctor` also look for
   the bridge on the port the browser tools use (`COLLIE_BROWSER_BRIDGE_PORT`).
+- Open the run menu's worker list faster. Its capability read probed each installed worker CLI one
+  after another, and Pi alone was started four times in a row (`--version` and an auth check per
+  provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read
+  after a minute took 5.5 s; the probes and Pi's checks now run side by side, with the Codex quota
+  read started alongside them, and the same read takes 1.5 s. The probe results are unchanged.
 - Keep the test suite away from the developer's real browser. Two tests reached the browser bridge
   on its fixed port (one read the form in a Collie tab, one listed tabs six times), so every suite
   run on a machine with the bridge running sent commands to its signed-in browser; the bridge

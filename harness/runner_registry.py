@@ -1003,9 +1003,17 @@ def probe_all(keys: Iterable[str] | None = None, *, live: bool = False,
     else:
         asked = {str(key) for key in keys}
         wanted = [key for key in SPECS if key in asked]
-    return {key: probe(key, live=live, now=now, provider=provider,
-                       status_runner=status_runner)
-            for key in wanted}
+    if len(wanted) <= 1:
+        return {key: probe(key, live=live, now=now, provider=provider,
+                           status_runner=status_runner)
+                for key in wanted}
+    # External probes wait on child processes (a CLI's --version, its auth check), so they are
+    # made side by side: the web run menu's list is as slow as its slowest runner, not their sum.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(wanted))) as pool:
+        running = {key: pool.submit(probe, key, live=live, now=now, provider=provider,
+                                    status_runner=status_runner) for key in wanted}
+    return {key: running[key].result() for key in wanted}
 
 
 def list_probes(*, live: bool = False, now: float | None = None,
