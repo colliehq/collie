@@ -167,6 +167,8 @@
   deleted every untracked file that existed before the run (reproduced with 0.29.1's code). A
   failed listing (git exiting with an error) was taken as empty the same way. The names are now
   passed back to git as raw bytes, and a checkpoint whose listing cannot be read fails instead.
+  The names are also taken literally now: as patterns, an untracked file named like
+  `secret[1].env` also matched an ignored `secret1.env`, which was then saved into the checkpoint.
 - Read shell output in the encoding each line was written in, on Windows machines whose code page
   is not UTF-8. Git, Git Bash's own tools, node and ripgrep print UTF-8, while Python programs and
   older console tools print in the system code page, and the bash tool read everything in the
@@ -181,7 +183,9 @@
 - Re-apply a reverted fix on Windows. When a coding run in SWE mode undid all of its edits, Collie
   restores its best diff, but the diff was written to `git apply` in text mode, which turned every
   line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
-  and re-applied as bytes and comes back exactly.
+  and re-applied as bytes and comes back exactly, whatever the user's diff settings. `run_in_env`
+  had the same problem with the patch it hands the container, and a SWE prediction patch now keeps
+  its line endings and bytes, or fails, instead of being quietly changed.
 
 ## v0.29.1 — Bound startup waits when the clock changes
 
