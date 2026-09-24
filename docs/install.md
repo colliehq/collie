@@ -83,8 +83,9 @@ the Updates card shows its release notes.
   starts the same pieces again. A task that is running at that moment is interrupted. If a newer
   release appears between reading the notice and pressing Install, nothing is installed and the
   card asks you to check again.
-- **macOS, Homebrew and pip installs** show the command to run: `collie update --yes` (it verifies
-  a macOS download with Gatekeeper and the signing team before replacing the app).
+- **The macOS app** points to the release page: download the new `Collie-arm64.dmg` and replace
+  Collie in Applications (the app puts no `collie` command on your PATH).
+- **Homebrew** copies show `brew upgrade collie`; **pip** installs show `collie update --yes`.
 
 From a terminal, `collie update` reports the latest release and `collie update --yes` installs it.
 

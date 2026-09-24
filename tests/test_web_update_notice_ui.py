@@ -185,3 +185,10 @@ def test_a_refused_install_reads_in_chinese_too(ui):
     s.box.get_by_role("button", name="安装 0.30.0 并重启").click()
     expect(s.line).to_have_text("显示的版本已不是最新版，请先重新检查")
     expect(s.box.get_by_role("button", name="安装 0.30.1 并重启")).to_be_visible()
+
+
+def test_the_mac_app_is_pointed_at_the_release_page_not_a_missing_command(ui):
+    s = Updates(ui, answer(kind="app", one_press=False, command="")).open()
+    s.general()
+    expect(s.box).to_contain_text("Download it from the release page and replace Collie in Applications.")
+    expect(s.box.locator(".upd-cmd")).to_have_count(0)

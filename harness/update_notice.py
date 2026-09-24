@@ -280,7 +280,10 @@ def status(*, now=None, path=None, local=True):
         "notes": (value.get("notes") or "") if newer else "",
         "error": value.get("error") or "",
         "error_at": value.get("error_at") or None,
-        "command": "collie update --channel %s --yes" % channel,
+        # What this install kind can actually run: the macOS app puts no `collie` command on PATH
+        # (it is updated from the release page), and a Homebrew copy is upgraded by brew.
+        "command": ("" if kind == "app" else "brew upgrade collie" if kind == "brew"
+                    else "collie update --channel %s --yes" % channel),
         "one_press": bool(newer and local and _one_press_supported(kind)),
         "install": _install_view(value, journal, clock),
     }

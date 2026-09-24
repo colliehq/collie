@@ -11,7 +11,8 @@
   were shown, verifies its published digest and Authenticode signature, closes, runs Setup and
   starts the same pieces again; the page reconnects by itself. If a newer release appears before you
   press Install, nothing is installed and the card asks you to check again. A paired phone can read
-  the notice but not install. macOS, Homebrew and pip copies show the exact command to run.
+  the notice but not install. Other installs are told what they can run: the macOS app is pointed
+  at the release page, Homebrew at `brew upgrade collie`, pip at `collie update --yes`.
 - `collie update --expect <version>` installs only that exact newer release (exit 3 otherwise), and
   the update journal now records the version being installed.
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only

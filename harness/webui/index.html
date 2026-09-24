@@ -4195,6 +4195,7 @@
     "Collie closes while it installs and opens again afterwards. A task that is running at that moment is interrupted.":"安装期间 Collie 会关闭，装完再打开。那时正在运行的任务会被中断。",
     "Updates are installed from Collie on this computer.":"更新需要在这台电脑上的 Collie 里安装。",
     "Install it from a terminal:":"请在终端中安装：",
+    "Download it from the release page and replace Collie in Applications.":"请从发布页面下载，并替换“应用程序”中的 Collie。",
     "Collie has not come back after the update. The installer log is collie-update.log in your temporary folder.":"更新后 Collie 还没有重新启动。安装日志是临时文件夹里的 collie-update.log。",
     "Installing… Collie is restarting.":"正在安装… Collie 正在重启。",
     "More models": "更多模型",
@@ -4485,6 +4486,7 @@
     "Collie closes while it installs and opens again afterwards. A task that is running at that moment is interrupted.":"安裝期間 Collie 會關閉，裝完再開啟。那時正在執行的任務會被中斷。",
     "Updates are installed from Collie on this computer.":"更新需要在這台電腦上的 Collie 裡安裝。",
     "Install it from a terminal:":"請在終端機中安裝：",
+    "Download it from the release page and replace Collie in Applications.":"請從發布頁面下載，並替換「應用程式」中的 Collie。",
     "Collie has not come back after the update. The installer log is collie-update.log in your temporary folder.":"更新後 Collie 還沒有重新啟動。安裝記錄檔是暫存資料夾裡的 collie-update.log。",
     "Installing… Collie is restarting.":"正在安裝… Collie 正在重新啟動。",
     "More models": "更多模型",
@@ -5460,6 +5462,8 @@
       html += '<div class="set-hint">' + setEsc(t("Collie closes while it installs and opens again afterwards. A task that is running at that moment is interrupted.")) + "</div>";
     else if (d.newer && !d.one_press && d.local === false)
       html += '<div class="set-hint">' + setEsc(t("Updates are installed from Collie on this computer.")) + "</div>";
+    else if (d.newer && !d.one_press && !d.command)
+      html += '<div class="set-hint">' + setEsc(t("Download it from the release page and replace Collie in Applications.")) + "</div>";
     else if (d.newer && !d.one_press)
       html += '<div class="set-hint">' + setEsc(t("Install it from a terminal:")) + ' <code class="upd-cmd">' + setEsc(d.command) + "</code></div>";
     box.innerHTML = html + "</div>";

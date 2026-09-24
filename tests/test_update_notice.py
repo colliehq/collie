@@ -338,3 +338,11 @@ def test_a_failure_is_cleared_once_this_copy_reached_the_target_another_way(stat
     assert update_notice.status()["install"]["state"] == "installed"
     monkeypatch.setattr(update_notice, "__version__", "0.31.0")     # and later past it
     assert update_notice.status()["install"] == {"state": "none"}
+
+
+@pytest.mark.parametrize("kind,command", [
+    ("setup", "collie update --channel stable --yes"), ("pip", "collie update --channel stable --yes"),
+    ("brew", "brew upgrade collie"), ("app", "")])
+def test_the_command_shown_is_one_this_install_can_run(state, monkeypatch, kind, command):
+    monkeypatch.setattr(update, "install_kind", lambda: kind)
+    assert update_notice.status()["command"] == command
