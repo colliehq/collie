@@ -54,6 +54,9 @@
   provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read
   after a minute took 5.5 s; the probes and Pi's checks now run side by side, with the Codex quota
   read started alongside them, and the same read takes 1.5 s. The probe results are unchanged.
+- Put the time on every line a supervised worker writes to its log (`09-23 17:39:02 [slack] …`).
+  The supervisor stamped only its own lines, so a Slack dog's 278 "connection lost" lines could not
+  be told apart from one another or matched to anything else on the machine.
 - Keep the test suite away from the developer's real browser. Two tests reached the browser bridge
   on its fixed port (one read the form in a Collie tab, one listed tabs six times), so every suite
   run on a machine with the bridge running sent commands to its signed-in browser; the bridge

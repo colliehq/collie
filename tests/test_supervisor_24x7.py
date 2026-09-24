@@ -329,3 +329,24 @@ def test_a_second_daemon_exits_with_one_line_instead_of_a_traceback(tmp_path, ca
     err = capsys.readouterr().err
     assert "already running" in err and "this copy is exiting" in err
     assert "Traceback" not in err
+
+
+def test_worker_output_lines_carry_the_time_they_arrived(tmp_path):
+    """A worker's own lines had no time, so 278 Slack reconnects could have been minutes or days
+    apart; now each carries the local time it was read."""
+    import io
+    import time as _time
+    proc = FakeProcess(51)
+    proc.stdout = io.StringIO("[slack] connected as rowan\n[slack] connection lost\n")
+    clock = [1_790_000_000.0]
+    spec = supervisor.WorkerSpec("slack-rowan", ["python", "bot.py"])
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        runtime = supervisor.WorkerRuntime(spec, store, str(tmp_path), popen=lambda *a, **k: proc,
+                                           probe=lambda spec: True, clock=lambda: clock[0])
+        runtime.step(clock[0])
+        runtime.reader.join(timeout=5)
+        runtime.close()
+    text = (tmp_path / "logs" / "slack-rowan.log").read_text(encoding="utf-8")
+    stamp = _time.strftime("%m-%d %H:%M:%S", _time.localtime(1_790_000_000.0))
+    assert "%s [slack] connected as rowan" % stamp in text
+    assert "%s [slack] connection lost" % stamp in text

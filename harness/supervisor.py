@@ -410,9 +410,9 @@ class WorkerRuntime:
     def _note(self, message):
         """One supervisor line, stamped with local wall time.
 
-        The worker's own output is copied through untouched. These lines had no time at all, so
-        the developer machine's web.log held 67 exits ("exited 4294967295 after 404.5s") that
-        could not be matched to anything that happened on that computer.
+        These lines had no time at all, so the developer machine's web.log held 67 exits
+        ("exited 4294967295 after 404.5s") that could not be matched to anything that happened on
+        that computer.
         """
         try:
             import datetime as _dt
@@ -422,12 +422,21 @@ class WorkerRuntime:
             stamp = "time unavailable"
         self.log.write("[supervisor %s] %s" % (stamp, message))
 
+    def _stamp(self):
+        """A short local time for a worker line: month-day and seconds; the file gives the year."""
+        try:
+            return time.strftime("%m-%d %H:%M:%S", time.localtime(float(self._clock())))
+        except (OverflowError, OSError, ValueError, TypeError):
+            return "--:--:--"
+
     def _read_output(self, stream):
+        # Each worker line gets the time it arrived. The Slack dog's log held 278 "connection
+        # lost" lines with nothing to say whether they came minutes or days apart.
         try:
             for line in iter(stream.readline, ""):
                 if not line:
                     break
-                self.log.write(line.rstrip("\r\n"))
+                self.log.write("%s %s" % (self._stamp(), line.rstrip("\r\n")))
         except Exception as exc:
             self._note("log reader stopped: %s" % exc)
         finally:
