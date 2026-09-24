@@ -4151,6 +4151,7 @@
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
     // Settings → Runtime reasons
+    "The background service manager is not running":"后台服务管理器没有运行",
     "{n} items need you to decide how to recover":"{n} 项需要你决定如何恢复",
     "The web service did not answer its health check":"Web 服务没有响应健康检查",
     "{name} is not signed in":"{name} 未登录",
@@ -4440,6 +4441,7 @@
   });
   Object.assign(ZHTW, {
     // Settings → Runtime reasons
+    "The background service manager is not running":"背景服務管理器沒有執行",
     "{n} items need you to decide how to recover":"{n} 項需要你決定如何復原",
     "The web service did not answer its health check":"Web 服務沒有回應健康檢查",
     "{name} is not signed in":"{name} 未登入",
@@ -5357,6 +5359,7 @@
       case "slack_needs_review": return t("{n} Slack tasks need review").replace("{n}", n);
       case "notifications_failing": return t("Notifications are not being delivered");
       case "supervisor_config_unreadable": return t("Background service settings could not be read");
+      case "supervisor_not_running": return t("The background service manager is not running");
     }
     return "";
   }

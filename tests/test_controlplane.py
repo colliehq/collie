@@ -116,3 +116,31 @@ def test_recovery_work_is_the_first_reason_given(tmp_path, monkeypatch):
                         lambda **_: {"installed": False, "mode": "none"})
     report = health(str(tmp_path), probe_services=False)
     assert report["reasons"][0] == {"code": "recovery_required", "subject": "work", "count": 1}
+
+
+def test_a_stopped_supervisor_is_one_reason_not_one_per_worker(tmp_path, monkeypatch):
+    from harness.controlplane import health
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    _quiet_credentials(monkeypatch)
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": True, "mode": "scheduled_task"})
+    report = health(str(tmp_path), probe_services=False)
+    codes = [row["code"] for row in report["reasons"]]
+    assert codes == ["supervisor_not_running"]
+    assert report["status"] == "degraded"
+
+
+def test_a_running_supervisor_names_the_worker_that_is_silent(tmp_path, monkeypatch):
+    import time
+    from harness.controlplane import health
+    from harness.ops import OpsStore
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    _quiet_credentials(monkeypatch)
+    monkeypatch.setattr("harness.supervisor.query_windows",
+                        lambda **_: {"installed": True, "mode": "scheduled_task"})
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("supervisor", "running", {}, ttl=60, now=time.time())
+        for name in ("web", "automations", "ambient", "bridge"):
+            store.beat("worker:" + name, "running", {}, ttl=60, now=time.time())
+    report = health(str(tmp_path), probe_services=False)
+    assert [(r["code"], r["subject"]) for r in report["reasons"]] == [("worker_not_reporting", "jobd")]

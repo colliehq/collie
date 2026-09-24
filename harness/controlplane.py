@@ -148,6 +148,13 @@ def health(path: str | None = None, *, probe_services: bool = True,
     }
     report["activity_errors"] = work["errors"]
     reasons = report.setdefault("reasons", [])
+    beat = (report.get("heartbeats") or {}).get("supervisor") or {}
+    if supervised and not beat.get("fresh"):
+        # Workers report through the supervisor. When it is not running, every worker is silent
+        # for that one reason -- including the web server answering this request -- so say that
+        # once instead of listing each worker as "not reporting".
+        reasons[:] = [row for row in reasons if row.get("code") != "worker_not_reporting"]
+        reasons.insert(0, {"code": "supervisor_not_running", "subject": "supervisor"})
     if config_error:
         report["activity_errors"]["supervisor_config"] = config_error
         report["ok"] = False
