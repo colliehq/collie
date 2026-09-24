@@ -188,6 +188,10 @@
   as debris, and a window such as "微信" could not be found by its name. The same applied to the
   now-playing title on the wallpaper and to process command lines with non-ASCII paths. These
   scripts now write UTF-8. Machines whose code page is already UTF-8 were not affected.
+- Stop telling the model that a correct shell script is broken, on Windows. After an edit, Collie
+  checks the file's syntax, and for `.sh` files it found Git Bash but then started the bare name
+  `bash`, which Windows resolves to WSL's bash first. WSL could not see the file, so every edited
+  shell script came back with "No such file or directory" attached to the edit result.
 - Find localized cameras and microphones for recording on Windows. ffmpeg prints device names as
   UTF-8, and Collie read them in the system code page, so under the Chinese code page a device
   such as "麦克风 (Realtek(R) Audio)" was listed garbled and could not be opened by that name.

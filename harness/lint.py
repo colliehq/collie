@@ -72,6 +72,10 @@ def diagnose(path, cwd):
         return ""
 
     tmpl = _CHECKERS.get(ext)
-    if not tmpl or not shutil.which(tmpl[0]):
+    exe = shutil.which(tmpl[0]) if tmpl else None
+    if not exe:
         return ""
-    return _run([a.replace("{p}", path) for a in tmpl], cwd)
+    # Run the program that was found, not its bare name: Windows' CreateProcess searches System32
+    # before PATH, so "bash" started WSL's bash.exe (which cannot see C:\ paths) while which() had
+    # found Git Bash -- and every edited .sh file came back "No such file or directory".
+    return _run([exe] + [a.replace("{p}", path) for a in tmpl[1:]], cwd)
