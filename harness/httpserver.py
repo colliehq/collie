@@ -12,6 +12,36 @@ from socketserver import TCPServer
 CLIENT_GONE = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)
 
 
+def loopback_listening(port, timeout=0.15):
+    """Whether anything accepts connections on this loopback port, answered quickly.
+
+    On Windows a connection to a loopback port nobody listens on is not refused at once: the stack
+    retries for about two seconds, so a probe of a service that is not running waits out its whole
+    HTTP timeout. Measured: 0.53 s of a 1.7 s `collie -p` with no browser bridge, spent on one
+    /health probe. A listening port completes the handshake in the kernel in well under a
+    millisecond, so a short connect decides it; the request that follows keeps its own timeout.
+    """
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def loopback_url_down(url):
+    """True when `url` names a loopback port that nothing listens on (so it need not be asked)."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        host, port = (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        return False
+    if host not in ("127.0.0.1", "localhost") or not port:
+        return False
+    return not loopback_listening(port)
+
+
 class _AddressBinding:
     def server_bind(self):
         # HTTPServer.server_bind calls getfqdn after binding, before listening.

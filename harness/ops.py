@@ -663,7 +663,15 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
     return out
 
 
+def _bridge_health_url() -> str:
+    # The port the browser tools use, which is the one worth reporting on.
+    return "http://127.0.0.1:%s/health" % (os.environ.get("COLLIE_BROWSER_BRIDGE_PORT") or 8677)
+
+
 def _probe_json(url: str, timeout: float = 1.5) -> dict:
+    from .httpserver import loopback_url_down
+    if loopback_url_down(url):
+        return {}           # not running; on Windows asking anyway waits out the whole timeout
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             raw = response.read(65536)
@@ -719,12 +727,15 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
         try:
             # The web server moves to the next free port when 8787 is taken; the one answering
             # this very request passes its own, so it cannot report itself unreachable.
+            from .httpserver import loopback_url_down
             url = "http://127.0.0.1:%d/api/ver" % int(web_port or 8787)
+            if loopback_url_down(url):
+                raise OSError("nothing listening")
             with urllib.request.urlopen(url, timeout=1.0) as r:
                 services["web"] = {"ok": r.status == 200}
         except Exception:
             services["web"] = {"ok": False}
-        bridge = _probe_json("http://127.0.0.1:8677/health")
+        bridge = _probe_json(_bridge_health_url())
         services["browser"] = {
             "ok": bool(bridge.get("ok")),
             "extension_connected": bool(bridge.get("extension_connected")),

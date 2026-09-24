@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
-from .httpserver import ThreadingHTTPServer
+from .httpserver import ThreadingHTTPServer, loopback_listening
 
 from . import plat
 from .tools import Tool
@@ -799,20 +799,7 @@ def start_background(port=None):
     return False
 
 
-def _listening(port, timeout=0.15):
-    """Whether anything accepts connections on this loopback port, answered quickly.
-
-    On Windows a connection to a loopback port nobody listens on is not refused at once: the stack
-    retries for about two seconds, so each probe below waited out its whole HTTP timeout. Measured:
-    0.53 s of a 1.7 s `collie -p` with no bridge running, spent on one /health probe. A listening
-    port completes the handshake in the kernel in well under a millisecond, so a short connect
-    decides it; the HTTP request that follows keeps its own timeout."""
-    import socket
-    try:
-        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
-            return True
-    except (OSError, ValueError):
-        return False
+_listening = loopback_listening     # a quick "is anything there" before each loopback probe
 
 
 def _web_server_up(port=8787, timeout=1.0):
