@@ -269,3 +269,27 @@ def test_load_config_discovers_slack_added_after_initial_install(tmp_path):
     rowan = next(item for item in loaded["workers"] if item["name"] == "slack-rowan")
     assert rowan["argv"][0] == "new-python"
     assert rowan["adopt_heartbeat"] == "slack:rowan"
+
+
+def test_supervisor_lines_carry_a_timestamp_and_the_restart_reason(tmp_path):
+    """Exits, starts and self-initiated restarts can be matched to what happened on the machine."""
+    import datetime as dt
+    processes = [FakeProcess(41), FakeProcess(42)]
+    clock = [1_790_000_000.0]
+    spec = supervisor.WorkerSpec("web", ["python", "web.py"], probe_url="http://health",
+                                 startup_grace_s=2, stable_s=10, max_backoff_s=10)
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        runtime = supervisor.WorkerRuntime(
+            spec, store, str(tmp_path), popen=lambda *a, **k: processes.pop(0),
+            probe=lambda spec: False, clock=lambda: clock[0])
+        runtime.step(clock[0])                  # starts pid 41
+        clock[0] += 5
+        runtime.step(clock[0] - 5)              # unhealthy since now
+        runtime.step(clock[0])                  # past the grace: restart
+        runtime.close()
+    text = (tmp_path / "logs" / "web.log").read_text(encoding="utf-8")
+    stamp = dt.datetime.fromtimestamp(1_790_000_000.0).astimezone().isoformat(timespec="seconds")
+    assert "[supervisor %s] started pid 41" % stamp in text
+    assert "health probe failed for 5.0s; restarting pid 41" in text
+    assert "] stopped" in text
+    assert "[supervisor] " not in text          # no unstamped supervisor line remains

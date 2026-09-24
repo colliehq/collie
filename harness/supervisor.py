@@ -392,6 +392,21 @@ class WorkerRuntime:
         return [part.replace("{python}", sys.executable).replace("{state}", self.root)
                 for part in self.spec.argv]
 
+    def _note(self, message):
+        """One supervisor line, stamped with local wall time.
+
+        The worker's own output is copied through untouched. These lines had no time at all, so
+        the developer machine's web.log held 67 exits ("exited 4294967295 after 404.5s") that
+        could not be matched to anything that happened on that computer.
+        """
+        try:
+            import datetime as _dt
+            stamp = _dt.datetime.fromtimestamp(float(self._clock())).astimezone().isoformat(
+                timespec="seconds")
+        except (OverflowError, OSError, ValueError, TypeError):
+            stamp = "time unavailable"
+        self.log.write("[supervisor %s] %s" % (stamp, message))
+
     def _read_output(self, stream):
         try:
             for line in iter(stream.readline, ""):
@@ -399,7 +414,7 @@ class WorkerRuntime:
                     break
                 self.log.write(line.rstrip("\r\n"))
         except Exception as exc:
-            self.log.write("[supervisor] log reader stopped: %s" % exc)
+            self._note("log reader stopped: %s" % exc)
         finally:
             try:
                 stream.close()
@@ -449,7 +464,7 @@ class WorkerRuntime:
                 self.reader = threading.Thread(target=self._read_output, args=(stream,),
                                                name="log-" + self.spec.name, daemon=True)
                 self.reader.start()
-            self.log.write("[supervisor] started pid %s" % getattr(self.process, "pid", "?"))
+            self._note("started pid %s" % getattr(self.process, "pid", "?"))
             self._beat("starting", now)
             return True
         except Exception as exc:
@@ -494,7 +509,7 @@ class WorkerRuntime:
             uptime = max(0.0, now - self.started_at)
             self.last_exit = int(code)
             self.last_error = "exited %s after %.1fs" % (code, uptime)
-            self.log.write("[supervisor] %s" % self.last_error)
+            self._note(self.last_error)
             self.process = None
             self._schedule_restart(now, rapid=uptime < self.spec.stable_s)
             state = "circuit_open" if now < self.circuit_until else "backoff"
@@ -516,6 +531,10 @@ class WorkerRuntime:
         # grace, then terminate the tree and let normal backoff/restart policy take over.
         if now - self.unhealthy_since >= self.spec.startup_grace_s:
             self.last_error = "health probe failed for %.1fs" % (now - self.unhealthy_since)
+            # Say why before stopping it: the log used to show only "stopped" for a restart
+            # the supervisor itself decided on.
+            self._note("%s; restarting pid %s" % (self.last_error,
+                                                  getattr(self.process, "pid", "?")))
             self.stop(grace_s=2)
             self._schedule_restart(now, rapid=True)
             self._beat("backoff", now, error=self.last_error)
@@ -540,7 +559,7 @@ class WorkerRuntime:
             proc.wait(timeout=max(0.1, float(grace_s)))
         except Exception:
             plat.kill_tree(proc)
-        self.log.write("[supervisor] stopped")
+        self._note("stopped")
 
     def close(self):
         self.stop()
