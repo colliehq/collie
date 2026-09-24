@@ -75,8 +75,12 @@ def _default_outdir():
 def list_dshow_devices():
     """(cameras, microphones) as ffmpeg sees them — the exact names dshow needs. Windows only."""
     exe = _ffmpeg()
+    # UTF-8, not the code page: dshow hands ffmpeg UTF-16 names and ffmpeg prints them as UTF-8.
+    # Read in 936, "麦克风 (Realtek(R) Audio)" came back garbled, and a name that is not the
+    # device's own is one dshow cannot open.
     p = subprocess.run([exe, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-                       capture_output=True, text=True, errors="replace", **plat.no_window_kwargs())
+                       capture_output=True, encoding="utf-8", errors="replace",
+                       **plat.no_window_kwargs())
     text = (p.stderr or "") + (p.stdout or "")
     cams, mics = [], []
     for line in text.splitlines():

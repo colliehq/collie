@@ -181,6 +181,9 @@
   running (measured: 20 s for a `sleep 20 &`; forever for a background server). The whole process
   tree is ended now, and the wait after that is bounded. Hook input is also sent as ASCII JSON, so
   non-ASCII text no longer arrives as `?` on Windows code pages that cannot spell it.
+- Find localized cameras and microphones for recording on Windows. ffmpeg prints device names as
+  UTF-8, and Collie read them in the system code page, so under the Chinese code page a device
+  such as "麦克风 (Realtek(R) Audio)" was listed garbled and could not be opened by that name.
 - Let `execute_code` scripts print any text on Windows. The script's output was written in the
   system code page but read as UTF-8, so under the Chinese code page `print("中文")` came back as
   replacement characters, and under 1252 it raised `UnicodeEncodeError` in the script itself.
