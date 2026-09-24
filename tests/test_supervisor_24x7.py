@@ -241,13 +241,14 @@ def test_slack_worker_adopts_fresh_legacy_heartbeat_then_takes_over(tmp_path):
     })
     assert spec.adopt_heartbeat == "slack:rowan"  # migration for existing schema-1 config
     with OpsStore(str(tmp_path / "ops.db")) as store:
-        store.beat("slack:rowan", "connected", {}, pid=321, ttl=10, now=100)
+        # A live process (this one) stands in for the legacy dog: adoption checks it is running.
+        store.beat("slack:rowan", "connected", {}, pid=os.getpid(), ttl=10, now=100)
         runtime = supervisor.WorkerRuntime(
             spec, store, str(tmp_path), popen=popen, probe=lambda _: False, clock=lambda: 0)
         assert runtime.step(105) == "external"
         row = store.heartbeats(now=105)["worker:slack-rowan"]
         assert row["pid"] == 0
-        assert row["detail"]["external_pid"] == 321
+        assert row["detail"]["external_pid"] == os.getpid()
         assert not spawned
         assert runtime.step(111) == "starting"
         assert len(spawned) == 1

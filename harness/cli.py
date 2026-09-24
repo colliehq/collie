@@ -4214,6 +4214,18 @@ def cmd_jobs(args):
         elif args.action == "daemon":
             # colliejobd: catch up on start, then tick jobs plus model-driven
             # Missions on an interval (the Mission lane cannot delay reminders).
+            # One at a time. A supervisor restart leaves its children running, and the next one
+            # started another: two daemons ticking the same jobs.db is where the developer
+            # machine's "mission tick paused: database is locked" came from.
+            from .supervisor import AlreadyRunning, InstanceLock
+            try:
+                jobd_lock = InstanceLock(os.path.join(d, "jobd.lock"),
+                                         what="The Collie jobs daemon")
+            except AlreadyRunning as exc:
+                print("collie jobs daemon: %s; this copy is exiting." % exc, file=sys.stderr)
+                return 3
+            from .ops import OpsStore
+            jobd_ops = OpsStore(os.environ.get("COLLIE_OPS_DB") or os.path.join(d, "ops.db"))
             from .scheduler import Scheduler
             sched = Scheduler(acts, jobs, db_path=os.path.join(d, "jobs.db"))
             from . import settings as _mst
@@ -4231,6 +4243,13 @@ def cmd_jobs(args):
                     if msg != last_mission_error[0]:
                         print("mission tick paused: %s" % msg)
                         last_mission_error[0] = msg
+                # What a supervisor started after this one adopts instead of starting a second.
+                try:
+                    jobd_ops.beat("jobs-daemon", "running",
+                                  {"mission_error": last_mission_error[0][:200]},
+                                  ttl=max(30.0, 3 * float(args.interval)))
+                except Exception:
+                    pass
 
             print("colliejobd: jobs + missions, catch-up + tick every %ss (Ctrl-C to stop)"
                   % args.interval)
@@ -4241,6 +4260,8 @@ def cmd_jobs(args):
             finally:
                 msvc.close()
                 sched.close()
+                jobd_ops.close()
+                jobd_lock.close()
         elif args.action == "receipts":
             rows = acts.receipts(args.text or None)
             if not rows:

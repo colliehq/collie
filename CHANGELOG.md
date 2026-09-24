@@ -89,6 +89,14 @@
   approximate location from your network address and `api.open-meteo.com` for the weather there,
   about every 30 minutes, which the privacy policy did not mention. `"weather": false` under
   `"clock"` in `~/.collie/desktop.json` now stops both requests and keeps the clock.
+- Run one jobs daemon at a time, and let a restarted supervisor adopt the daemons already running.
+  A supervisor restart leaves its children running, and the next supervisor started a second
+  jobs daemon on the same database -- the "mission tick paused: database is locked" lines in one
+  machine's log -- and a second automations daemon that could not take its lock, exited, was
+  restarted and ended *circuit open*, reported stopped while one was running. The jobs daemon now
+  holds a single-instance lock and reports a heartbeat, the supervisor adopts a live jobs or
+  automations daemon by its heartbeat (existing `supervisor.json` files learn this on load), and a
+  heartbeat from a process that has exited is never adopted.
 - Put the time on every line a supervised worker writes to its log (`09-23 17:39:02 [slack] …`).
   The supervisor stamped only its own lines, so a Slack dog's 278 "connection lost" lines could not
   be told apart from one another or matched to anything else on the machine.

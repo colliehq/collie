@@ -104,6 +104,38 @@ def new_group_kwargs() -> dict:
         else {"start_new_session": True}
 
 
+def pid_alive(pid) -> bool:
+    """Read-only liveness of a process by id (never signals it: os.kill(pid, 0) kills on Windows)."""
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel = ctypes.windll.kernel32
+            handle = kernel.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+                return bool(ok and code.value == 259)            # STILL_ACTIVE
+            finally:
+                kernel.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def no_window_kwargs() -> dict:
     """Popen kwargs that keep a child from flashing a console window.
 

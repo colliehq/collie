@@ -233,10 +233,11 @@ def default_config(root: str | None = None, python: str | None = None) -> dict:
         WorkerSpec("web", [python, "-m", "harness.webapp", "--port", "8787", "--no-open"],
                    probe_url="http://127.0.0.1:8787/api/ver").as_dict(),
         WorkerSpec("jobd", [python, "-m", "harness.cli", "jobs", "daemon", "--interval", "60"],
-                   startup_grace_s=15).as_dict(),
+                   startup_grace_s=15, adopt_heartbeat="jobs-daemon").as_dict(),
         WorkerSpec("automations", [python, "-m", "harness.automations", "daemon",
                                     "--interval", "5", "--state-dir", root],
-                   critical=False, startup_grace_s=15).as_dict(),
+                   critical=False, startup_grace_s=15,
+                   adopt_heartbeat="automation-daemon").as_dict(),
         # The worker is safe to keep alive while observation is off: it polls the
         # local setting and records nothing until a versioned one-time consent exists.
         WorkerSpec("ambient", [python, "-m", "harness.ambient", "--state-dir", root],
@@ -290,6 +291,10 @@ def save_config(value: dict, path: str | None = None):
     _atomic_json(path or config_path(value.get("state_dir")), clean)
 
 
+#: Workers that report a heartbeat an already-running copy can be adopted by.
+_ADOPT_BY_HEARTBEAT = {"jobd": "jobs-daemon", "automations": "automation-daemon"}
+
+
 def load_config(path: str | None = None, *, python: str | None = None) -> dict:
     path = path or config_path()
     try:
@@ -312,6 +317,13 @@ def load_config(path: str | None = None, *, python: str | None = None) -> dict:
                 item["name"] not in known):
             value["workers"].append(item)
             known[item["name"]] = item
+        elif (item["name"] in _ADOPT_BY_HEARTBEAT and item["name"] in known
+              and not known[item["name"]].get("adopt_heartbeat")):
+            # A daemon a previous supervisor started keeps running across a supervisor restart
+            # (the task's job object does not kill its children). Without a heartbeat to adopt it
+            # by, the new supervisor started a second copy, which found the lock held, exited,
+            # was restarted, and ended "circuit open" -- reported stopped while one was running.
+            known[item["name"]]["adopt_heartbeat"] = _ADOPT_BY_HEARTBEAT[item["name"]]
         elif item["name"].startswith("slack-") and item["argv"] != known[item["name"]]["argv"]:
             # The dog's launcher is where `collie slack --install-autostart` records what the
             # person asked for; this copy was taken once, when supervisor.json was created. A
@@ -396,6 +408,7 @@ class WorkerRuntime:
         self.restart_count = 0
         self.consecutive_failures = 0
         self.last_exit = None
+        self.last_child_pid = 0                # the pid of this runtime's last child that exited
         self.last_error = ""
         self.unhealthy_since = 0.0
         self.circuit_until = 0.0
@@ -459,6 +472,12 @@ class WorkerRuntime:
         row = self.store.heartbeats(now=now).get(self.spec.adopt_heartbeat) or {}
         if not row.get("fresh") or row.get("state") in (
                 "dead", "failed", "stopped", "shutdown_timeout"):
+            return None
+        if self.last_child_pid and int(row.get("pid") or 0) == self.last_child_pid:
+            return None                    # our own child, just exited: its beat has not expired
+        if not plat.pid_alive(row.get("pid")):
+            # Gone, whoever it was (a venv's python.exe is a launcher, so the pid that beats is not
+            # always the pid this runtime started); its beat simply has not expired yet.
             return None
         return {
             "adopted_via": "heartbeat",
@@ -531,6 +550,7 @@ class WorkerRuntime:
         code = self.process.poll()
         if code is not None:
             uptime = max(0.0, now - self.started_at)
+            self.last_child_pid = int(getattr(self.process, "pid", 0) or 0)
             self.last_exit = int(code)
             self.last_error = "exited %s after %.1fs" % (code, uptime)
             self._note(self.last_error)
