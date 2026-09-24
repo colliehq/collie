@@ -167,6 +167,13 @@
   deleted every untracked file that existed before the run (reproduced with 0.29.1's code). A
   failed listing (git exiting with an error) was taken as empty the same way. The names are now
   passed back to git as raw bytes, and a checkpoint whose listing cannot be read fails instead.
+- Read shell output in the encoding each line was written in, on Windows machines whose code page
+  is not UTF-8. Git, Git Bash's own tools, node and ripgrep print UTF-8, while Python programs and
+  older console tools print in the system code page, and the bash tool read everything in the
+  system code page. With the Chinese default (936), `git log`, `cat` of a source file and
+  similar commands therefore reached the model garbled. Each line is now read as UTF-8 when it is
+  valid UTF-8, and in the system code page otherwise. Machines already on UTF-8 (code page 65001)
+  are unchanged.
 - Re-apply a reverted fix on Windows. When a coding run in SWE mode undid all of its edits, Collie
   restores its best diff, but the diff was written to `git apply` in text mode, which turned every
   line ending into CRLF on Windows, so the restore never applied there. The diff is now captured

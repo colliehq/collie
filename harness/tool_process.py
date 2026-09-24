@@ -44,8 +44,10 @@ runs.
 from __future__ import annotations
 
 import base64
+import codecs
 from collections import deque
 import json
+import locale
 import os
 import subprocess
 import sys
@@ -67,6 +69,102 @@ DRAIN_S = 5.0
 OUTPUT_CAPTURE_CHARS = 1_048_576
 OUTPUT_HEAD_CHARS = 32_768
 PIPE_READ_CHARS = 65_536
+
+
+# What a command prints on Windows is not in one encoding. Git, Git Bash's own tools, node and
+# rg write UTF-8; Python children and legacy console programs write the ANSI code page. Read in
+# the ANSI code page (the text-mode default), everything UTF-8 -- `git log`, `cat` of a source
+# file -- reached the model garbled wherever that code page is not UTF-8 (936, the Chinese
+# default; 1252). So each line is read as UTF-8 when it is valid UTF-8, which text in another
+# code page almost never is, and in the ANSI code page otherwise. Where the code page already
+# is UTF-8 (65001) nothing changes.
+OUTPUT_CODEC = "collie_utf8_else_ansi"
+_LONG_LINE_BYTES = 65_536
+
+
+def _ansi() -> str:
+    return locale.getpreferredencoding(False)
+
+
+def _decode_line(raw: bytes, errors: str) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(_ansi(), errors)
+
+
+class _Utf8ElseAnsiDecoder(codecs.IncrementalDecoder):
+    """Decide per line. A line longer than _LONG_LINE_BYTES is released in pieces cut on a
+    UTF-8 character boundary, so one enormous line keeps the reader's memory bound."""
+
+    def __init__(self, errors="replace"):
+        super().__init__(errors)
+        self._pending = b""
+
+    def decode(self, data, final=False):
+        buf = self._pending + bytes(data)
+        out, start = [], 0
+        while True:
+            nl = buf.find(b"\n", start)
+            if nl < 0:
+                break
+            out.append(_decode_line(buf[start:nl + 1], self.errors))
+            start = nl + 1
+        rest = buf[start:]
+        if final and rest:
+            out.append(_decode_line(rest, self.errors))
+            rest = b""
+        elif len(rest) >= _LONG_LINE_BYTES:
+            utf8 = codecs.getincrementaldecoder("utf-8")()
+            try:
+                out.append(utf8.decode(rest))
+                rest = utf8.getstate()[0]           # an incomplete character waits for the rest
+            except UnicodeDecodeError:
+                out.append(rest.decode(_ansi(), self.errors))
+                rest = b""
+        self._pending = rest
+        return "".join(out)
+
+    def reset(self):
+        self._pending = b""
+
+    def getstate(self):
+        return self._pending, 0
+
+    def setstate(self, state):
+        self._pending = state[0]
+
+
+class _AnsiEncoder(codecs.IncrementalEncoder):
+    def encode(self, text, final=False):
+        return text.encode(_ansi(), self.errors)
+
+
+def _codec_search(name):
+    if name != OUTPUT_CODEC:
+        return None
+    return codecs.CodecInfo(
+        name=OUTPUT_CODEC,
+        encode=lambda text, errors="strict": (text.encode(_ansi(), errors), len(text)),
+        decode=lambda raw, errors="strict": (
+            _Utf8ElseAnsiDecoder(errors).decode(raw, final=True), len(raw)),
+        incrementalencoder=_AnsiEncoder, incrementaldecoder=_Utf8ElseAnsiDecoder)
+
+
+codecs.register(_codec_search)
+
+
+def _output_encoding():
+    """The pipes' encoding for a command: None (the platform default) unless Windows's ANSI
+    code page is something other than UTF-8."""
+    if not plat.is_windows():
+        return None
+    try:
+        if codecs.lookup(_ansi()).name == "utf-8":
+            return None
+    except LookupError:
+        pass
+    return OUTPUT_CODEC
 
 OK = "ok"
 TIMEOUT = "timeout"
@@ -583,6 +681,9 @@ def _start_owned(argv, *, use_shell, cwd, env, capture_stderr, cancelled):
     stdio = dict(stdout=subprocess.PIPE,
                  stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
                  text=True, errors="replace")
+    encoding = _output_encoding()
+    if encoding:
+        stdio["encoding"] = encoding
     if not plat.is_windows():
         group_kwargs = plat.new_group_kwargs()
         try:
