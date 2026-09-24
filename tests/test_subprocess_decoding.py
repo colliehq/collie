@@ -180,11 +180,23 @@ def test_swe_prediction_patch_is_exact_or_refused(tmp_path):
     subprocess.run(["git", "-C", str(tmp_path), "apply", "-"], input=patch.encode("utf-8"),
                    check=True, capture_output=True)
     assert f.read_bytes() == b"x = 1\r\ny = 2\r\n"
-    # Not UTF-8: kept, with U+FFFD for those bytes and a warning. Refusing it left the
-    # instance with no prediction on every retry.
-    f.write_bytes(b"x = 1\r\n# caf\xe9\r\n")
+    # Not UTF-8: sent as git binary patches, which apply to the exact bytes. U+FFFD scored bytes
+    # the agent never wrote, or (in a context line) a patch that no longer applied; refusing it
+    # left the instance with no prediction at all.
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "crlf")
+    f.write_bytes(b"x = 1\r\n# caf\xe9\r\ny = 2\r\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "latin-1 context")
+    f.write_bytes(b"x = 1\r\n# caf\xe9\r\ny = 3\r\n# na\xefve\r\n")
     patch = swe.make_patch(str(tmp_path))
-    assert "+# caf\ufffd\r\n" in patch
+    assert "\ufffd" not in patch and "GIT binary patch" in patch
+    assert not (tmp_path / ".git" / "info" / "attributes").exists() or \
+        b"-diff" not in (tmp_path / ".git" / "info" / "attributes").read_bytes()
+    _git(tmp_path, "reset", "-q", "--hard")
+    subprocess.run(["git", "-C", str(tmp_path), "apply", "-"], input=patch.encode("utf-8"),
+                   check=True, capture_output=True)
+    assert f.read_bytes() == b"x = 1\r\n# caf\xe9\r\ny = 3\r\n# na\xefve\r\n"
 
 
 def test_run_in_env_hands_the_container_the_exact_diff(tmp_path, monkeypatch):

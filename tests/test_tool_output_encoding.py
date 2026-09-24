@@ -98,3 +98,14 @@ def test_a_huge_line_in_a_double_byte_code_page_stays_paired(monkeypatch):
     got = [d.decode(line[i:i + 8191]) for i in range(0, len(line), 8191)]
     got.append(d.decode(b"", final=True))
     assert "".join(got) == "中" * 20001 + "兄" * 20001 + "\n"
+
+
+def test_the_rest_of_a_long_line_keeps_the_encoding_it_started_in(monkeypatch):
+    # After a cut, a GBK tail such as b"\xd2\xbb tail" is also valid UTF-8 (U+04BB); judged
+    # afresh it came back Cyrillic. A line released in pieces is read in one encoding.
+    monkeypatch.setattr(tp, "_ansi", lambda: "gbk")
+    d = codecs.getincrementaldecoder(tp.OUTPUT_CODEC)("replace")
+    head = ("中" * (tp._LONG_LINE_BYTES // 2)).encode("gbk")      # one full piece of GBK
+    line = head + "一 tail\n".encode("gbk")
+    got = d.decode(line[:len(head) + 1]) + d.decode(line[len(head) + 1:])
+    assert got == "中" * (tp._LONG_LINE_BYTES // 2) + "一 tail\n"

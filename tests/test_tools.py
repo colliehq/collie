@@ -487,6 +487,17 @@ def test_execute_code_writes_its_script_as_utf8(monkeypatch):
                                       _ctx(os.getcwd()))
     assert "ok 中文" in out and seen and seen[-1].get("encoding") == "utf-8", (out, seen)
 
+def test_execute_code_survives_a_lone_surrogate_in_the_code():
+    # JSON can carry a lone "\ud83d"; writing it as UTF-8 raised out of run() and left an empty
+    # script file behind. It is written as its escape: the same code point in a string literal.
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    out = reg.get("execute_code").run({"code": 'print(len("a\ud83db"))', "timeout": 20},
+                                      _ctx(os.getcwd()))
+    assert out.strip() == "3", out
+
 def test_execute_code_prints_non_ascii_whatever_the_code_page():
     # The host reads the script's pipes as UTF-8, and -I ignores PYTHONIOENCODING, so the script
     # used the ANSI code page: "中文" came back as U+FFFD under 936 and raised

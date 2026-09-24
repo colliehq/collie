@@ -564,8 +564,11 @@ def running_parts(root):
           "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' or Name = 'pythonw.exe'\""
           " | ForEach-Object { $_.CommandLine }")
     try:
-        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
-                             capture_output=True, text=True, errors="replace", timeout=25,
+        # UTF-8 out: PowerShell writes pipes in the OEM code page, read here as ANSI -- on a
+        # Western Windows (850/437 vs 1252) a path with "José" in it no longer matched, and the
+        # Slack dog was not started again after the update.
+        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", plat.PS_UTF8_OUTPUT + ps],
+                             capture_output=True, encoding="utf-8", errors="replace", timeout=25,
                              **plat.no_window_kwargs()).stdout or ""
     except Exception:
         out = ""

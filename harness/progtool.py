@@ -281,8 +281,10 @@ class ExecuteCodeTool(Tool):
             # UTF-8, which is what Python reads a source file as. In the locale code page a
             # script with non-ASCII in it failed to write under 1252 and was a SyntaxError
             # under 936.
+            # backslashreplace: a lone surrogate (JSON can carry one) becomes its \uXXXX escape,
+            # the same code point inside a string literal, instead of an exception here.
             with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
-                                             encoding="utf-8") as f:
+                                             encoding="utf-8", errors="backslashreplace") as f:
                 f.write(_PREAMBLE + "\n" + code)
                 path = f.name
             # Do NOT prepend the untrusted repo (ctx.cwd) to PYTHONPATH — that puts it ahead of the

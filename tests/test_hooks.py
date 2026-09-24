@@ -173,3 +173,20 @@ def test_a_payload_that_cannot_be_sent_starts_nothing(tmp_path):
     import time
     time.sleep(2)                     # long enough for a hook that did start to have written
     assert not marker.exists(), "the hook ran although its payload could not be sent"
+
+
+def test_hook_output_is_read_in_the_encoding_it_was_written_in(tmp_path, monkeypatch):
+    # jq, node and Git Bash's tools print UTF-8; read in the code page a Chinese reason reached
+    # the model as mojibake ("涓嶅厑璁" for "不允许" under 936).
+    import locale
+    from harness import tool_process
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp936")      # the pipes' default
+    monkeypatch.setattr(tool_process, "_ansi", lambda: "gbk")
+    monkeypatch.setattr(tool_process, "_output_encoding", lambda: tool_process.OUTPUT_CODEC)
+    command = _script(tmp_path,
+        "import sys\n"
+        "sys.stdout.buffer.write('{\"decision\":\"deny\",\"reason\":\"不允许: 生产分支\"}'"
+        ".encode('utf-8'))\n")
+    hooks = HookManager(str(tmp_path), [_config("PreToolUse", command, "bash")])
+    result = hooks.dispatch("PreToolUse", {"tool_name": "bash"}, subject="bash")
+    assert result.reason == "不允许: 生产分支"

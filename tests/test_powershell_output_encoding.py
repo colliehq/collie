@@ -17,6 +17,10 @@ _LINE = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 def test_every_script_whose_output_is_read_sets_utf8_output():
     assert plat.PS_UTF8_OUTPUT.strip() == _LINE
+    import inspect
+    from harness import update
+    # update.running_parts reads process command lines to know what to start again
+    assert "PS_UTF8_OUTPUT" in inspect.getsource(update.running_parts)
     for name, src in (("native UIA driver", native._DRIVER_PS),
                       ("MSAA driver", native_input._MSAA_PS),
                       ("capture script", screenshot._CAPTURE_PS)):

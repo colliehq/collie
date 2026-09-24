@@ -202,7 +202,7 @@
   line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
   and re-applied as bytes and comes back exactly, whatever the user's diff settings. `run_in_env`
   had the same problem with the patch it hands the container, and a SWE prediction patch now keeps
-  its line endings, and says so when bytes that are not UTF-8 had to be replaced.
+  its line endings, and goes out as exact git binary patches when the diff is not UTF-8.
 
 ## v0.29.1 — Bound startup waits when the clock changes
 

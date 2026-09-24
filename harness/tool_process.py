@@ -103,6 +103,11 @@ class _Utf8ElseAnsiDecoder(codecs.IncrementalDecoder):
     def __init__(self, errors="replace"):
         super().__init__(errors)
         self._pending = b""
+        self._line = None           # the encoding a line already released in pieces was read in
+
+    def _finish(self, raw):
+        encoding, self._line = self._line, None
+        return raw.decode(encoding, self.errors) if encoding else _decode_line(raw, self.errors)
 
     def decode(self, data, final=False):
         buf = self._pending + bytes(data)
@@ -111,22 +116,27 @@ class _Utf8ElseAnsiDecoder(codecs.IncrementalDecoder):
             nl = buf.find(b"\n", start)
             if nl < 0:
                 break
-            out.append(_decode_line(buf[start:nl + 1], self.errors))
+            out.append(self._finish(buf[start:nl + 1]))
             start = nl + 1
         rest = buf[start:]
         if final and rest:
-            out.append(_decode_line(rest, self.errors))
+            out.append(self._finish(rest))
             rest = b""
         elif len(rest) >= _LONG_LINE_BYTES:
             # Cut on a character boundary in whichever encoding the piece is in: a double-byte
             # (936, 932) lead byte left at the cut used to become U+FFFD and pair every later
-            # byte of the line with the wrong neighbour.
-            for encoding, errors in (("utf-8", "strict"), (_ansi(), self.errors)):
+            # byte of the line with the wrong neighbour. The rest of the line keeps that
+            # encoding: judged afresh, a GBK tail such as b"\xd2\xbbtail" is also valid UTF-8.
+            choices = ([(self._line, self.errors)] if self._line else
+                       [("utf-8", "strict"), (_ansi(), self.errors)])
+            for encoding, errors in choices:
                 piece = codecs.getincrementaldecoder(encoding)(errors)
                 try:
                     out.append(piece.decode(rest))
                 except UnicodeDecodeError:
                     continue
+                if max(rest) >= 0x80:               # pure ASCII is both; it decides nothing
+                    self._line = encoding
                 rest = piece.getstate()[0]          # an incomplete character waits for the rest
                 break
         self._pending = rest
@@ -134,6 +144,7 @@ class _Utf8ElseAnsiDecoder(codecs.IncrementalDecoder):
 
     def reset(self):
         self._pending = b""
+        self._line = None
 
     def getstate(self):
         return self._pending, 0
