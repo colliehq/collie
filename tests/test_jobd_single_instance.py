@@ -61,13 +61,14 @@ def test_a_running_jobs_daemon_reports_a_heartbeat(tmp_path):
 def test_an_older_supervisor_config_learns_the_heartbeats_to_adopt_by(tmp_path):
     config = supervisor.default_config(str(tmp_path), sys.executable)
     for worker in config["workers"]:
-        if worker["name"] in ("jobd", "automations"):
+        if worker["name"] in ("jobd", "automations", "ambient"):
             worker["adopt_heartbeat"] = ""          # as written by an earlier release
     path = tmp_path / "supervisor.json"
     path.write_text(json.dumps(config), encoding="utf-8")
     loaded = {w["name"]: w for w in supervisor.load_config(str(path))["workers"]}
     assert loaded["jobd"]["adopt_heartbeat"] == "jobs-daemon"
     assert loaded["automations"]["adopt_heartbeat"] == "automation-daemon"
+    assert loaded["ambient"]["adopt_heartbeat"] == "ambient-observer"
 
 
 class _Proc:
@@ -136,3 +137,23 @@ def test_its_own_child_that_just_died_is_restarted_not_adopted(tmp_path):
         assert runtime.step(clock[0]) == "starting", "its own beat must not look like a stranger"
         assert len(spawned) == 2
         runtime.close()
+
+
+def test_a_running_ambient_observer_reports_a_heartbeat(tmp_path):
+    proc = subprocess.Popen([sys.executable, "-m", "harness.ambient", "--state-dir", str(tmp_path),
+                             "--interval", "2"], cwd=ROOT, env=_env(tmp_path),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 45
+        beat = {}
+        while time.time() < deadline:
+            if (tmp_path / "ops.db").exists():
+                with OpsStore(str(tmp_path / "ops.db")) as store:
+                    beat = store.heartbeats().get("ambient-observer") or {}
+                if beat.get("fresh"):
+                    break
+            time.sleep(0.5)
+        assert beat.get("fresh") and beat.get("state") == "running", beat
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)

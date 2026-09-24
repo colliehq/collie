@@ -241,7 +241,8 @@ def default_config(root: str | None = None, python: str | None = None) -> dict:
         # The worker is safe to keep alive while observation is off: it polls the
         # local setting and records nothing until a versioned one-time consent exists.
         WorkerSpec("ambient", [python, "-m", "harness.ambient", "--state-dir", root],
-                   critical=False, startup_grace_s=15).as_dict(),
+                   critical=False, startup_grace_s=15,
+                   adopt_heartbeat="ambient-observer").as_dict(),
         WorkerSpec("bridge", [python, "-m", "harness.cli", "browser-bridge", "--port", "8677"],
                    critical=False, probe_url="http://127.0.0.1:8677/health").as_dict(),
     ]
@@ -292,7 +293,8 @@ def save_config(value: dict, path: str | None = None):
 
 
 #: Workers that report a heartbeat an already-running copy can be adopted by.
-_ADOPT_BY_HEARTBEAT = {"jobd": "jobs-daemon", "automations": "automation-daemon"}
+_ADOPT_BY_HEARTBEAT = {"jobd": "jobs-daemon", "automations": "automation-daemon",
+                       "ambient": "ambient-observer"}
 
 
 def load_config(path: str | None = None, *, python: str | None = None) -> dict:

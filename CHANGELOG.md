@@ -94,8 +94,8 @@
   jobs daemon on the same database -- the "mission tick paused: database is locked" lines in one
   machine's log -- and a second automations daemon that could not take its lock, exited, was
   restarted and ended *circuit open*, reported stopped while one was running. The jobs daemon now
-  holds a single-instance lock and reports a heartbeat, the supervisor adopts a live jobs or
-  automations daemon by its heartbeat (existing `supervisor.json` files learn this on load), and a
+  holds a single-instance lock and reports a heartbeat, the ambient observer reports one too, the
+  supervisor adopts a live jobs, automations or ambient daemon by its heartbeat (existing `supervisor.json` files learn this on load), and a
   heartbeat from a process that has exited is never adopted.
 - Put the time on every line a supervised worker writes to its log (`09-23 17:39:02 [slack] …`).
   The supervisor stamped only its own lines, so a Slack dog's 278 "connection lost" lines could not
