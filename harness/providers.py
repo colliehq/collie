@@ -324,6 +324,10 @@ _TERMINAL_RE = re.compile(
 _RETRYABLE_RE = re.compile(
     r"overloaded|rate.?limit|too many requests|throttl|timed?.?out|timeout"  # throttl ← Bedrock ThrottlingException
     r"|connection (reset|refused|aborted|error)|remote end closed|incomplete read"
+    # Windows words a reset and an abort differently (WinError 10054 / 10053), and a real run on
+    # 2026-08-01 stopped on the first one as "no known pattern" instead of being retried.
+    r"|forcibly closed by the remote host|aborted by the software in your host"
+    r"|winerror 1005[34]|connectionreseterror|connectionabortederror"
     r"|eof occurred|temporarily unavailable|server.?error|internal.?error"
     r"|service.?unavailable|stream error|stream ended", re.I)
 _RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504, 522, 524, 529}
