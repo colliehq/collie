@@ -184,6 +184,8 @@
 - Find localized cameras and microphones for recording on Windows. ffmpeg prints device names as
   UTF-8, and Collie read them in the system code page, so under the Chinese code page a device
   such as "麦克风 (Realtek(R) Audio)" was listed garbled and could not be opened by that name.
+  Web search through headless Chrome had the same problem: any result with accented or Chinese
+  text came back garbled on those machines.
 - Let `execute_code` scripts print any text on Windows. The script's output was written in the
   system code page but read as UTF-8, so under the Chinese code page `print("中文")` came back as
   replacement characters, and under 1252 it raised `UnicodeEncodeError` in the script itself.
