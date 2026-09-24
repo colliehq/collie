@@ -75,6 +75,22 @@ t('Live tab context returns only the active web host and bounded title',
   src.includes('cmd.action === "live_context"') &&
   !/liveTabContext[\s\S]{0,1000}url\.pathname/.test(src));
 
+// --- page dialogs: what an action may say OK to ----------------------------------------------------
+{
+  const accepts = new Function('spaces',
+    grab('function acceptsDialog(watch, type, stale)') + '\nreturn acceptsDialog;');
+  const own = accepts({ mine: { tabId: 1, owned: true }, theirs: { tabId: 2, owned: false } });
+  const w = (space, action, policy) => ({ space, action, policy: policy || 'accept' });
+  t('an alert is always acknowledged', own(w('mine', 'click', 'dismiss'), 'alert', false));
+  t('a confirm is cancelled unless the action said accept', !own(w('mine', 'click', 'dismiss'), 'confirm', false));
+  t('an action that said accept may OK a confirm it caused', own(w('mine', 'click'), 'confirm', false));
+  t('a box left over from an earlier action is never accepted', !own(w('mine', 'click'), 'confirm', true));
+  t('open may OK nothing but leaving the page', !own(w('mine', 'open'), 'confirm', false));
+  t('open may leave a tab Collie opened', own(w('mine', 'open'), 'beforeunload', false));
+  t('open never discards unsaved work in a tab the user handed over',
+    !own(w('theirs', 'open'), 'beforeunload', false));
+}
+
 // --- product shell: presence, hard takeover, and side-panel entry points -------------------------
 {
   const manifest = JSON.parse(fs.readFileSync(

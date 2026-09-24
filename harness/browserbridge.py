@@ -1368,7 +1368,8 @@ _DIALOG_HELP = (" Optional dialog: if the page answers this with a confirm, prom
                 "alert is always acknowledged, and its text is reported.")
 _DIALOG_ARG = {"type": "string", "enum": ["accept", "dismiss"]}
 _LEAVE_HELP = (" Optional dialog: if the page you are on warns that leaving loses unsaved changes, "
-               "Collie stays and tells you; pass dialog=\"accept\" to leave anyway.")
+               "Collie stays and tells you; pass dialog=\"accept\" to leave anyway (only in a tab "
+               "Collie opened itself -- a tab the user handed over is never left that way).")
 
 
 def _dialog_arg(args):

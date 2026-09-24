@@ -1592,7 +1592,13 @@ function dialogTab(watch) {
 function acceptsDialog(watch, type, stale) {
   if (type === "alert") return true;
   if (stale || watch.policy !== "accept") return false;
-  return watch.action !== "open" || type === "beforeunload";
+  if (watch.action !== "open") return true;
+  if (type !== "beforeunload") return false;
+  // Leaving throws away what the page holds unsaved. In a tab the user handed over that is their
+  // own work, and `open` can pass the approval gate on site policy alone, so only Collie's own
+  // tabs may be left that way; elsewhere a click that navigates (and is approved) can.
+  const rec = spaces && watch.space ? spaces[watch.space] : null;
+  return !!(rec && rec.owned);
 }
 
 async function answerDialog(tabId, watch, info, stale) {

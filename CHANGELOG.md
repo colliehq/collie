@@ -29,7 +29,8 @@
   `dialog: "accept"`. The tool result says what the page asked (fenced as page content) and what
   was answered. `dialog: "accept"` asks for approval as a final action whatever the button says,
   a box that came up after the previous action returned is only ever cancelled, and
-  `browser_open` may accept nothing but "leave this page?". Needs the reloaded extension (4.1)
+  `browser_open` may accept nothing but "leave this page?", and that only in a tab Collie opened
+  (never discarding unsaved work in a tab you handed over). Needs the reloaded extension (4.1)
   and its debugger access, which the default build has.
 - Keep a page from closing the untrusted-content fence itself. Page text, and now dialog text, is
   wrapped in markers that tell the model it is data; a page that wrote the closing marker could end
