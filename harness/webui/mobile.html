@@ -465,19 +465,21 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "Disabled":"已停用","Stopped":"已停止","No heartbeat":"沒有心跳","Heartbeat stale":"心跳已過期",
   "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"沒有任何心跳記錄",
   "last known state: {s}":"最後已知狀態：{s}","unrecognised worker state":"無法辨識的工作程序狀態" };
-function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(d[en]||en):en; }
+function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(own(d,en)||en):en; }
 
 // ---- authenticated Activity + recovery (allowlisted lifecycle metadata only) ----
 var mobileActivityOpen=false,mobileActivityRequest=0;
 function mobileTerminal(state){return ["completed","succeeded","failed","cancelled","dead"].indexOf(String(state||""))>=0;}
 function mobileMissionActive(state){return ["done_verified","done_accepted","failed","cancelled"].indexOf(String(state||""))<0;}
+// Server words index these tables; "constructor" or "__proto__" must not reach Object.prototype.
+function own(map,key){key=String(key==null?"":key);return Object.prototype.hasOwnProperty.call(map,key)?map[key]:undefined;}
 function mobileStateLabel(state){
   var labels={queued:"Queued",running:"Running",blocked:"Blocked",waiting:"Waiting",needs_you:"Needs You",
     paused:"Paused",completed:"Completed",succeeded:"Completed",failed:"Failed",dead:"Failed",
     cancel_requested:"Cancel requested",cancelled:"Cancelled",recovery_required:"Recovery required",
     workspace_required:"Workspace required",done_verified:"Verified against contract",
     done_accepted:"Completed without independent verification",review_required:"Review required",draft:"Draft"};
-  return t(labels[state]||String(state||"unknown").replace(/_/g," "));
+  return t(own(labels,state)||String(state||"unknown").replace(/_/g," "));
 }
 function mobileStateTone(state){state=String(state||"");if(/failed|dead|cancelled/.test(state))return"bad";
   if(/needs_you|blocked|waiting|paused|cancel_requested|recovery|required/.test(state))return"warn";return"";}
@@ -969,11 +971,11 @@ function mobileCheckRow(ev){
   else if(state==="cancelled")add(t("stopped before it finished"));
   else if(state==="not_run"&&ev.skipped_reason)add(String(ev.skipped_reason));
   else if(state==="inconclusive")add(t("exit 0 does not certify this result: {why}")
-    .replace("{why}",t(MOBILE_CHECK_WHY[String(ev.freshness||"")]||
+    .replace("{why}",t(own(MOBILE_CHECK_WHY,ev.freshness)||
                        "its result could not be bound to the files that exist now")));
-  return {verb:t({passed:"check passed",failed:"check failed",cancelled:"check stopped",
+  return {verb:t(own({passed:"check passed",failed:"check failed",cancelled:"check stopped",
                   timed_out:"check ran out of time",not_run:"check did not run",
-                  inconclusive:"check did not certify this result"}[state]),
+                  inconclusive:"check did not certify this result"},state)||"check"),
           detail:detail,tone:state==="passed"?false:(state==="failed"?true:"warn"),state:state};
 }
 
