@@ -21,6 +21,7 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 import urllib.request
@@ -575,16 +576,32 @@ _READS_CREDENTIAL = {
 }
 
 
-def _needed_credentials(provider=None) -> set:
-    """Which listed credentials the configured provider cannot work without."""
+#: Routes that run Claude Code, which keeps its login in this file on Windows and Linux (and in
+#: the Keychain on macOS) and refreshes it itself: a missing file there still means no login.
+_CLI_OWNS_CLAUDE_LOGIN = ("claude-agent-sdk", "claude-sdk", "claude-cli", "cli")
+
+
+def _configured_provider(provider=None) -> str:
     if provider is None:
         try:
             from . import settings
             provider = settings.get("PROVIDER", "") or ""
         except Exception:
             provider = ""
-    provider = str(provider or "").strip().lower()
+    return str(provider or "").strip().lower()
+
+
+def _needed_credentials(provider=None) -> set:
+    """Which listed credentials the configured provider cannot work without."""
+    provider = _configured_provider(provider)
     return {name for name, readers in _READS_CREDENTIAL.items() if provider in readers}
+
+
+def _cli_owned_logins(provider=None) -> set:
+    """Credentials that must exist but that their owner refreshes (so expiry is not a problem)."""
+    if sys.platform == "darwin":
+        return set()
+    return {"claude-oauth"} if _configured_provider(provider) in _CLI_OWNS_CLAUDE_LOGIN else set()
 
 
 def credential_health(*, now: float | None = None, claude_path: str | None = None,
@@ -598,6 +615,7 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
     """
     now = float(time.time() if now is None else now)
     needed = _needed_credentials(provider)
+    self_refreshing = _cli_owned_logins(provider)
     claude_path = claude_path or os.path.expanduser("~/.claude/.credentials.json")
     codex_path = codex_path or os.path.expanduser("~/.codex/auth.json")
     out = []
@@ -634,7 +652,9 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
         out.append(CredentialStatus(
             "codex-oauth", "missing", action="run `codex login`").as_dict())
     for row in out:
-        row["needed"] = row["name"] in needed
+        row["needed"] = row["name"] in needed or row["name"] in self_refreshing
+        if row["name"] in self_refreshing:
+            row["self_refreshing"] = True
     return out
 
 
@@ -712,7 +732,8 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
     failing = [name for name, row in workers.items()
                if not row["fresh"] or row["state"] in ("dead", "failed", "circuit_open")]
     expired = [row["name"] for row in credentials
-               if row.get("needed", True) and row["state"] in ("expired", "missing")]
+               if row.get("needed", True) and (row["state"] == "missing" or (
+                   row["state"] == "expired" and not row.get("self_refreshing")))]
     notification_pump = beats.get("notification-pump") or {}
     notification_stalled = bool(
         queues["notifications"].get("stale") and
@@ -804,6 +825,8 @@ def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int
     for cred in report.get("credentials") or []:
         if cred.get("needed") is False:
             continue          # listed for the operations view; nothing configured reads it
+        if cred.get("self_refreshing") and cred.get("state") != "missing":
+            continue          # its owner (Claude Code) refreshes it on use; only absence matters
         remaining = cred.get("seconds_remaining")
         if cred.get("state") in ("expired", "missing", "expiring") or (
                 remaining is not None and remaining <= credential_warning_s):

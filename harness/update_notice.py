@@ -43,6 +43,11 @@ CHECK_INTERVAL_S = 20 * 3600       # automatic checks: at most about once a day
 ERROR_BACKOFF_S = 3600             # after a failed automatic check, wait before trying again
 MANUAL_REUSE_S = 30                # a second press within this window answers from the last check
 OUTCOME_TTL_S = 24 * 3600          # how long "updated" / "not installed" stays on the card
+# After the CLI hands off, its bootstrap waits up to a minute for it to exit and then runs Setup,
+# which closes this server within moments. A server still answering well past that is one the
+# installer never closed: Setup was cancelled, failed, or never started.
+HANDOFF_WAIT_S = 5 * 60
+RUNNING_STALE_S = 45 * 60          # a download/verify child older than this is not waited on
 _NOTES_MAX = 4000
 _LOG_TAIL_MAX = 1600
 
@@ -207,6 +212,38 @@ def _log_tail(path):
         return ""
 
 
+def _pid_alive(pid):
+    """Read-only liveness of a recorded child (never signals it; os.kill(pid, 0) kills on Windows)."""
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel = ctypes.windll.kernel32
+            handle = kernel.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+                return bool(ok and code.value == 259)            # STILL_ACTIVE
+            finally:
+                kernel.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def _install_view(value, journal, clock):
     """The install as the person should read it, from this process's watcher or the journal."""
     record = value.get("install") if isinstance(value.get("install"), dict) else {}
@@ -219,7 +256,9 @@ def _install_view(value, journal, clock):
     target = str(record.get("target") or "")
     started = float(record.get("started_at") or 0)
     same_process = record.get("server_pid") == os.getpid()
-    live = same_process and state in ("running", "handed_off")
+    live = same_process and (state == "running" or (
+        state == "handed_off" and
+        clock - float(record.get("finished_at") or started) < HANDOFF_WAIT_S))
     if not live and (clock - started > OUTCOME_TTL_S or clock < started - 60):
         # An outcome is news for a day. After that the notice goes back to what the last check
         # found; an old failure is not left standing over a copy that was since updated anyway.
@@ -227,7 +266,9 @@ def _install_view(value, journal, clock):
     if not live and target and not _newer(target, __version__):
         # This copy is at (or past) the version that install was for, however it got there.
         return dict(out, state="installed") if target == __version__ else {"state": "none"}
-    if state in ("running", "handed_off") and not same_process:
+    if state == "handed_off" and same_process and not live:
+        out["state"] = "unconfirmed"      # handed off long ago, yet this server was never closed
+    elif state in ("running", "handed_off") and not same_process:
         # The server that started it is gone -- on Windows that is the installer closing it. What
         # happened next is in the update journal the CLI and the supervisor write.
         if journal.get("state") == "install_failed":
@@ -314,9 +355,16 @@ def start_install(expect_version, *, local=True, path=None, spawn=None, now=None
         record = value.get("install") if isinstance(value.get("install"), dict) else {}
         if _child["proc"] is not None and _child["proc"].poll() is None:
             raise UpdateRefused("an update is already being installed")
-        if record.get("state") == "handed_off" and record.get("server_pid") == os.getpid():
+        if (record.get("state") == "handed_off" and record.get("server_pid") == os.getpid()
+                and clock - float(record.get("finished_at") or record.get("started_at") or 0)
+                < HANDOFF_WAIT_S):
             # The installer is waiting for Collie to close; a second press would queue another.
             raise UpdateRefused("the installer is already waiting to run; Collie will restart")
+        if (record.get("state") == "running" and _pid_alive(record.get("pid"))
+                and clock - float(record.get("started_at") or 0) < RUNNING_STALE_S):
+            # Started by a server that has since gone, and still downloading or verifying: two
+            # children would share one download path and one bootstrap script.
+            raise UpdateRefused("an update is already being installed")
         channel = str(value.get("channel") or "stable")
         log = install_log_path()
         os.makedirs(os.path.dirname(log), exist_ok=True)
@@ -357,7 +405,8 @@ def start_install(expect_version, *, local=True, path=None, spawn=None, now=None
             if install.get("pid") == getattr(proc, "pid", None):
                 install.update(finished)
                 _merge({"install": install}, path)
-            _child["proc"] = None
+            if _child["proc"] is proc:
+                _child["proc"] = None
 
     (watch or (lambda fn: threading.Thread(target=fn, name="collie-update-install",
                                            daemon=True).start()))(wait)

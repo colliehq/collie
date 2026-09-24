@@ -72,5 +72,8 @@ def test_web_handlers_do_not_guard_client_departure_with_broken_pipe_alone():
     from harness import webapp
     source = inspect.getsource(webapp)
     assert "except BrokenPipeError:" not in source
-    assert source.count("except CLIENT_GONE:") >= 5
+    assert source.count("except CLIENT_GONE:") >= 3
+    # The two run handlers wrap the whole run: a reset there may be upstream and keeps the crash
+    # path, so they accept only a local abort as "client went away".
+    assert source.count("except (BrokenPipeError, ConnectionAbortedError):") == 2
     assert {ConnectionAbortedError, ConnectionResetError, BrokenPipeError} <= set(httpserver.CLIENT_GONE)

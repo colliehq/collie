@@ -770,9 +770,13 @@ class ChannelService:
         self._row(connection)
         if not isinstance(reason, str) or not reason.strip():
             raise ChannelError("say briefly why no reply is needed; it is kept with the message")
-        return comms.mark_event_settled(connection, event_id, disposition="closed",
-                                        actor="desktop-user", reason=reason.strip(),
-                                        directory=self.directory)
+        # Under the op lock _save_answer holds for its check-then-create: a close and a finishing
+        # task are ordered, so either the reply was stored first (and the message reads as
+        # answered) or the close was, and nothing is prepared afterwards.
+        with self._op_lock(connection):
+            return comms.mark_event_settled(connection, event_id, disposition="closed",
+                                            actor="desktop-user", reason=reason.strip(),
+                                            directory=self.directory)
 
     def prepare_reply(self, connection, result_id, *, text, event_id="", speak=False, automatic=False):
         row = self._row(connection)

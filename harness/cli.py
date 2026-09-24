@@ -1228,6 +1228,23 @@ def cmd_update(args):
 
     kind, assets = info["kind"], info["assets"]
     digests = info.get("digests") or {}
+    # One install at a time, however it was started (two terminals, the desktop card, a second
+    # web server): they would download to the same file and write the same bootstrap script.
+    from .supervisor import AlreadyRunning, InstanceLock
+    try:
+        update_lock = InstanceLock(os.path.join(os.path.expanduser("~"), ".collie", "update.lock"),
+                                   what="Another Collie update")
+    except AlreadyRunning as exc:
+        print("%s; nothing installed." % exc, file=sys.stderr)
+        return 4
+    try:
+        return _install_update(up, info, kind, assets, digests)
+    finally:
+        update_lock.close()
+
+
+def _install_update(up, info, kind, assets, digests):
+    """The download-verify-install half of cmd_update, run under its update lock."""
 
     def _fetch(name):
         dest = os.path.join(tempfile.gettempdir(), name)

@@ -935,3 +935,19 @@ def test_closing_is_reachable_from_the_desktop_action(service):
     closed = channel_web.perform(host.root, {"action": "close", "connection": "mail",
                                              "event": "close-five", "reason": "Handled in person"})
     assert closed["settlement"]["reason"] == "Handled in person"
+
+
+def test_closing_waits_for_a_reply_being_saved_under_the_op_lock(service):
+    import threading
+    host, _ = service
+    host.ingest("mail", message("close-race"))
+    host.accept("mail", "close-race", start=False)
+    done = []
+    with host._op_lock("mail"):                   # what _save_answer holds while it saves
+        worker = threading.Thread(target=lambda: done.append(
+            host.close_event("mail", "close-race", "Handled")))
+        worker.start()
+        worker.join(0.5)
+        assert done == []                         # the close waits its turn
+    worker.join(5)
+    assert done and done[0]["settlement"]["disposition"] == "closed"

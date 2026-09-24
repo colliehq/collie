@@ -4946,7 +4946,9 @@ class Handler(BaseHTTPRequestHandler):
         # the relay client replays a phone's request from 127.0.0.1 (so it looks loopback) but tags it
         # with this header — used to withhold the embedded CSRF token from pages sent to a phone.
         try:
-            return (self.headers.get("X-Collie-Relay") or "") == "1"
+            # Every value, not the first: a relayed phone request must not untag itself by sending
+            # its own X-Collie-Relay ahead of the relay's.
+            return "1" in [str(v).strip() for v in (self.headers.get_all("X-Collie-Relay") or [])]
         except Exception:
             return False
 
@@ -6734,7 +6736,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not canceled:
                     Handler._notify_done(sid, res, wall_ms=res.wall_ms)
                 _tx("done", done_d)
-            except CLIENT_GONE:
+            except (BrokenPipeError, ConnectionAbortedError):
+                # Not CLIENT_GONE: a ConnectionResetError here may come from upstream, and that
+                # must keep the crash path's fence and receipt rather than read as a closed tab.
                 error = "client went away"
                 Handler._run_end(sid, error=error, run_id=run_id)
                 done_d = {"session": sid, "run": run_id, "answer": "",
@@ -7107,7 +7111,7 @@ class Handler(BaseHTTPRequestHandler):
             if not canceled:
                 Handler._notify_done(sid, res, wall_ms=res.wall_ms)
             _tx("done", done_d)
-        except CLIENT_GONE:
+        except (BrokenPipeError, ConnectionAbortedError):
             # Only reachable now from a write outside h.emit; the run's own emits swallow it.
             Handler._run_end(sid, error="client went away", run_id=run_id)
         except Exception as e:

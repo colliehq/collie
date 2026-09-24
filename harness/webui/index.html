@@ -5497,6 +5497,8 @@
       return r.json().then(function (d) { return { ok: r.ok, d: d }; });
     }).then(function (res) {
       if (mine !== updateSeq) return null;
+      // A refused or failed request ends the "checking" shown when the button was pressed.
+      if (updateInfo) updateInfo = Object.assign({}, updateInfo, { checking: false });
       if (!res.ok) {
         updateRender(res.d && res.d.update, (res.d && res.d.error) ? t(res.d.error) : t("could not apply"));
         return null;
@@ -5504,7 +5506,9 @@
       updateRender(res.d);
       return res.d;
     }).catch(function () {
-      if (mine === updateSeq) updateRender(null, t("network error"));
+      if (mine !== updateSeq) return null;
+      if (updateInfo) updateInfo = Object.assign({}, updateInfo, { checking: false });
+      updateRender(null, t("network error"));
       return null;
     });
   }

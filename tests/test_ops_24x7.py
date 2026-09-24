@@ -250,9 +250,14 @@ def _creds(tmp_path, *, claude=None, codex=None):
 
 @pytest.mark.parametrize("provider,needed", [
     ("codex-oauth", {"codex-oauth"}), ("anthropic-oauth", {"claude-oauth"}),
-    ("claude-agent-sdk", set()), ("claude-cli", set()), ("anthropic", set()), ("", set()),
+    # Claude Code routes need its login too; on Windows and Linux that is this file.
+    ("claude-agent-sdk", {"claude-oauth"}), ("claude-cli", {"claude-oauth"}),
+    ("anthropic", set()), ("", set()),
 ])
-def test_credentials_are_marked_needed_only_for_the_provider_that_reads_them(tmp_path, provider, needed):
+def test_credentials_are_marked_needed_only_for_the_provider_that_reads_them(tmp_path, monkeypatch,
+                                                                            provider, needed):
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "win32")
     claude, codex = _creds(tmp_path)
     rows = credential_health(now=1000, claude_path=claude, codex_path=codex, provider=provider)
     assert {row["name"] for row in rows} == {"claude-oauth", "codex-oauth"}   # both still listed
@@ -313,3 +318,47 @@ def test_health_says_why_it_is_not_ok(tmp_path, monkeypatch):
     assert report["reasons"][0]["action"] == "run `codex login`"
     # An unused login is listed in credentials but never given as a reason.
     assert all(row["subject"] != "claude-oauth" for row in report["reasons"])
+
+
+def test_on_windows_and_linux_a_claude_code_route_still_needs_its_login(tmp_path, monkeypatch):
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    claude, codex = _creds(tmp_path)
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="claude-agent-sdk")}
+    assert rows["claude-oauth"]["needed"] is True and rows["claude-oauth"]["self_refreshing"] is True
+    assert rows["codex-oauth"]["needed"] is False
+
+
+def test_an_expired_login_claude_code_refreshes_itself_is_not_a_problem(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    claude, codex = _creds(tmp_path, claude={"accessToken": "a", "refreshToken": "r", "expiresAt": 1})
+    monkeypatch.setenv("COLLIE_PROVIDER", "claude-agent-sdk")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        report = aggregate_health(store, desired_workers=[], state_dir=str(tmp_path), now=105,
+                                  probe_services=False)
+        assert report["ok"] is True
+        enqueue_health_alerts(store, report, now=105)
+        assert "credential_expiry" not in [r[0] for r in store.db.execute("SELECT kind FROM notifications")]
+    # ...but a missing one is: every run on that route would fail to sign in.
+    missing_claude, _ = _creds(tmp_path / "none") if (tmp_path / "none").mkdir() is None else (None, None)
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health.func, claude_path=missing_claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops2.db")) as store:
+        report = aggregate_health(store, desired_workers=[], state_dir=str(tmp_path), now=105,
+                                  probe_services=False)
+        assert report["ok"] is False
+        assert report["reasons"][0]["code"] == "login_missing"
+
+
+def test_on_macos_the_keychain_login_is_not_judged_by_a_file(tmp_path, monkeypatch):
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "darwin")
+    claude, codex = _creds(tmp_path)
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="claude-agent-sdk")}
+    assert rows["claude-oauth"]["needed"] is False

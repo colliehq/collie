@@ -201,3 +201,12 @@ def test_a_second_window_follows_an_install_started_elsewhere(ui):
     s.open()
     # No click here: the page saw an install in progress and waits for the restart by itself.
     ui.page.wait_for_function("() => !window.__stillTheSamePage", timeout=15000)
+
+
+def test_a_failed_check_gives_the_button_back(ui):
+    s = Updates(ui, NEWER).open()
+    s.general()
+    s.post_answers["check"] = (500, {"error": "could not reach the release feed"})
+    s.box.get_by_role("button", name="Check for updates").click()
+    expect(s.line).to_have_text("could not reach the release feed")
+    expect(s.box.get_by_role("button", name="Check for updates")).to_be_enabled()

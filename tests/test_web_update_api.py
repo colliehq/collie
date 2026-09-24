@@ -122,3 +122,31 @@ def test_a_stale_version_is_refused_with_the_current_notice(web):
     assert code == 409 and "check again" in refused["error"]
     assert refused["update"]["latest"] == "0.30.0"
     assert calls["spawned"] == []
+
+
+def test_a_relayed_request_cannot_untag_itself_with_its_own_header(web):
+    """The relay forwards a phone's headers and adds X-Collie-Relay: 1; a phone's own copy
+    sent ahead of it must not make the request look local."""
+    import http.client
+    base, token, calls = web
+    _json(base + "/api/update/check?token=" + token, "POST", {})
+    host, port = base.rsplit("/", 1)[-1].split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=8)
+    body = json.dumps({"version": "0.30.0"})
+    conn.putrequest("POST", "/api/update/install?token=" + token)
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Content-Length", str(len(body)))
+    conn.putheader("x-collie-relay", "0")              # the phone's own attempt, first
+    conn.putheader("X-Collie-Relay", "1")              # the relay's tag
+    conn.endheaders()
+    conn.send(body.encode())
+    response = conn.getresponse()
+    assert response.status == 403
+    assert calls["spawned"] == []
+
+
+def test_the_relay_strips_a_phones_copy_of_its_tag_in_any_case():
+    import inspect
+    from harness import remote
+    source = inspect.getsource(remote)
+    assert 'if k.lower() != "x-collie-relay"' in source

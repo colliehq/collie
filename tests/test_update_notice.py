@@ -178,7 +178,7 @@ class _Child:
         return self.code
 
 
-def _install(state, *, code=0, expect="0.30.0", **kwargs):
+def _install(state, *, code=0, expect="0.30.0", now=300.0, **kwargs):
     seen, watchers = {}, []
 
     def spawn(argv, **popen):
@@ -187,7 +187,7 @@ def _install(state, *, code=0, expect="0.30.0", **kwargs):
         return _Child(code)
 
     value = update_notice.start_install(expect, spawn=spawn, watch=watchers.append,
-                                        python="python-under-test", now=300.0, **kwargs)
+                                        python="python-under-test", now=now, **kwargs)
     return value, seen, watchers
 
 
@@ -346,3 +346,64 @@ def test_a_failure_is_cleared_once_this_copy_reached_the_target_another_way(stat
 def test_the_command_shown_is_one_this_install_can_run(state, monkeypatch, kind, command):
     monkeypatch.setattr(update, "install_kind", lambda: kind)
     assert update_notice.status()["command"] == command
+
+
+# --- from the independent review ------------------------------------------------------------
+
+def test_a_handoff_the_installer_never_acted_on_stops_blocking_a_retry(state):
+    update_notice.check_now(now=100.0, checker=_feed())
+    _value, _seen, watchers = _install(state)          # started at 300
+    watchers[0]()                                       # handed off (finished_at is wall time)
+    install = update_notice._read()["install"]
+    install["finished_at"] = 300.0
+    update_notice._merge({"install": install})
+    soon = update_notice.status(now=300.0 + 30)["install"]
+    assert soon["state"] == "handed_off"                # still waiting for Setup to close us
+    late = update_notice.status(now=300.0 + update_notice.HANDOFF_WAIT_S + 1)["install"]
+    assert late["state"] == "unconfirmed"               # Setup never closed this server
+    value, seen, _watchers = _install(state, now=300.0 + update_notice.HANDOFF_WAIT_S + 1)
+    assert value["install"]["state"] == "running" and seen["argv"][-1] == "0.30.0"
+
+
+def test_a_download_still_running_from_a_gone_server_is_not_started_twice(state, monkeypatch):
+    update_notice.check_now(now=100.0, checker=_feed())
+    update_notice._merge({"install": {"state": "running", "target": "0.30.0", "server_pid": -7,
+                                      "pid": 4321, "started_at": 250.0, "log": "x"}})
+    monkeypatch.setattr(update_notice, "_pid_alive", lambda pid: pid == 4321)
+    with pytest.raises(update_notice.UpdateRefused, match="already being installed"):
+        _install(state)                                 # clock 300: 50s old and alive
+    update_notice._merge({"install": {"state": "running", "target": "0.30.0", "server_pid": -7,
+                                      "pid": 4321, "started_at": 300.0 - update_notice.RUNNING_STALE_S - 1,
+                                      "log": "x"}})
+    value, _seen, _w = _install(state)                  # far too old: a reused pid, not a download
+    assert value["install"]["state"] == "running"
+
+
+def test_a_finished_watcher_does_not_drop_a_newer_childs_handle(state):
+    update_notice.check_now(now=100.0, checker=_feed())
+    _value, _seen, first = _install(state)
+    newer = object()
+    update_notice._child["proc"] = newer                # as if another install replaced it
+    first[0]()
+    assert update_notice._child["proc"] is newer
+
+
+def test_pid_alive_reads_without_signalling():
+    import os as _os
+    assert update_notice._pid_alive(_os.getpid()) is True
+    assert update_notice._pid_alive(0) is False and update_notice._pid_alive("x") is False
+
+
+def test_the_cli_installs_one_update_at_a_time(monkeypatch, tmp_path, capsys):
+    from harness import cli, supervisor
+    monkeypatch.setenv("USERPROFILE", str(tmp_path)); monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(update, "check", lambda channel: {
+        "current": "0.29.1", "latest": "0.30.0", "newer": True, "channel": "stable",
+        "kind": "setup", "notes": "", "url": "", "assets": {"Collie-Setup.exe": "x"}, "digests": {}})
+    monkeypatch.setattr(update, "_download", lambda *a, **k: pytest.fail("downloaded"))
+    held = supervisor.InstanceLock(str(tmp_path / ".collie" / "update.lock"))
+    try:
+        assert cli.cmd_update(_cli_args()) == 4
+    finally:
+        held.close()
+    assert "Another Collie update is already running" in capsys.readouterr().err
