@@ -383,7 +383,11 @@ jobs:
     # PyPI is the stable channel. Pre-release artifacts remain available from GitHub's beta feed
     # until a separate pre-release package policy is intentionally introduced.
     needs: [wheel, release]
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    # Publishing needs this repository registered as the project's Trusted Publisher on PyPI. Until
+    # an owner has done that and set the repository variable PYPI_PUBLISH=true, the job is skipped
+    # instead of failing: v0.27.0 through v0.29.1 each ended red here with `invalid-publisher`,
+    # after every artifact had already been published, which made a good release read as broken.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && vars.PYPI_PUBLISH == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

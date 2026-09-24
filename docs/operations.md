@@ -171,8 +171,9 @@ explicitly; Collie does not infer or advertise new network authority from their 
 and stable tags using semantic-version precedence, so a later stable release still supersedes an
 older beta. Downloads retain the existing digest and platform-signature checks. A stable release tag
 also publishes the wheel and source distribution through PyPI Trusted Publishing once the repository
-and workflow are registered as that project's Trusted Publisher; no PyPI API token is stored in the
-repository.
+and workflow are registered as that project's Trusted Publisher and the repository variable
+`PYPI_PUBLISH` is set to `true`; until then the `pypi` job is skipped rather than failed. No PyPI API
+token is stored in the repository.
 
 The desktop reads the last check from `~/.collie/update-status.json` (`GET /api/update`, which never
 waits on the network). A check happens on `POST /api/update/check` or, with `UPDATE_CHECK=on`, at
