@@ -346,11 +346,12 @@ def _run_hook_process(argv, use_shell, cwd, stdin_text, timeout):
     from . import tool_process
     # Hook output, like the bash tool's: git, jq and node print UTF-8, Python the code page, and
     # read in the code page a Chinese "reason" reached the model as mojibake.
+    group = plat.new_group_kwargs()
     proc = subprocess.Popen(
         argv, shell=use_shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, errors="replace", cwd=cwd,
         encoding=tool_process._output_encoding(),
-        **plat.new_group_kwargs(), **plat.no_window_kwargs())
+        **group, **plat.no_window_kwargs())
     try:
         job = plat.attach_kill_on_close_job(proc)
     except Exception:
@@ -365,6 +366,16 @@ def _run_hook_process(argv, use_shell, cwd, stdin_text, timeout):
             except Exception:
                 pass
         plat.kill_tree(proc)
+        if group.get("start_new_session"):
+            # The session is ours, so its group id is the child's pid -- signal it directly. The
+            # shell has often already exited: macOS answers getpgid() on that unreaped child with
+            # ESRCH, kill_tree then signals only the dead shell, and what it left behind lives on.
+            # Until we reap the child its pid cannot be reused, so this reaches only its group.
+            import signal
+            try:
+                os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
+            except OSError:
+                pass
         try:
             proc.communicate(timeout=2)
         except BaseException:

@@ -190,3 +190,26 @@ def test_hook_output_is_read_in_the_encoding_it_was_written_in(tmp_path, monkeyp
     hooks = HookManager(str(tmp_path), [_config("PreToolUse", command, "bash")])
     result = hooks.dispatch("PreToolUse", {"tool_name": "bash"}, subject="bash")
     assert result.reason == "不允许: 生产分支"
+
+
+def test_a_timed_out_hook_is_ended_even_where_getpgid_fails_on_its_shell(tmp_path, monkeypatch):
+    # macOS answers getpgid() with ESRCH for a child that has exited but is not yet reaped (the
+    # hook's shell, after `... & exit 0`), so kill_tree signalled only that shell.
+    import os
+    import time
+    from harness import plat
+    if plat.is_windows():
+        import pytest
+        pytest.skip("POSIX process groups")
+
+    def esrch(pid):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "getpgid", esrch)
+    marker = tmp_path / "marker.txt"
+    command = "(sleep 3; echo alive >> '%s') & exit 0" % str(marker)
+    hooks = HookManager(str(tmp_path), [_config("PreToolUse", command, "bash", timeout=1)])
+    result = hooks.dispatch("PreToolUse", {"tool_name": "bash"}, subject="bash")
+    assert result.receipts[0]["timed_out"] is True
+    time.sleep(4.5)
+    assert _count(marker) == 0, "a process the timed-out hook left behind kept running"
