@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import types
 
 import pytest
@@ -209,7 +210,7 @@ def test_a_failed_install_reports_the_cli_reason_and_its_log(state):
     update_notice.check_now(now=100.0, checker=_feed())
     _value, _seen, watchers = _install(state, code=1)
     watchers[0]()
-    after = update_notice.status()
+    after = update_notice.status(now=400.0)
     assert after["install"]["state"] == "failed"
     assert after["install"]["detail"] == "update failed: digest mismatch"
     assert "digest mismatch" in after["install"]["log_tail"]
@@ -252,9 +253,11 @@ def test_install_refuses_a_second_press_while_one_is_running_or_waiting(state):
 
 # ---------------------------------------------------------------- after the server was replaced
 
-def _started_by_an_earlier_server(state, *, target="0.30.0", journal=None):
+def _started_by_an_earlier_server(state, *, target="0.30.0", journal=None, started=None,
+                                  recorded="handed_off"):
     update_notice.check_now(now=100.0, checker=_feed(latest=target))
-    update_notice._merge({"install": {"state": "handed_off", "target": target, "server_pid": -7,
+    update_notice._merge({"install": {"state": recorded, "target": target, "server_pid": -7,
+                                      "started_at": time.time() if started is None else started,
                                       "from_version": "0.29.1", "log": str(state / "missing.log")}})
     if journal is not None:
         update._write_update_journal(journal)
@@ -317,3 +320,21 @@ def test_cli_passes_the_release_version_into_the_update_journal(monkeypatch, tmp
     journal = json.loads((tmp_path / "journal.json").read_text(encoding="utf-8"))
     assert journal["target_version"] == "0.30.0"
     assert journal["state"] == "pending_startup"
+
+
+def test_an_outcome_is_news_for_a_day_then_the_card_returns_to_the_last_check(state):
+    _started_by_an_earlier_server(state, journal={"schema": 1, "state": "install_failed",
+                                                  "last_error": "installer exited 2"},
+                                  started=time.time() - update_notice.OUTCOME_TTL_S - 5)
+    value = update_notice.status()
+    assert value["install"] == {"state": "none"}
+    assert value["newer"] is True and value["one_press"] is True     # offered again
+
+
+def test_a_failure_is_cleared_once_this_copy_reached_the_target_another_way(state, monkeypatch):
+    _started_by_an_earlier_server(state, recorded="failed")
+    assert update_notice.status()["install"]["state"] == "failed"
+    monkeypatch.setattr(update_notice, "__version__", "0.30.0")     # e.g. `collie update --yes`
+    assert update_notice.status()["install"]["state"] == "installed"
+    monkeypatch.setattr(update_notice, "__version__", "0.31.0")     # and later past it
+    assert update_notice.status()["install"] == {"state": "none"}

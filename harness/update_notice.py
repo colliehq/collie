@@ -42,6 +42,7 @@ SCHEMA = 1
 CHECK_INTERVAL_S = 20 * 3600       # automatic checks: at most about once a day
 ERROR_BACKOFF_S = 3600             # after a failed automatic check, wait before trying again
 MANUAL_REUSE_S = 30                # a second press within this window answers from the last check
+OUTCOME_TTL_S = 24 * 3600          # how long "updated" / "not installed" stays on the card
 _NOTES_MAX = 4000
 _LOG_TAIL_MAX = 1600
 
@@ -206,7 +207,7 @@ def _log_tail(path):
         return ""
 
 
-def _install_view(value, journal):
+def _install_view(value, journal, clock):
     """The install as the person should read it, from this process's watcher or the journal."""
     record = value.get("install") if isinstance(value.get("install"), dict) else {}
     if not record:
@@ -216,13 +217,20 @@ def _install_view(value, journal):
            if record.get(k) not in (None, "")}
     state = str(record.get("state") or "")
     target = str(record.get("target") or "")
+    started = float(record.get("started_at") or 0)
     same_process = record.get("server_pid") == os.getpid()
+    live = same_process and state in ("running", "handed_off")
+    if not live and (clock - started > OUTCOME_TTL_S or clock < started - 60):
+        # An outcome is news for a day. After that the notice goes back to what the last check
+        # found; an old failure is not left standing over a copy that was since updated anyway.
+        return {"state": "none"}
+    if not live and target and not _newer(target, __version__):
+        # This copy is at (or past) the version that install was for, however it got there.
+        return dict(out, state="installed") if target == __version__ else {"state": "none"}
     if state in ("running", "handed_off") and not same_process:
         # The server that started it is gone -- on Windows that is the installer closing it. What
         # happened next is in the update journal the CLI and the supervisor write.
-        if target and target == __version__:
-            out["state"] = "installed"
-        elif journal.get("state") == "install_failed":
+        if journal.get("state") == "install_failed":
             out["state"] = "failed"
             out["detail"] = str(journal.get("last_error") or "the installer reported a failure")
         elif journal.get("state") in ("startup_failed", "rollback_required"):
@@ -274,7 +282,7 @@ def status(*, now=None, path=None, local=True):
         "error_at": value.get("error_at") or None,
         "command": "collie update --channel %s --yes" % channel,
         "one_press": bool(newer and local and _one_press_supported(kind)),
-        "install": _install_view(value, journal),
+        "install": _install_view(value, journal, clock),
     }
     if journal:
         out["last_update"] = {k: journal.get(k) for k in ("state", "previous_version",
