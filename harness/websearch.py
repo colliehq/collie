@@ -118,8 +118,10 @@ def _chrome_search(query, k, chrome):
            "--user-data-dir=" + _winpath(prof, chrome), "--dump-dom", url]
     try:
         from . import plat as _plat
-        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60,
-                           **_plat.no_window_kwargs())
+        # --dump-dom prints UTF-8; read in the code page (1252, 936), every result with
+        # non-ASCII text in it came back garbled.
+        p = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=60, **_plat.no_window_kwargs())
         return _parse_bing(p.stdout or "", k)
     finally:
         if not persistent:
