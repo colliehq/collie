@@ -328,6 +328,8 @@ _RETRYABLE_RE = re.compile(
     # 2026-08-01 stopped on the first one as "no known pattern" instead of being retried.
     r"|forcibly closed by the remote host|aborted by the software in your host"
     r"|winerror 1005[34]|connectionreseterror|connectionabortederror"
+    # Windows' connect timeout (10060) never says "timed out"; the POSIX one already matched.
+    r"|did not properly respond after a period of time|winerror 10060"
     r"|eof occurred|temporarily unavailable|server.?error|internal.?error"
     r"|service.?unavailable|stream error|stream ended", re.I)
 _RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504, 522, 524, 529}
