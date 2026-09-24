@@ -111,6 +111,10 @@ configured in the environment that starts Collie, so secrets are not stored in t
 **`Collie-arm64.dmg`** from the [latest release](https://github.com/colliehq/collie/releases/latest),
 drag Collie to Applications, and open it normally.
 
+**Staying current.** *Settings → General → Updates* checks GitHub for a newer release when you ask
+(or daily, once you turn that on) and shows its notes. On Windows it installs with one press after
+verifying the download; elsewhere `collie update --yes` does the same.
+
 **Linux and developers — pip.** The core is stdlib-only, so the base install is tiny:
 
 ```bash
