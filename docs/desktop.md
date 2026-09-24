@@ -141,7 +141,8 @@ reads is fenced as data (prompt-injection defense).
 when you ask (or daily, if you turn that on). On an installer copy, *Install and restart* verifies
 the download, closes Collie, runs Setup silently and brings back the window, wallpaper, browser
 bridge and background services that were running. The page reconnects by itself when Collie is
-back. See [Staying up to date](install.md#staying-up-to-date).
+back. Chrome keeps the old browser extension until you reload it in `chrome://extensions`; Settings
+says so while it does. See [Staying up to date](install.md#staying-up-to-date).
 
 ## Uninstalling
 

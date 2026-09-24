@@ -89,6 +89,11 @@ the Updates card shows its release notes.
 
 From a terminal, `collie update` reports the latest release and `collie update --yes` installs it.
 
+After an update, reload the Collie browser extension once: open `chrome://extensions` and press the
+reload arrow on the Collie card. Chrome keeps running an unpacked extension until it is reloaded, so
+until then the browser tools use the old one. *Settings → General* says so while Chrome is still
+running an older copy.
+
 ## Verify it works
 
 ```bash
