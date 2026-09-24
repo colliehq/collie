@@ -2192,6 +2192,7 @@ class Harness:
         reported_cache = getattr(self.provider, "reports_cache", False)
         prev_prompt = 0
         prev_skey = None
+        prev_system = None
         prev_elide_from = 0
         prev_compact_gen = 0
         prev_t = None
@@ -2600,9 +2601,15 @@ class Harness:
 
                 # --- cache-waste detection (point #3)
                 skey = ",".join(sorted(s["name"] for s in schemas))
+                system_key = hashlib.sha1(str(system).encode("utf-8", "replace")).hexdigest()
                 cause = []
                 if prev_skey is not None and skey != prev_skey:
                     cause.append("schema")           # tool set changed (load_tools / hard_at restriction)
+                if prev_system is not None and system_key != prev_system:
+                    # The system block leads the request, so any change in it (core memory the run
+                    # wrote, Live context, a new day) re-reads the whole history after it. These
+                    # were all "unexplained": 681 turns and 4.0M tokens in one machine's run log.
+                    cause.append("system")
                 compact_gen = int((meta.compaction or {}).get("generation") or 0)
                 if compact_gen != prev_compact_gen:
                     # Replacing an old span with a summary rewrites the message prefix, so the
@@ -2627,6 +2634,7 @@ class Harness:
                     miss_n += 1; waste_tok += mt; waste_usd += mu
                     self._emit("cache_miss", tokens=mt, usd=mu, cause=c_str)
                 prev_skey = skey
+                prev_system = system_key
                 prev_elide_from = meta.elide_from
                 prev_compact_gen = compact_gen
                 prev_t = time.time()
