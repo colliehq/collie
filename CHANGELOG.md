@@ -17,6 +17,10 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Stop reporting background workers as missing where nothing is meant to run them. The macOS app
+  and a pip `collie web` have no supervisor, yet health listed its five default workers as having no
+  heartbeat and showed *Needs attention* for good. Workers are expected only where the supervisor is
+  installed or has run.
 - Stop reporting a login you do not use as a problem. Health counted a missing Claude or Codex
   subscription login as degraded whichever provider was configured, so someone on one subscription
   (and every Mac, where Claude Code keeps its login in the Keychain) saw *Needs attention* and a

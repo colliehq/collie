@@ -90,10 +90,19 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
         config_error = "%s: %s" % (type(exc).__name__, exc)
         config = default_config(root)
     desired = [row["name"] for row in config.get("workers", []) if row.get("enabled", True)]
+    supervisor_info = query_windows(root=root)
     with OpsStore(os.path.join(root, "ops.db")) as store:
-        report = aggregate_health(store, desired_workers=desired, state_dir=root,
-                                  probe_services=probe_services)
-    report["supervisor"] = query_windows(root=root)
+        # Background workers are only expected where something keeps them running: the Windows
+        # installer's supervisor task, or any supervisor that has run against this state (it
+        # leaves a heartbeat). The macOS app and a pip `collie web` have none, and listing the
+        # generated default workers there reported all five "missing" -- "Needs attention" for
+        # good on every Mac, with nothing to fix.
+        supervised = bool(supervisor_info.get("installed") or
+                          "supervisor" in store.heartbeats())
+        report = aggregate_health(store, desired_workers=desired if supervised else [],
+                                  state_dir=root, probe_services=probe_services)
+    report["supervisor"] = supervisor_info
+    report["supervised"] = supervised
     work = activity(root, limit=250)
     session_recovery = [{
         "kind": "interactive", "session_id": row.get("session_id"),
