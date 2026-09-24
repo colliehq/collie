@@ -83,7 +83,10 @@ _LONG_LINE_BYTES = 65_536
 
 
 def _ansi() -> str:
-    return locale.getpreferredencoding(False)
+    # The code page children write in -- what subprocess's text mode would use. Not
+    # getpreferredencoding(): under UTF-8 mode that says utf-8 for this process alone.
+    getencoding = getattr(locale, "getencoding", None)          # 3.11+
+    return getencoding() if getencoding else locale.getpreferredencoding(False)
 
 
 def _decode_line(raw: bytes, errors: str) -> str:

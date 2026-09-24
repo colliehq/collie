@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -105,3 +106,96 @@ def test_worktree_diff_round_trips_exactly(tmp_path, base, edited):
     assert loop._tree_empty(str(tmp_path)) is True
     assert loop._apply_diff(str(tmp_path), diff)
     assert f.read_bytes() == edited
+
+
+def _code_page(monkeypatch, name):
+    # What subprocess's text mode encodes stdin with and decodes output with, when not told.
+    import locale
+    monkeypatch.setattr(locale, "getencoding", lambda: name)
+
+
+def test_agent_cli_stdin_keeps_text_the_code_page_cannot_spell(monkeypatch, tmp_path):
+    # errors="replace" also governs what is WRITTEN to stdin: under 1252 the task text reached
+    # the agent CLI (a node program, which reads UTF-8) with "?" for every Chinese character.
+    from harness import swe
+    _code_page(monkeypatch, "cp1252")
+    text = "修复解析器 🙂 café"
+    r = swe._run_cli([sys.executable, "-c",
+                      "import sys; sys.stdout.write(sys.stdin.buffer.read().hex())"],
+                     str(tmp_path), timeout=60, stdin_text=text)
+    assert bytes.fromhex(r.stdout.strip()).decode("utf-8") == text
+
+
+def test_worktree_diff_ignores_the_users_diff_config(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    f = tmp_path / "mod.py"
+    f.write_bytes(b"x = 1\n")
+    _git(tmp_path, "init", "-q")
+    for key, value in (("core.autocrlf", "false"), ("color.diff", "always"),
+                       ("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true")):
+        _git(tmp_path, "config", key, value)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    f.write_bytes(b"x = 1\ny = 2\n")
+    diff = loop._tree_diff(str(tmp_path))
+    assert "\x1b[" not in diff and "--- a/mod.py" in diff
+    _git(tmp_path, "checkout", "--", "mod.py")
+    assert loop._apply_diff(str(tmp_path), diff)
+    assert f.read_bytes() == b"x = 1\ny = 2\n"
+
+
+def test_swe_prediction_patch_is_exact_or_refused(tmp_path):
+    # The prediction is scored by applying it: a CRLF folded to LF, or a byte turned into U+FFFD,
+    # would score a patch the agent never wrote.
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    from harness import swe
+    f = tmp_path / "mod.py"
+    f.write_bytes(b"x = 1\r\n")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "core.autocrlf", "false")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    f.write_bytes(b"x = 1\r\ny = 2\r\n")
+    patch = swe.make_patch(str(tmp_path))
+    assert "+y = 2\r\n" in patch
+    _git(tmp_path, "reset", "-q", "--hard")
+    subprocess.run(["git", "-C", str(tmp_path), "apply", "-"], input=patch.encode("utf-8"),
+                   check=True, capture_output=True)
+    assert f.read_bytes() == b"x = 1\r\ny = 2\r\n"
+    f.write_bytes(b"x = 1\r\n# caf\xe9\r\n")
+    with pytest.raises(UnicodeDecodeError):
+        swe.make_patch(str(tmp_path))
+
+
+def test_run_in_env_hands_the_container_the_exact_diff(tmp_path, monkeypatch):
+    # The patch file was written in text mode: CRLF on Windows, so `git apply` in the container
+    # never applied the edits the model asked to test.
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    from harness import tools
+    f = tmp_path / "mod.py"
+    f.write_bytes(b"x = 1\n")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "core.autocrlf", "false")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    f.write_bytes(b"x = 1\ny = 2\n")
+    expected = subprocess.run(["git", "-C", str(tmp_path), "diff", "--no-color", "--no-ext-diff",
+                               "--binary"], capture_output=True, check=True).stdout
+    handed = []
+    real_run = subprocess.run
+
+    def run(argv, *a, **kw):
+        if argv and argv[0] == "docker":
+            host = argv[argv.index("-v") + 1].rsplit(":/tmp/e.patch", 1)[0]
+            handed.append(open(host, "rb").read())
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setenv("COLLIE_E2E_IMAGE", "img")
+    monkeypatch.setattr(tools.subprocess, "run", run)
+    tools.RunInEnvTool().run({"command": "python -c 'print(1)'"},
+                             types.SimpleNamespace(cwd=str(tmp_path)))
+    assert handed and handed[-1] == expected and b"\r\n" not in handed[-1]

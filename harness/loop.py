@@ -806,7 +806,11 @@ def _tree_diff(cwd):
         # Bytes, decoded here: _apply_diff may re-apply this, so it must come back exactly. Text
         # mode lost it -- one byte that is not UTF-8 made stdout None on Windows, and reading
         # folded CRLF to LF, so a CRLF file's diff no longer matched the file.
-        r = subprocess.run(["git", "diff", "HEAD"], cwd=cwd, capture_output=True, timeout=30,
+        # Pinned format, whatever the user's config says: color.diff=always, an external diff
+        # tool or diff.noprefix all produced a "diff" git apply could not take back.
+        r = subprocess.run(["git", "diff", "--no-color", "--no-ext-diff", "--binary",
+                            "--src-prefix=a/", "--dst-prefix=b/", "HEAD"],
+                           cwd=cwd, capture_output=True, timeout=30,
                            **_plat.no_window_kwargs())
         return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else ""
     except Exception:

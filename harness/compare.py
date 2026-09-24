@@ -239,7 +239,7 @@ def run_cc(recorder: Recorder, task: dict, cwd: str, model: str = "",
     if model:
         cmd += ["--model", model]
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, encoding="utf-8",
                            errors="replace", timeout=timeout)
         data = _parse_cc_json(r.stdout)
         u = data.get("usage", {}) or {}

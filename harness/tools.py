@@ -676,17 +676,18 @@ class RunInEnvTool(Tool):
         _t = args.get("timeout_s", args.get("timeout"))
         timeout = 180 if _t in (None, "") else max(1, min(600, int(_t)))
         cmd = args.get("command", "")
+        # Bytes end to end: a text-mode temp file on Windows wrote every LF as CRLF, so
+        # `git apply` in the container never applied the edits being tested.
         try:
-            diff = subprocess.run(["git", "-C", ctx.cwd, "diff", "--no-color"],
-                                  capture_output=True,
-                                  encoding="utf-8", errors="replace", timeout=30,
-                                  **plat.no_window_kwargs()).stdout
+            diff = subprocess.run(["git", "-C", ctx.cwd, "diff", "--no-color", "--no-ext-diff",
+                                   "--binary"], capture_output=True, timeout=30,
+                                  **plat.no_window_kwargs()).stdout or b""
         except Exception:
-            diff = ""
+            diff = b""
 
         def _exec(apply_edits):
-            pf = _tf.NamedTemporaryFile("w", suffix=".patch", delete=False)
-            pf.write(diff if apply_edits else ""); pf.close()
+            pf = _tf.NamedTemporaryFile("wb", suffix=".patch", delete=False)
+            pf.write(diff if apply_edits else b""); pf.close()
             apply = ("(git apply /tmp/e.patch 2>/dev/null || git apply --3way /tmp/e.patch 2>/dev/null || true) && "
                      if apply_edits else "")
             inner = ("cd /testbed && " + apply +

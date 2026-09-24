@@ -117,7 +117,11 @@ def _untracked_parent(cwd: str) -> str:
     # for real and watching new.txt survive, which is precisely the "undo" a user expects to work.
     tmp = tempfile.mkdtemp(prefix="collie-ckpt-")
     try:
-        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
+        # Literal pathspecs: the names below are file names, not patterns. As patterns, an
+        # untracked "secret[1].env" also matched an IGNORED "secret1.env", and `add --force`
+        # committed that ignored file into the checkpoint ref.
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"),
+                   GIT_LITERAL_PATHSPECS="1")
         if files:
             spec = os.path.join(tmp, "pathspec")
             with open(spec, "wb") as f:                   # NUL-delimited: no argv length limit

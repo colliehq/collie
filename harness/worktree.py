@@ -215,13 +215,16 @@ def status(wt_dir):
         here = "refs/heads/" + branch
         others = [r for r in refs.splitlines() if r and r != here and PREFIX not in r]
     commits = 0
+    counted = ok2
     if others:
         ok3, ahead = _git(["rev-list", "--count", "HEAD", "--not"] + others, wt_dir)
-        if ok3 and ahead.strip().isdigit():
+        counted = ok3 and ahead.strip().isdigit()
+        if counted:
             commits = int(ahead.strip())
-    # readable: a status git could not produce (timeout, error) is not a clean tree.
+    # readable: a status or commit count git could not produce (timeout, error) is not "nothing
+    # here" -- an uncounted commit on a detached HEAD would be lost with the tree.
     return {"dirty": bool(files), "files": files[:200], "commits": commits, "branch": branch,
-            "readable": ok}
+            "readable": bool(ok and counted)}
 
 
 def diff(wt_dir, max_bytes=200_000):
@@ -300,7 +303,7 @@ def listing(cwd):
                 st = status(cur["dir"])
                 trees.append({"dir": cur["dir"], "branch": st["branch"],
                               "dirty": st["dirty"], "files": len(st["files"]),
-                              "commits": st["commits"]})
+                              "commits": st["commits"], "readable": st["readable"]})
             cur = {}
             continue
         if line.startswith("worktree "):

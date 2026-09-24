@@ -1396,7 +1396,9 @@ class ClaudeCliProvider(ModelProvider):
                 if not request_id:
                     raise RuntimeError("claude CLI model request reservation denied")
             try:
-                r = subprocess.run(full_cmd, capture_output=True, text=True,
+                # UTF-8 both ways: the CLI is node. In the ANSI code page the prompt reached it
+                # with "?" wherever that code page cannot spell the text.
+                r = subprocess.run(full_cmd, capture_output=True, encoding="utf-8",
                                    errors="replace", input=prompt,
                                    timeout=self.timeout, env=env, **_plat.no_window_kwargs())
             except Exception:
