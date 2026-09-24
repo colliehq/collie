@@ -443,6 +443,9 @@ def _semantic_text(args: dict) -> str:
     return " ".join(values)[:2000]
 
 
+_LOWER_THAN_COMMIT = (Effect.OBSERVE, Effect.PREPARE, Effect.ACT)
+
+
 def intent_for(tool_name: str, args: Optional[dict], *, risk: str = "", target: str = "",
                tool: Any = None) -> ActionIntent:
     """Host-owned deterministic intent classifier.
@@ -451,6 +454,24 @@ def intent_for(tool_name: str, args: Optional[dict], *, risk: str = "", target: 
     admitted by the registry.  Arbitrary plugin declarations are never trusted to lower
     an effect; malformed declarations fall through to the conservative classifier.
     """
+    intent = _classify(tool_name, args, risk=risk, target=target, tool=tool)
+    # dialog="accept" answers OK to whatever the page asks in a confirm box ("Transfer $500?",
+    # "Delete this?") -- a question the control's own label does not show. Answering it is the
+    # page's final step, never routine UI work, so it is at least a commit. (browser_open's
+    # accept only leaves a page that warns about unsaved changes; the extension enforces that.)
+    name = str(tool_name or "").casefold()
+    if (name.startswith("browser_") and name != "browser_open" and isinstance(args, dict)
+            and str(args.get("dialog") or "").strip().casefold() == "accept"
+            and intent.effect in _LOWER_THAN_COMMIT):
+        intent = replace(intent, action="external_change" if intent.action in (
+            "observe", "navigate", "prepare", "enter_data") else intent.action,
+            effect=Effect.COMMIT, reversible=False,
+            reason="answers OK to a confirmation the page asks for").bounded()
+    return intent
+
+
+def _classify(tool_name: str, args: Optional[dict], *, risk: str = "", target: str = "",
+              tool: Any = None) -> ActionIntent:
     args = args if isinstance(args, dict) else {}
     resolver = getattr(tool, "_collie_intent", None)
     if callable(resolver):

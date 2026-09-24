@@ -34,7 +34,7 @@ def test_browser_snapshot_ref_wiring():
         assert sent["action"] == "click" and sent["ref"] == "e1", sent
         bb.BrowserType().run({"ref": "e2", "text": "hi", "submit": True}, ctx)
         assert sent == {"action": "type", "ref": "e2", "label": None, "selector": None,
-                        "text": "hi", "submit": True}, sent
+                        "text": "hi", "submit": True, "dialog": "dismiss"}, sent
         # browser_snapshot must be registered alongside the other browser_* tools
         names = []
         reg = types.SimpleNamespace(register=lambda t: names.append(t.name))

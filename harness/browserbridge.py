@@ -231,15 +231,28 @@ def _audit(entry):
 # --------------------------------------------------------------------------- server ----------
 class _Bridge:
     """Shared state between the tool-facing /enqueue and the extension-facing /poll + /result."""
+    # A connected extension is always either holding a poll open (each lasts up to 25s and the next
+    # follows at once), running a command it took, or about to be revived by its 30-second alarm.
+    # None of those for this long means it is not there: the browser is closed or the extension is
+    # off. Waiting out a full command timeout then only delays the same answer -- on the developer's
+    # machine a closed browser turned every Mission tick into 88 seconds of timeouts (one 60s
+    # form read, then seven 4s origin checks), 140 in a row over a day, each saying only "did not
+    # respond".
+    ABSENT_AFTER_S = 90.0
+
     def __init__(self):
         self.pending = queue.Queue()          # commands waiting for the extension to pick up
         self.results = {}                     # id -> result dict
         self.events = {}                      # id -> threading.Event
         self.lock = threading.Lock()
         self.n = 0
+        self.started = time.time()
         self.last_poll = 0.0                   # when the extension last polled (connection health)
+        self.polling = 0                       # polls held open right now
+        self.taken = set()                     # ids the extension took and has not answered yet
         self.ext_version = ""                  # manifest version the loaded extension reports
         self.meta = {}                         # id -> what to write to the audit log when it ends
+        self.dialogs = {}                      # id -> the page dialogs answered while it ran
         self.rejected = 0                      # unauthenticated attempts, so /health can say so
 
     def _log(self, cid, outcome, data=None):
@@ -255,51 +268,136 @@ class _Bridge:
                     entry[k] = str(data[k])[:160]
         _audit(entry)
 
+    def absent_for(self, now=None):
+        """Seconds since the extension was last there, or None while it is (or may yet be)."""
+        now = time.time() if now is None else now
+        if self.polling or self.taken:
+            return None
+        idle = now - (self.last_poll or self.started)
+        return idle if idle > self.ABSENT_AFTER_S else None
+
     def enqueue(self, cmd, timeout=60):
         with self.lock:
             self.n += 1
             cid = "c%d" % self.n
+        self.meta[cid] = {"cmd": _audit_summary(cmd), "t0": time.time()}
+        absent = self.absent_for()
+        if absent is not None:
+            # Not queued, so a browser opened later never runs a command whose caller moved on.
+            self._log(cid, "not-connected")
+            if self.last_poll:
+                since = "last heard from %s ago" % _ago(absent)
+            else:
+                since = "not connected since the bridge started %s ago" % _ago(absent)
+            return {"ok": False, "extension_connected": False,
+                    "error": "the Collie browser extension is not connected (%s), so nothing "
+                             "was sent to the browser. Open Chrome with the Collie extension "
+                             "enabled, then try again." % since}
         ev = threading.Event()
         self.events[cid] = ev
-        self.meta[cid] = {"cmd": _audit_summary(cmd), "t0": time.time()}
         cmd = dict(cmd, id=cid)
         self.pending.put(cmd)
         if not ev.wait(timeout):
             self.events.pop(cid, None)
             self.results.pop(cid, None)   # a late deliver() racing the timeout could leave an orphan
+            self.dialogs.pop(cid, None)
+            # Still in self.taken if the extension took it: it is still working on it, and the
+            # next poll (not this timeout) is what says it has finished.
             self._log(cid, "timeout")
+            if cid in self.taken:
+                return {"ok": False, "error": "the browser took this command but had not finished "
+                                              "it after %ds. Something in the page is holding the "
+                                              "tab (a long-running script, or a dialog the "
+                                              "extension could not answer); browser commands "
+                                              "after it wait behind it." % timeout}
+            if self.taken:
+                return {"ok": False, "error": "the browser is still working on an earlier command, "
+                                              "so this one had not started after %ds. Something in "
+                                              "that page is holding the tab (a long-running script, "
+                                              "or a dialog the extension could not answer)."
+                                              % timeout}
             return {"ok": False, "error": "browser did not respond in %ds (is the extension "
                                           "loaded and a tab open?)" % timeout}
         if cid not in self.results:
             self._log(cid, "no-result")
             return {"ok": False, "error": "no result"}
         data = self.results.pop(cid)
+        dialogs = self.dialogs.pop(cid, None)
         self._log(cid, "error" if isinstance(data, dict) and data.get("error") else "ok", data)
-        return {"ok": True, "data": data}                    # consistent envelope
+        out = {"ok": True, "data": data}                     # consistent envelope
+        if dialogs:
+            out["dialogs"] = dialogs
+        return out
 
     def next_cmd(self, wait=25):
         self.last_poll = time.time()           # the extension is alive and polling
         deadline = time.time() + wait
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return None
-            try:
-                cmd = self.pending.get(timeout=remaining)
-            except queue.Empty:
-                return None
-            # skip commands whose caller already gave up (enqueue timed out and popped the event):
-            # a reconnecting extension must NOT execute a stale click/type/eval against the live tab.
-            if cmd.get("id") in self.events:
-                return cmd
+        with self.lock:
+            self.polling += 1
+            # It runs one command at a time and asks for the next only when done: whatever it took
+            # before is finished, answered or not.
+            self.taken.clear()
+        try:
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                try:
+                    cmd = self.pending.get(timeout=remaining)
+                except queue.Empty:
+                    return None
+                # skip commands whose caller already gave up (enqueue timed out and popped the
+                # event): a reconnecting extension must NOT execute a stale click/type/eval against
+                # the live tab.
+                if cmd.get("id") in self.events:
+                    self.taken.add(cmd.get("id"))
+                    return cmd
+        finally:
+            with self.lock:
+                self.polling -= 1
+            self.last_poll = time.time()       # it was there for the whole poll, not only its start
 
-    def deliver(self, cid, data):
+    def deliver(self, cid, data, dialogs=None):
         # store the result ONLY if the caller is still waiting; a late result for a timed-out
         # command would otherwise accumulate in self.results forever (unbounded growth).
+        self.taken.discard(cid)
         ev = self.events.pop(cid, None)
         if ev:
             self.results[cid] = data
+            cleaned = _clean_dialogs(dialogs)
+            if cleaned:
+                self.dialogs[cid] = cleaned
             ev.set()
+
+
+def _clean_dialogs(value):
+    """The extension's account of the page dialogs it answered, bounded and typed."""
+    out = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        row = {"type": str(item.get("type") or "unknown")[:20],
+               "message": str(item.get("message") or "")[:500],
+               "answered": str(item.get("answered") or "")[:20]}
+        if item.get("error"):
+            row["error"] = str(item["error"])[:200]
+        if item.get("stale") is True:
+            row["stale"] = True
+        out.append(row)
+        if len(out) >= 10:
+            break
+    return out
+
+
+def _ago(seconds):
+    seconds = int(max(0, seconds))
+    if seconds < 120:
+        return "%ds" % seconds
+    if seconds < 7200:
+        return "%d min" % (seconds // 60)
+    if seconds < 172800:
+        return "%d h" % (seconds // 3600)
+    return "%d days" % (seconds // 86400)
 
 
 def _handler(bridge, enforce_host=True):
@@ -451,7 +549,7 @@ def _handler(bridge, enforce_host=True):
                 timeout = max(1, min(timeout, 300))
                 return self._json(bridge.enqueue(body, timeout=timeout))
             if self.path.startswith("/result"):     # from the extension
-                bridge.deliver(body.get("id"), body.get("data", body))
+                bridge.deliver(body.get("id"), body.get("data", body), body.get("dialogs"))
                 return self._json({"ok": True})
             if self.path.startswith("/web/start"):  # side panel: lazily bring up its local UI API
                 return self._json(start_web_background())
@@ -937,6 +1035,7 @@ def _ensure_server(port):
 
 
 _CURRENT_SPACE = [None]
+_DIALOGS = contextvars.ContextVar("collie_browser_dialogs", default=None)
 _SPACE_CONTEXT = contextvars.ContextVar("collie_browser_space", default="")
 _SPACE_ACTIVITY = contextvars.ContextVar("collie_browser_space_activity", default=None)
 
@@ -1018,26 +1117,99 @@ def _call(cmd, timeout=60):
                                           "Authorization": "Bearer " + token()})
     try:
         with urllib.request.urlopen(req, timeout=timeout + 5) as r:
-            return json.loads(r.read())
+            res = json.loads(r.read())
     except Exception as e:
-        # No extension answering. On macOS we can still drive the user's real
-        # browser through Apple Events, which needs nothing installed — worth
-        # trying before telling someone to go and load an unpacked extension.
-        # Opt out with COLLIE_NO_APPLE_EVENTS=1.
-        if os.environ.get("COLLIE_NO_APPLE_EVENTS") != "1":
-            try:
-                from . import browserapple
-                if browserapple.available():
-                    res = browserapple.call(cmd, timeout=timeout)
-                    if res.get("ok"):
-                        return res
-                    # Report the Apple Events problem, which is the actionable
-                    # one (a settings toggle), not "bridge unreachable".
-                    return res
-            except Exception:
-                pass    # fall through to the extension instructions
-        return {"ok": False, "error": "bridge unreachable (%s). Is the collie extension loaded "
-                "in Chrome? chrome://extensions -> Load unpacked -> harness/browser_ext/" % e}
+        return _apple_events(cmd, timeout) or {
+            "ok": False, "error": "bridge unreachable (%s). Is the collie extension loaded "
+            "in Chrome? chrome://extensions -> Load unpacked -> harness/browser_ext/" % e}
+    if isinstance(res, dict) and res.get("extension_connected") is False:
+        # A bridge with no extension behind it is no more use than no bridge.
+        return _apple_events(cmd, timeout) or res
+    seen = _DIALOGS.get()
+    if seen is not None and isinstance(res, dict) and isinstance(res.get("dialogs"), list):
+        seen.extend(res["dialogs"])
+    return res
+
+
+_DIALOG_KIND = {"alert": "an alert", "confirm": "a confirm box", "prompt": "a prompt box",
+                "beforeunload": "a \"leave this page?\" warning"}
+
+
+def _dialog_note(seen):
+    """What the page asked in a dialog while the tool ran, and what Collie answered.
+
+    Without this a dismissed confirm reads as a click that did nothing, and an alert's text -- often
+    the only place a site says "submitted" or "failed" -- is lost. The dialog's words come from the
+    page, so they are fenced like any other page content."""
+    rows = [d for d in seen or [] if isinstance(d, dict)][:10]
+    if not rows:
+        return ""
+    lines, words = [], []
+    for d in rows:
+        kind = d.get("type") or "unknown"
+        what = _DIALOG_KIND.get(kind, "a dialog")
+        answered = d.get("answered")
+        if answered == "failed":
+            how = "Collie could not answer it (%s); the tab may still be blocked" % (
+                d.get("error") or "unknown error")
+        elif kind == "alert":
+            how = "acknowledged (OK)"
+        elif kind == "beforeunload":
+            how = ("left the page" if answered == "accepted" else
+                   "stayed on the page -- repeat the action with dialog=\"accept\" to leave anyway")
+        elif answered == "accepted":
+            how = "answered OK"
+        elif d.get("stale"):
+            how = ("answered Cancel -- it came up after the previous action had returned, so no "
+                   "later action may say OK to it; if OK was wanted, redo the step that brought it "
+                   "up with dialog=\"accept\"")
+        else:
+            how = ("answered Cancel -- repeat the action with dialog=\"accept\" to answer OK "
+                   "instead")
+        lines.append("- %s: %s" % (what, how))
+        if d.get("message"):
+            words.append("%d. %s" % (len(lines), d["message"]))
+    out = "NOTE: the page opened %s while this ran; Collie answered for you:\n%s\n" % (
+        "a dialog" if len(rows) == 1 else "%d dialogs" % len(rows), "\n".join(lines))
+    if words:
+        out += "What the page said in %s:\n%s\n" % ("it" if len(rows) == 1 else "them",
+                                                     _fence("\n".join(words)))
+    return out
+
+
+def _with_dialog_notes(tool):
+    """Put the dialog note in front of whatever this browser tool returns."""
+    run = tool.run
+
+    def wrapped(args, ctx):
+        token = _DIALOGS.set([])
+        try:
+            out = run(args, ctx)
+            seen = _DIALOGS.get()
+        finally:
+            _DIALOGS.reset(token)
+        note = _dialog_note(seen)
+        return note + out if note and isinstance(out, str) else out
+
+    tool.run = wrapped
+    return tool
+
+
+def _apple_events(cmd, timeout):
+    """No extension answering. On macOS we can still drive the user's real browser through Apple
+    Events, which needs nothing installed — worth trying before telling someone to go and load an
+    unpacked extension. Opt out with COLLIE_NO_APPLE_EVENTS=1. None when there is no such route."""
+    if os.environ.get("COLLIE_NO_APPLE_EVENTS") == "1":
+        return None
+    try:
+        from . import browserapple
+        if browserapple.available():
+            # Its answer either way: a failure there names the actionable problem (a settings
+            # toggle), not "bridge unreachable".
+            return browserapple.call(cmd, timeout=timeout)
+    except Exception:
+        pass    # fall through to the extension instructions
+    return None
 
 
 def _data(res):
@@ -1109,6 +1281,20 @@ def _fence(text):
     return "%s\n%s\n%s" % (_FENCE_HEAD, text, _FENCE_TAIL)
 
 
+# The actions a page can answer with a confirm / prompt / "leave this page?" box take this.
+_DIALOG_HELP = (" Optional dialog: if the page answers this with a confirm, prompt or \"leave this "
+                "page?\" box, Collie answers Cancel and tells you what it asked; pass "
+                "dialog=\"accept\" to answer OK instead, only when OK is what the user wants. An "
+                "alert is always acknowledged, and its text is reported.")
+_DIALOG_ARG = {"type": "string", "enum": ["accept", "dismiss"]}
+_LEAVE_HELP = (" Optional dialog: if the page you are on warns that leaving loses unsaved changes, "
+               "Collie stays and tells you; pass dialog=\"accept\" to leave anyway.")
+
+
+def _dialog_arg(args):
+    return "accept" if str((args or {}).get("dialog") or "").strip().lower() == "accept" else "dismiss"
+
+
 class BrowserOpen(Tool):
     name, tier = "browser_open", "always"
     description = ("Open a URL in the user's REAL logged-in browser (via the collie extension) and "
@@ -1121,12 +1307,14 @@ class BrowserOpen(Tool):
                    "for that, e.g. \"finish what I started in this tab\"); optional window (true = "
                    "give this space its own browser window, to keep a long job visually separate — "
                    "a preference, not a requirement: collie acts in its tab while it sits in the "
-                   "background, without pulling it in front of what the user is doing).")
+                   "background, without pulling it in front of what the user is doing)."
+                   + _LEAVE_HELP)
     schema = {"type": "object", "properties": {
         "url": {"type": "string"},
         "space": {"type": "string"},
         "adopt": {"type": "boolean"},
-        "window": {"type": "boolean"}}, "required": ["url"]}
+        "window": {"type": "boolean"},
+        "dialog": _DIALOG_ARG}, "required": ["url"]}
 
     def run(self, args, ctx):
         space = (args.get("space") or "").strip()
@@ -1134,7 +1322,8 @@ class BrowserOpen(Tool):
             _CURRENT_SPACE[0] = space[:40]      # sticky: the rest of this run works in that lane
         return _fence(_fmt(_call({"action": "open", "url": args.get("url", ""),
                                   "adopt": bool(args.get("adopt")),
-                                  "window": bool(args.get("window"))})))
+                                  "window": bool(args.get("window")),
+                                  "dialog": _dialog_arg(args)})))
 
 
 class BrowserRead(Tool):
@@ -1230,10 +1419,11 @@ class BrowserClick(Tool):
                    "For a native OS window that DOES appear on its own (print, save-as, an OS auth "
                    "prompt), browser_* cannot touch it — switch hands to the desktop_* tools "
                    "(desktop_inspect / desktop_type / desktop_click), calling "
-                   "enable_capability(\"desktop_control\") first if desktop control is off.")
+                   "enable_capability(\"desktop_control\") first if desktop control is off."
+                   + _DIALOG_HELP)
     schema = {"type": "object", "properties": {
         "ref": {"type": "string"}, "text": {"type": "string"}, "selector": {"type": "string"},
-        "x": {"type": "number"}, "y": {"type": "number"}}}
+        "x": {"type": "number"}, "y": {"type": "number"}, "dialog": _DIALOG_ARG}}
 
     def _collie_intent(self, args):
         """Resolve an opaque snapshot ref before the gate decides.
@@ -1263,7 +1453,7 @@ class BrowserClick(Tool):
     def run(self, args, ctx):
         res = _call({"action": "click", "ref": args.get("ref"),
                      "text": args.get("text"), "selector": args.get("selector"),
-                     "x": args.get("x"), "y": args.get("y")})
+                     "x": args.get("x"), "y": args.get("y"), "dialog": _dialog_arg(args)})
         out = _fence(_fmt(res))
         d = _data(res) or {}
         click = d.get("click") if isinstance(d.get("click"), dict) else d
@@ -1311,16 +1501,17 @@ class BrowserType(Tool):
                    "types inside a cross-origin iframe — that is where an embedded payment or "
                    "booking field lives. The field is read back afterwards and this FAILS if the "
                    "text did not actually land, so a reported success means the text is really in "
-                   "the field. Args: ref OR label OR selector, text, optional submit (bool).")
+                   "the field. Args: ref OR label OR selector, text, optional submit (bool)."
+                   + _DIALOG_HELP)
     schema = {"type": "object", "properties": {
         "ref": {"type": "string"}, "label": {"type": "string"}, "selector": {"type": "string"},
-        "text": {"type": "string"}, "submit": {"type": "boolean"}},
+        "text": {"type": "string"}, "submit": {"type": "boolean"}, "dialog": _DIALOG_ARG},
         "required": ["text"]}
 
     def run(self, args, ctx):
         res = _call({"action": "type", "ref": args.get("ref"), "label": args.get("label"),
                      "selector": args.get("selector"), "text": args.get("text"),
-                     "submit": bool(args.get("submit"))})
+                     "submit": bool(args.get("submit")), "dialog": _dialog_arg(args)})
         d = _data(res)
         if isinstance(d, dict) and d.get("landed") is False:
             # The write silently did nothing. Reporting this as success is how an empty form gets
@@ -1345,16 +1536,16 @@ class BrowserPress(Tool):
                    "Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space. "
                    "Args: key, optional modifiers (list of ctrl/alt/shift/meta), optional repeat "
                    "(default 1). The key goes to whatever has focus, so click or type into the "
-                   "field first if it matters.")
+                   "field first if it matters." + _DIALOG_HELP)
     schema = {"type": "object", "properties": {
         "key": {"type": "string"},
         "modifiers": {"type": "array", "items": {"type": "string"}},
-        "repeat": {"type": "integer"}}, "required": ["key"]}
+        "repeat": {"type": "integer"}, "dialog": _DIALOG_ARG}, "required": ["key"]}
 
     def run(self, args, ctx):
         return _fmt(_call({"action": "press", "key": args.get("key", ""),
                            "modifiers": args.get("modifiers") or [],
-                           "repeat": args.get("repeat") or 1}))
+                           "repeat": args.get("repeat") or 1, "dialog": _dialog_arg(args)}))
 
 
 class BrowserHover(Tool):
@@ -1497,9 +1688,10 @@ class BrowserScript(Tool):
         "counts as failure, so a script never keeps going on top of an empty field. Only the LAST "
         "step returns its full result; earlier ones are summarised, which is where the saving is. "
         "Uploads and screenshots are not steps — use browser_upload / browser_screenshot. "
-        "Args: steps (list, max 40).")
+        "Args: steps (list, max 40). Optional dialog, for the whole script:" + _DIALOG_HELP)
     schema = {"type": "object", "properties": {
-        "steps": {"type": "array", "items": {"type": "object"}}}, "required": ["steps"]}
+        "steps": {"type": "array", "items": {"type": "object"}}, "dialog": _DIALOG_ARG},
+        "required": ["steps"]}
 
     STEP_ACTIONS = {"open", "click", "type", "pick", "read", "snapshot", "fields", "links",
                     "wait", "wait_for", "scroll", "eval", "show", "press", "hover", "drag"}
@@ -1525,7 +1717,8 @@ class BrowserScript(Tool):
                         % (i, act, ", ".join(sorted(self.STEP_ACTIONS))))
         # One step can legitimately wait 60s; the whole script needs room for all of them.
         budget = min(600, 30 + 30 * len(steps))
-        res = _call({"action": "script", "steps": steps}, timeout=budget)
+        res = _call({"action": "script", "steps": steps, "dialog": _dialog_arg(args)},
+                    timeout=budget)
         if not res.get("ok", True) and res.get("error"):
             return "ERROR(browser): %s" % res["error"]
         d = res.get("data", res)
@@ -1808,5 +2001,5 @@ def register_browser_bridge(registry):
               BrowserPick(), BrowserUpload(), BrowserFields(), BrowserLinks(), BrowserConsole(),
               BrowserEval(), BrowserScreenshot(), BrowserReloadExtension(),
               BrowserScript(), BrowserTabs(), BrowserPress(), BrowserHover(), BrowserDrag()):
-        registry.register(t)
+        registry.register(_with_dialog_notes(t))
     return True

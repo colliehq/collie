@@ -21,6 +21,23 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Stop a page's alert or confirm box from freezing the browser tools. While a dialog is showing,
+  the page cannot run anything Collie sends it, and because the extension runs one command at a
+  time, every browser command in every space then timed out until someone clicked OK by hand. The
+  extension now answers a dialog in Collie's tab as it opens: an alert is acknowledged, and a
+  confirm, prompt or "leave this page?" box is answered Cancel unless the action was given
+  `dialog: "accept"`. The tool result says what the page asked (fenced as page content) and what
+  was answered. `dialog: "accept"` asks for approval as a final action whatever the button says,
+  a box that came up after the previous action returned is only ever cancelled, and
+  `browser_open` may accept nothing but "leave this page?". Needs the reloaded extension (4.1)
+  and its debugger access, which the default build has.
+- Say at once when the browser extension is not connected. With the browser closed, each browser
+  command waited out its full timeout and then said only "did not respond"; on one machine that
+  was 140 timeouts in a row over a day, 88 seconds per Mission step. When the extension has not
+  been heard from for 90 seconds and holds no command, the bridge now answers immediately that it
+  is not connected and since when, and queues nothing a browser opened later could run. A command
+  the extension took but did not finish is reported as held up in the page, not as a missing
+  extension.
 - Keep a Slack dog restricted to the people you named after a restart. `collie slack
   --install-autostart` dropped `--allow` from the launcher (Windows) and LaunchAgent (macOS), and the
   supervisor kept the command line it copied from a launcher when `supervisor.json` was first
