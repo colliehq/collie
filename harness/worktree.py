@@ -219,7 +219,9 @@ def status(wt_dir):
         ok3, ahead = _git(["rev-list", "--count", "HEAD", "--not"] + others, wt_dir)
         if ok3 and ahead.strip().isdigit():
             commits = int(ahead.strip())
-    return {"dirty": bool(files), "files": files[:200], "commits": commits, "branch": branch}
+    # readable: a status git could not produce (timeout, error) is not a clean tree.
+    return {"dirty": bool(files), "files": files[:200], "commits": commits, "branch": branch,
+            "readable": ok}
 
 
 def diff(wt_dir, max_bytes=200_000):
@@ -249,6 +251,11 @@ def release(wt_dir, force=False):
     if not listed or os.path.normcase(wt_dir) not in registered:
         return {"ok": False, "removed": False, "error": "refusing to remove an unregistered directory"}
     st = status(wt_dir)
+    if not force and not st["readable"]:
+        # Unread is not clean: git would then refuse the dirty tree, and the half-way cleanup
+        # below would delete the directory anyway.
+        return {"ok": False, "removed": False,
+                "error": "could not read the worktree's status, so it may still hold work"}
     if not force and (st["dirty"] or st["commits"]):
         return {"ok": False, "removed": False,
                 "error": "worktree still holds work (%d changed file%s, %d commit%s)"

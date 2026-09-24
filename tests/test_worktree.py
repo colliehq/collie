@@ -96,6 +96,19 @@ def main():
     check(r2["ok"] and r2["removed"], "a clean one is removed (%s)" % r2["error"][:60])
     check(not os.path.isdir(b["dir"]), "and is really gone")
 
+    # A status git cannot produce (a timeout, an error) is not a clean tree: taken as clean, git
+    # refused the dirty tree and the half-way cleanup then deleted the directory anyway.
+    real_git = wt._git
+    wt._git = lambda args, cwd, timeout=60: ((False, "fatal: timed out")
+                                              if args[:1] == ["status"] else real_git(args, cwd, timeout))
+    try:
+        r4 = wt.release(a["dir"])
+    finally:
+        wt._git = real_git
+    check(not r4["removed"] and os.path.isdir(a["dir"])
+          and open(os.path.join(a["dir"], "a.txt")).read() == "changed by A\n",
+          "a worktree whose status cannot be read is kept, with its work (%r)" % r4["error"][:60])
+
     r3 = wt.release(a["dir"], force=True)
     check(r3["removed"], "force removes one that still has work, when explicitly asked")
 
