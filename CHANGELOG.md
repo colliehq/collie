@@ -17,6 +17,10 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Label Daily Brief sources that have nothing connected. Calendar and Email & phone used to
+  read "read just now" even with no calendar imported and no account connected; they now say
+  *not connected* on the page and in the morning email's sources line, while still counting as
+  answered.
 - Mark an accepted message as *No reply needed* in the inbox, with a short reason kept beside it.
   It stops counting as owed in the inbox and Daily Brief, and a task that finishes afterwards keeps
   its result without preparing or sending an automatic reply. The task itself is not changed.
