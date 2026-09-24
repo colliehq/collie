@@ -50,6 +50,24 @@ def test_non_ascii_payload_reaches_the_hook_intact_in_any_code_page(tmp_path):
     assert result.reason == "echo 提交说明 café"
 
 
+def test_a_timed_out_hook_does_not_wait_for_what_it_left_running(tmp_path):
+    # subprocess.run killed only the shell; on Windows its drain then waited for as long as a
+    # background process the hook started kept the output pipe open.
+    import time
+    from harness import plat
+    if plat.is_windows() and not plat.posix_shell():
+        import pytest
+        pytest.skip("needs a POSIX shell to background a process")
+    hooks = HookManager(str(tmp_path),
+                        [_config("PreToolUse", "sleep 20 & sleep 20", "bash", timeout=1)])
+    t0 = time.monotonic()
+    result = hooks.dispatch("PreToolUse", {"tool_name": "bash"}, subject="bash")
+    elapsed = time.monotonic() - t0
+    assert result.receipts[0]["timed_out"] is True
+    assert not result.allowed
+    assert elapsed < 10, "waited %.1fs for a background process of a timed-out hook" % elapsed
+
+
 def test_matcher_and_additional_context(tmp_path):
     command = _script(tmp_path,
         "import json,sys\njson.load(sys.stdin)\n"

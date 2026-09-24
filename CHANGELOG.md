@@ -176,6 +176,11 @@
   similar commands therefore reached the model garbled. Each line is now read as UTF-8 when it is
   valid UTF-8, and in the system code page otherwise. Machines already on UTF-8 (code page 65001)
   are unchanged.
+- Stop a timed-out hook from stalling the run. On a timeout only the hook's shell was killed, and
+  on Windows Collie then waited for its output for as long as anything the hook had started kept
+  running (measured: 20 s for a `sleep 20 &`; forever for a background server). The whole process
+  tree is ended now, and the wait after that is bounded. Hook input is also sent as ASCII JSON, so
+  non-ASCII text no longer arrives as `?` on Windows code pages that cannot spell it.
 - Let `execute_code` scripts print any text on Windows. The script's output was written in the
   system code page but read as UTF-8, so under the Chinese code page `print("中文")` came back as
   replacement characters, and under 1252 it raised `UnicodeEncodeError` in the script itself.

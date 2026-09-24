@@ -275,12 +275,25 @@ class HookManager:
             # ensure_ascii: the payload goes through a text pipe in the system code page, which on
             # Windows is often not UTF-8 -- non-ASCII text arrived as "?" (or failed to encode).
             # \uXXXX escapes are the same JSON to every parser, in every code page.
-            proc = subprocess.run(
-                argv, shell=use_shell, input=json.dumps(payload, ensure_ascii=True),
-                text=True, errors="replace", capture_output=True, timeout=timeout, cwd=self.cwd,
-                **plat.no_window_kwargs())
-            stdout = (proc.stdout or "")[:_MAX_OUTPUT]
-            stderr = (proc.stderr or "")[:_MAX_OUTPUT]
+            proc = subprocess.Popen(
+                argv, shell=use_shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, errors="replace", cwd=self.cwd,
+                **plat.new_group_kwargs(), **plat.no_window_kwargs())
+            try:
+                out, err = proc.communicate(json.dumps(payload, ensure_ascii=True),
+                                            timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # The whole tree, not just the shell: subprocess.run killed only the direct
+                # child, and on Windows its drain then waited for as long as anything the hook
+                # started kept the pipe open -- forever, for a background process.
+                plat.kill_tree(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass              # something outside the tree still holds a pipe
+                raise
+            stdout = (out or "")[:_MAX_OUTPUT]
+            stderr = (err or "")[:_MAX_OUTPUT]
             base["exit_code"] = proc.returncode
             decision = None
             if stdout.strip():
