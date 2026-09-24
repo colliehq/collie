@@ -37,6 +37,40 @@ def _restore_module_env(request):
     yield
 
 
+def _dead_port():
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+#: Where the suite's browser bridge "is": a port nothing listens on. The bridge drives the real,
+#: signed-in browser of whoever runs the suite, on a fixed default port, so a test that reached a
+#: browser_* path without stubbing every call (`space_identity`, the form read, the origin check)
+#: talked to it -- or, with none running, started one. A test that wants a bridge starts its own
+#: and points COLLIE_BROWSER_BRIDGE_PORT at it. `COLLIE_BROWSER_LIVE=1` (the opt-in live-browser
+#: tests) is the one way to reach the real one.
+_NO_BRIDGE = {"COLLIE_BROWSER_BRIDGE_PORT": str(_dead_port()),
+              "COLLIE_BROWSER_BRIDGE_NOSPAWN": "1",
+              "COLLIE_NO_APPLE_EVENTS": "1"}
+_LIVE_BROWSER = os.environ.get("COLLIE_BROWSER_LIVE") == "1"
+if not _LIVE_BROWSER:
+    # Now, before collection: modules that copy os.environ at import for their subprocesses
+    # (surfaces_test.py's ENV) must carry it too.
+    os.environ.update(_NO_BRIDGE)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_browser_bridge(monkeypatch):
+    """Put it back for every test, whatever an earlier one did to the process environment."""
+    if not _LIVE_BROWSER:
+        for key, value in _NO_BRIDGE.items():
+            monkeypatch.setenv(key, value)
+    yield
+
+
 @pytest.fixture
 def tmp(tmp_path):
     """Some test modules were written to be run standalone via a main() that

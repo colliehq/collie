@@ -32,12 +32,19 @@
   `browser_open` may accept nothing but "leave this page?". Needs the reloaded extension (4.1)
   and its debugger access, which the default build has.
 - Say at once when the browser extension is not connected. With the browser closed, each browser
-  command waited out its full timeout and then said only "did not respond"; on one machine that
-  was 140 timeouts in a row over a day, 88 seconds per Mission step. When the extension has not
-  been heard from for 90 seconds and holds no command, the bridge now answers immediately that it
-  is not connected and since when, and queues nothing a browser opened later could run. A command
-  the extension took but did not finish is reported as held up in the page, not as a missing
-  extension.
+  command waited out its full timeout (60 s for a form read, 4 s for each origin check) and then
+  said only "did not respond". When the extension has not been heard from for 90 seconds and holds
+  no command, the bridge now answers immediately that it is not connected and since when, and
+  queues nothing a browser opened later could run. A command the extension took but did not finish
+  is reported as held up in the page, not as a missing extension. A browser tool also stops
+  waiting for a refused connection when no bridge is running (about 2 s on Windows), and the
+  bridge probe made while setting up each run takes at most 0.15 s instead of 0.5 s there.
+- Keep the test suite away from the developer's real browser. Two tests reached the browser bridge
+  on its fixed port (one read the form in a Collie tab, one listed tabs six times), so every suite
+  run on a machine with the bridge running sent commands to its signed-in browser; the bridge
+  audit on the developer's machine holds 96 such form reads since August. Every test now gets a
+  port nothing listens on unless it starts its own bridge, and `COLLIE_BROWSER_LIVE=1` is the one
+  way to reach the real one.
 - Keep a Slack dog restricted to the people you named after a restart. `collie slack
   --install-autostart` dropped `--allow` from the launcher (Windows) and LaunchAgent (macOS), and the
   supervisor kept the command line it copied from a launcher when `supervisor.json` was first

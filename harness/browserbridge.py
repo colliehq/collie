@@ -234,10 +234,9 @@ class _Bridge:
     # A connected extension is always either holding a poll open (each lasts up to 25s and the next
     # follows at once), running a command it took, or about to be revived by its 30-second alarm.
     # None of those for this long means it is not there: the browser is closed or the extension is
-    # off. Waiting out a full command timeout then only delays the same answer -- on the developer's
-    # machine a closed browser turned every Mission tick into 88 seconds of timeouts (one 60s
-    # form read, then seven 4s origin checks), 140 in a row over a day, each saying only "did not
-    # respond".
+    # off. Waiting out a full command timeout then only delays the same answer: with the browser
+    # closed, a form read waited 60 s and each origin check 4 s, and all any of them said was "did
+    # not respond" (the developer's bridge audit holds runs of these, 140 in a row one day).
     ABSENT_AFTER_S = 90.0
 
     def __init__(self):
@@ -800,7 +799,25 @@ def start_background(port=None):
     return False
 
 
+def _listening(port, timeout=0.15):
+    """Whether anything accepts connections on this loopback port, answered quickly.
+
+    On Windows a connection to a loopback port nobody listens on is not refused at once: the stack
+    retries for about two seconds, so each probe below waited out its whole HTTP timeout. Measured:
+    0.53 s of a 1.7 s `collie -p` with no bridge running, spent on one /health probe. A listening
+    port completes the handshake in the kernel in well under a millisecond, so a short connect
+    decides it; the HTTP request that follows keeps its own timeout."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
 def _web_server_up(port=8787, timeout=1.0):
+    if not _listening(port):
+        return False
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % int(port), timeout=timeout) as r:
             return bool((r.read() or b"").strip())
@@ -810,6 +827,8 @@ def _web_server_up(port=8787, timeout=1.0):
 
 def _web_extension_api_up(port=8787, timeout=1.0):
     """A 403 proves the new bridge-auth route exists; 404 means an old Web process."""
+    if not _listening(port):
+        return False
     try:
         urllib.request.urlopen("http://127.0.0.1:%d/api/browser/bridge-auth" % int(port),
                                timeout=timeout)
@@ -918,6 +937,8 @@ def _server_up(port):
     # confirm it's OUR bridge, not just any server squatting on the port — /health must return the
     # bridge's own JSON shape. Otherwise _ensure_server would skip spawning and POST /enqueue at an
     # unrelated service.
+    if not _listening(port):
+        return False
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=2) as r:
             d = json.loads(r.read() or b"{}")
@@ -929,9 +950,11 @@ def _server_up(port):
 def _bridge_live(port=None, timeout=0.5):
     """True iff a bridge is up AND a browser extension is currently connected (polling). Used to
     auto-enable the browser_* tools when a real local browser is available — a fast localhost probe
-    that fails instantly (connection refused) when no bridge is running, so it's cheap on the common
-    no-bridge path."""
+    that is cheap on the common no-bridge path (see _listening: on Windows that takes a connect
+    pre-check, since a refused loopback connection is not reported for about two seconds)."""
     port = port or _port()
+    if not _listening(port):
+        return False
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=timeout) as r:
             d = json.loads(r.read() or b"{}")
@@ -1104,7 +1127,13 @@ def _call(cmd, timeout=60):
     """Send a command to the bridge server and wait for the extension's result. The server is
     auto-spawned if not already running."""
     port = _port()
-    _ensure_server(port)
+    if not _ensure_server(port):
+        # Nothing is listening and none could be started: connecting anyway only waits for the
+        # refusal, which Windows reports after about two seconds.
+        return _apple_events(cmd, timeout) or {
+            "ok": False, "error": "bridge unreachable (nothing on port %d). Is the collie "
+            "extension loaded in Chrome? chrome://extensions -> Load unpacked -> "
+            "harness/browser_ext/" % port}
     cmd = dict(cmd)
     cmd.setdefault("space", _space())
     activity = _SPACE_ACTIVITY.get()
@@ -1806,6 +1835,8 @@ class BrowserTabs(Tool):
 
 def _health(port=None, timeout=2):
     """The bridge's own /health — which extension is connected, and what version it reports."""
+    if not _listening(port or _port()):
+        return {}
     try:
         req = urllib.request.Request("http://127.0.0.1:%d/health" % (port or _port()),
                                      headers={"X-Collie-Bridge": "1"})

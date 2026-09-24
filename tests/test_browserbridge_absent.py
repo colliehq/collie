@@ -1,8 +1,7 @@
 """A bridge with no extension behind it says so at once, and only when that is really the case.
 
-On the developer's machine a closed browser turned every Mission tick into 88 seconds of timeouts
-(a 60s form read, then seven 4s origin checks), 140 in a row over a day, each reporting only that
-the browser "did not respond".
+With the browser closed, each command waited out its whole timeout (60 s for a form read, 4 s for
+each origin check) and then reported only that the browser "did not respond".
 """
 import json
 import os
@@ -146,3 +145,36 @@ def test_ago_reads_naturally():
     assert bb._ago(600) == "10 min"
     assert bb._ago(3 * 3600 + 5) == "3 h"
     assert bb._ago(5 * 86400) == "5 days"
+
+
+def test_probing_a_port_nobody_listens_on_is_quick():
+    """Windows reports a refused loopback connection only after about two seconds, so every probe
+    waited out its HTTP timeout: 0.5 s per run with no bridge (a third of a short `collie -p`)."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    for probe in (lambda: bb._bridge_live(port), lambda: bb._server_up(port),
+                  lambda: bb._health(port), lambda: bb._web_server_up(port)):
+        t0 = time.monotonic()
+        assert not probe()
+        assert time.monotonic() - t0 < 0.4
+
+
+def test_a_listening_bridge_is_still_found(monkeypatch):
+    from harness.httpserver import ThreadingHTTPServer
+    bridge = bb._Bridge()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), bb._handler(bridge))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        assert bb._listening(port) is True
+        assert bb._server_up(port) is True
+        assert bb._health(port).get("ok") is True
+        assert bb._bridge_live(port) is False, "up, but no extension polling"
+        bridge.last_poll = time.time()
+        assert bb._bridge_live(port) is True
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
