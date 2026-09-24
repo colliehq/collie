@@ -41,6 +41,9 @@
 - Retry a model request whose connection Windows reports as reset. The retry patterns knew the
   POSIX wording only, so "An existing connection was forcibly closed by the remote host" (WinError
   10054) and the 10053 abort were read as unrecognised and fatal; a real run stopped on the first.
+- Say what an overflow failure was. A run whose conversation was still too long after its one
+  shrink-and-retry ended with the note meant for unrecognised errors ("matches no known pattern");
+  it now says the conversation was still too long after it was shrunk, or that recovery is off.
 - Keep a page from closing the untrusted-content fence itself. Page text, and now dialog text, is
   wrapped in markers that tell the model it is data; a page that wrote the closing marker could end
   the fence early and have what followed read as outside it. Copies of the markers inside the
