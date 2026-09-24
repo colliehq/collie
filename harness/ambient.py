@@ -269,9 +269,13 @@ def main(argv=None):
         observer = AmbientObserver(path)
         print(json.dumps(observer.run(once=True), ensure_ascii=False))
         return 0
-    from .supervisor import InstanceLock
+    from .supervisor import AlreadyRunning, InstanceLock
     root = os.path.dirname(path)
-    lock = InstanceLock(os.path.join(root, "ambient.lock"))
+    try:
+        lock = InstanceLock(os.path.join(root, "ambient.lock"), what="The Collie ambient observer")
+    except AlreadyRunning as exc:
+        print("collie ambient: %s; this copy is exiting." % exc, file=sys.stderr)
+        return 3
     try:
         AmbientObserver(path).run(interval=args.interval)
     except KeyboardInterrupt:

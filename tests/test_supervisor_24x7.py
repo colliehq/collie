@@ -293,3 +293,39 @@ def test_supervisor_lines_carry_a_timestamp_and_the_restart_reason(tmp_path):
     assert "health probe failed for 5.0s; restarting pid 41" in text
     assert "] stopped" in text
     assert "[supervisor] " not in text          # no unstamped supervisor line remains
+
+
+def test_a_held_instance_lock_names_its_owner(tmp_path):
+    path = str(tmp_path / "automations.lock")
+    first = supervisor.InstanceLock(path, what="The Collie automations daemon")
+    try:
+        with pytest.raises(supervisor.AlreadyRunning) as refused:
+            supervisor.InstanceLock(path, what="The Collie automations daemon")
+        assert "automations daemon is already running" in str(refused.value)
+        assert "supervisor" not in str(refused.value)
+        assert isinstance(refused.value, RuntimeError)       # existing callers catch RuntimeError
+    finally:
+        first.close()
+
+
+@pytest.mark.parametrize("module,lock_name,argv", [
+    ("automations", "automations.lock", ["daemon", "--interval", "1"]),
+    ("ambient", "ambient.lock", ["--interval", "1"]),
+])
+def test_a_second_daemon_exits_with_one_line_instead_of_a_traceback(tmp_path, capsys, monkeypatch,
+                                                                     module, lock_name, argv):
+    import importlib
+    mod = importlib.import_module("harness." + module)
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    if module == "ambient":
+        monkeypatch.setattr(mod, "state_path", lambda _d=None: str(tmp_path / "ambient.json"))
+    else:
+        argv = argv + ["--state-dir", str(tmp_path)]
+    held = supervisor.InstanceLock(str(tmp_path / lock_name))
+    try:
+        assert mod.main(argv) == 3
+    finally:
+        held.close()
+    err = capsys.readouterr().err
+    assert "already running" in err and "this copy is exiting" in err
+    assert "Traceback" not in err

@@ -315,10 +315,18 @@ def load_config(path: str | None = None, *, python: str | None = None) -> dict:
     return value
 
 
-class InstanceLock:
-    """OS-released single-supervisor guard; a stale file is harmless."""
+class AlreadyRunning(RuntimeError):
+    """Another live process holds this single-instance lock."""
 
-    def __init__(self, path: str):
+
+class InstanceLock:
+    """OS-released single-instance guard; a stale file is harmless.
+
+    The automations daemon and the ambient observer use it too, so the refusal names whose lock
+    it is: every one of them used to say "Collie supervisor is already running".
+    """
+
+    def __init__(self, path: str, what: str = "The Collie supervisor"):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.file = open(path, "a+b")
         # The OS can lock an empty file; initialization must not race an owner.
@@ -333,7 +341,7 @@ class InstanceLock:
         except (OSError, IOError) as exc:
             self.file.close()
             self.file = None
-            raise RuntimeError("Collie supervisor is already running") from exc
+            raise AlreadyRunning("%s is already running (lock %s)" % (what, path)) from exc
 
     def close(self):
         f, self.file = self.file, None
