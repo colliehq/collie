@@ -13,8 +13,11 @@
   press Install, nothing is installed and the card asks you to check again. A paired phone can read
   the notice but not install. Other installs are told what they can run: the macOS app is pointed
   at the release page, Homebrew at `brew upgrade collie`, pip at `collie update --yes`.
-- `collie update --expect <version>` installs only that exact newer release (exit 3 otherwise), and
-  the update journal now records the version being installed.
+- `collie update --expect <version>` installs only that exact newer release (exit 3 otherwise), one
+  update runs at a time (exit 4 while another holds the lock), and the update journal records the
+  version being installed.
+- A request relayed from a paired phone can no longer present itself as local by sending its own
+  `X-Collie-Relay` header ahead of the relay's; the relay strips it and the server reads every value.
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
@@ -34,8 +37,9 @@
 - Stop reporting a login you do not use as a problem. Health counted a missing Claude or Codex
   subscription login as degraded whichever provider was configured, so someone on one subscription
   (and every Mac, where Claude Code keeps its login in the Keychain) saw *Needs attention* and a
-  recurring "claude-oauth is missing" alert. Only the login the configured provider reads itself
-  now affects health and alerts; both are still listed.
+  recurring "claude-oauth is missing" alert. Only the login the configured provider needs now
+  affects health and alerts; both are still listed. Claude Code routes on Windows and Linux still
+  need their sign-in file, but its expiry is not a problem because Claude Code refreshes it.
 - Name the reasoning effort an unchosen run will use. With a Default reasoning effort saved in
   Settings, the run menu (desktop and phone) said "Auto by task" while every run used the saved
   level; it now shows *Saved default: High* (or the level saved), refreshes right after that setting
