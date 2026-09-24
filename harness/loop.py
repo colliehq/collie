@@ -2555,6 +2555,17 @@ class Harness:
                         comp.text = explain_exhausted(
                             getattr(self.provider, "name", ""),
                             comp.error_detail or comp.text or "", comp.error_status)
+                    elif cls == "overflow":
+                        # A context overflow IS a recognised failure; saying "matches no known
+                        # pattern" sent a reader looking for a provider problem that was not there.
+                        note = ("the conversation was still too long after it was shrunk once"
+                                if overflow_tried else
+                                "the conversation is too long and overflow recovery is off"
+                                if not self.overflow_recovery else
+                                "the conversation is too long, with no turn left to shrink it")
+                        comp.text = "%s: [%s] %s%s" % (
+                            cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                            comp.error_detail or comp.text or "provider error")
                     else:
                         known = is_known_terminal(comp.error_detail or comp.text or "")
                         note = ("not retried (fatal)" if known else
