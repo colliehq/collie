@@ -193,13 +193,14 @@ class Scheduler:
             "SELECT * FROM waits WHERE state=? ORDER BY fire_at", (PENDING_W,))]
 
     def serve(self, interval: float = 60.0, now_fn=time.time, stop=None,
-              extra_tick=None):
+              extra_tick=None, heartbeat=None):
         """Catch up immediately, then tick on an interval.
 
         ``extra_tick`` runs in a non-overlapping worker so a slow Mission model or
         browser call cannot delay ordinary reminders.  Shutdown waits for that
         worker's current boundary before callers close its durable stores.
-        ``stop`` is a callable for tests / clean shutdown.
+        ``stop`` is a callable for tests / clean shutdown. ``heartbeat(now, extra_busy)`` is called
+        from the main lane every tick, so a long Mission tick cannot make the daemon look gone.
         """
         extra_worker = [None]
         extra_lock = threading.Lock()
@@ -214,6 +215,11 @@ class Scheduler:
         def _tick():
             now = int(now_fn())
             self.tick(now)
+            if heartbeat is not None:
+                try:
+                    heartbeat(now, extra_worker[0] is not None)
+                except Exception:
+                    pass
             if extra_tick:
                 # A Mission tick can spend minutes in a model/browser call. Run
                 # it in its own lane so ordinary reminders remain punctual, and

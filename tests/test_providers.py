@@ -60,6 +60,18 @@ def test_history_cache_breakpoint_placement():
     assert m2[-1]["content"][-1]["text"] == "there", "promoted block keeps the text"
     assert n_bp(m2) == 1
 
+    # A request can carry one-off messages after the durable history (the verification preflight,
+    # a repair nudge): the tail mark goes on the history's end, never on those.
+    m4 = [{"role": "user", "content": [{"type": "text", "text": str(i)}]} for i in range(7)]
+    _apply_history_cache(m4, 3, history_end=5)
+    assert [i for i, m in enumerate(m4) if m["content"][-1].get("cache_control")] == [2, 4]
+    m5 = [{"role": "user", "content": [{"type": "text", "text": str(i)}]} for i in range(7)]
+    _apply_history_cache(m5, 3, history_end=0)     # overflow recovery: no tail mark
+    assert [i for i, m in enumerate(m5) if m["content"][-1].get("cache_control")] == [2]
+    m6 = [{"role": "user", "content": [{"type": "text", "text": str(i)}]} for i in range(4)]
+    _apply_history_cache(m6, 0, history_end=3)     # short thread with a one-off after it
+    assert [i for i, m in enumerate(m6) if m["content"][-1].get("cache_control")] == [2]
+
     _apply_history_cache([], 5)             # empty: must not raise
     # out-of-range stable_upto is clamped, never indexes past the end
     m3 = [{"role": "user", "content": [{"type": "text", "text": "a"}]}]

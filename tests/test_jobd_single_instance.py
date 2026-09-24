@@ -99,6 +99,38 @@ def test_a_daemon_left_running_by_an_earlier_supervisor_is_adopted_not_doubled(t
         runtime.close()
 
 
+def test_adopting_a_running_copy_clears_the_backoff_its_rivals_ran_up(tmp_path):
+    spec = supervisor.WorkerSpec("jobd", ["python", "jobd"], adopt_heartbeat="jobs-daemon",
+                                 startup_grace_s=2, stable_s=10, max_backoff_s=10)
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        runtime = supervisor.WorkerRuntime(spec, store, str(tmp_path), popen=lambda *a, **k: None,
+                                           probe=lambda spec: True, clock=lambda: 1000.0)
+        runtime.consecutive_failures, runtime.circuit_until, runtime.next_start_at = 8, 1600.0, 1600.0
+        store.beat("jobs-daemon", "running", {}, pid=os.getpid(), ttl=180, now=1000.0)
+        assert runtime.step(1000.0) == "external"
+        assert runtime.consecutive_failures == 0 and runtime.circuit_until == 0.0
+        assert runtime.next_start_at <= 1000.0
+        runtime.close()
+
+
+def test_the_jobs_heartbeat_comes_from_the_main_lane_while_a_mission_tick_runs(tmp_path):
+    """A Mission tick can take minutes; a beat that waited for it expired while jobd was fine."""
+    from harness.scheduler import Scheduler
+    from harness.actions import ActionStore
+    from harness.jobs import JobStore
+    sched = Scheduler(ActionStore(str(tmp_path / "a.db")), JobStore(str(tmp_path / "j.db")),
+                      db_path=str(tmp_path / "j.db"))
+    beats, t0 = [], time.time()
+    try:
+        sched.serve(interval=0.1, extra_tick=lambda now: time.sleep(1.5),
+                    heartbeat=lambda now, busy: beats.append(busy),
+                    stop=lambda: time.time() - t0 > 1.2)
+    finally:
+        sched.close()
+    assert len(beats) >= 5, beats                  # every tick, not once per Mission tick
+    assert any(beats), "and it says the Mission lane was busy"
+
+
 def test_a_fresh_beat_from_a_process_that_is_gone_is_not_adopted(tmp_path):
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait(timeout=30)
@@ -115,7 +147,7 @@ def test_a_fresh_beat_from_a_process_that_is_gone_is_not_adopted(tmp_path):
 
 
 def test_its_own_child_that_just_died_is_restarted_not_adopted(tmp_path):
-    child = _Proc(77)
+    child = _Proc(os.getpid())       # alive, so only the own-child guard can refuse its beat
     spawned = []
 
     def popen(*a, **k):
@@ -129,7 +161,7 @@ def test_its_own_child_that_just_died_is_restarted_not_adopted(tmp_path):
         runtime = supervisor.WorkerRuntime(spec, store, str(tmp_path), popen=popen,
                                            probe=lambda spec: True, clock=lambda: clock[0])
         assert runtime.step(clock[0]) == "starting"
-        store.beat("jobs-daemon", "running", {}, pid=77, ttl=180, now=clock[0])   # the child beats
+        store.beat("jobs-daemon", "running", {}, pid=os.getpid(), ttl=180, now=clock[0])
         child.code = 1                                                           # ...then dies
         clock[0] += 30
         runtime.step(clock[0])                                                  # sees the exit

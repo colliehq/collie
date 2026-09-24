@@ -4243,23 +4243,31 @@ def cmd_jobs(args):
                     if msg != last_mission_error[0]:
                         print("mission tick paused: %s" % msg)
                         last_mission_error[0] = msg
+
+
+            def _beat(now, mission_busy):
                 # What a supervisor started after this one adopts instead of starting a second.
-                try:
-                    jobd_ops.beat("jobs-daemon", "running",
-                                  {"mission_error": last_mission_error[0][:200]},
-                                  ttl=max(30.0, 3 * float(args.interval)))
-                except Exception:
-                    pass
+                # From the main lane, every tick: a Mission tick can take minutes, and a beat that
+                # waited for it would expire while this daemon is healthy and holds the lock.
+                jobd_ops.beat("jobs-daemon", "running",
+                              {"mission_busy": bool(mission_busy),
+                               "mission_error": last_mission_error[0][:200]},
+                              ttl=max(30.0, 3 * float(args.interval)))
 
             print("colliejobd: jobs + missions, catch-up + tick every %ss (Ctrl-C to stop)"
                   % args.interval)
             try:
-                sched.serve(interval=float(args.interval), extra_tick=_mission_tick)
+                sched.serve(interval=float(args.interval), extra_tick=_mission_tick,
+                            heartbeat=_beat)
             except KeyboardInterrupt:
                 print("\ncolliejobd stopped")
             finally:
                 msvc.close()
                 sched.close()
+                try:
+                    jobd_ops.beat("jobs-daemon", "stopped", {}, ttl=30)
+                except Exception:
+                    pass
                 jobd_ops.close()
                 jobd_lock.close()
         elif args.action == "receipts":

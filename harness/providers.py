@@ -222,7 +222,7 @@ def _mark_cache_block(msg):
     return msg
 
 
-def _apply_history_cache(msgs, stable_upto):
+def _apply_history_cache(msgs, stable_upto, history_end=None):
     """Add ONE rolling cache_control breakpoint inside the conversation history so the large, growing
     message prefix caches turn-to-turn instead of being re-billed in full every turn (the difference
     between ~2% and ~90% cache hit on long runs). Anthropic caches the prefix UP TO the breakpoint and
@@ -235,15 +235,21 @@ def _apply_history_cache(msgs, stable_upto):
     n = len(msgs)
     if n == 0:
         return
-    bp = (stable_upto - 1) if (stable_upto and stable_upto > 0) else (n - 1)
+    # history_end: how many of these messages are durable history (the loop says; None = all).
+    # A request can carry one-off messages after it -- the verification preflight, a
+    # format-repair nudge, the final-summary instruction -- and a cache entry that ends on one of
+    # those is never read again. 0 means "do not mark the tail" (overflow recovery, whose window
+    # moves every turn).
+    end = n if history_end is None else max(0, min(int(history_end), n))
+    bp = (stable_upto - 1) if (stable_upto and stable_upto > 0) else ((end or n) - 1)
     bp = max(0, min(bp, n - 1))
     msgs[bp] = _mark_cache_block(msgs[bp])
-    # And the final message. The elision boundary now moves in steps (context.ELIDE_STEP), so the
-    # recent window after it stays byte-stable for a few turns; marked, the next turn reads it from
-    # the cache instead of paying for it again. With a boundary that moved every turn this would
-    # only have bought cache writes nobody read. System + boundary + final = 3 of the 4 allowed.
-    if stable_upto and stable_upto > 0 and bp < n - 1:
-        msgs[n - 1] = _mark_cache_block(msgs[n - 1])
+    # And the end of the history. The elision boundary moves in steps (context.ELIDE_STEP), so
+    # the recent window after it stays byte-stable for a few turns; marked, the next turn reads it
+    # from the cache instead of paying for it again. With a boundary that moved every turn this
+    # would only have bought cache writes nobody read. System + boundary + end = 3 of 4 allowed.
+    if stable_upto and stable_upto > 0 and end and bp < end - 1:
+        msgs[end - 1] = _mark_cache_block(msgs[end - 1])
 
 
 def _openai_content(content):
@@ -334,8 +340,11 @@ _RETRYABLE_RE = re.compile(
     # 2026-08-01 stopped on the first one as "no known pattern" instead of being retried.
     r"|forcibly closed by the remote host|aborted by the software in your host"
     r"|winerror 1005[34]|connectionreseterror|connectionabortederror"
-    # Windows' connect timeout (10060) never says "timed out"; the POSIX one already matched.
-    r"|did not properly respond after a period of time|winerror 10060"
+    # Windows' connect timeout (10060) never says "timed out", and its refusal (10061) never
+    # says "connection refused"; the POSIX wordings already matched. IncompleteRead is the
+    # exception's name, with no space.
+    r"|did not properly respond after a period of time|winerror 1006[01]|actively refused"
+    r"|incompleteread"
     r"|eof occurred|temporarily unavailable|server.?error|internal.?error"
     r"|service.?unavailable|stream error|stream ended", re.I)
 _RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504, 522, 524, 529}
@@ -832,7 +841,8 @@ class AnthropicProvider(ModelProvider):
         anthropic_msgs = self._to_anthropic(messages)
         # 2nd cache breakpoint (system is the 1st): cache the growing conversation prefix too, not
         # just the ~3k system block. Placed on the stable elided prefix — see _apply_history_cache.
-        _apply_history_cache(anthropic_msgs, getattr(self, "cache_stable_upto", 0))
+        _apply_history_cache(anthropic_msgs, getattr(self, "cache_stable_upto", 0),
+                             getattr(self, "cache_history_end", None))
         body = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -1049,7 +1059,8 @@ class AnthropicOAuthProvider(AnthropicProvider):
         anthropic_msgs = self._to_anthropic(messages)
         # Cache the conversation prefix too; the outer Harness remains the sole
         # owner of the system/tool contract.
-        _apply_history_cache(anthropic_msgs, getattr(self, "cache_stable_upto", 0))
+        _apply_history_cache(anthropic_msgs, getattr(self, "cache_stable_upto", 0),
+                             getattr(self, "cache_history_end", None))
         # Extended thinking (COLLIE_THINKING=budget_tokens, e.g. 8000): run Opus "thick" like the
         # real Claude Code does, instead of collie's default no-thinking path. Gap-closer hypothesis
         # (cc/hermes think, collie doesn't). budget MUST be < max_tokens, and max_tokens must leave

@@ -16,7 +16,10 @@ def test_windows_connection_resets_and_aborts_are_retryable():
             "ConnectionResetError: [Errno 104] Connection reset by peer",
             "URLError: <urlopen error [WinError 10060] A connection attempt failed because the "
             "connected party did not properly respond after a period of time, or established "
-            "connection failed because connected host has failed to respond>"):
+            "connection failed because connected host has failed to respond>",
+            "URLError: <urlopen error [WinError 10061] No connection could be made because the "
+            "target machine actively refused it>",
+            "IncompleteRead(0 bytes read)"):
         assert classify_error(text) == "retryable", text
 
 

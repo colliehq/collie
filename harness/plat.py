@@ -118,7 +118,8 @@ def pid_alive(pid) -> bool:
             kernel = ctypes.windll.kernel32
             handle = kernel.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
             if not handle:
-                return False
+                # Refused is not gone: a process of another account exists (as EPERM says below).
+                return kernel.GetLastError() == 5                # ERROR_ACCESS_DENIED
             try:
                 code = ctypes.c_ulong()
                 ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))

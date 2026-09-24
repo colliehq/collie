@@ -540,6 +540,11 @@ class WorkerRuntime:
             external = self._external_status(now)
             if external:
                 self.external = True
+                # Whatever failures led here were of copies that found this one running; when it
+                # goes, start the next one promptly rather than after that backoff or circuit.
+                self.consecutive_failures = 0
+                self.circuit_until = 0.0
+                self.next_start_at = min(self.next_start_at, now)
                 self._beat("external", now, **external)
                 return "external"
             self.external = False

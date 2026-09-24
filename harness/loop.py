@@ -2193,7 +2193,7 @@ class Harness:
         prev_prompt = 0
         prev_skey = None
         prev_system = None
-        prev_elide_from = 0
+        prev_elide_from = None
         prev_compact_gen = 0
         prev_t = None
         waste_tok = waste_usd = 0
@@ -2332,6 +2332,11 @@ class Harness:
                 # cache_control breakpoint there (Anthropic caches history turn-to-turn -> the big
                 # win on long runs). Providers that don't cache ignore this attribute.
                 self.provider.cache_stable_upto = meta.elide_from
+                # ...and where the durable history ends: anything added after it for this request
+                # only (the preflight, a repair nudge) is not worth a cache entry. Overflow
+                # recovery moves its window every turn, so its tail is not marked at all.
+                self.provider.cache_history_end = (0 if session.get("_overflow_shrink")
+                                                   else len(msgs))
 
                 tt = time.time()
                 schemas = self.registry.active_schemas()
@@ -2621,10 +2626,13 @@ class Harness:
                 # active that is the PROJECTION, not the raw transcript, and slicing the wrong
                 # list would attribute the miss to the wrong cause (or miss it entirely).
                 elide_src = meta.pre_elision or session["messages"]
-                if prev_elide_from and meta.elide_from > prev_elide_from and any(
+                # A boundary below zero (a short history) stubs nothing, and the first move off
+                # zero counts: stepped elision makes 0 -> ELIDE_STEP the first real one.
+                elided_from = max(prev_elide_from, 0) if prev_elide_from is not None else None
+                if elided_from is not None and meta.elide_from > elided_from and any(
                         m.get("role") == "tool" and isinstance(m.get("content"), str)
                         and len(m["content"]) > 240
-                        for m in elide_src[prev_elide_from:meta.elide_from]):
+                        for m in elide_src[elided_from:meta.elide_from]):
                     cause.append("elide")            # history elision newly stubbed a big tool output
                 if prev_t and time.time() - prev_t > _CACHE_TTL:
                     cause.append("ttl?")             # NB completion-to-completion incl. generation time

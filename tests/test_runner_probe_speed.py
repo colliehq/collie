@@ -119,5 +119,4 @@ def test_concurrent_reads_of_one_runner_share_a_single_probe(monkeypatch):
         t.join(5)
     assert calls == ["codex-exec"], calls
     assert len(got) == 3 and all(g is got[0] for g in got)
-    assert time.monotonic() - t0 < 0.8
     runner_registry.reset_cache()

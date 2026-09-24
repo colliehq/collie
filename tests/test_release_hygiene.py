@@ -337,7 +337,7 @@ _EXT_LOCK = ROOT / "tests" / "extension_release_lock.json"
 def _extension_digest() -> str:
     """What ships in the extension, independent of line endings and of the version field itself."""
     h = hashlib.sha256()
-    for path in sorted(_EXT_DIR.iterdir()):
+    for path in sorted(_EXT_DIR.rglob("*")):
         if not path.is_file() or path.name in ("token.txt", "STORE_RELEASE.md"):
             continue
         raw = path.read_bytes()
@@ -347,7 +347,7 @@ def _extension_digest() -> str:
             raw = json.dumps(value, sort_keys=True).encode("utf-8")
         elif path.suffix in (".js", ".html", ".css"):
             raw = raw.replace(b"\r\n", b"\n")
-        h.update(path.name.encode("utf-8") + b"\0" + raw + b"\0")
+        h.update(path.relative_to(_EXT_DIR).as_posix().encode("utf-8") + b"\0" + raw + b"\0")
     return h.hexdigest()
 
 
