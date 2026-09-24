@@ -17,6 +17,10 @@
 - Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
   from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
   check. *Open task* from the inbox opens the task in the same window.
+- Name the reasoning effort an unchosen run will use. With a Default reasoning effort saved in
+  Settings, the run menu (desktop and phone) said "Auto by task" while every run used the saved
+  level; it now shows *Saved default: High* (or the level saved), refreshes right after that setting
+  is saved, and a phone refreshes run options when it is brought back to the screen.
 - Label Daily Brief sources that have nothing connected. Calendar and Email & phone used to
   read "read just now" even with no calendar imported and no account connected; they now say
   *not connected* on the page and in the morning email's sources line, while still counting as

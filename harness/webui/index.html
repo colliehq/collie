@@ -4148,6 +4148,7 @@
   // Strings introduced by operational surfaces are kept in one additive block
   // so the two selectable Chinese locales cannot silently fall back to English.
   Object.assign(ZH, {
+    "Use the reasoning level selected in Settings":"使用设置中选择的推理强度",
     "Inbox":"收件箱","{n} waiting":"{n} 项待处理",
     // Collie updates (Settings → General)
     "checked just now":"刚刚检查过",
@@ -4420,6 +4421,7 @@
     "Dry run trigger":"试运行触发条件","Save automation":"保存自动化"
   });
   Object.assign(ZHTW, {
+    "Use the reasoning level selected in Settings":"使用設定中選擇的推理強度",
     "Inbox":"收件匣","{n} waiting":"{n} 項待處理",
     // Collie updates (Settings → General)
     "checked just now":"剛剛檢查過",
@@ -6083,7 +6085,8 @@
             if (saved.PROVIDER !== undefined && saved.MODEL !== undefined)
               adoptCurrentModel(String(saved.PROVIDER), String(saved.MODEL));
             loadModelCatalog(false);
-          } else if (key === "RUNNER" || key === "RUNNER_POOL" || key === "INTERACTIVE_SPEED") {
+          } else if (key === "RUNNER" || key === "RUNNER_POOL" || key === "INTERACTIVE_SPEED" ||
+                     key === "REASONING_EFFORT") {
             // These defaults belong to the capability response too. Refresh the existing setup
             // after an accepted save, preserving explicit per-task choices and Pack's standard
             // speed through the same adoption rules used for a model change.
@@ -13631,6 +13634,18 @@
       var saved = $("savedWorkerDesc");
       if (saved) saved.textContent = t("Use the worker selected in Settings") + ": " +
         (reported.worker_default || "collie");
+      // An effort that is not chosen here is sent as Auto and resolved on the server to the Settings
+      // default (or the one frozen when a queued request was accepted). Say what that default is,
+      // rather than "Auto by task" while a saved High runs every time.
+      var effortAuto = menu.querySelector('.mode-item[data-axis="effort"][data-val="auto"]');
+      if (effortAuto) {
+        var level = { low: "Low", medium: "Medium", high: "High" }[reported.effort_default || ""];
+        var effortName = effortAuto.querySelector(".mi-name"), effortDesc = effortAuto.querySelector(".mi-desc");
+        if (effortName) effortName.textContent = t(level ? "Saved default" : "Auto by task");
+        if (effortDesc) effortDesc.textContent = level
+          ? t("Use the reasoning level selected in Settings") + ": " + t(level)
+          : t("Use the lowest reasoning level that fits");
+      }
       (reported.workers || []).forEach(function (row) {
         var status = menu.querySelector('[data-worker-status="' + row.key + '"]');
         if (!status || !row.probe) return;

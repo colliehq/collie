@@ -717,11 +717,19 @@ $("mPackCheck").addEventListener("input",function(){this.setCustomValidity("");}
 $("mPackN").addEventListener("input",function(){this.setCustomValidity("");});
 $("mVerifyCommand").addEventListener("input",function(){this.setCustomValidity("");this.dataset.source="user";});
 var runCapabilityEpoch=0;
+// An effort not chosen here is sent as Auto and resolved on the server to the Settings default,
+// so the Auto option names that default. Re-painted after a language switch resets option text.
+function paintEffortDefault(){
+  var o=$("mEffort").querySelector('option[value="auto"]');if(!o)return;
+  var level=own({low:"Low",medium:"Medium",high:"High"},(runCapabilities||{}).effort_default);
+  o.textContent=level?t("Saved default")+" · "+t(level):t("Auto by task");
+}
 function refreshRunCapabilities(){var epoch=++runCapabilityEpoch;fetch(api('/api/run-capabilities')).then(function(r){return r.json();}).then(function(c){
   if(epoch!==runCapabilityEpoch)return;
   runCapabilities=c||{};var fast=(c.speed_tiers||[]).indexOf('fast')>=0,opt=$("mFastOption");opt.hidden=!fast;opt.disabled=!fast;
   if(!fast&&$("mSpeed").value==='fast'){$("mSpeed").value='standard';delete runExplicitAxes.speed;}
   Array.prototype.forEach.call($("mEffort").options,function(o){if(o.value==='auto')return;o.disabled=(c.reasoning_efforts||[]).indexOf(o.value)<0;});
+  paintEffortDefault();
   var rows={};(c.workers||[]).forEach(function(row){rows[row.key]=row;});
   Array.prototype.forEach.call($("mRunner").options,function(o){
     var key=o.value,base=key===""?t("Saved default")+" · "+(c.worker_default||"collie"):
@@ -1173,7 +1181,7 @@ function applyStatic(){ document.documentElement.lang=UI_LANG; $("menuBtn").setA
   document.querySelectorAll('[data-t]').forEach(function(el){el.textContent=t(el.getAttribute('data-t'));});
   document.querySelectorAll('[data-t-placeholder]').forEach(function(el){el.placeholder=t(el.getAttribute('data-t-placeholder'));});
   document.querySelectorAll('[data-t-aria-label]').forEach(function(el){el.setAttribute('aria-label',t(el.getAttribute('data-t-aria-label')));});
-  $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); }
+  $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); paintEffortDefault(); }
 refreshVerification();
 fetch(api('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })

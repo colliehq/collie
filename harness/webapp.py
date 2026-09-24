@@ -2312,6 +2312,11 @@ class Handler(BaseHTTPRequestHandler):
                          probe=probes[key].to_dict())
                     for key in runner_reg.option_keys() if key in probes
                 ]
+                # What an inherited (not explicitly chosen) effort resolves to on the server:
+                # the menu used to show "Auto by task" while a saved High ran every time.
+                effort_default = (settings.get("REASONING_EFFORT", "auto") or "auto").strip().lower()
+                payload["effort_default"] = (effort_default if effort_default in
+                                             ("auto", "low", "medium", "high") else "auto")
                 payload["worker_default"] = settings.get("RUNNER", "collie") or "collie"
                 payload["worker_pool"] = settings.get("RUNNER_POOL", "collie") or "collie"
                 payload["worker_signals"] = signal_set.to_dict()
