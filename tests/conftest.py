@@ -12,6 +12,7 @@ import functools
 import inspect
 import os
 import shutil
+import sys
 import tempfile
 
 import pytest
@@ -45,9 +46,37 @@ if os.path.isfile(_gitconfig):
     shutil.copyfile(_gitconfig, os.path.join(TEST_HOME, ".gitconfig"))
 os.environ["HOME"] = os.environ["USERPROFILE"] = TEST_HOME
 
+#: The suite's temp directory, for the same reason. Tests and the code under test make temp folders
+#: and many never remove them: one developer's %TEMP% held 12,352 from this suite. Everything
+#: made under this one goes at the end of the session, including what
+#: subprocesses make (they inherit TMP/TEMP/TMPDIR). pytest's own tmp_path stays where it was,
+#: with its usual keep-the-last-three, so a failure can still be looked at afterwards.
+REAL_TEMP = tempfile.gettempdir()
+os.environ.setdefault("PYTEST_DEBUG_TEMPROOT", REAL_TEMP)
+TEST_TEMP = tempfile.mkdtemp(prefix="collie-test-tmp-")
+for _name in ("TMPDIR", "TEMP", "TMP"):
+    os.environ[_name] = TEST_TEMP
+tempfile.tempdir = TEST_TEMP
+
+
+def _remove_tree(path):
+    # git marks its objects read-only, and Windows does not delete a read-only file, so plain
+    # rmtree(ignore_errors=True) leaves every test repository behind.
+    def writable(fn, target, _exc):
+        try:
+            os.chmod(target, 0o700)
+            fn(target)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=writable)
+    else:
+        shutil.rmtree(path, onerror=writable)
+
 
 def pytest_sessionfinish(session, exitstatus):
-    shutil.rmtree(TEST_HOME, ignore_errors=True)
+    for path in (TEST_HOME, TEST_TEMP):
+        _remove_tree(path)
 
 
 #: Page loads a Windows runner refuses for a while when it is out of socket buffers

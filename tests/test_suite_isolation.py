@@ -20,6 +20,29 @@ def test_home_is_the_suites_own():
     assert os.path.normcase(conftest.TEST_HOME) != os.path.normcase(conftest.REAL_HOME)
 
 
+def test_temp_is_the_suites_own_in_this_process_and_its_children(tmp_path):
+    import subprocess
+    import sys
+    import tempfile
+    assert _inside(tempfile.mkdtemp(prefix="isolation-"), conftest.TEST_TEMP)
+    child = subprocess.run([sys.executable, "-c", "import tempfile; print(tempfile.gettempdir())"],
+                           capture_output=True, text=True, timeout=60).stdout.strip()
+    assert _inside(child, conftest.TEST_TEMP), child
+    # pytest's own tmp_path is kept outside, so it survives the session for a post-mortem.
+    assert not _inside(str(tmp_path), conftest.TEST_TEMP), tmp_path
+
+
+def test_the_session_end_removes_read_only_files(tmp_path):
+    import stat
+    tree = tmp_path / "repo" / ".git" / "objects" / "ab"
+    tree.mkdir(parents=True)
+    obj = tree / "cdef"
+    obj.write_bytes(b"x")
+    os.chmod(obj, stat.S_IREAD)        # what git does to every object it writes
+    conftest._remove_tree(str(tmp_path / "repo"))
+    assert not (tmp_path / "repo").exists()
+
+
 def test_a_transient_page_load_refusal_is_retried_and_nothing_else_is():
     calls = []
 
