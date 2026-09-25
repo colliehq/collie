@@ -56,7 +56,7 @@ def pytest_sessionfinish(session, exitstatus):
 _TRANSIENT_PAGE_LOAD = ("net::ERR_NO_BUFFER_SPACE",)
 
 
-def _with_transient_retry(goto, attempts=3, pause_s=2.0):
+def _with_transient_retry(goto, attempts=4, pause_s=5.0):
     import time
 
     def retrying(page, url, **kwargs):
@@ -66,7 +66,9 @@ def _with_transient_retry(goto, attempts=3, pause_s=2.0):
             except Exception as exc:
                 if attempt == attempts - 1 or not any(m in str(exc) for m in _TRANSIENT_PAGE_LOAD):
                     raise
-                time.sleep(pause_s * (attempt + 1))
+                # 5, 15, 30 s: the refusals last as long as sockets sit in TIME_WAIT (up to 120 s),
+                # so a short pause only fails again. Paid only when the error actually happens.
+                time.sleep(pause_s * (1, 3, 6)[min(attempt, 2)])
     retrying.collie_transient_retry = True
     return retrying
 
