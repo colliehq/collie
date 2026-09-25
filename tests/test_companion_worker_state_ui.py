@@ -56,6 +56,7 @@ class _Fixture(BaseHTTPRequestHandler):
     activity = {}
     lang = "en"
     posts = []              # nothing a health read does may ever land here
+    seen = []               # every GET path, for the failure message
     unauthenticated = []    # (path) for every guarded GET that arrived without the page token
 
     def log_message(self, *_a):
@@ -90,6 +91,7 @@ class _Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
+        _Fixture.seen.append(path)
         if path in ("/api/activity", "/api/healthz") and \
                 (query.get("token") or [""])[0] != TOKEN:
             _Fixture.unauthenticated.append(path)
@@ -144,6 +146,7 @@ def browser():
 @pytest.fixture
 def page(server, browser):
     _Fixture.posts, _Fixture.unauthenticated, _Fixture.lang = [], [], "en"
+    _Fixture.seen = []
     _Fixture.activity, _Fixture.health = dict(ACTIVITY), dict(HEALTH)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
@@ -170,13 +173,29 @@ def _rows(page, selector, state_class):
                   "state": ".packrowstate"}}[state_class])
 
 
+# 20 s, not 8: the zh and zh-tw cases timed out on loaded Windows CI runners (2 of 5 runs on
+# 2026-09-25, never on a quiet one or locally). On a timeout the message says what the panel
+# showed and what the page asked for, so a recurrence can be read rather than rerun.
+_WAIT_MS = 20000
+
+
+def _wait_rows(page, selector, where):
+    try:
+        page.wait_for_selector(selector, timeout=_WAIT_MS)
+    except Exception as exc:
+        shown = page.evaluate("(s) => { const n = document.querySelector(s); "
+                              "return n ? n.innerText.slice(0, 400) : '(missing)'; }", where)
+        raise AssertionError("%s never appeared: %s\n%s shows: %r\npage errors: %r\nrequests: %r"
+                             % (selector, exc, where, shown, page.errors, _Fixture.seen)) from None
+
+
 def ambient_workers(page, server, workers, services=None):
     """Open the ambient Activity panel against a health snapshot carrying these worker rows."""
     _Fixture.health = dict(HEALTH, workers=workers, services=services or {})
     page.goto(server + "/ambient", wait_until="load")
-    page.wait_for_selector("#opsState", timeout=8000)
+    page.wait_for_selector("#opsState", timeout=_WAIT_MS)
     page.click("#opsState")
-    page.wait_for_selector("#ambientOther .ops-row", timeout=8000)
+    _wait_rows(page, "#ambientOther .ops-row", "#opsPanel")
     return _rows(page, "#ambientOther", "ops")
 
 
@@ -184,7 +203,7 @@ def remote_workers(page, server, workers, services=None):
     """Load the remote Pack page against the same snapshot; it renders the workers twice."""
     _Fixture.health = dict(HEALTH, workers=workers, services=services or {})
     page.goto(server + "/remote", wait_until="load")
-    page.wait_for_selector("#remoteOtherActivity .activityrow", timeout=8000)
+    _wait_rows(page, "#remoteOtherActivity .activityrow", "#remoteOtherActivity")
     return _rows(page, "#remoteOtherActivity", "activity")
 
 
@@ -267,6 +286,32 @@ def test_ambient_worker_states_speak_the_readers_language(page, server, lang, fa
     assert failed in lane and missing in lane and stale in lane and note in lane
     assert "运行中" in lane or "執行中" in lane, "the healthy worker reads as running"
     assert "Recovery required" not in lane and "需要恢复" not in lane and "需要復原" not in lane
+
+
+def test_a_language_that_arrives_after_the_panel_opened_is_applied_to_its_rows(page, server):
+    """The panel was drawn in English, and its lane text stayed English when the zh setting
+    came back late, until the panel's next 5 s refresh."""
+    import time as _time
+    real = _Fixture.do_GET
+
+    def late_settings(self):
+        if urlparse(self.path).path == "/api/settings":
+            _time.sleep(1.5)
+        return real(self)
+    _Fixture.do_GET = late_settings
+    # No timers: the panel's own 5 s refresh would re-translate it eventually and hide the bug.
+    page.add_init_script("window.setInterval = function () { return 0; };")
+    try:
+        _Fixture.lang = "zh"
+        ambient_workers(page, server, {"ambient": beat("failed", True)})
+        assert page.evaluate("document.documentElement.lang") == "en", \
+            "the setting must still be on its way, or this tests nothing"
+        page.wait_for_function("document.documentElement.lang === 'zh'", timeout=_WAIT_MS)
+        page.wait_for_function(
+            "document.querySelector('#ambientOther').innerText.includes('后台服务状态会自动更新')",
+            timeout=_WAIT_MS)
+    finally:
+        _Fixture.do_GET = real
 
 
 # ------------------------------------------- the remote Pack page: Activity lane AND members lane
