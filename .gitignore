@@ -88,6 +88,8 @@ bench/results/*
 bench/experiments/*
 !bench/experiments/2026-09-07/
 !bench/experiments/2026-09-08/
+!bench/experiments/2026-09-24-read-batch/
+!bench/experiments/2026-09-24-elision-step/
 !bench/subscription_guard.py
 !bench/subscription_smoke.py
 !bench/subscription_rank.py
@@ -146,3 +148,4 @@ installer/shell/payload.zip
 # Cloudflare wrangler local cache (account id, deploy cache)
 .wrangler/
 harness/browser_ext/token.txt
+.read-batch-experiment/

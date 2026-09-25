@@ -233,14 +233,16 @@ def default_config(root: str | None = None, python: str | None = None) -> dict:
         WorkerSpec("web", [python, "-m", "harness.webapp", "--port", "8787", "--no-open"],
                    probe_url="http://127.0.0.1:8787/api/ver").as_dict(),
         WorkerSpec("jobd", [python, "-m", "harness.cli", "jobs", "daemon", "--interval", "60"],
-                   startup_grace_s=15).as_dict(),
+                   startup_grace_s=15, adopt_heartbeat="jobs-daemon").as_dict(),
         WorkerSpec("automations", [python, "-m", "harness.automations", "daemon",
                                     "--interval", "5", "--state-dir", root],
-                   critical=False, startup_grace_s=15).as_dict(),
+                   critical=False, startup_grace_s=15,
+                   adopt_heartbeat="automation-daemon").as_dict(),
         # The worker is safe to keep alive while observation is off: it polls the
         # local setting and records nothing until a versioned one-time consent exists.
         WorkerSpec("ambient", [python, "-m", "harness.ambient", "--state-dir", root],
-                   critical=False, startup_grace_s=15).as_dict(),
+                   critical=False, startup_grace_s=15,
+                   adopt_heartbeat="ambient-observer").as_dict(),
         WorkerSpec("bridge", [python, "-m", "harness.cli", "browser-bridge", "--port", "8677"],
                    critical=False, probe_url="http://127.0.0.1:8677/health").as_dict(),
     ]
@@ -290,6 +292,11 @@ def save_config(value: dict, path: str | None = None):
     _atomic_json(path or config_path(value.get("state_dir")), clean)
 
 
+#: Workers that report a heartbeat an already-running copy can be adopted by.
+_ADOPT_BY_HEARTBEAT = {"jobd": "jobs-daemon", "automations": "automation-daemon",
+                       "ambient": "ambient-observer"}
+
+
 def load_config(path: str | None = None, *, python: str | None = None) -> dict:
     path = path or config_path()
     try:
@@ -305,20 +312,42 @@ def load_config(path: str | None = None, *, python: str | None = None) -> dict:
     # releases can add privacy-idle workers such as ambient. Merge only missing
     # generated workers, preserving every existing worker setting.
     root = state_dir(value.get("state_dir") or os.path.dirname(path))
-    known = {item["name"] for item in value["workers"]}
+    known = {item["name"]: item for item in value["workers"]}
     generated = default_config(root, python or sys.executable)
     for item in generated["workers"]:
         if ((item["name"].startswith("slack-") or item["name"] == "ambient") and
                 item["name"] not in known):
             value["workers"].append(item)
-            known.add(item["name"])
+            known[item["name"]] = item
+        elif (item["name"] in _ADOPT_BY_HEARTBEAT and item["name"] in known
+              and not known[item["name"]].get("adopt_heartbeat")):
+            # A daemon a previous supervisor started keeps running across a supervisor restart
+            # (the task's job object does not kill its children). Without a heartbeat to adopt it
+            # by, the new supervisor started a second copy, which found the lock held, exited,
+            # was restarted, and ended "circuit open" -- reported stopped while one was running.
+            known[item["name"]]["adopt_heartbeat"] = _ADOPT_BY_HEARTBEAT[item["name"]]
+        elif item["name"].startswith("slack-") and item["argv"] != known[item["name"]]["argv"]:
+            # The dog's launcher is where `collie slack --install-autostart` records what the
+            # person asked for; this copy was taken once, when supervisor.json was created. A
+            # launcher re-installed with --allow afterwards left the supervised dog answering
+            # "anyone in them" (measured on the developer machine). Follow the launcher's command
+            # line; every other setting of the worker stays as it is.
+            known[item["name"]]["argv"] = list(item["argv"])
     return value
 
 
-class InstanceLock:
-    """OS-released single-supervisor guard; a stale file is harmless."""
+class AlreadyRunning(RuntimeError):
+    """Another live process holds this single-instance lock."""
 
-    def __init__(self, path: str):
+
+class InstanceLock:
+    """OS-released single-instance guard; a stale file is harmless.
+
+    The automations daemon and the ambient observer use it too, so the refusal names whose lock
+    it is: every one of them used to say "Collie supervisor is already running".
+    """
+
+    def __init__(self, path: str, what: str = "The Collie supervisor"):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.file = open(path, "a+b")
         # The OS can lock an empty file; initialization must not race an owner.
@@ -333,7 +362,7 @@ class InstanceLock:
         except (OSError, IOError) as exc:
             self.file.close()
             self.file = None
-            raise RuntimeError("Collie supervisor is already running") from exc
+            raise AlreadyRunning("%s is already running (lock %s)" % (what, path)) from exc
 
     def close(self):
         f, self.file = self.file, None
@@ -381,6 +410,7 @@ class WorkerRuntime:
         self.restart_count = 0
         self.consecutive_failures = 0
         self.last_exit = None
+        self.last_child_pid = 0                # the pid of this runtime's last child that exited
         self.last_error = ""
         self.unhealthy_since = 0.0
         self.circuit_until = 0.0
@@ -392,14 +422,38 @@ class WorkerRuntime:
         return [part.replace("{python}", sys.executable).replace("{state}", self.root)
                 for part in self.spec.argv]
 
+    def _note(self, message):
+        """One supervisor line, stamped with local wall time.
+
+        These lines had no time at all, so the developer machine's web.log held 67 exits
+        ("exited 4294967295 after 404.5s") that could not be matched to anything that happened on
+        that computer.
+        """
+        try:
+            import datetime as _dt
+            stamp = _dt.datetime.fromtimestamp(float(self._clock())).astimezone().isoformat(
+                timespec="seconds")
+        except (OverflowError, OSError, ValueError, TypeError):
+            stamp = "time unavailable"
+        self.log.write("[supervisor %s] %s" % (stamp, message))
+
+    def _stamp(self):
+        """A short local time for a worker line: month-day and seconds; the file gives the year."""
+        try:
+            return time.strftime("%m-%d %H:%M:%S", time.localtime(float(self._clock())))
+        except (OverflowError, OSError, ValueError, TypeError):
+            return "--:--:--"
+
     def _read_output(self, stream):
+        # Each worker line gets the time it arrived. The Slack dog's log held 278 "connection
+        # lost" lines with nothing to say whether they came minutes or days apart.
         try:
             for line in iter(stream.readline, ""):
                 if not line:
                     break
-                self.log.write(line.rstrip("\r\n"))
+                self.log.write("%s %s" % (self._stamp(), line.rstrip("\r\n")))
         except Exception as exc:
-            self.log.write("[supervisor] log reader stopped: %s" % exc)
+            self._note("log reader stopped: %s" % exc)
         finally:
             try:
                 stream.close()
@@ -420,6 +474,12 @@ class WorkerRuntime:
         row = self.store.heartbeats(now=now).get(self.spec.adopt_heartbeat) or {}
         if not row.get("fresh") or row.get("state") in (
                 "dead", "failed", "stopped", "shutdown_timeout"):
+            return None
+        if self.last_child_pid and int(row.get("pid") or 0) == self.last_child_pid:
+            return None                    # our own child, just exited: its beat has not expired
+        if not plat.pid_alive(row.get("pid")):
+            # Gone, whoever it was (a venv's python.exe is a launcher, so the pid that beats is not
+            # always the pid this runtime started); its beat simply has not expired yet.
             return None
         return {
             "adopted_via": "heartbeat",
@@ -449,7 +509,7 @@ class WorkerRuntime:
                 self.reader = threading.Thread(target=self._read_output, args=(stream,),
                                                name="log-" + self.spec.name, daemon=True)
                 self.reader.start()
-            self.log.write("[supervisor] started pid %s" % getattr(self.process, "pid", "?"))
+            self._note("started pid %s" % getattr(self.process, "pid", "?"))
             self._beat("starting", now)
             return True
         except Exception as exc:
@@ -480,6 +540,11 @@ class WorkerRuntime:
             external = self._external_status(now)
             if external:
                 self.external = True
+                # Whatever failures led here were of copies that found this one running; when it
+                # goes, start the next one promptly rather than after that backoff or circuit.
+                self.consecutive_failures = 0
+                self.circuit_until = 0.0
+                self.next_start_at = min(self.next_start_at, now)
                 self._beat("external", now, **external)
                 return "external"
             self.external = False
@@ -492,9 +557,10 @@ class WorkerRuntime:
         code = self.process.poll()
         if code is not None:
             uptime = max(0.0, now - self.started_at)
+            self.last_child_pid = int(getattr(self.process, "pid", 0) or 0)
             self.last_exit = int(code)
             self.last_error = "exited %s after %.1fs" % (code, uptime)
-            self.log.write("[supervisor] %s" % self.last_error)
+            self._note(self.last_error)
             self.process = None
             self._schedule_restart(now, rapid=uptime < self.spec.stable_s)
             state = "circuit_open" if now < self.circuit_until else "backoff"
@@ -516,6 +582,10 @@ class WorkerRuntime:
         # grace, then terminate the tree and let normal backoff/restart policy take over.
         if now - self.unhealthy_since >= self.spec.startup_grace_s:
             self.last_error = "health probe failed for %.1fs" % (now - self.unhealthy_since)
+            # Say why before stopping it: the log used to show only "stopped" for a restart
+            # the supervisor itself decided on.
+            self._note("%s; restarting pid %s" % (self.last_error,
+                                                  getattr(self.process, "pid", "?")))
             self.stop(grace_s=2)
             self._schedule_restart(now, rapid=True)
             self._beat("backoff", now, error=self.last_error)
@@ -540,7 +610,7 @@ class WorkerRuntime:
             proc.wait(timeout=max(0.1, float(grace_s)))
         except Exception:
             plat.kill_tree(proc)
-        self.log.write("[supervisor] stopped")
+        self._note("stopped")
 
     def close(self):
         self.stop()
@@ -561,7 +631,7 @@ def startup_self_check(config: dict, store: OpsStore) -> dict:
         errors.append("worker names are not unique")
     credentials = credential_health()
     for row in credentials:
-        if row["state"] in ("expired", "expiring"):
+        if row.get("needed", True) and row["state"] in ("expired", "expiring"):
             warnings.append("%s is %s" % (row["name"], row["state"]))
     try:
         store.beat("startup-self-check", "failed" if errors else "ok",
@@ -685,7 +755,7 @@ class Supervisor:
 def _current_sid(runner=subprocess.run) -> str:
     try:
         result = runner(["whoami.exe", "/user", "/fo", "csv", "/nh"],
-                        capture_output=True, text=True, timeout=10)
+                        capture_output=True, text=True, errors="replace", timeout=10)
         row = next(csv.reader(io.StringIO(result.stdout or "")))
         if len(row) >= 2 and row[1].startswith("S-"):
             return row[1]
@@ -774,7 +844,7 @@ def install_windows(*, root: str | None = None, config: str | None = None,
     write_xml(include_boot)
     try:
         result = runner(["schtasks.exe", "/Create", "/TN", TASK_NAME, "/XML", xml_path, "/F"],
-                        capture_output=True, text=True, timeout=30)
+                        capture_output=True, text=True, errors="replace", timeout=30)
         if result.returncode == 0:
             return {"ok": True, "mode": "scheduled_task", "task": TASK_NAME,
                     "config": cfg, "boot": bool(include_boot),
@@ -787,7 +857,7 @@ def install_windows(*, root: str | None = None, config: str | None = None,
             write_xml(False)
             retry = runner(
                 ["schtasks.exe", "/Create", "/TN", TASK_NAME, "/XML", xml_path, "/F"],
-                capture_output=True, text=True, timeout=30)
+                capture_output=True, text=True, errors="replace", timeout=30)
             if retry.returncode == 0:
                 return {"ok": True, "mode": "scheduled_task", "task": TASK_NAME,
                         "config": cfg, "boot": False, "degraded": True,
@@ -824,9 +894,9 @@ def uninstall_windows(*, root: str | None = None, runner=subprocess.run,
             # /End is a bounded fallback after the cooperative stop window. If the process already
             # exited, Task Scheduler simply reports that the task is not running.
             runner(["schtasks.exe", "/End", "/TN", TASK_NAME],
-                   capture_output=True, text=True, timeout=20)
+                   capture_output=True, text=True, errors="replace", timeout=20)
             result = runner(["schtasks.exe", "/Delete", "/TN", TASK_NAME, "/F"],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, errors="replace", timeout=30)
             if result.returncode == 0:
                 removed.append(TASK_NAME)
             elif "cannot find" not in (result.stderr or result.stdout or "").lower():
@@ -854,7 +924,7 @@ def query_windows(*, root: str | None = None, runner=subprocess.run) -> dict:
     if plat.is_windows():
         try:
             result = runner(["schtasks.exe", "/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"],
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, errors="replace", timeout=20)
             scheduled = result.returncode == 0
             detail = (result.stdout if scheduled else result.stderr or result.stdout or "")[:4000]
         except Exception as exc:

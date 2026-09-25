@@ -111,6 +111,18 @@ Each Web run receives its own browser space. Completion, cancellation, failure, 
 client releases control automatically. The final tab stays open as a handoff; a tab you handed to
 Collie is never closed by cleanup.
 
+A page dialog in Collie's tab is answered as it opens, so it cannot hold up every other browser
+command: an alert is acknowledged, and a confirm, prompt, or "leave this page?" box is answered
+**Cancel** unless the action was given `dialog: "accept"`. The tool result quotes what the page asked
+and says what was answered, so a cancelled confirm reads as one rather than as a click that did
+nothing. Answering OK asks for approval as a final action; a box that came up after the previous
+action returned is only ever cancelled. This works on tabs Collie holds with Chrome's debugger
+(the default input mode).
+
+If the extension has not been heard from for about 90 seconds and is not busy with a command, the
+bridge answers at once that it is not connected and since when, instead of letting each command wait
+out its timeout. Opening Chrome with the extension enabled reconnects it.
+
 !!! warning "Load the extension from the collie you actually run"
     If Chrome loads the extension from a *different* checkout than the collie you're running, every
     fix looks like it did nothing. The popup warns on a version mismatch — the bridge reports the
@@ -122,6 +134,15 @@ The bridge is localhost-only and refuses any request missing its CSRF header; it
 and `Host`. Its bearer token is distinct from the local Web UI token; the side panel exchanges it
 over loopback rather than exposing the Web token to page JavaScript. Untrusted page content Collie
 reads is fenced as data (prompt-injection defense).
+
+## Updating
+
+*Settings → General → Updates* shows the version you are running and checks GitHub for a newer one
+when you ask (or daily, if you turn that on). On an installer copy, *Install and restart* verifies
+the download, closes Collie, runs Setup silently and brings back the window, wallpaper, browser
+bridge and background services that were running. The page reconnects by itself when Collie is
+back. Chrome keeps the old browser extension until you reload it in `chrome://extensions`; Settings
+says so while it does. See [Staying up to date](install.md#staying-up-to-date).
 
 ## Uninstalling
 

@@ -75,8 +75,12 @@ def _default_outdir():
 def list_dshow_devices():
     """(cameras, microphones) as ffmpeg sees them — the exact names dshow needs. Windows only."""
     exe = _ffmpeg()
+    # UTF-8, not the code page: dshow hands ffmpeg UTF-16 names and ffmpeg prints them as UTF-8.
+    # Read in 936, "麦克风 (Realtek(R) Audio)" came back garbled, and a name that is not the
+    # device's own is one dshow cannot open.
     p = subprocess.run([exe, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-                       capture_output=True, text=True, **plat.no_window_kwargs())
+                       capture_output=True, encoding="utf-8", errors="replace",
+                       **plat.no_window_kwargs())
     text = (p.stderr or "") + (p.stdout or "")
     cams, mics = [], []
     for line in text.splitlines():
@@ -105,7 +109,8 @@ def list_avfoundation_devices():
     index is what we keep. Screens show up among the VIDEO devices as "Capture screen N"."""
     exe = _ffmpeg()
     p = subprocess.run([exe, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-                       capture_output=True, text=True)      # exits nonzero by design; output is stderr
+                       capture_output=True, text=True,
+                       errors="replace")      # exits nonzero by design; output is stderr
     vids, auds, cur = [], [], None
     for line in ((p.stderr or "") + (p.stdout or "")).splitlines():
         line = _AVF_TAG.sub("", line).strip()
@@ -175,7 +180,8 @@ def _avf_camera_rate(idx, want):
     try:
         p = subprocess.run([_ffmpeg(), "-hide_banner", "-f", "avfoundation", "-framerate", "1",
                             "-i", "%d:" % idx, "-t", "0.1", "-f", "null", "-"],
-                           capture_output=True, text=True, timeout=20, **plat.no_window_kwargs())
+                           capture_output=True, text=True,
+                           errors="replace", timeout=20, **plat.no_window_kwargs())
     except Exception:
         return 30
     rates = set()
@@ -429,10 +435,11 @@ def _alive(pid):
             # process is still an ffmpeg is what stops us reporting some unrelated new process as a
             # live recording (the same check the tasklist branch makes).
             out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
-                                 capture_output=True, text=True).stdout or ""
+                                 capture_output=True, text=True, errors="replace").stdout or ""
             return "ffmpeg" in out.lower()
         out = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/NH"],
-                             capture_output=True, text=True, **plat.no_window_kwargs()).stdout or ""
+                             capture_output=True, text=True,
+                             errors="replace", **plat.no_window_kwargs()).stdout or ""
         return ("ffmpeg" in out.lower()) and (str(pid) in out)
     except Exception:
         return False

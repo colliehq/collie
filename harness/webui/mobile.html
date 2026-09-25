@@ -465,19 +465,21 @@ var ZHTW={ "Message Collie…":"傳訊息給 Collie…","Chats":"對話","＋ Ne
   "Disabled":"已停用","Stopped":"已停止","No heartbeat":"沒有心跳","Heartbeat stale":"心跳已過期",
   "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"沒有任何心跳記錄",
   "last known state: {s}":"最後已知狀態：{s}","unrecognised worker state":"無法辨識的工作程序狀態" };
-function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(d[en]||en):en; }
+function t(en){ var d=UI_LANG==="zh-tw"?ZHTW:(UI_LANG==="zh"?ZH:null); return d?(own(d,en)||en):en; }
 
 // ---- authenticated Activity + recovery (allowlisted lifecycle metadata only) ----
 var mobileActivityOpen=false,mobileActivityRequest=0;
 function mobileTerminal(state){return ["completed","succeeded","failed","cancelled","dead"].indexOf(String(state||""))>=0;}
 function mobileMissionActive(state){return ["done_verified","done_accepted","failed","cancelled"].indexOf(String(state||""))<0;}
+// Server words index these tables; "constructor" or "__proto__" must not reach Object.prototype.
+function own(map,key){key=String(key==null?"":key);return Object.prototype.hasOwnProperty.call(map,key)?map[key]:undefined;}
 function mobileStateLabel(state){
   var labels={queued:"Queued",running:"Running",blocked:"Blocked",waiting:"Waiting",needs_you:"Needs You",
     paused:"Paused",completed:"Completed",succeeded:"Completed",failed:"Failed",dead:"Failed",
     cancel_requested:"Cancel requested",cancelled:"Cancelled",recovery_required:"Recovery required",
     workspace_required:"Workspace required",done_verified:"Verified against contract",
     done_accepted:"Completed without independent verification",review_required:"Review required",draft:"Draft"};
-  return t(labels[state]||String(state||"unknown").replace(/_/g," "));
+  return t(own(labels,state)||String(state||"unknown").replace(/_/g," "));
 }
 function mobileStateTone(state){state=String(state||"");if(/failed|dead|cancelled/.test(state))return"bad";
   if(/needs_you|blocked|waiting|paused|cancel_requested|recovery|required/.test(state))return"warn";return"";}
@@ -715,11 +717,19 @@ $("mPackCheck").addEventListener("input",function(){this.setCustomValidity("");}
 $("mPackN").addEventListener("input",function(){this.setCustomValidity("");});
 $("mVerifyCommand").addEventListener("input",function(){this.setCustomValidity("");this.dataset.source="user";});
 var runCapabilityEpoch=0;
+// An effort not chosen here is sent as Auto and resolved on the server to the Settings default,
+// so the Auto option names that default. Re-painted after a language switch resets option text.
+function paintEffortDefault(){
+  var o=$("mEffort").querySelector('option[value="auto"]');if(!o)return;
+  var level=own({low:"Low",medium:"Medium",high:"High"},(runCapabilities||{}).effort_default);
+  o.textContent=level?t("Saved default")+" · "+t(level):t("Auto by task");
+}
 function refreshRunCapabilities(){var epoch=++runCapabilityEpoch;fetch(api('/api/run-capabilities')).then(function(r){return r.json();}).then(function(c){
   if(epoch!==runCapabilityEpoch)return;
   runCapabilities=c||{};var fast=(c.speed_tiers||[]).indexOf('fast')>=0,opt=$("mFastOption");opt.hidden=!fast;opt.disabled=!fast;
   if(!fast&&$("mSpeed").value==='fast'){$("mSpeed").value='standard';delete runExplicitAxes.speed;}
   Array.prototype.forEach.call($("mEffort").options,function(o){if(o.value==='auto')return;o.disabled=(c.reasoning_efforts||[]).indexOf(o.value)<0;});
+  paintEffortDefault();
   var rows={};(c.workers||[]).forEach(function(row){rows[row.key]=row;});
   Array.prototype.forEach.call($("mRunner").options,function(o){
     var key=o.value,base=key===""?t("Saved default")+" · "+(c.worker_default||"collie"):
@@ -751,6 +761,9 @@ function refreshRunCapabilities(){var epoch=++runCapabilityEpoch;fetch(api('/api
 // are re-read at the moment a person opens them rather than only once at boot. One gesture, one
 // read — not a poll — and a read overtaken by a later one is dropped by the epoch above.
 $("runSetup").addEventListener("toggle",function(){if(this.open)refreshRunCapabilities();});
+// A phone left open is often put away while the desktop changes model or worker; coming back to
+// the page re-reads what the next run can use. The epoch drops any answer a later read overtook.
+document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")refreshRunCapabilities();});
 var verificationScope=null, verificationEpoch=0;
 function refreshVerification(){
   var sid=currentSession||'',epoch=++verificationEpoch;
@@ -969,11 +982,11 @@ function mobileCheckRow(ev){
   else if(state==="cancelled")add(t("stopped before it finished"));
   else if(state==="not_run"&&ev.skipped_reason)add(String(ev.skipped_reason));
   else if(state==="inconclusive")add(t("exit 0 does not certify this result: {why}")
-    .replace("{why}",t(MOBILE_CHECK_WHY[String(ev.freshness||"")]||
+    .replace("{why}",t(own(MOBILE_CHECK_WHY,ev.freshness)||
                        "its result could not be bound to the files that exist now")));
-  return {verb:t({passed:"check passed",failed:"check failed",cancelled:"check stopped",
+  return {verb:t(own({passed:"check passed",failed:"check failed",cancelled:"check stopped",
                   timed_out:"check ran out of time",not_run:"check did not run",
-                  inconclusive:"check did not certify this result"}[state]),
+                  inconclusive:"check did not certify this result"},state)||"check"),
           detail:detail,tone:state==="passed"?false:(state==="failed"?true:"warn"),state:state};
 }
 
@@ -1168,7 +1181,7 @@ function applyStatic(){ document.documentElement.lang=UI_LANG; $("menuBtn").setA
   document.querySelectorAll('[data-t]').forEach(function(el){el.textContent=t(el.getAttribute('data-t'));});
   document.querySelectorAll('[data-t-placeholder]').forEach(function(el){el.placeholder=t(el.getAttribute('data-t-placeholder'));});
   document.querySelectorAll('[data-t-aria-label]').forEach(function(el){el.setAttribute('aria-label',t(el.getAttribute('data-t-aria-label')));});
-  $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); }
+  $("input").placeholder=t('Message Collie…'); $("drawerTitle").textContent=t('Chats'); $("newBtn2").textContent=t('＋ New chat'); paintRunSetup(); setSendMode(); paintEffortDefault(); }
 refreshVerification();
 fetch(api('/api/settings')).then(function(r){return r.json();}).then(function(d){ UI_LANG=resolveLang(((d||{}).values||{}).LANG); })
   .catch(function(){ UI_LANG=resolveLang(null); })

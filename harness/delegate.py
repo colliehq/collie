@@ -119,7 +119,8 @@ def run_child(parent, task, max_turns, budget, model_call_limit=0, parent_run_id
         event=event.get("type", ""), tool=event.get("name", ""),
         ok=event.get("ok"), turns=event.get("turns"))
     parent._emit("delegate_start", task=task[:200], model=parent.provider.model)
-    saved = {key: getattr(parent.provider, key) for key in ("max_tokens", "cache_stable_upto")
+    saved = {key: getattr(parent.provider, key)
+             for key in ("max_tokens", "cache_stable_upto", "cache_history_end")
              if hasattr(parent.provider, key)}
     try:
         from .providers import content_text

@@ -77,7 +77,8 @@ def activity(path: str | None = None, *, limit: int = 100) -> dict:
     return out
 
 
-def health(path: str | None = None, *, probe_services: bool = True) -> dict:
+def health(path: str | None = None, *, probe_services: bool = True,
+           web_port: int | None = None) -> dict:
     """Aggregate supervisor facts plus durable work that requires human recovery."""
     root = state_dir(path)
     from .ops import OpsStore, aggregate_health
@@ -90,10 +91,20 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
         config_error = "%s: %s" % (type(exc).__name__, exc)
         config = default_config(root)
     desired = [row["name"] for row in config.get("workers", []) if row.get("enabled", True)]
+    supervisor_info = query_windows(root=root)
     with OpsStore(os.path.join(root, "ops.db")) as store:
-        report = aggregate_health(store, desired_workers=desired, state_dir=root,
-                                  probe_services=probe_services)
-    report["supervisor"] = query_windows(root=root)
+        # Background workers are only expected where something keeps them running: the Windows
+        # installer's supervisor task, or any supervisor that has run against this state (it
+        # leaves a heartbeat). The macOS app and a pip `collie web` have none, and listing the
+        # generated default workers there reported all five "missing" -- "Needs attention" for
+        # good on every Mac, with nothing to fix.
+        supervised = bool(supervisor_info.get("installed") or
+                          "supervisor" in store.heartbeats())
+        report = aggregate_health(store, desired_workers=desired if supervised else [],
+                                  state_dir=root, probe_services=probe_services,
+                                  web_port=web_port)
+    report["supervisor"] = supervisor_info
+    report["supervised"] = supervised
     work = activity(root, limit=250)
     session_recovery = [{
         "kind": "interactive", "session_id": row.get("session_id"),
@@ -136,11 +147,22 @@ def health(path: str | None = None, *, probe_services: bool = True) -> dict:
                               automation_recovery),
     }
     report["activity_errors"] = work["errors"]
+    reasons = report.setdefault("reasons", [])
+    beat = (report.get("heartbeats") or {}).get("supervisor") or {}
+    if supervised and not beat.get("fresh"):
+        # Workers report through the supervisor. When it is not running, every worker is silent
+        # for that one reason -- including the web server answering this request -- so say that
+        # once instead of listing each worker as "not reporting".
+        reasons[:] = [row for row in reasons if row.get("code") != "worker_not_reporting"]
+        reasons.insert(0, {"code": "supervisor_not_running", "subject": "supervisor"})
     if config_error:
         report["activity_errors"]["supervisor_config"] = config_error
         report["ok"] = False
         if report.get("status") == "ok":
             report["status"] = "degraded"
+        reasons.append({"code": "supervisor_config_unreadable", "subject": "supervisor"})
     if report["work"]["recovery_required"]:
         report["ok"], report["status"] = False, "needs_you"
+        reasons.insert(0, {"code": "recovery_required", "subject": "work",
+                           "count": len(report["work"]["recovery_required"])})
     return report

@@ -1045,7 +1045,7 @@ class _MCPConnection:
         from . import plat as _plat
         self.proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=env, cwd=self.cfg.get("cwd") or None, bufsize=1, text=True,
+            env=env, cwd=self.cfg.get("cwd") or None, bufsize=1, encoding="utf-8", errors="replace",
             **_plat.no_window_kwargs())
         self._alive = True
         self._reader = threading.Thread(target=self._read_loop, daemon=True)

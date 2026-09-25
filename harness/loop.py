@@ -796,16 +796,26 @@ _JUNK_UNTRACKED = ("__pycache__", ".pyc", "venv/", ".venv/", "node_modules/",
                    ".egg-info", ".dist-info", ".pytest_cache")
 
 
-def _tree_diff(cwd):
+def _tree_diff(cwd, binary=True):
     """Net worktree diff vs HEAD (tracked files — the shape of a code fix). '' on non-git/error,
     which also disarms the whole guard: no snapshot -> no nudge -> no restore."""
     try:
         # windowless like every other spawn: this one runs on EVERY turn, so under pythonw it was
         # a console window per turn on top of one per shell command.
         from . import plat as _plat
-        r = subprocess.run(["git", "diff", "HEAD"], cwd=cwd, capture_output=True,
-                           text=True, timeout=30, **_plat.no_window_kwargs())
-        return r.stdout if r.returncode == 0 else ""
+        # Bytes, decoded here: _apply_diff may re-apply this, so it must come back exactly. Text
+        # mode lost it -- one byte that is not UTF-8 made stdout None on Windows, and reading
+        # folded CRLF to LF, so a CRLF file's diff no longer matched the file.
+        # Pinned format, whatever the user's config says: color.diff=always, an external diff
+        # tool or diff.noprefix all produced a "diff" git apply could not take back.
+        # binary: what _apply_diff needs to restore a binary file; a reader (the critic, which
+        # sees the first 9000 characters) is better off without the base85.
+        r = subprocess.run(["git", "diff", "--no-color", "--no-ext-diff"]
+                           + (["--binary"] if binary else [])
+                           + ["--src-prefix=a/", "--dst-prefix=b/", "HEAD"],
+                           cwd=cwd, capture_output=True, timeout=30,
+                           **_plat.no_window_kwargs())
+        return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -818,7 +828,7 @@ def _tree_empty(cwd):
     try:
         from . import plat as _plat
         r = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
-                           capture_output=True, text=True, timeout=30,
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=30,
                            **_plat.no_window_kwargs())
         return not [p for p in r.stdout.splitlines()
                     if p.strip() and not any(j in p for j in _JUNK_UNTRACKED)]
@@ -828,11 +838,14 @@ def _tree_empty(cwd):
 
 def _apply_diff(cwd, diff):
     """Re-apply a captured diff; --3way fallback for drifted context. True on success."""
+    # As bytes: in text mode Windows wrote every "\n" as "\r\n", so no patch of an LF file ever
+    # applied there (and the rollback reported FAILED).
+    patch = diff.encode("utf-8", "surrogateescape")
     for extra in ([], ["--3way"]):
         try:
             from . import plat as _plat
             r = subprocess.run(["git", "apply", "--whitespace=nowarn"] + extra, cwd=cwd,
-                               input=diff, capture_output=True, text=True, timeout=60,
+                               input=patch, capture_output=True, timeout=60,
                                **_plat.no_window_kwargs())
             if r.returncode == 0:
                 return True
@@ -2192,7 +2205,8 @@ class Harness:
         reported_cache = getattr(self.provider, "reports_cache", False)
         prev_prompt = 0
         prev_skey = None
-        prev_elide_from = 0
+        prev_system = None
+        prev_elide_from = None
         prev_compact_gen = 0
         prev_t = None
         waste_tok = waste_usd = 0
@@ -2331,6 +2345,11 @@ class Harness:
                 # cache_control breakpoint there (Anthropic caches history turn-to-turn -> the big
                 # win on long runs). Providers that don't cache ignore this attribute.
                 self.provider.cache_stable_upto = meta.elide_from
+                # ...and where the durable history ends: anything added after it for this request
+                # only (the preflight, a repair nudge) is not worth a cache entry. Overflow
+                # recovery moves its window every turn, so its tail is not marked at all.
+                self.provider.cache_history_end = (0 if session.get("_overflow_shrink")
+                                                   else len(msgs))
 
                 tt = time.time()
                 schemas = self.registry.active_schemas()
@@ -2555,6 +2574,17 @@ class Harness:
                         comp.text = explain_exhausted(
                             getattr(self.provider, "name", ""),
                             comp.error_detail or comp.text or "", comp.error_status)
+                    elif cls == "overflow":
+                        # A context overflow IS a recognised failure; saying "matches no known
+                        # pattern" sent a reader looking for a provider problem that was not there.
+                        note = ("the conversation was still too long after it was shrunk once"
+                                if overflow_tried else
+                                "the conversation is too long and overflow recovery is off"
+                                if not self.overflow_recovery else
+                                "the conversation is too long, with no turn left to shrink it")
+                        comp.text = "%s: [%s] %s%s" % (
+                            cls, note, ("HTTP %d " % comp.error_status) if comp.error_status else "",
+                            comp.error_detail or comp.text or "provider error")
                     else:
                         known = is_known_terminal(comp.error_detail or comp.text or "")
                         note = ("not retried (fatal)" if known else
@@ -2589,9 +2619,15 @@ class Harness:
 
                 # --- cache-waste detection (point #3)
                 skey = ",".join(sorted(s["name"] for s in schemas))
+                system_key = hashlib.sha1(str(system).encode("utf-8", "replace")).hexdigest()
                 cause = []
                 if prev_skey is not None and skey != prev_skey:
                     cause.append("schema")           # tool set changed (load_tools / hard_at restriction)
+                if prev_system is not None and system_key != prev_system:
+                    # The system block leads the request, so any change in it (core memory the run
+                    # wrote, Live context, a new day) re-reads the whole history after it. These
+                    # were all "unexplained": 681 turns and 4.0M tokens in one machine's run log.
+                    cause.append("system")
                 compact_gen = int((meta.compaction or {}).get("generation") or 0)
                 if compact_gen != prev_compact_gen:
                     # Replacing an old span with a summary rewrites the message prefix, so the
@@ -2603,10 +2639,13 @@ class Harness:
                 # active that is the PROJECTION, not the raw transcript, and slicing the wrong
                 # list would attribute the miss to the wrong cause (or miss it entirely).
                 elide_src = meta.pre_elision or session["messages"]
-                if prev_elide_from and meta.elide_from > prev_elide_from and any(
+                # A boundary below zero (a short history) stubs nothing, and the first move off
+                # zero counts: stepped elision makes 0 -> ELIDE_STEP the first real one.
+                elided_from = max(prev_elide_from, 0) if prev_elide_from is not None else None
+                if elided_from is not None and meta.elide_from > elided_from and any(
                         m.get("role") == "tool" and isinstance(m.get("content"), str)
                         and len(m["content"]) > 240
-                        for m in elide_src[prev_elide_from:meta.elide_from]):
+                        for m in elide_src[elided_from:meta.elide_from]):
                     cause.append("elide")            # history elision newly stubbed a big tool output
                 if prev_t and time.time() - prev_t > _CACHE_TTL:
                     cause.append("ttl?")             # NB completion-to-completion incl. generation time
@@ -2616,6 +2655,7 @@ class Harness:
                     miss_n += 1; waste_tok += mt; waste_usd += mu
                     self._emit("cache_miss", tokens=mt, usd=mu, cause=c_str)
                 prev_skey = skey
+                prev_system = system_key
                 prev_elide_from = meta.elide_from
                 prev_compact_gen = compact_gen
                 prev_t = time.time()
@@ -3429,7 +3469,11 @@ class Harness:
                         and (not getattr(self, "max_model_calls", 0) or
                              model_calls < int(self.max_model_calls))
                         and not shared_exhausted and not local_exhausted):
-                    _cdiff = _tree_diff(self.cwd)
+                    # For reading, not re-applying: bytes that are not UTF-8 become U+FFFD here
+                    # rather than lone surrogates, which a request body cannot encode.
+                    _cdiff = _tree_diff(self.cwd, binary=False).encode(
+                        "utf-8", "surrogateescape").decode(
+                        "utf-8", "replace")
                     if _cdiff:
                         _ok, _obj = (self.critic_fn(self.critic_issue, _cdiff, self.cwd)
                                      if self.critic_fn else

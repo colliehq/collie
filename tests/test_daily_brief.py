@@ -1143,3 +1143,40 @@ def test_a_personal_reminder_and_its_agenda_copy_are_one_hideable_obligation(tmp
     assert hidden["suppressed"][0]["title"] == "Design review"
     db.restore(item["id"], state_dir=str(tmp_path), now=NOON)
     assert len(db.build(rows, now=NOON, state_dir=str(tmp_path))["attention"]) == 1
+
+
+# --------------------------------------------------------------- nothing connected is not "read"
+
+def test_a_calendar_and_inbox_with_nothing_connected_are_labelled_so():
+    brief = db.build(payloads(), now=NOON)
+    coverage = brief["coverage"]
+    assert coverage["not_connected"] == ["communications", "meetings"]
+    # Still read, still counted as answered: the label changes, the coverage logic does not.
+    assert {"communications", "meetings"} <= set(coverage["ok"])
+    assert coverage["complete"] is True
+    line = db.render_text(brief).strip().splitlines()[-1]
+    assert line.startswith("Sources: ")
+    read, idle = line[len("Sources: "):].split("; not connected: ")
+    assert "Calendar" not in read and "Email & phone" not in read
+    assert idle == "Email & phone, Calendar"
+    assert "not connected: Email &amp; phone, Calendar" in db.render_email(brief)["html"]
+
+
+def test_connected_sources_are_not_labelled_idle():
+    event = {"id": "m1", "title": "Standup", "start_at": NOON + 3600, "end_at": NOON + 5400}
+    brief = db.build(payloads(meetings={"events": [event]}, communications=connection()),
+                     now=NOON)
+    assert brief["coverage"]["not_connected"] == []
+    assert "not connected" not in db.render_text(brief)
+
+
+def test_an_unreadable_source_is_not_called_unconnected():
+    brief = db.build(payloads(meetings={"__unavailable": True, "error": "store is locked"}),
+                     now=NOON)
+    assert "meetings" not in brief["coverage"]["not_connected"]
+    assert "meetings" in brief["coverage"]["unavailable"]
+
+
+def test_the_chinese_email_names_idle_sources_in_chinese():
+    brief = db.build(payloads(), now=NOON, language="zh")
+    assert db.render_text(brief).strip().splitlines()[-1].endswith("; 未连接: 邮箱与电话, 日历")

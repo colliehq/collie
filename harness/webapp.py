@@ -80,7 +80,7 @@ def _scope(cwd: str) -> str:
     from .memory import project_scope
     return project_scope(cwd)
 from http.server import BaseHTTPRequestHandler
-from .httpserver import ThreadingHTTPServer
+from .httpserver import CLIENT_GONE, ThreadingHTTPServer
 
 from .recorder import note_host_error
 
@@ -442,9 +442,21 @@ def _public_health(raw):
         }
     credentials = [{k: row.get(k) for k in
                     ("name", "state", "expires_at", "seconds_remaining",
-                     "refresh_available", "refresh_owner", "action")
+                     "refresh_available", "refresh_owner", "action", "needed")
                     if row.get(k) is not None}
                    for row in (raw.get("credentials") or []) if isinstance(row, dict)]
+    # Reason codes and the names they are about; any other field a future reason carries stays
+    # server-side. Counts are numbers or nothing.
+    reasons = []
+    for row in (raw.get("reasons") or [])[:20]:
+        if not isinstance(row, dict) or not isinstance(row.get("code"), str):
+            continue
+        item = {"code": row["code"][:60], "subject": str(row.get("subject") or "")[:60]}
+        if isinstance(row.get("action"), str) and row["action"]:
+            item["action"] = row["action"][:160]
+        if isinstance(row.get("count"), int) and not isinstance(row.get("count"), bool):
+            item["count"] = row["count"]
+        reasons.append(item)
     queues_raw = raw.get("queues") if isinstance(raw.get("queues"), dict) else {}
     queues = {}
     for name in ("slack", "notifications"):
@@ -465,6 +477,7 @@ def _public_health(raw):
                  "recovery_required": recovery},
         "activity_errors": {str(k): "unavailable" for k in (raw.get("activity_errors") or {})},
         "issues": [str(x)[:120] for x in (raw.get("issues") or [])],
+        "reasons": reasons, "supervised": raw.get("supervised") is not False,
     }
 
 
@@ -1788,6 +1801,33 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_html(body, code, "application/json; charset=utf-8")
 
+    # A request body the handler did not read is still read before the socket closes (see
+    # finish). Closing with unread input makes the OS reset the connection, and on Windows a reset
+    # discards whatever the client had not read yet -- so a 403 answered before the body was read
+    # (every token check comes first) could reach the browser as a network error instead. Measured
+    # as the intermittent ConnectionAbortedError (10053) in the full Windows suite on 2026-09-14.
+    _DRAIN_BODY_MAX = 8 * 1024 * 1024
+    _DRAIN_BODY_TIMEOUT_S = 2.0
+
+    def finish(self):
+        try:
+            declared = int((self.headers.get("content-length") if getattr(self, "headers", None)
+                            else 0) or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        left = declared - int(getattr(self, "_body_consumed", 0) or 0)
+        if 0 < left <= self._DRAIN_BODY_MAX:
+            try:
+                self.connection.settimeout(self._DRAIN_BODY_TIMEOUT_S)
+                while left > 0:
+                    chunk = self.rfile.read(min(left, 65536))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+            except (OSError, ValueError):
+                pass
+        super().finish()
+
     def _read_json(self, maxlen: int = 8192):
         """Read + parse a JSON POST body, or None on any problem (missing/oversize/parse)."""
         try:
@@ -1797,7 +1837,9 @@ class Handler(BaseHTTPRequestHandler):
         if n <= 0 or n > maxlen:
             return None
         try:
-            body = _strict_json_loads(self.rfile.read(n).decode("utf-8") or "{}")
+            raw = self.rfile.read(n)
+            self._body_consumed = n
+            body = _strict_json_loads(raw.decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError):
             return None
         return body if isinstance(body, dict) else None
@@ -1829,12 +1871,15 @@ class Handler(BaseHTTPRequestHandler):
                     drain -= len(chunk)
             except OSError:
                 pass
+            self._body_consumed = n           # drained here, or closed below: finish() must not wait
             if n > 8 * 1024 * 1024:
                 self.close_connection = True
             return None, ("this request is %d bytes; the limit is %d and nothing was "
                           "truncated or accepted" % (n, maxlen)), 413
         try:
-            body = _strict_json_loads(self.rfile.read(n).decode("utf-8") or "{}")
+            raw = self.rfile.read(n)
+            self._body_consumed = n
+            body = _strict_json_loads(raw.decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError):
             return None, "expected a JSON object", 400
         if not isinstance(body, dict):
@@ -1853,6 +1898,7 @@ class Handler(BaseHTTPRequestHandler):
             value = self.rfile.read(n)
         except OSError:
             return None
+        self._body_consumed = n
         return value if len(value) == n else None
 
     def _sse_open(self):
@@ -2098,6 +2144,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(capability_snapshot(_state_root(), os.getcwd()))
                 except (ExtensionError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     return self._send_json({"error": str(exc)}, 409)
+            if path == "/api/update":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import update_notice
+                # Contacts the release feed only when the person enabled automatic checks, and
+                # then in the background: this answer is always the file, never a network wait.
+                update_notice.maybe_background_check()
+                return self._send_json(update_notice.status(local=self._update_local()))
             if path == "/api/comfy":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -2115,7 +2169,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(_public_activity(activity(_state_root(), limit=250)))
                 if path == "/api/healthz":
                     from .controlplane import health
-                    report = _public_health(health(_state_root()))
+                    report = _public_health(health(
+                        _state_root(), web_port=self.server.server_address[1]))
                     report["mission_scheduler"] = mission_ticker_status()
                     return self._send_json(report)
                 if path == "/api/doctor":
@@ -2293,6 +2348,9 @@ class Handler(BaseHTTPRequestHandler):
                 # observed host state so it can disable a missing/login-blocked
                 # worker instead of waiting for a run to fail.
                 from . import runner_registry as runner_reg
+                # Not overlapped with the Codex quota read below: that starts `codex app-server`,
+                # which may refresh the login and rewrite ~/.codex/auth.json while the Codex
+                # probes are reading it.
                 probes = runner_reg.probe_all(keys=runner_reg.option_keys())
                 from . import runner_signals
                 from .cli import _paths as _cli_paths
@@ -2304,6 +2362,11 @@ class Handler(BaseHTTPRequestHandler):
                          probe=probes[key].to_dict())
                     for key in runner_reg.option_keys() if key in probes
                 ]
+                # What an inherited (not explicitly chosen) effort resolves to on the server:
+                # the menu used to show "Auto by task" while a saved High ran every time.
+                effort_default = (settings.get("REASONING_EFFORT", "auto") or "auto").strip().lower()
+                payload["effort_default"] = (effort_default if effort_default in
+                                             ("auto", "low", "medium", "high") else "auto")
                 payload["worker_default"] = settings.get("RUNNER", "collie") or "collie"
                 payload["worker_pool"] = settings.get("RUNNER_POOL", "collie") or "collie"
                 payload["worker_signals"] = signal_set.to_dict()
@@ -2377,9 +2440,17 @@ class Handler(BaseHTTPRequestHandler):
                 # where's the extension folder, and which Chromium browsers are installed.
                 import shutil
                 from . import browserbridge as bb
+                # Bound here as well: `plat` is a local of do_GET (imported in other branches), so
+                # _found below read an unassigned name and every status poll answered 500 -- the
+                # onboarding step kept saying "Waiting for the extension" after it connected.
+                from . import plat
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 health = {}
                 try:
+                    # Polled every 2.5 s while onboarding waits for a bridge that is usually not
+                    # running yet; on Windows a probe of a closed port waits out its timeout.
+                    if not bb._listening(bb._port()):
+                        raise OSError("bridge not running")
                     with urllib.request.urlopen("http://127.0.0.1:%d/health" % bb._port(), timeout=1.5) as r:
                         health = _strict_json_loads(r.read())
                 except Exception:
@@ -2880,7 +2951,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_remote_qr()
             self._send_html(b"not found", 404, "text/plain; charset=utf-8")
-        except BrokenPipeError:
+        except CLIENT_GONE:
             pass
         except Exception as e:                       # never take the server down on one bad request
             try:
@@ -3275,6 +3346,24 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     lease.release()
                 return self._send_json(reply, status)
+            if path in ("/api/update/check", "/api/update/install"):
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(4096)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import update_notice
+                local = self._update_local()
+                if path == "/api/update/check":
+                    return self._send_json(update_notice.check_now(local=local))
+                try:
+                    value = update_notice.start_install(str(body.get("version") or ""),
+                                                        local=local)
+                except update_notice.UpdateRefused as exc:
+                    return self._send_json({"error": str(exc),
+                                            "update": update_notice.status(local=local)},
+                                           exc.status)
+                return self._send_json(value)
             if path == "/api/doctor/repair":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -4487,7 +4576,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"resolved": False, "error": "need session + id"}, 400)
                 return self._send_json({"resolved": Handler._inbox_answer(sid, item, answer)})
             self._send_json({"error": "not found"}, 404)
-        except BrokenPipeError:
+        except CLIENT_GONE:
             pass
         except Exception as e:
             try:
@@ -4892,11 +4981,23 @@ class Handler(BaseHTTPRequestHandler):
         peer = (self.client_address[0] if self.client_address else "") or ""
         return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1") or peer.startswith("127.")
 
+    def _update_local(self) -> bool:
+        """Installing an update closes and restarts Collie on this computer. That is decided by
+        someone sitting at it: a paired phone or a relayed request may read the notice, not act."""
+        return self._peer_is_loopback() and not self._is_relay()
+
     def _is_relay(self) -> bool:
         # the relay client replays a phone's request from 127.0.0.1 (so it looks loopback) but tags it
         # with this header — used to withhold the embedded CSRF token from pages sent to a phone.
         try:
-            return (self.headers.get("X-Collie-Relay") or "") == "1"
+            # Every value, not the first: a relayed phone request must not untag itself by sending
+            # its own X-Collie-Relay ahead of the relay's. A plain mapping has only the one value.
+            headers = self.headers
+            if hasattr(headers, "get_all"):
+                values = headers.get_all("X-Collie-Relay") or []
+            else:
+                values = [headers.get("X-Collie-Relay")]
+            return "1" in [str(v).strip() for v in values if v is not None]
         except Exception:
             return False
 
@@ -5044,7 +5145,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(svg)
-        except BrokenPipeError:
+        except CLIENT_GONE:
             pass
 
     def _serve_sessions(self, qs=None):
@@ -6684,7 +6785,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not canceled:
                     Handler._notify_done(sid, res, wall_ms=res.wall_ms)
                 _tx("done", done_d)
-            except BrokenPipeError:
+            except (BrokenPipeError, ConnectionAbortedError):
+                # Not CLIENT_GONE: a ConnectionResetError here may come from upstream, and that
+                # must keep the crash path's fence and receipt rather than read as a closed tab.
                 error = "client went away"
                 Handler._run_end(sid, error=error, run_id=run_id)
                 done_d = {"session": sid, "run": run_id, "answer": "",
@@ -7057,7 +7160,7 @@ class Handler(BaseHTTPRequestHandler):
             if not canceled:
                 Handler._notify_done(sid, res, wall_ms=res.wall_ms)
             _tx("done", done_d)
-        except BrokenPipeError:
+        except (BrokenPipeError, ConnectionAbortedError):
             # Only reachable now from a write outside h.emit; the run's own emits swallow it.
             Handler._run_end(sid, error="client went away", run_id=run_id)
         except Exception as e:
@@ -7317,7 +7420,7 @@ def _macos_firewall_on():
     try:
         import subprocess
         out = subprocess.run(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"],
-                             capture_output=True, text=True, timeout=4).stdout
+                             capture_output=True, text=True, errors="replace", timeout=4).stdout
         return "State = 1" in out or "enabled" in out.lower()
     except Exception:
         return False

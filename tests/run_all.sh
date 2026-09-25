@@ -31,25 +31,11 @@ if [ -z "$PY" ]; then
   exit 2
 fi
 
-# One standalone check, with its output kept for the case that needs it. `>/dev/null 2>&1` made
-# every failure look identical and unactionable: a UnicodeEncodeError that killed tests/test_e2e.py
-# on its own check name left "e2e FAIL" in the Windows CI log and nothing else — no traceback, no
-# failing label, no exit code, nothing to distinguish a broken relay from a console that cannot
-# print an arrow. A green run stays as quiet as it was; a failure prints the tail of what the
-# script actually said, indented under its line.
-#   check_script <label> <command...>       (returns the script's own exit status)
-check_script() {
-  local label="$1"; shift
-  local out status
-  out=$("$@" 2>&1); status=$?
-  if [ "$status" = "0" ]; then
-    echo "  $label OK"
-  else
-    echo "  $label FAIL (exit $status)"
-    printf '%s\n' "$out" | tail -25 | sed 's/^/      /'
-  fi
-  return $status
-}
+# Every Python suite runs once, through pytest below: the standalone scripts (a main() and no
+# test functions) are collected by tests/conftest.py and run in their own interpreter, and
+# their verdict is the exit status. They used to be invoked one by one here as well, which
+# ran 26 of them twice (pytest collected them too) and left `pytest tests/` without the
+# other 33.
 
 rc=0
 NODE_OK=0
@@ -69,38 +55,6 @@ fi
 echo "── py_compile (all modules) ─────────────────────────────"
 if "$PY" -m py_compile harness/*.py; then echo "  OK"; else echo "  FAIL"; rc=1; fi
 
-echo "── core component tests (Python) ────────────────────────"
-"$PY" tests/test_core.py 2>&1 | grep -vE "RequestsDependency|warnings.warn|WARN\(costs\)"
-[ "${PIPESTATUS[0]}" = "0" ] || rc=1
-
-echo "── verifier protocol (done-check equivalence) ───────────"
-check_script "verifier" "$PY" tests/test_verifier.py || rc=1
-check_script "observe (real-socket e2e)" "$PY" tests/test_observe.py || rc=1
-check_script "actions (confirm/executor/receipt)" "$PY" tests/test_actions.py || rc=1
-check_script "jobs (lifecycle/registry/executor)" "$PY" tests/test_jobs.py || rc=1
-check_script "leash (authority allow/ask/deny)" "$PY" tests/test_leash.py || rc=1
-check_script "capabilities (note.append live e2e)" "$PY" tests/test_capabilities.py || rc=1
-check_script "scheduler (durable wait/catch-up)" "$PY" tests/test_scheduler.py || rc=1
-check_script "gate freshness (loop regression)" "$PY" tests/test_gate_freshness.py || rc=1
-check_script "mandate (NL compiler)" "$PY" tests/test_mandate.py || rc=1
-check_script "research (web capability)" "$PY" tests/test_research.py || rc=1
-check_script "everyday (translate/summarize/reminder/note.list)" "$PY" tests/test_everyday.py || rc=1
-check_script "jobs web (dashboard + CSRF)" "$PY" tests/test_jobsweb.py || rc=1
-check_script "cli jobs (inbox/confirm/receipts)" "$PY" tests/test_cli_jobs.py || rc=1
-check_script "plat (OS layer: detect/kill_tree/rmtree/open_excl)" "$PY" tests/test_plat.py || rc=1
-check_script "mission (multi-step campaign: plan/loop/gate/hand-off)" "$PY" tests/test_mission.py || rc=1
-check_script "mission web (NL front-door service: start/confirm/resume)" "$PY" tests/test_missionweb.py || rc=1
-check_script "primitives (real: research/compose/observe/web.submit+verify/web.send)" "$PY" tests/test_primitives.py || rc=1
-check_script "router (front-door classify: chat/code/mission + threshold/abstain/override)" "$PY" tests/test_router.py || rc=1
-check_script "update (version compare + refuses unsigned/tampered downloads)" env COLLIE_SKIP_NET=1 "$PY" tests/test_update.py || rc=1
-check_script "platform purity (one codebase, three OSes: no unguarded Windows-only API)" "$PY" tests/test_platform_purity.py || rc=1
-check_script "desktop (ambient widgets/music: clean/lrc/intent/config/pick/resolve caps)" "$PY" tests/test_desktop.py || rc=1
-check_script "desktop web (audio-proxy SSRF allow-list + relay CSRF-token gate)" "$PY" tests/test_desktopweb.py || rc=1
-
-echo "── model catalog + codex provider (offline) ─────────────"
-if catalog_out=$("$PY" tests/test_catalog.py 2>&1); then echo "  catalog OK"; else echo "  catalog FAIL"; echo "$catalog_out" | tail -30 | sed 's/^/      /'; rc=1; fi
-check_script "codex_oauth" "$PY" tests/test_codex_oauth.py || rc=1
-
 echo "── renderer tests (JS) ──────────────────────────────────"
 if [ "$NODE_OK" = "1" ]; then
   node tests/render_test.js || rc=1
@@ -117,9 +71,6 @@ if [ "$NODE_OK" = "1" ]; then
 else
   echo "  (node not found — skipping browser + VS Code extension suites)"
 fi
-
-echo "── browser bridge tools (batching / spaces / warnings) ──"
-check_script "browserbridge" "$PY" tests/test_browserbridge.py || rc=1
 
 echo "── browser, LIVE (opt-in: COLLIE_BROWSER_LIVE=1 + extension) ─"
 # The checks stubs cannot make — does CDP input reach a background tab, is a cross-origin iframe
@@ -146,32 +97,6 @@ else
   echo "  (node not found — skipping push + landing security suites)"
 fi
 
-echo "── phone notifications: when a run is worth a buzz ──────"
-check_script "notify" "$PY" tests/test_notify.py || rc=1
-check_script "pairprompt" "$PY" tests/test_pairprompt.py || rc=1
-check_script "e2e_persist" "$PY" tests/test_e2e_persist.py || rc=1
-check_script "playhere" "$PY" tests/test_playhere.py || rc=1
-if app_out=$("$PY" tests/test_app_port.py 2>&1); then echo "  app_port OK"; else echo "  app_port FAIL"; echo "$app_out" | tail -20 | sed 's/^/      /'; rc=1; fi
-check_script "output_encoding" "$PY" tests/test_output_encoding.py || rc=1
-check_script "data_dir" "$PY" tests/test_data_dir.py || rc=1
-check_script "model_pin" "$PY" tests/test_model_pin.py || rc=1
-check_script "no_console_flash" "$PY" tests/test_no_console_flash.py || rc=1
-check_script "settings_fallback" "$PY" tests/test_settings_fallback.py || rc=1
-check_script "relay_keepalive" "$PY" tests/test_relay_keepalive.py || rc=1
-check_script "remote_protocol_v2" "$PY" -m pytest -q tests/test_remote_protocol_v2.py || rc=1
-check_script "repos_deadline" "$PY" tests/test_repos_deadline.py || rc=1
-check_script "runs_registry" "$PY" tests/test_runs_registry.py || rc=1
-check_script "mirror_backlog" "$PY" tests/test_mirror_backlog.py || rc=1
-check_script "worktree" "$PY" tests/test_worktree.py || rc=1
-check_script "mcp_catalog" "$PY" tests/test_mcp_catalog.py || rc=1
-check_script "mcp_confidential" "$PY" tests/test_mcp_confidential.py || rc=1
-check_script "slackbot" "$PY" tests/test_slackbot.py || rc=1
-check_script "slack guard (parent/process-tree ownership)" "$PY" tests/test_slack_guard.py || rc=1
-check_script "slack setup (one app per dog)" "$PY" tests/test_slack_setup.py || rc=1
-check_script "dog mail (sealed to the dog, replay-proof)" "$PY" tests/test_dogmail.py || rc=1
-check_script "dog mail wire (python ↔ worker agree on the bytes)" "$PY" tests/test_dogmail_wire.py || rc=1
-check_script "packaging" "$PY" tests/test_packaging_facts.py || rc=1
-
 echo "── GUI interactive components (Playwright, mock, \$0) ────"
 if "$PY" -c "import playwright" >/dev/null 2>&1; then
   # Keep the output when it fails. Piping through grep and reporting only the exit status meant a
@@ -197,22 +122,6 @@ else
   echo "  (playwright not found — skipping GUI suite)"
 fi
 
-echo "── remote E2E crypto (zero-knowledge relay) ─────────────"
-if "$PY" -c "import cryptography" >/dev/null 2>&1; then
-  check_script "e2e" "$PY" tests/test_e2e.py || rc=1
-else
-  echo "  e2e SKIP (needs collie-harness[remote])"
-fi
-
-echo "── pair code (collie's own optical format) ──────────────"
-check_script "paircode" "$PY" tests/test_paircode.py || rc=1
-
-echo "── QR encoder (fallback pairing code) ───────────────────"
-check_script "qr" "$PY" tests/test_qr.py || rc=1
-
-echo "── web --lan host guard (phone pairing) ─────────────────"
-check_script "web --lan" "$PY" tests/test_web_lan.py || rc=1
-
 echo "── all collected pytest regressions ─────────────────────"
 # Many files are written as bare `def test_*` with no __main__ block, so `"$PY" tests/x.py` imports
 # them, runs nothing, and exits 0. Run the complete collected suite here—not a hand-maintained list
@@ -231,20 +140,6 @@ else
   # Not silently skipped: an unrunnable suite is a fact about this checkout, not a pass.
   echo "  gate suite NOT RUN — pytest is not installed (pip install pytest)"; rc=1
 fi
-
-echo "── what collie slack does with an ask ───────────────────"
-check_script "slack worker" "$PY" tests/test_slack_worker.py || rc=1
-check_script "whoami (which dog is this)" "$PY" tests/test_whoami.py || rc=1
-check_script "slack answer (executed)" "$PY" tests/test_slack_answer.py || rc=1
-
-echo "── a face per dog (deterministic logo variants) ─────────"
-check_script "avatar" "$PY" tests/test_avatar.py || rc=1
-
-echo "── which directories are a user's projects (star-map) ───"
-check_script "repo discovery" "$PY" tests/test_repo_discovery.py || rc=1
-
-echo "── what the star-map shows when you just open it ────────"
-check_script "map landing" "$PY" tests/test_map_landing.py || rc=1
 
 echo "── CLI surfaces (run/dashboard/repl/tui/acp/bridge, mock) ─"
 # Same rule as the GUI suite: the grep is for the happy path, and a failure gets everything. Piping

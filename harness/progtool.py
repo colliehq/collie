@@ -40,6 +40,14 @@ import json as _json, os as _os, sys as _sys, urllib.request as _u
 # owner. User code therefore cannot win the Windows Popen -> AssignProcessToJobObject race.
 if _sys.stdin.buffer.read(1) != b"G":
     raise SystemExit("execute_code start gate was not released")
+# The host reads these pipes as UTF-8. Left alone they use the ANSI code page on Windows (-I
+# ignores PYTHONIOENCODING): Chinese text printed came back as U+FFFD under 936, and raised
+# UnicodeEncodeError in the user's code under 1252. (Keep this preamble ASCII.)
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
 _PORT = _os.environ["COLLIE_RPC_PORT"]
 _TOKEN = _os.environ.get("COLLIE_RPC_TOKEN", "")
 def tool(name, **args):
@@ -270,7 +278,13 @@ class ExecuteCodeTool(Tool):
         tree_terminated = False
         run_error = None
         try:
-            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            # UTF-8, which is what Python reads a source file as. In the locale code page a
+            # script with non-ASCII in it failed to write under 1252 and was a SyntaxError
+            # under 936.
+            # backslashreplace: a lone surrogate (JSON can carry one) becomes its \uXXXX escape,
+            # the same code point inside a string literal, instead of an exception here.
+            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
+                                             encoding="utf-8", errors="backslashreplace") as f:
                 f.write(_PREAMBLE + "\n" + code)
                 path = f.name
             # Do NOT prepend the untrusted repo (ctx.cwd) to PYTHONPATH — that puts it ahead of the

@@ -197,6 +197,16 @@ def integration():
         srv.wait(timeout=5)
 
 
+def test_registry_unit_checks():
+    # unit() ran only in script mode (run_all.sh); pytest collected integration() alone.
+    before = len(fails)
+    try:
+        unit()
+        assert not fails[before:], "\n".join(fails[before:])
+    finally:
+        del fails[before:]
+
+
 def test_module_entrypoint_keeps_one_run_registry_after_client_disconnect():
     before = len(fails)
     try:

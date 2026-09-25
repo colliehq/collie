@@ -21,6 +21,7 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 import urllib.request
@@ -566,10 +567,55 @@ def _jwt_exp(token: str) -> float:
         return 0.0
 
 
+#: Providers that read one of these credential files themselves. Everything else either uses an
+#: API key, or runs a CLI that owns its own login -- on macOS Claude Code keeps it in the Keychain,
+#: so the file below is absent on every Mac whether or not the person is signed in.
+_READS_CREDENTIAL = {
+    "claude-oauth": ("anthropic-oauth", "claude-sub"),
+    "codex-oauth": ("codex-oauth", "codex-sub", "codex"),
+}
+
+
+#: Routes that run Claude Code, which keeps its login in this file on Windows and Linux (and in
+#: the Keychain on macOS) and refreshes it itself: a missing file there still means no login.
+_CLI_OWNS_CLAUDE_LOGIN = ("claude-agent-sdk", "claude-sdk", "claude-cli", "cli")
+
+
+def _configured_provider(provider=None) -> str:
+    if provider is None:
+        try:
+            from . import settings
+            provider = settings.get("PROVIDER", "") or ""
+        except Exception:
+            provider = ""
+    return str(provider or "").strip().lower()
+
+
+def _needed_credentials(provider=None) -> set:
+    """Which listed credentials the configured provider cannot work without."""
+    provider = _configured_provider(provider)
+    return {name for name, readers in _READS_CREDENTIAL.items() if provider in readers}
+
+
+def _cli_owned_logins(provider=None) -> set:
+    """Credentials that must exist but that their owner refreshes (so expiry is not a problem)."""
+    if sys.platform == "darwin":
+        return set()
+    return {"claude-oauth"} if _configured_provider(provider) in _CLI_OWNS_CLAUDE_LOGIN else set()
+
+
 def credential_health(*, now: float | None = None, claude_path: str | None = None,
-                      codex_path: str | None = None) -> list[dict]:
-    """Return credential *metadata* only.  Access/refresh token values never leave this function."""
+                      codex_path: str | None = None, provider: str | None = None) -> list[dict]:
+    """Return credential *metadata* only.  Access/refresh token values never leave this function.
+
+    Both logins are always listed. ``needed`` says whether the configured provider reads that
+    file itself; only a needed credential that is missing or expired makes Collie unhealthy. A
+    person on one subscription used to see "Needs attention" and a recurring "claude-oauth is
+    missing" alert forever for the one they never signed into.
+    """
     now = float(time.time() if now is None else now)
+    needed = _needed_credentials(provider)
+    self_refreshing = _cli_owned_logins(provider)
     claude_path = claude_path or os.path.expanduser("~/.claude/.credentials.json")
     codex_path = codex_path or os.path.expanduser("~/.codex/auth.json")
     out = []
@@ -605,10 +651,41 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
     else:
         out.append(CredentialStatus(
             "codex-oauth", "missing", action="run `codex login`").as_dict())
+    for row in out:
+        row["needed"] = row["name"] in needed or row["name"] in self_refreshing
+        if row["name"] in self_refreshing:
+            row["self_refreshing"] = True
+        if row["name"] == "claude-oauth" and row["state"] == "missing" and (
+                sys.platform == "darwin" or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")):
+            # Absent file, not absent login: macOS keeps Claude's sign-in in the Keychain, and
+            # `claude setup-token` signs in through CLAUDE_CODE_OAUTH_TOKEN with no file at all.
+            row["needed"] = False
     return out
 
 
+def _shipped_extension_version() -> str:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext",
+                               "manifest.json"), encoding="utf-8") as fh:
+            return str(json.load(fh).get("version") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _version_tuple(value) -> tuple:
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", str(value or ""))[:4])
+
+
+def _bridge_health_url() -> str:
+    # The port the browser tools use, which is the one worth reporting on.
+    return "http://127.0.0.1:%s/health" % (os.environ.get("COLLIE_BROWSER_BRIDGE_PORT") or 8677)
+
+
 def _probe_json(url: str, timeout: float = 1.5) -> dict:
+    from .httpserver import loopback_url_down
+    if loopback_url_down(url):
+        return {}           # not running; on Windows asking anyway waits out the whole timeout
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             raw = response.read(65536)
@@ -645,7 +722,7 @@ def slack_queue_health(state_dir: str | None = None) -> dict:
 
 def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = None,
                      state_dir: str | None = None, now: float | None = None,
-                     probe_services: bool = True) -> dict:
+                     probe_services: bool = True, web_port: int | None = None) -> dict:
     """Build the safe JSON object the Web layer can return from ``/api/healthz``."""
     now = float(time.time() if now is None else now)
     beats = store.heartbeats(now=now)
@@ -662,23 +739,39 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
     services = {}
     if probe_services:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8787/api/ver", timeout=1.0) as r:
+            # The web server moves to the next free port when 8787 is taken; the one answering
+            # this very request passes its own, so it cannot report itself unreachable.
+            from .httpserver import loopback_url_down
+            url = "http://127.0.0.1:%d/api/ver" % int(web_port or 8787)
+            if loopback_url_down(url):
+                raise OSError("nothing listening")
+            with urllib.request.urlopen(url, timeout=1.0) as r:
                 services["web"] = {"ok": r.status == 200}
         except Exception:
             services["web"] = {"ok": False}
-        bridge = _probe_json("http://127.0.0.1:8677/health")
+        bridge = _probe_json(_bridge_health_url())
         services["browser"] = {
             "ok": bool(bridge.get("ok")),
             "extension_connected": bool(bridge.get("extension_connected")),
             "last_poll_secs_ago": bridge.get("last_poll_secs_ago"),
         }
+        # Chrome keeps running an unpacked extension until it is reloaded, so after an update the
+        # browser tools run the old one -- without the fixes, and refusing new actions -- and
+        # nothing on the desktop said so. Only an OLDER copy counts: a developer's newer one is fine.
+        loaded, shipped = str(bridge.get("extension_version") or ""), _shipped_extension_version()
+        if (bridge.get("extension_connected") and loaded and shipped
+                and _version_tuple(loaded) < _version_tuple(shipped)):
+            services["browser"].update(extension_version=loaded, extension_expected=shipped,
+                                       extension_stale=True)
 
     credentials = credential_health(now=now)
     queues = {"slack": slack_queue_health(state_dir),
               "notifications": store.notification_health(now=now)}
     failing = [name for name, row in workers.items()
                if not row["fresh"] or row["state"] in ("dead", "failed", "circuit_open")]
-    expired = [row["name"] for row in credentials if row["state"] in ("expired", "missing")]
+    expired = [row["name"] for row in credentials
+               if row.get("needed", True) and (row["state"] == "missing" or (
+                   row["state"] == "expired" and not row.get("self_refreshing")))]
     notification_pump = beats.get("notification-pump") or {}
     notification_stalled = bool(
         queues["notifications"].get("stale") and
@@ -691,12 +784,37 @@ def aggregate_health(store: OpsStore, *, desired_workers: list[str] | None = Non
                     or queues["slack"]["dead_letters"]
                     or queues["notifications"].get("dead", 0)
                     or notification_stalled)
+    extension_stale = bool((services.get("browser") or {}).get("extension_stale"))
     if probe_services:
-        degraded = degraded or not services.get("web", {}).get("ok", False)
+        degraded = degraded or not services.get("web", {}).get("ok", False) or extension_stale
+    # Why, in the order a person should look. Codes and names only: a surface words them in its
+    # own language, and "Needs attention" alone never said what to look at.
+    reasons = []
+    if probe_services and not services.get("web", {}).get("ok", False):
+        reasons.append({"code": "web_unreachable", "subject": "web"})
+    for row in credentials:
+        if row["name"] in expired:
+            reasons.append({"code": "login_" + row["state"], "subject": row["name"],
+                            "action": row.get("action", "")})
+    for name in failing:
+        state = workers[name]["state"]
+        reasons.append({"code": "worker_stopped" if state in ("dead", "failed", "circuit_open")
+                        else "worker_not_reporting", "subject": name, "state": state})
+    if queues["slack"]["dead_letters"] or queues["slack"]["unresolved"]:
+        reasons.append({"code": "slack_needs_review", "subject": "slack",
+                        "count": int(queues["slack"]["dead_letters"] or 0) +
+                                 int(queues["slack"]["unresolved"] or 0)})
+    if queues["notifications"].get("dead", 0) or notification_stalled:
+        reasons.append({"code": "notifications_failing", "subject": "notifications",
+                        "count": int(queues["notifications"].get("dead", 0) or 0)})
+    if extension_stale:
+        reasons.append({"code": "browser_extension_stale",
+                        "subject": services["browser"]["extension_version"],
+                        "action": "chrome://extensions"})
     return {
         "ok": not degraded, "status": "degraded" if degraded else "ok", "at": now,
         "workers": workers, "services": services, "credentials": credentials,
-        "queues": queues, "heartbeats": beats, "issues": issues,
+        "queues": queues, "heartbeats": beats, "issues": issues, "reasons": reasons,
     }
 
 
@@ -748,6 +866,10 @@ def enqueue_health_alerts(store: OpsStore, report: dict, *, backlog_warning: int
     # Notification delivery failures stay in the local doctor/control-center view.  Sending an
     # alert about a broken notification transport through that same transport is self-referential.
     for cred in report.get("credentials") or []:
+        if cred.get("needed") is False:
+            continue          # listed for the operations view; nothing configured reads it
+        if cred.get("self_refreshing") and cred.get("state") != "missing":
+            continue          # its owner (Claude Code) refreshes it on use; only absence matters
         remaining = cred.get("seconds_remaining")
         if cred.get("state") in ("expired", "missing", "expiring") or (
                 remaining is not None and remaining <= credential_warning_s):

@@ -760,6 +760,24 @@ class ChannelService:
         return comms.reject_event(connection, event_id, actor="desktop-user", reason="Dismissed by user",
                                   directory=self.directory)
 
+    def close_event(self, connection, event_id, reason):
+        """Record that an accepted message will not be answered, and why.
+
+        The task it started is left exactly as it is: its result stays in the task, and a later
+        finish no longer prepares an automatic reply (``_save_answer``). A reply already stored
+        settles the message as answered instead, and the person's reason is not needed then.
+        """
+        self._row(connection)
+        if not isinstance(reason, str) or not reason.strip():
+            raise ChannelError("say briefly why no reply is needed; it is kept with the message")
+        # Under the op lock _save_answer holds for its check-then-create: a close and a finishing
+        # task are ordered, so either the reply was stored first (and the message reads as
+        # answered) or the close was, and nothing is prepared afterwards.
+        with self._op_lock(connection):
+            return comms.mark_event_settled(connection, event_id, disposition="closed",
+                                            actor="desktop-user", reason=reason.strip(),
+                                            directory=self.directory)
+
     def prepare_reply(self, connection, result_id, *, text, event_id="", speak=False, automatic=False):
         row = self._row(connection)
         event = (comms.get_event(connection, event_id, include_private=True, directory=self.directory)
@@ -984,6 +1002,11 @@ class ChannelService:
             existing = comms.get_result(connection, result_id, directory=self.directory)
             if existing:
                 return existing
+            event = comms.get_event(connection, event_id, directory=self.directory) or {}
+            if (event.get("settlement") or {}).get("disposition") == "closed":
+                # Someone recorded that this message needs no reply. A task that finishes
+                # afterwards keeps its result in the task; it does not answer on its own.
+                return None
             self._authorized_recipient(connection, row, event_id, session)
             if row["kind"] == "twilio" and len(text) > 1400:
                 text = text[:1150] + "\n\nExcerpt only. The full result is saved in Collie task " + session + "."

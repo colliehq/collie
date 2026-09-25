@@ -82,6 +82,11 @@ def free_port(preferred: int = 8787) -> int:
 
 
 def server_up(port: int) -> bool:
+    # A cold start probes before anything listens: without this, each probe waited out its 0.8 s
+    # (Windows reports a refused loopback connection only after about two seconds).
+    from .httpserver import loopback_listening
+    if not loopback_listening(port):
+        return False
     try:
         urllib.request.urlopen("http://127.0.0.1:%d/api/ver" % port, timeout=0.8).read()
         return True
@@ -227,7 +232,8 @@ def build_engine(force: bool = False) -> "str | None":
            "/reference:Microsoft.Web.WebView2.Core.dll",
            "/reference:Microsoft.Web.WebView2.WinForms.dll", "Program.cs"]
     try:
-        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=120, **_quiet())
+        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True,
+                           errors="replace", timeout=120, **_quiet())
     except Exception:
         try:
             if os.path.exists(tmp):

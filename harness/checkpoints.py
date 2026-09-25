@@ -32,6 +32,7 @@ only ever called on explicit user action, and reports exactly what it did.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -68,7 +69,8 @@ def _git(cwd: str, args, env=None, check=True, timeout=120) -> str:
     identity = (["-c", "user.name=Collie Checkpoint", "-c",
                  "user.email=checkpoint@collie.local"]
                 if args and args[0] in {"commit-tree", "stash"} else [])
-    p = subprocess.run(["git"] + identity + ["-C", cwd] + list(args), capture_output=True, text=True,
+    p = subprocess.run(["git"] + identity + ["-C", cwd] + list(args), capture_output=True,
+                       encoding="utf-8", errors="replace",
                        env=env, timeout=timeout, **plat.no_window_kwargs())
     if check and p.returncode != 0:
         raise CheckpointError("git %s failed (%d): %s"
@@ -78,15 +80,15 @@ def _git(cwd: str, args, env=None, check=True, timeout=120) -> str:
 
 def available(cwd: str) -> tuple:
     """(ok, reason). Checkpoints need a git work tree; say plainly when there isn't one."""
+    # One git call for both questions: each costs ~30 ms on Windows, and this runs before every
+    # task (a checkpoint capture made 14 of them, 0.43 s of a 1.1 s run).
     try:
-        inside = _git(cwd, ["rev-parse", "--is-inside-work-tree"], check=False)
+        lines = _git(cwd, ["rev-parse", "--is-inside-work-tree", "HEAD"], check=False).split()
     except (OSError, subprocess.SubprocessError) as e:
         return False, "git is not usable here: %s" % e
-    if inside != "true":
+    if not lines or lines[0] != "true":
         return False, "%s is not inside a git repository, so there is nothing to rewind to" % cwd
-    try:
-        _git(cwd, ["rev-parse", "HEAD"])
-    except CheckpointError:
+    if len(lines) < 2 or not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", lines[1]):
         return False, "this repository has no commits yet — make one commit and checkpoints work"
     return True, ""
 
@@ -98,10 +100,16 @@ def _untracked_parent(cwd: str) -> str:
     index to take a snapshot would corrupt whatever they had staged.
     """
     from . import plat as _plat
+    # Bytes, never decoded: the names go straight back to git below. Read as text in the locale's
+    # code page, a UTF-8 name that did not decode made stdout None on Windows -- and an unreadable
+    # listing must not become "there were none", because restore then runs `git clean -fd` and
+    # deletes files that existed when this snapshot was taken.
     listing = subprocess.run(["git", "-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
-                             **_plat.no_window_kwargs(),
-                             capture_output=True, text=True, timeout=300)
-    files = [f for f in (listing.stdout or "").split("\0") if f]
+                             **_plat.no_window_kwargs(), capture_output=True, timeout=300)
+    if listing.returncode != 0 or listing.stdout is None:
+        raise CheckpointError("git ls-files failed (%s): %s" % (
+            listing.returncode, (listing.stderr or b"").decode("utf-8", "replace").strip()[:300]))
+    files = [f for f in listing.stdout.split(b"\0") if f]
     # NOTE the empty case still produces a commit, holding an EMPTY tree. "There were no untracked
     # files" is complete knowledge, not missing knowledge: it means every untracked file present at
     # restore time appeared afterwards and is safe to remove. Cline stops at a HEAD-only fallback
@@ -109,11 +117,15 @@ def _untracked_parent(cwd: str) -> str:
     # for real and watching new.txt survive, which is precisely the "undo" a user expects to work.
     tmp = tempfile.mkdtemp(prefix="collie-ckpt-")
     try:
-        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
+        # Literal pathspecs: the names below are file names, not patterns. As patterns, an
+        # untracked "secret[1].env" also matched an IGNORED "secret1.env", and `add --force`
+        # committed that ignored file into the checkpoint ref.
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"),
+                   GIT_LITERAL_PATHSPECS="1")
         if files:
             spec = os.path.join(tmp, "pathspec")
             with open(spec, "wb") as f:                   # NUL-delimited: no argv length limit
-                f.write(("\0".join(files) + "\0").encode("utf-8"))
+                f.write(b"\0".join(files) + b"\0")
             _git(cwd, ["add", "--force", "--pathspec-from-file", spec, "--pathspec-file-nul"],
                  env=env)
         tree = _git(cwd, ["write-tree"], env=env)         # empty tree when there were none
@@ -144,17 +156,15 @@ def capture(cwd: str, session: str, n: int, label: str = "") -> Checkpoint:
         if not untracked:
             ref, kind = stash, "stash"
         else:
-            tree = _git(cwd, ["rev-parse", stash + "^{tree}"])
-            base = _git(cwd, ["rev-parse", stash + "^1"])
-            index_parent = _git(cwd, ["rev-parse", stash + "^2"])
+            tree, base, index_parent = _git(
+                cwd, ["rev-parse", stash + "^{tree}", stash + "^1", stash + "^2"]).split()
             ref = _git(cwd, ["commit-tree", tree, "-p", base, "-p", index_parent,
                              "-p", untracked, "-m", msg]) or stash
             kind = "stash"
     elif untracked:
         # Tracked tree clean. Still synthesize a snapshot: the untracked parent records the exact
         # set present now (possibly none), which is what lets restore delete whatever appears later.
-        head = _git(cwd, ["rev-parse", "HEAD"])
-        head_tree = _git(cwd, ["rev-parse", "HEAD^{tree}"])
+        head, head_tree = _git(cwd, ["rev-parse", "HEAD", "HEAD^{tree}"]).split()
         index_parent = _git(cwd, ["commit-tree", head_tree, "-p", head, "-m", _MARKER + "index"])
         ref = _git(cwd, ["commit-tree", head_tree, "-p", head, "-p", index_parent,
                          "-p", untracked, "-m", msg])

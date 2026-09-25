@@ -71,6 +71,29 @@ pip install -e ".[local,tui,search]"
     Without the `local` extra, memory runs on **BM25 keyword recall** — it works out of the box, it
     just isn't semantic. Collie never silently falls back to a low-quality embedder.
 
+## Staying up to date
+
+Open **Settings → General → Updates** and press **Check for updates**, or turn on *Check for
+updates automatically* to have Collie ask GitHub about once a day (off by default; see
+[Privacy](privacy.md)). When a newer release exists, a small dot appears on the Settings button and
+the Updates card shows its release notes.
+
+- **Windows installer copies** get **Install and restart**: Collie downloads the release you were
+  shown, checks its published digest and Authenticode signature, closes, runs Setup silently and
+  starts the same pieces again. A task that is running at that moment is interrupted. If a newer
+  release appears between reading the notice and pressing Install, nothing is installed and the
+  card asks you to check again.
+- **The macOS app** points to the release page: download the new `Collie-arm64.dmg` and replace
+  Collie in Applications (the app puts no `collie` command on your PATH).
+- **Homebrew** copies show `brew upgrade collie`; **pip** installs show `collie update --yes`.
+
+From a terminal, `collie update` reports the latest release and `collie update --yes` installs it.
+
+After an update, reload the Collie browser extension once: open `chrome://extensions` and press the
+reload arrow on the Collie card. Chrome keeps running an unpacked extension until it is reloaded, so
+until then the browser tools use the old one. *Settings → General* says so while Chrome is still
+running an older copy.
+
 ## Verify it works
 
 ```bash

@@ -245,15 +245,20 @@ class AmbientObserver:
         finally:
             self.store.close()
 
-    def run(self, *, interval=None, once=False):
+    def run(self, *, interval=None, once=False, heartbeat=None):
         try:
             while True:
                 value = self.tick()
                 if once:
                     return value
                 settings = self.store.settings(refresh=True)
-                delay = int(interval or settings.get("ambient_sample_seconds") or 5)
-                time.sleep(max(2, min(delay, 300)))
+                delay = max(2, min(int(interval or settings.get("ambient_sample_seconds") or 5), 300))
+                if heartbeat is not None:
+                    try:
+                        heartbeat(delay)
+                    except Exception:
+                        pass
+                time.sleep(delay)
         finally:
             self.close()
 
@@ -269,14 +274,23 @@ def main(argv=None):
         observer = AmbientObserver(path)
         print(json.dumps(observer.run(once=True), ensure_ascii=False))
         return 0
-    from .supervisor import InstanceLock
+    from .supervisor import AlreadyRunning, InstanceLock
     root = os.path.dirname(path)
-    lock = InstanceLock(os.path.join(root, "ambient.lock"))
     try:
-        AmbientObserver(path).run(interval=args.interval)
+        lock = InstanceLock(os.path.join(root, "ambient.lock"), what="The Collie ambient observer")
+    except AlreadyRunning as exc:
+        print("collie ambient: %s; this copy is exiting." % exc, file=sys.stderr)
+        return 3
+    from .ops import OpsStore
+    ops = OpsStore(os.environ.get("COLLIE_OPS_DB") or os.path.join(root, "ops.db"))
+    # What a supervisor started after this one adopts instead of starting a second copy.
+    beat = lambda delay: ops.beat("ambient-observer", "running", {}, ttl=3 * delay + 30)
+    try:
+        AmbientObserver(path).run(interval=args.interval, heartbeat=beat)
     except KeyboardInterrupt:
         return 0
     finally:
+        ops.close()
         lock.close()
     return 0
 

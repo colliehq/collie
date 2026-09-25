@@ -53,6 +53,18 @@ feature inherently requires:
   security changes, secrets, target changes, and ambiguous irreversible actions remain gated.
   Interactive tasks and background Missions still use the ordinary recovery boundaries. Stopping
   clears live capture and surface authority.
+- **Update checks (on request, or daily once you turn them on).** Pressing *Check for updates* in
+  Settings, running `collie update`, or enabling *Check for updates automatically* (off by default;
+  then about once a day) asks GitHub's public release API (`api.github.com`) for the latest Collie
+  release. The request carries no account, identifier or information about your work; GitHub sees
+  your network address as with any web request. The answer is kept in
+  `~/.collie/update-status.json`. Installing always waits for you to press *Install* or run
+  `collie update --yes`, and downloads only the release you were shown, from GitHub.
+- **Weather on the live wallpaper (opt-in wallpaper).** While the desktop wallpaper runs with its
+  clock showing, the clock's weather line asks `ipapi.co` for an approximate location from your
+  network address, then `api.open-meteo.com` for the current weather at that point, about every 30
+  minutes. Nothing about you or your work is sent. Set `"weather": false` under `"clock"` in
+  `~/.collie/desktop.json` to stop both requests; the clock stays.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,

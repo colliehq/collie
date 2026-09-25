@@ -199,7 +199,7 @@ class CodeSliceProcessRunner:
             value = subprocess.run(
                 ["ps", "-p", str(int(pid)), "-o", "lstart="],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, timeout=3, check=False).stdout.strip()
+                text=True, errors="replace", timeout=3, check=False).stdout.strip()
             return "ps:" + value if value else ""
         except Exception:
             return ""
@@ -220,7 +220,7 @@ class CodeSliceProcessRunner:
                 command = subprocess.run(
                     ["ps", "-p", str(int(pid)), "-o", "command="],
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                    text=True, timeout=3, check=False).stdout
+                    text=True, errors="replace", timeout=3, check=False).stdout
             normalized = command.replace("\\", "/")
             owned_command = ("harness.codeworker" in command or
                              "/harness/codeworker.py" in normalized)

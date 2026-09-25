@@ -241,13 +241,14 @@ def test_slack_worker_adopts_fresh_legacy_heartbeat_then_takes_over(tmp_path):
     })
     assert spec.adopt_heartbeat == "slack:rowan"  # migration for existing schema-1 config
     with OpsStore(str(tmp_path / "ops.db")) as store:
-        store.beat("slack:rowan", "connected", {}, pid=321, ttl=10, now=100)
+        # A live process (this one) stands in for the legacy dog: adoption checks it is running.
+        store.beat("slack:rowan", "connected", {}, pid=os.getpid(), ttl=10, now=100)
         runtime = supervisor.WorkerRuntime(
             spec, store, str(tmp_path), popen=popen, probe=lambda _: False, clock=lambda: 0)
         assert runtime.step(105) == "external"
         row = store.heartbeats(now=105)["worker:slack-rowan"]
         assert row["pid"] == 0
-        assert row["detail"]["external_pid"] == 321
+        assert row["detail"]["external_pid"] == os.getpid()
         assert not spawned
         assert runtime.step(111) == "starting"
         assert len(spawned) == 1
@@ -269,3 +270,84 @@ def test_load_config_discovers_slack_added_after_initial_install(tmp_path):
     rowan = next(item for item in loaded["workers"] if item["name"] == "slack-rowan")
     assert rowan["argv"][0] == "new-python"
     assert rowan["adopt_heartbeat"] == "slack:rowan"
+
+
+def test_supervisor_lines_carry_a_timestamp_and_the_restart_reason(tmp_path):
+    """Exits, starts and self-initiated restarts can be matched to what happened on the machine."""
+    import datetime as dt
+    processes = [FakeProcess(41), FakeProcess(42)]
+    clock = [1_790_000_000.0]
+    spec = supervisor.WorkerSpec("web", ["python", "web.py"], probe_url="http://health",
+                                 startup_grace_s=2, stable_s=10, max_backoff_s=10)
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        runtime = supervisor.WorkerRuntime(
+            spec, store, str(tmp_path), popen=lambda *a, **k: processes.pop(0),
+            probe=lambda spec: False, clock=lambda: clock[0])
+        runtime.step(clock[0])                  # starts pid 41
+        clock[0] += 5
+        runtime.step(clock[0] - 5)              # unhealthy since now
+        runtime.step(clock[0])                  # past the grace: restart
+        runtime.close()
+    text = (tmp_path / "logs" / "web.log").read_text(encoding="utf-8")
+    stamp = dt.datetime.fromtimestamp(1_790_000_000.0).astimezone().isoformat(timespec="seconds")
+    assert "[supervisor %s] started pid 41" % stamp in text
+    assert "health probe failed for 5.0s; restarting pid 41" in text
+    assert "] stopped" in text
+    assert "[supervisor] " not in text          # no unstamped supervisor line remains
+
+
+def test_a_held_instance_lock_names_its_owner(tmp_path):
+    path = str(tmp_path / "automations.lock")
+    first = supervisor.InstanceLock(path, what="The Collie automations daemon")
+    try:
+        with pytest.raises(supervisor.AlreadyRunning) as refused:
+            supervisor.InstanceLock(path, what="The Collie automations daemon")
+        assert "automations daemon is already running" in str(refused.value)
+        assert "supervisor" not in str(refused.value)
+        assert isinstance(refused.value, RuntimeError)       # existing callers catch RuntimeError
+    finally:
+        first.close()
+
+
+@pytest.mark.parametrize("module,lock_name,argv", [
+    ("automations", "automations.lock", ["daemon", "--interval", "1"]),
+    ("ambient", "ambient.lock", ["--interval", "1"]),
+])
+def test_a_second_daemon_exits_with_one_line_instead_of_a_traceback(tmp_path, capsys, monkeypatch,
+                                                                     module, lock_name, argv):
+    import importlib
+    mod = importlib.import_module("harness." + module)
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    if module == "ambient":
+        monkeypatch.setattr(mod, "state_path", lambda _d=None: str(tmp_path / "ambient.json"))
+    else:
+        argv = argv + ["--state-dir", str(tmp_path)]
+    held = supervisor.InstanceLock(str(tmp_path / lock_name))
+    try:
+        assert mod.main(argv) == 3
+    finally:
+        held.close()
+    err = capsys.readouterr().err
+    assert "already running" in err and "this copy is exiting" in err
+    assert "Traceback" not in err
+
+
+def test_worker_output_lines_carry_the_time_they_arrived(tmp_path):
+    """A worker's own lines had no time, so 278 Slack reconnects could have been minutes or days
+    apart; now each carries the local time it was read."""
+    import io
+    import time as _time
+    proc = FakeProcess(51)
+    proc.stdout = io.StringIO("[slack] connected as rowan\n[slack] connection lost\n")
+    clock = [1_790_000_000.0]
+    spec = supervisor.WorkerSpec("slack-rowan", ["python", "bot.py"])
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        runtime = supervisor.WorkerRuntime(spec, store, str(tmp_path), popen=lambda *a, **k: proc,
+                                           probe=lambda spec: True, clock=lambda: clock[0])
+        runtime.step(clock[0])
+        runtime.reader.join(timeout=5)
+        runtime.close()
+    text = (tmp_path / "logs" / "slack-rowan.log").read_text(encoding="utf-8")
+    stamp = _time.strftime("%m-%d %H:%M:%S", _time.localtime(1_790_000_000.0))
+    assert "%s [slack] connected as rowan" % stamp in text
+    assert "%s [slack] connection lost" % stamp in text

@@ -29,7 +29,9 @@ def _is_mac():
 DEFAULT_CONFIG = {
     "widgets": {
         "brand":    {"on": True,  "slot": "center"},
-        "clock":    {"on": True,  "slot": "tr"},
+        # weather: the clock's weather line asks ipapi.co where this IP address is and then
+        # api.open-meteo.com for the weather there (see docs/privacy.md); false turns both off.
+        "clock":    {"on": True,  "slot": "tr", "weather": True},
         # Off on macOS: the Dock already is the app launcher, always visible and always in the same
         # place, so a second row of the same icons on the wallpaper is clutter. Windows has no
         # equivalent for a behind-the-icons desktop, so it keeps it.
@@ -280,7 +282,7 @@ def _mac_icns(app_path):
     name = ""
     try:
         out = subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Print CFBundleIconFile", plist],
-                             capture_output=True, text=True, timeout=10)
+                             capture_output=True, text=True, errors="replace", timeout=10)
         name = (out.stdout or "").strip()
     except Exception:
         name = ""
@@ -320,7 +322,7 @@ def _mac_media(cmd):
             r = subprocess.run(
                 ["osascript", "-e",
                  'tell application "System Events" to (name of processes) contains "%s"' % app],
-                capture_output=True, text=True, timeout=5)
+                capture_output=True, text=True, errors="replace", timeout=5)
             if (r.stdout or "").strip() == "true":
                 subprocess.run(["osascript", "-e", 'tell application "%s" to %s' % (app, act)],
                                timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -357,7 +359,7 @@ def nowplaying():
     if now - _NP_CACHE["t"] < 3.0:
         return _NP_CACHE["v"]
     _NP_CACHE["t"] = now
-    ps = r'''
+    ps = plat.PS_UTF8_OUTPUT + r'''
 $ErrorActionPreference='SilentlyContinue'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
 function AW($op,$t){ $m=[System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'GetAwaiter' -and $_.GetParameters().Count -eq 1}|select -First 1
@@ -373,7 +375,7 @@ if($s){ $p=AW ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSy
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                            **plat.no_window_kwargs(), timeout=6,
-                           capture_output=True, text=True)
+                           capture_output=True, encoding="utf-8", errors="replace")
         out = (r.stdout or "").strip()
         v = json.loads(out) if out.startswith("{") else None
         if v and not (v.get("title") or v.get("artist")):

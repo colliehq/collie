@@ -1918,6 +1918,7 @@ class LiveCopilotRuntime:
         self.last_browser_context = ""
         self.last_browser_context_poll_ms = 0
         self.last_browser_visual_poll_ms = 0
+        self.browser_visual_retry_at_ms = 0
         self.last_input_at_ms = 0
         self.last_activity_event_ms = 0
         self.last_screen_capture_ms = 0
@@ -2123,11 +2124,26 @@ class LiveCopilotRuntime:
         """Fetch a single active-tab screenshot and bounded page body without persisting either."""
         if not value.get("observe_screen"):
             return None
+        if now < self.browser_visual_retry_at_ms:
+            return None                     # the loaded extension cannot do it; the window shot can
         self.last_browser_visual_poll_ms = now
         try:
             from .browserbridge import live_tab_observation
             row = live_tab_observation(timeout=7, max_text=16_000, max_dim=1280)
         except Exception:
+            return None
+        if (row or {}).get("unsupported"):
+            # An extension older than this Collie: say so once, fall back to the window screenshot,
+            # and ask again in ten minutes (by then it may have been reloaded). It used to be asked
+            # on every tick of a session and to fail silently each time.
+            self.browser_visual_retry_at_ms = now + 600_000
+            try:
+                self.store.add_event(
+                    source="system", kind="notice", app="chrome", title="",
+                    text="Live cannot read the browser page: %s Using a window screenshot "
+                         "instead." % _text(row.get("detail"), 400))
+            except LiveCopilotError:
+                pass                        # the session ended meanwhile
             return None
         host = _text((row or {}).get("host"), 255).casefold()
         if not host:

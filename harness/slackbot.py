@@ -194,13 +194,14 @@ def fingerprint() -> str:
     try:
         if sys.platform == "darwin":
             out = subprocess.run(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                                 capture_output=True, text=True, timeout=5).stdout
+                                 capture_output=True, text=True, errors="replace", timeout=5).stdout
             m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
             raw = m.group(1) if m else ""
         elif sys.platform == "win32":
             from . import plat as _plat
             out = subprocess.run(["reg", "query", r"HKLM\SOFTWARE\Microsoft\Cryptography",
-                                  "/v", "MachineGuid"], capture_output=True, text=True, timeout=5,
+                                  "/v", "MachineGuid"], capture_output=True, text=True,
+                                  errors="replace", timeout=5,
                                  **_plat.no_window_kwargs()).stdout
             m = re.search(r"MachineGuid\s+REG_SZ\s+(\S+)", out)
             raw = m.group(1) if m else ""
@@ -592,7 +593,7 @@ def _process_identity(pid: int) -> str:
             # text, so invoking ps directly is bounded and shell-free.
             return subprocess.check_output(
                 ["ps", "-o", "lstart=", "-p", str(int(pid))],
-                text=True, timeout=2).strip()
+                text=True, errors="replace", timeout=2).strip()
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
         return ""
 
@@ -2186,7 +2187,7 @@ def _plist(label: str, argv: list, cwd: str, log: str) -> str:
 
 
 def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str = "",
-                          autonomy: str = "", presence_url: str = "") -> int:
+                          autonomy: str = "", presence_url: str = "", allow: str = "") -> int:
     """The macOS half: a LaunchAgent, which is what a per-user background job is here.
 
     No wrapper script, unlike Windows: launchd takes an argv and two log paths directly, so the
@@ -2196,8 +2197,8 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
     label, path = _agent_label(name), _agent_path(name)
     log = os.path.expanduser("~/.collie/slack-%s.log" % _agent_label(name).rsplit(".", 1)[-1])
     argv = [sys.executable, "-m", "harness.cli", "slack", "--name", name, "--cwd", cwd]
-    for flag, v in (("--channels", channels), ("--provider", provider), ("--autonomy", autonomy),
-                    ("--presence-url", presence_url)):
+    for flag, v in (("--channels", channels), ("--allow", allow), ("--provider", provider),
+                    ("--autonomy", autonomy), ("--presence-url", presence_url)):
         if v:
             argv += [flag, v]
     # Announce on every start would post a greeting on every wake and every crash-restart. The
@@ -2212,11 +2213,12 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
     # bootout first: without it, re-running this leaves the OLD arguments running and the new plist
     # loaded but inert, which reads as "the flag I just changed did nothing".
     subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, label)],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, errors="replace")
     r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, errors="replace")
     if r.returncode != 0:                       # older macOS, or a session launchctl cannot address
-        r = subprocess.run(["launchctl", "load", "-w", path], capture_output=True, text=True)
+        r = subprocess.run(["launchctl", "load", "-w", path], capture_output=True, text=True,
+                           errors="replace")
     if r.returncode != 0:
         print("wrote %s but launchctl refused it: %s"
               % (path, (r.stderr or r.stdout or "").strip()), file=sys.stderr)
@@ -2230,7 +2232,7 @@ def _install_launch_agent(name: str, cwd: str, channels: str = "", provider: str
 def _uninstall_launch_agent(name: str) -> int:
     label, path = _agent_label(name), _agent_path(name)
     subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), label)],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, errors="replace")
     try:
         if os.path.exists(path):
             os.remove(path)
@@ -2244,7 +2246,7 @@ def _uninstall_launch_agent(name: str) -> int:
 
 
 def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "",
-                      autonomy: str = "", presence_url: str = "") -> int:
+                      autonomy: str = "", presence_url: str = "", allow: str = "") -> int:
     """Bring this dog back after a restart.
 
     A dog started from a terminal dies with the terminal, which is how one sat silent through a
@@ -2262,7 +2264,8 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     from . import plat
     if not plat.is_windows():
         if sys.platform == "darwin":
-            return _install_launch_agent(name, cwd, channels, provider, autonomy, presence_url)
+            return _install_launch_agent(name, cwd, channels, provider, autonomy, presence_url,
+                                         allow)
         print("collie slack --install-autostart has no Linux form yet "
               "(a systemd --user unit is the shape it wants).", file=sys.stderr)
         return 2
@@ -2271,6 +2274,10 @@ def install_autostart(name: str, cwd: str, channels: str = "", provider: str = "
     argv = ["slack", "--name", name, "--cwd", cwd]
     if channels:
         argv += ["--channels", channels]
+    # Who may command this dog. Leaving it out of the launcher widened a dog restricted to one
+    # person to "anyone in them" at the next logon, silently -- the same hole autonomy had.
+    if allow:
+        argv += ["--allow", allow]
     if provider:
         argv += ["--provider", provider]
     # Autonomy too, when it was stated. Every other flag the person typed is written into the
@@ -2362,7 +2369,7 @@ def main(argv=None) -> int:
         return uninstall_autostart(args.name or "collie")
     if args.install_autostart:
         return install_autostart(args.name or "collie", args.cwd, args.channels, args.provider,
-                                 args.autonomy, args.presence_url)
+                                 args.autonomy, args.presence_url, args.allow)
 
     # The kennel first, the environment second. A pack means several dogs with several pairs of
     # tokens, and one pair of environment variables cannot hold them — but an env var still wins

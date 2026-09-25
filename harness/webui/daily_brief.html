@@ -291,10 +291,12 @@ function render(){
 
   const sources=$("sourceList");
   sources.replaceChildren();
+  const idle=new Set((brief.coverage||{}).not_connected||[]);
   (data.sources||[]).forEach(row=>{
     const li=document.createElement("li");
     li.append(node("span",sourceName(row.name)));
-    const state=row.state==="ok"?tr("read ","读取于 ")+ago(row.collected_at)
+    // Read, but nothing is connected to it: say that rather than a freshness stamp.
+    const state=row.state==="ok"?(idle.has(row.name)?tr("not connected","未连接"):tr("read ","读取于 ")+ago(row.collected_at))
       :(row.reason||tr("could not be read","读取失败"));
     li.append(node("span",state,row.state==="ok"?"muted":"muted bad"));
     sources.append(li);

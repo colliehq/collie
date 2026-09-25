@@ -1683,9 +1683,16 @@ def main(argv=None) -> int:
         return 0
 
     from .ops import OpsStore
-    from .supervisor import InstanceLock
+    from .supervisor import AlreadyRunning, InstanceLock
     os.makedirs(state, exist_ok=True)
-    lock = InstanceLock(os.path.join(state, "automations.lock"))
+    try:
+        lock = InstanceLock(os.path.join(state, "automations.lock"),
+                            what="The Collie automations daemon")
+    except AlreadyRunning as exc:
+        # A second copy started while the first still runs (an overlapping restart): one line
+        # saying so, not a traceback that reads like a crash.
+        print("collie automations: %s; this copy is exiting." % exc, file=sys.stderr)
+        return 3
     trigger_store = AutomationStore(db_path)
     executor_store = AutomationStore(db_path)
     ops_store = OpsStore(ops_path)

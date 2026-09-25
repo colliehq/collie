@@ -78,7 +78,8 @@ class HarnessAdapter:
                 cmd[0] = resolved
             from . import plat as _plat
             r = subprocess.run(cmd, cwd=cwd, **_plat.no_window_kwargs(),
-                               capture_output=True, text=True, timeout=timeout, env=env)
+                               capture_output=True, text=True,
+                               errors="replace", timeout=timeout, env=env)
             d = self.parse(r.stdout, r.stderr)
             res.input_tokens = d.get("input_tokens", 0)
             res.output_tokens = d.get("output_tokens", 0)

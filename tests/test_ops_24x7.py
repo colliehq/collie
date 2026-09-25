@@ -8,6 +8,12 @@ from harness.ops import (NotificationPump, OpsStore, OutboxFull, RotatingLog,
                          remote_notification_sender)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_claude_token(monkeypatch):
+    # A token sign-in in the environment running these tests would change what counts as missing.
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+
 def _jwt(exp):
     enc = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
     return "%s.%s.x" % (enc({"alg": "none"}), enc({"exp": exp}))
@@ -235,3 +241,145 @@ def test_remote_notification_survives_disconnect_and_drains_after_reconnect(tmp_
         assert store.db.execute(
             "SELECT state FROM notifications WHERE notification_id=?", (nid,)
         ).fetchone()["state"] == "delivered"
+
+
+# --- only the login the configured provider reads can make Collie unhealthy -------------------
+
+def _creds(tmp_path, *, claude=None, codex=None):
+    claude_path, codex_path = tmp_path / "claude.json", tmp_path / "codex.json"
+    if claude is not None:
+        claude_path.write_text(json.dumps({"claudeAiOauth": claude}), encoding="utf-8")
+    if codex is not None:
+        codex_path.write_text(json.dumps({"tokens": codex}), encoding="utf-8")
+    return str(claude_path), str(codex_path)
+
+
+@pytest.mark.parametrize("provider,needed", [
+    ("codex-oauth", {"codex-oauth"}), ("anthropic-oauth", {"claude-oauth"}),
+    # Claude Code routes need its login too; on Windows and Linux that is this file.
+    ("claude-agent-sdk", {"claude-oauth"}), ("claude-cli", {"claude-oauth"}),
+    ("anthropic", set()), ("", set()),
+])
+def test_credentials_are_marked_needed_only_for_the_provider_that_reads_them(tmp_path, monkeypatch,
+                                                                            provider, needed):
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    claude, codex = _creds(tmp_path)
+    rows = credential_health(now=1000, claude_path=claude, codex_path=codex, provider=provider)
+    assert {row["name"] for row in rows} == {"claude-oauth", "codex-oauth"}   # both still listed
+    assert {row["name"] for row in rows if row["needed"]} == needed
+
+
+def test_an_unused_missing_login_neither_degrades_health_nor_raises_an_alert(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    claude, codex = _creds(tmp_path, codex={"access_token": _jwt(10_000), "refresh_token": "r"})
+    monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("worker:web", "running", {}, ttl=10, now=100)
+        report = aggregate_health(store, desired_workers=["web"], state_dir=str(tmp_path),
+                                  now=105, probe_services=False)
+        assert report["ok"] is True and report["status"] == "ok"
+        assert any(row["name"] == "claude-oauth" and row["state"] == "missing"
+                   for row in report["credentials"])
+        enqueue_health_alerts(store, report, now=105)
+        kinds = [row["kind"] for row in store.db.execute("SELECT kind FROM notifications")]
+        assert "credential_expiry" not in kinds
+
+
+def test_the_login_the_provider_reads_still_degrades_and_alerts_when_missing(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    claude, codex = _creds(tmp_path)
+    monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("worker:web", "running", {}, ttl=10, now=100)
+        report = aggregate_health(store, desired_workers=["web"], state_dir=str(tmp_path),
+                                  now=105, probe_services=False)
+        assert report["ok"] is False and report["status"] == "degraded"
+        enqueue_health_alerts(store, report, now=105)
+        rows = list(store.db.execute("SELECT kind, body FROM notifications"))
+        assert [row[1] for row in rows if row[0] == "credential_expiry"] == ["codex-oauth is missing"]
+
+
+def test_health_says_why_it_is_not_ok(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    claude, codex = _creds(tmp_path)
+    monkeypatch.setenv("COLLIE_PROVIDER", "codex-oauth")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        store.beat("worker:web", "running", {}, ttl=10, now=100)
+        store.beat("worker:automations", "circuit_open", {}, ttl=10, now=100)
+        report = aggregate_health(store, desired_workers=["web", "jobd", "automations"],
+                                  state_dir=str(tmp_path), now=105, probe_services=False)
+    codes = [(row["code"], row["subject"]) for row in report["reasons"]]
+    assert codes == [("login_missing", "codex-oauth"), ("worker_not_reporting", "jobd"),
+                     ("worker_stopped", "automations")]
+    assert report["reasons"][0]["action"] == "run `codex login`"
+    # An unused login is listed in credentials but never given as a reason.
+    assert all(row["subject"] != "claude-oauth" for row in report["reasons"])
+
+
+def test_on_windows_and_linux_a_claude_code_route_still_needs_its_login(tmp_path, monkeypatch):
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    claude, codex = _creds(tmp_path)
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="claude-agent-sdk")}
+    assert rows["claude-oauth"]["needed"] is True and rows["claude-oauth"]["self_refreshing"] is True
+    assert rows["codex-oauth"]["needed"] is False
+
+
+def test_an_expired_login_claude_code_refreshes_itself_is_not_a_problem(tmp_path, monkeypatch):
+    import functools
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    claude, codex = _creds(tmp_path, claude={"accessToken": "a", "refreshToken": "r", "expiresAt": 1})
+    monkeypatch.setenv("COLLIE_PROVIDER", "claude-agent-sdk")
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health, claude_path=claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops.db")) as store:
+        report = aggregate_health(store, desired_workers=[], state_dir=str(tmp_path), now=105,
+                                  probe_services=False)
+        assert report["ok"] is True
+        enqueue_health_alerts(store, report, now=105)
+        assert "credential_expiry" not in [r[0] for r in store.db.execute("SELECT kind FROM notifications")]
+    # ...but a missing one is: every run on that route would fail to sign in.
+    missing_claude, _ = _creds(tmp_path / "none") if (tmp_path / "none").mkdir() is None else (None, None)
+    monkeypatch.setattr(ops, "credential_health", functools.partial(
+        ops.credential_health.func, claude_path=missing_claude, codex_path=codex))
+    with OpsStore(str(tmp_path / "ops2.db")) as store:
+        report = aggregate_health(store, desired_workers=[], state_dir=str(tmp_path), now=105,
+                                  probe_services=False)
+        assert report["ok"] is False
+        assert report["reasons"][0]["code"] == "login_missing"
+
+
+def test_on_macos_the_keychain_login_is_not_judged_by_a_file(tmp_path, monkeypatch):
+    from harness import ops
+    monkeypatch.setattr(ops.sys, "platform", "darwin")
+    claude, codex = _creds(tmp_path)
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="claude-agent-sdk")}
+    assert rows["claude-oauth"]["needed"] is False
+
+
+def test_a_token_sign_in_or_the_macos_keychain_is_not_a_missing_login(tmp_path, monkeypatch):
+    from harness import ops
+    claude, codex = _creds(tmp_path)
+    monkeypatch.setattr(ops.sys, "platform", "win32")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-setup-token")
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="claude-cli")}
+    assert rows["claude-oauth"]["state"] == "missing" and rows["claude-oauth"]["needed"] is False
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    monkeypatch.setattr(ops.sys, "platform", "darwin")
+    rows = {r["name"]: r for r in credential_health(now=1000, claude_path=claude, codex_path=codex,
+                                                     provider="anthropic-oauth")}
+    assert rows["claude-oauth"]["needed"] is False

@@ -1047,6 +1047,14 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
                  if row.get("enabled") and _text(row.get("permission_state"), 32) == "granted"]
     has_calendar = bool([row for row in _rows(sources["meetings"]["payload"], "events")]) or \
         any(_text(row.get("kind"), 32) == "calendar" for row in connected)
+    # Two sources are read from local stores that exist whether or not anything was ever
+    # connected to them. "Read just now" beside Calendar or Email & phone then looked like a
+    # working connection when there was none, contradicting the notice below it. They are
+    # still read and still count as answered; they are just labelled for what they are.
+    not_connected = sorted(
+        name for name, missing in (("meetings", not has_calendar),
+                                   ("communications", not comms_report["connections"]))
+        if missing and sources[name]["state"] == "ok")
 
     if unavailable:
         notices.append(("无法读取：%s。未读取的内容不会被判定为无事。" if language.startswith("zh")
@@ -1112,7 +1120,8 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
                     for row in sources.values()],
         "coverage": {"ok": sorted(ok_names), "unavailable": sorted(unavailable),
                      "absent": sorted(absent), "complete": complete,
-                     "partial": sorted(partial), "configured": configured},
+                     "partial": sorted(partial), "configured": configured,
+                     "not_connected": not_connected},
         "top": top,
         "attention": attention,
         "agenda": agenda,
@@ -1456,11 +1465,13 @@ _LABELS = {
     "en": {"attention": "Needs you", "agenda": "Today", "progress": "In progress",
            "completed": "Done today", "news": "News", "suggestions": "Suggested next",
            "notices": "Notes", "setup": "Set up", "sources": "Sources",
+           "not_connected": "not connected",
            "hidden": "hidden by you", "stale": "unchanged since",
            "nothing": "Nothing here.", "subject": "Daily brief"},
     "zh": {"attention": "需要你", "agenda": "今天", "progress": "进行中",
            "completed": "今日完成", "news": "新闻", "suggestions": "建议",
            "notices": "说明", "setup": "设置", "sources": "来源",
+           "not_connected": "未连接",
            "hidden": "已被你隐藏", "stale": "未变化，始于",
            "nothing": "暂无内容。", "subject": "每日简报"},
 }
@@ -1534,10 +1545,20 @@ def render_text(brief, *, bilingual=False):
     if brief["notices"]:
         lines += ["", "%s:" % _label(brief, "notices", bilingual)]
         lines += ["  - %s" % notice for notice in brief["notices"]]
-    lines += ["", "%s: %s" % (_label(brief, "sources", bilingual),
-                              ", ".join(_source_name(name, brief.get("language"))
-                                        for name in brief["coverage"]["ok"]) or "none")]
+    lines += ["", "%s: %s" % (_label(brief, "sources", bilingual), _sources_line(brief, bilingual))]
     return "\n".join(lines).strip() + "\n"
+
+
+def _sources_line(brief, bilingual):
+    """Sources that were read, then -- separately -- the ones with nothing connected to them."""
+    coverage, language = brief["coverage"], brief.get("language")
+    idle = set(coverage.get("not_connected") or ())
+    read = ", ".join(_source_name(name, language) for name in coverage["ok"] if name not in idle)
+    line = read or "none"
+    if idle:
+        line += "; %s: %s" % (_label(brief, "not_connected", bilingual),
+                              ", ".join(_source_name(name, language) for name in sorted(idle)))
+    return line
 
 
 def _esc(value):
@@ -1607,9 +1628,7 @@ def render_email(brief, *, bilingual=False):
             parts.append("<li>%s</li>" % _esc(notice))
         parts.append("</ul>")
     parts.append('<p style="color:#6b7280;font-size:12px">%s: %s</p></div>' % (
-        _esc(_label(brief, "sources", bilingual)),
-        _esc(", ".join(_source_name(name, brief.get("language"))
-                       for name in brief["coverage"]["ok"]) or "none")))
+        _esc(_label(brief, "sources", bilingual)), _esc(_sources_line(brief, bilingual))))
     subject = "%s · %s · %s" % (_labels(brief.get("language"))["subject"], brief["date"],
                                 brief["headline"])
     return {"subject": _text(subject, 160), "text": text, "html": "".join(parts),

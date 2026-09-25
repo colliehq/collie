@@ -1548,10 +1548,123 @@ if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onDetach.addListener((src, reason) 
 async function ensureAttached(tabId) {
   if (pausedTabs.has(tabId)) throw new Error("Collie is paused on this tab");
   if (dbgTab === tabId) return;
-  if (dbgTab != null) { const old = dbgTab; dbgTab = null; await dbgDetach(old); }
+  if (dbgTab != null) {
+    const old = dbgTab;
+    // A box left open on the tab being let go could not be answered once the debugger is off it.
+    if (openDialogs.has(old)) await answerLeftover(old);
+    dbgTab = null; await dbgDetach(old);
+  }
   await dbgAttach(tabId);
   dbgTab = tabId;
+  // So its dialogs are seen (below). Bounded: on a page already held by a dialog nobody saw open,
+  // Page.enable waits on the very renderer the dialog holds.
+  try { await Promise.race([dbgSend(tabId, "Page.enable", {}), sleep(3000)]); } catch (e) {}
 }
+
+// --- page dialogs: alert, confirm, prompt, "leave this page?" -----------------------------------
+// While a page shows one, its main thread is parked inside it: injected scripts, CDP input and even
+// navigation all wait for it to close. Commands run one at a time, so the whole bridge waited with
+// it -- every space, every command, until someone clicked OK by hand (a submission's "thank you"
+// alert() once did exactly that for minutes). So a dialog in the tab of the command in flight is
+// answered as it opens, as Playwright does by default: an alert is acknowledged (OK is all it has);
+// a confirm, prompt or leave-page box is CANCELLED unless the command said dialog:"accept". The
+// command then finishes normally and its result says what the page asked and what was answered.
+// "accept" covers only what the command itself caused: a box already open when it starts (it came
+// up after the previous command returned) is cancelled whatever the command says, and `open` --
+// which the permission gate lets through on allowed sites -- may accept only "leave this page?".
+// Otherwise a navigation could say OK to an unseen "Confirm payment?" left by an earlier click.
+// Nothing is ever abandoned mid-way, so commands still run strictly one at a time (see curSpace).
+//
+// Seeing one needs the Page domain on BEFORE it opens, which is why ensureAttached enables it. A
+// dialog that opened earlier cannot be answered over CDP at all -- measured: Chrome keeps no record
+// of it for a later client, and a late Page.enable waits on the very renderer the dialog is holding.
+// Without the debugger, Chrome does not block on dialogs in background tabs (Collie's own tabs are
+// background tabs), so the case left open is a foreground tab Collie was never attached to.
+const openDialogs = new Map();       // tabId -> {type, message, defaultPrompt} showing there now
+let dialogWatch = null;              // the command in flight: {space, policy, seen: []}
+const dialogReports = new Map();     // space -> answered while another space's command ran
+
+function dialogTab(watch) {
+  const rec = spaces && watch ? spaces[watch.space] : null;
+  return rec && rec.tabId != null ? rec.tabId : null;
+}
+
+function acceptsDialog(watch, type, stale) {
+  if (type === "alert") return true;
+  if (stale || watch.policy !== "accept") return false;
+  if (watch.action !== "open") return true;
+  if (type !== "beforeunload") return false;
+  // Leaving throws away what the page holds unsaved. In a tab the user handed over that is their
+  // own work, and `open` can pass the approval gate on site policy alone, so only Collie's own
+  // tabs may be left that way; elsewhere a click that navigates (and is approved) can.
+  const rec = spaces && watch.space ? spaces[watch.space] : null;
+  return !!(rec && rec.owned);
+}
+
+async function answerDialog(tabId, watch, info, stale) {
+  const d = info || openDialogs.get(tabId);
+  // The event and the check at the start of a command can both see one dialog; answer it once.
+  if (!d || d.answering) return null;
+  d.answering = true;
+  const accept = acceptsDialog(watch, d.type, stale);
+  const params = { accept };
+  // OK on a prompt keeps what the page pre-filled, as it would for a person.
+  if (accept && d.type === "prompt") params.promptText = String(d.defaultPrompt || "");
+  const entry = { type: d.type, message: String(d.message || "").slice(0, 500),
+                  answered: accept ? "accepted" : "dismissed" };
+  if (stale) entry.stale = true;     // it came up after the previous command had returned
+  try {
+    await dbgSend(tabId, "Page.handleJavaScriptDialog", params);
+    openDialogs.delete(tabId);
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    if (/no dialog is showing|not attached|no tab with/i.test(why)) {
+      openDialogs.delete(tabId);     // already gone (closed with the debugger, or by hand)
+      return null;
+    }
+    d.answering = false;
+    entry.answered = "failed";
+    entry.error = why.slice(0, 200);
+  }
+  if (watch.seen.length < 10) watch.seen.push(entry);
+  return entry;
+}
+
+function spaceOfTabNow(tabId) {
+  for (const [name, rec] of Object.entries(spaces || {})) if (rec && rec.tabId === tabId) return name;
+  return "";
+}
+
+// A box on a tab that is not the current command's: never accepted, and reported to the next
+// command of the space that owns the tab rather than to whoever happened to be running.
+async function answerLeftover(tabId) {
+  const report = { space: spaceOfTabNow(tabId), action: "", policy: "dismiss", seen: [] };
+  const entry = await answerDialog(tabId, report, null, true);
+  if (entry && report.space) {
+    const held = dialogReports.get(report.space) || [];
+    held.push(entry);
+    dialogReports.set(report.space, held.slice(-10));
+  }
+  return entry;
+}
+
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onDetach.addListener((src) => {
+  if (src && src.tabId != null) openDialogs.delete(src.tabId);
+});
+chrome.tabs.onRemoved.addListener((tabId) => { openDialogs.delete(tabId); });
+
+if (HAS_DEBUGGER_PERMISSION) chrome.debugger.onEvent.addListener((src, method, params) => {
+  if (!src || src.tabId == null || src.sessionId) return;
+  if (method === "Page.javascriptDialogOpening") {
+    const info = { type: String((params && params.type) || "unknown"),
+                   message: String((params && params.message) || ""),
+                   defaultPrompt: String((params && params.defaultPrompt) || "") };
+    openDialogs.set(src.tabId, info);
+    if (dialogWatch && dialogTab(dialogWatch) === src.tabId) answerDialog(src.tabId, dialogWatch, info);
+  } else if (method === "Page.javascriptDialogClosed") {
+    openDialogs.delete(src.tabId);
+  }
+});
 
 // Attach local files through Chrome DevTools Protocol. Some Chromium builds refuse to add a
 // programmatically-created File to DataTransfer even though assigning an existing OS file through
@@ -3106,6 +3219,11 @@ async function runScript(cmd) {
 
 async function handle(cmd) {
   curSpace = spaceOf(cmd);
+  // A dialog that opened after the previous command finished is still holding this tab, and even
+  // the presence message below would wait behind it.
+  const waiting = dialogWatch && dialogTab(dialogWatch);
+  if (waiting != null && openDialogs.has(waiting)) await answerDialog(waiting, dialogWatch, null, true);
+  for (const other of [...openDialogs.keys()]) if (other !== waiting) await answerLeftover(other);
   if (cmd.action === "pause") return await pauseSpace(curSpace, cmd.reason || "Paused from Collie");
   if (cmd.action === "resume") return await resumeSpace(curSpace);
   if (cmd.action === "status") {
@@ -3424,13 +3542,20 @@ async function pollOnce() {
       if (cmd && cmd.id) {
         keepAlive(true);
         let data;
+        const watch = { space: spaceOf(cmd), action: String(cmd.action || ""),
+                        policy: cmd.dialog === "accept" ? "accept" : "dismiss", seen: [] };
+        const heldForSpace = dialogReports.get(watch.space);
+        if (heldForSpace) { watch.seen.push(...heldForSpace); dialogReports.delete(watch.space); }
+        dialogWatch = watch;
         try { data = await handle(cmd); }
-        finally { keepAlive(false); }
+        finally { dialogWatch = null; keepAlive(false); }
+        const reply = { id: cmd.id, data };
+        if (watch.seen.length) reply.dialogs = watch.seen;
         try {
           await fetch(BRIDGE + "/result", {
             method: "POST",
             headers: await bridgeHeaders({ "content-type": "application/json" }),
-            body: JSON.stringify({ id: cmd.id, data }),
+            body: JSON.stringify(reply),
           });
         } catch (e) { /* result dropped; the tool times out and reports it */ }
       }

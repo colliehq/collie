@@ -45,6 +45,7 @@ _MAX_DIM = 1568
 
 _CAPTURE_PS = r'''
 param([Parameter(Mandatory=$true)][string]$Path, [string]$Title = "", [int]$MaxDim = 1568)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)   # plat.PS_UTF8_OUTPUT
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing | Out-Null
 Add-Type @"

@@ -31,7 +31,8 @@ _CHECKERS = {
 def _run(argv, cwd):
     try:
         from . import plat
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=20,
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                           errors="replace", timeout=20,
                            **plat.no_window_kwargs())
     except Exception:
         return ""
@@ -71,6 +72,10 @@ def diagnose(path, cwd):
         return ""
 
     tmpl = _CHECKERS.get(ext)
-    if not tmpl or not shutil.which(tmpl[0]):
+    exe = shutil.which(tmpl[0]) if tmpl else None
+    if not exe:
         return ""
-    return _run([a.replace("{p}", path) for a in tmpl], cwd)
+    # Run the program that was found, not its bare name: Windows' CreateProcess searches System32
+    # before PATH, so "bash" started WSL's bash.exe (which cannot see C:\ paths) while which() had
+    # found Git Bash -- and every edited .sh file came back "No such file or directory".
+    return _run([exe] + [a.replace("{p}", path) for a in tmpl[1:]], cwd)

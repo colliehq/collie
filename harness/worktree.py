@@ -34,7 +34,8 @@ def _git(args, cwd, timeout=60):
     try:
         from . import plat
         p = subprocess.run(["git"] + list(args), cwd=cwd, timeout=timeout,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           encoding="utf-8", errors="replace",
                            **plat.no_window_kwargs())
         return p.returncode == 0, (p.stdout or "").strip()
     except (OSError, subprocess.SubprocessError) as e:
@@ -214,11 +215,16 @@ def status(wt_dir):
         here = "refs/heads/" + branch
         others = [r for r in refs.splitlines() if r and r != here and PREFIX not in r]
     commits = 0
+    counted = ok2
     if others:
         ok3, ahead = _git(["rev-list", "--count", "HEAD", "--not"] + others, wt_dir)
-        if ok3 and ahead.strip().isdigit():
+        counted = ok3 and ahead.strip().isdigit()
+        if counted:
             commits = int(ahead.strip())
-    return {"dirty": bool(files), "files": files[:200], "commits": commits, "branch": branch}
+    # readable: a status or commit count git could not produce (timeout, error) is not "nothing
+    # here" -- an uncounted commit on a detached HEAD would be lost with the tree.
+    return {"dirty": bool(files), "files": files[:200], "commits": commits, "branch": branch,
+            "readable": bool(ok and counted)}
 
 
 def diff(wt_dir, max_bytes=200_000):
@@ -248,6 +254,11 @@ def release(wt_dir, force=False):
     if not listed or os.path.normcase(wt_dir) not in registered:
         return {"ok": False, "removed": False, "error": "refusing to remove an unregistered directory"}
     st = status(wt_dir)
+    if not force and not st["readable"]:
+        # Unread is not clean: git would then refuse the dirty tree, and the half-way cleanup
+        # below would delete the directory anyway.
+        return {"ok": False, "removed": False,
+                "error": "could not read the worktree's status, so it may still hold work"}
     if not force and (st["dirty"] or st["commits"]):
         return {"ok": False, "removed": False,
                 "error": "worktree still holds work (%d changed file%s, %d commit%s)"
@@ -292,7 +303,7 @@ def listing(cwd):
                 st = status(cur["dir"])
                 trees.append({"dir": cur["dir"], "branch": st["branch"],
                               "dirty": st["dirty"], "files": len(st["files"]),
-                              "commits": st["commits"]})
+                              "commits": st["commits"], "readable": st["readable"]})
             cur = {}
             continue
         if line.startswith("worktree "):

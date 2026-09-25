@@ -26,7 +26,7 @@ from . import plat
 
 
 def _git(args, cwd=None, capture=False, check=True, timeout=600):
-    return subprocess.run(["git"] + args, cwd=cwd, text=True, check=check,
+    return subprocess.run(["git"] + args, cwd=cwd, encoding="utf-8", errors="replace", check=check,
                           capture_output=capture, timeout=timeout)
 
 
@@ -117,14 +117,50 @@ def make_patch(workdir: str, max_len: int = 200_000) -> str:
     venv/__pycache__/*.egg-info/etc., plus a size backstop that falls back to tracked
     *.py hunks only if something still bloated the diff.
     """
+    def _staged_diff():
+        # Bytes, with no newline translation: the prediction is scored by applying it, so a CRLF
+        # folded to LF would score a patch the agent never wrote. A diff that is not UTF-8 cannot
+        # be a str exactly; refusing it left the instance with no prediction on every retry, so
+        # it is kept with U+FFFD for those bytes, and said so.
+        r = subprocess.run(["git", "diff", "--cached", "--no-color", "--no-ext-diff",
+                            "--src-prefix=a/", "--dst-prefix=b/"],
+                           cwd=workdir, capture_output=True, check=True, timeout=600)
+        try:
+            return r.stdout.decode("utf-8")
+        except UnicodeDecodeError as e:
+            print("  WARN make_patch: the diff is not UTF-8 (%s); sending it as git binary "
+                  "patches, which are ASCII and apply to the exact bytes" % e, flush=True)
+        # U+FFFD would score bytes the agent never wrote, or a patch that no longer applies.
+        # `-diff` in info/attributes (above every .gitattributes) makes git emit base85
+        # binary hunks for every file; the checkout is ours and the file is put back.
+        attrs = subprocess.run(["git", "rev-parse", "--git-path", "info/attributes"], cwd=workdir,
+                               capture_output=True, check=True).stdout.decode("utf-8").strip()
+        attrs = attrs if os.path.isabs(attrs) else os.path.join(workdir, attrs)
+        saved = open(attrs, "rb").read() if os.path.exists(attrs) else None
+        os.makedirs(os.path.dirname(attrs), exist_ok=True)
+        try:
+            with open(attrs, "wb") as f:
+                f.write((saved or b"") + b"\n* -diff\n")
+            r = subprocess.run(["git", "-c", "core.quotepath=true", "diff", "--cached",
+                                "--binary", "--no-color", "--no-ext-diff",
+                                "--src-prefix=a/", "--dst-prefix=b/"],
+                               cwd=workdir, capture_output=True, check=True, timeout=600)
+        finally:
+            if saved is None:
+                os.remove(attrs)
+            else:
+                with open(attrs, "wb") as f:
+                    f.write(saved)
+        return r.stdout.decode("utf-8", "replace")
+
     _git(["add", "-A", "--", "."] + _JUNK_PATHSPEC, cwd=workdir, check=False)
-    patch = _git(["diff", "--cached"], cwd=workdir, capture=True).stdout
+    patch = _staged_diff()
     if len(patch) > max_len:
         print("  WARN make_patch: %d bytes (>%d) — restricting to *.py hunks"
               % (len(patch), max_len), flush=True)
         _git(["reset", "-q"], cwd=workdir, check=False)
         _git(["add", "-u", "--", "*.py"], cwd=workdir, check=False)
-        patch = _git(["diff", "--cached"], cwd=workdir, capture=True).stdout
+        patch = _staged_diff()
     return patch
 
 
@@ -710,7 +746,10 @@ def _run_cli(cmd, workdir, extra_env=None, timeout=1800, stdin_text=None):
                     "argv[%d] of %r contains a newline; on Windows cmd.exe would truncate it "
                     "there and the agent would receive only a fragment. Pass it via stdin_text."
                     % (i, cmd[0]))
-    return subprocess.run([exe] + list(cmd[1:]), cwd=workdir, env=env, text=True, check=False,
+    # UTF-8 both ways: the agent CLIs are node/rust programs. In the ANSI code page the task
+    # text on stdin lost whatever that code page cannot spell.
+    return subprocess.run([exe] + list(cmd[1:]), cwd=workdir, env=env, encoding="utf-8",
+                          errors="replace", check=False,
                           timeout=timeout, capture_output=True, input=stdin_text)
 
 

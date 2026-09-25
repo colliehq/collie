@@ -272,13 +272,15 @@ class HookManager:
             timeout = 30.0
         argv, use_shell = plat.shell_argv(command)
         try:
-            proc = subprocess.run(
-                argv, shell=use_shell, input=json.dumps(payload, ensure_ascii=False),
-                text=True, capture_output=True, timeout=timeout, cwd=self.cwd,
-                **plat.no_window_kwargs())
-            stdout = (proc.stdout or "")[:_MAX_OUTPUT]
-            stderr = (proc.stderr or "")[:_MAX_OUTPUT]
-            base["exit_code"] = proc.returncode
+            # ensure_ascii: the payload goes through a text pipe in the system code page, which on
+            # Windows is often not UTF-8 -- non-ASCII text arrived as "?" (or failed to encode).
+            # \uXXXX escapes are the same JSON to every parser, in every code page.
+            stdin_text = json.dumps(payload, ensure_ascii=True)      # before anything runs
+            returncode, out, err = _run_hook_process(argv, use_shell, self.cwd, stdin_text,
+                                                     timeout)
+            stdout = (out or "")[:_MAX_OUTPUT]
+            stderr = (err or "")[:_MAX_OUTPUT]
+            base["exit_code"] = returncode
             decision = None
             if stdout.strip():
                 try:
@@ -291,10 +293,10 @@ class HookManager:
                 base["reason"] = str(decision.get("reason") or "")[:2000]
                 base["additional_context"] = str(
                     decision.get("additionalContext") or decision.get("additional_context") or "")[:8000]
-            elif proc.returncode != 0:
+            elif returncode != 0:
                 base["allowed"] = event not in _BLOCKING
                 base["reason"] = (stderr.strip() or stdout.strip()
-                                  or "hook exited %d" % proc.returncode)[:2000]
+                                  or "hook exited %d" % returncode)[:2000]
         except subprocess.TimeoutExpired:
             base.update(allowed=event not in _BLOCKING, timed_out=True,
                         reason="hook timed out after %.1fs" % timeout)
@@ -329,3 +331,59 @@ def validate_config(path: str) -> list[str]:
                 elif not str(handler.get("command") or "").strip():
                     errors.append("%s[%d].hooks[%d].command is required" % (event, i, j))
     return errors
+
+
+def _run_hook_process(argv, use_shell, cwd, stdin_text, timeout):
+    """Run one hook command: (returncode, stdout, stderr), or raise TimeoutExpired.
+
+    Its whole process tree is ended on a timeout AND on any other way out of the wait (Ctrl-C
+    included): subprocess.run killed only the direct child, and on Windows its drain then waited
+    for as long as anything the hook started kept the pipe open -- forever, for a background
+    process. On Windows the tree is a Job Object, because taskkill /T cannot reach a descendant
+    whose shell has already exited. A hook that finishes normally keeps what it deliberately
+    left running.
+    """
+    from . import tool_process
+    # Hook output, like the bash tool's: git, jq and node print UTF-8, Python the code page, and
+    # read in the code page a Chinese "reason" reached the model as mojibake.
+    group = plat.new_group_kwargs()
+    proc = subprocess.Popen(
+        argv, shell=use_shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, errors="replace", cwd=cwd,
+        encoding=tool_process._output_encoding(),
+        **group, **plat.no_window_kwargs())
+    try:
+        job = plat.attach_kill_on_close_job(proc)
+    except Exception:
+        job = None                      # taskkill /T below still reaches the live descendants
+
+    try:
+        out, err = proc.communicate(stdin_text, timeout=timeout)
+    except BaseException:
+        if job is not None:
+            try:
+                job.close(timeout_s=5)          # terminate, confirm, release the handle
+            except Exception:
+                pass
+        plat.kill_tree(proc)
+        if group.get("start_new_session"):
+            # The session is ours, so its group id is the child's pid -- signal it directly. The
+            # shell has often already exited: macOS answers getpgid() on that unreaped child with
+            # ESRCH, kill_tree then signals only the dead shell, and what it left behind lives on.
+            # Until we reap the child its pid cannot be reused, so this reaches only its group.
+            import signal
+            try:
+                os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
+            except OSError:
+                pass
+        try:
+            proc.communicate(timeout=2)
+        except BaseException:
+            pass                        # something outside the tree still holds a pipe
+        raise
+    if job is not None:
+        try:
+            job.release_without_terminating()
+        except Exception:
+            pass                        # left open, the Job ends them when Collie exits
+    return proc.returncode, out, err

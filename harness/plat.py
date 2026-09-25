@@ -104,6 +104,47 @@ def new_group_kwargs() -> dict:
         else {"start_new_session": True}
 
 
+def pid_alive(pid) -> bool:
+    """Read-only liveness of a process by id (never signals it: os.kill(pid, 0) kills on Windows)."""
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel = ctypes.windll.kernel32
+            handle = kernel.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
+            if not handle:
+                # Refused is not gone: a process of another account exists (as EPERM says below).
+                return kernel.GetLastError() == 5                # ERROR_ACCESS_DENIED
+            try:
+                code = ctypes.c_ulong()
+                ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+                return bool(ok and code.value == 259)            # STILL_ACTIVE
+            finally:
+                kernel.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+# First line of any Windows PowerShell script whose output Collie reads (after a script file's
+# param() block). Windows PowerShell writes to a pipe in [Console]::OutputEncoding, which starts as
+# the OEM code page (936 on Chinese Windows, 437 on English), not UTF-8 -- so a Chinese window title
+# read back as UTF-8 came out as debris. Measured under a 936 console: "微信 - 窗口标题" arrived as
+# b'\xce\xa2\xd0\xc5 - ...' before this line, and as UTF-8 after it.
+PS_UTF8_OUTPUT = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
+
+
 def no_window_kwargs() -> dict:
     """Popen kwargs that keep a child from flashing a console window.
 
@@ -715,7 +756,7 @@ def ask_allow_deny(title: str, message: str, allow: str = "Allow", deny: str = "
                 % (_as_str(message), _as_str(title), _as_str(deny), _as_str(allow),
                    _as_str(allow), timeout))
             out = subprocess.run(["osascript", "-e", script], capture_output=True,
-                                 text=True, timeout=timeout + 15)
+                                 text=True, errors="replace", timeout=timeout + 15)
             if out.returncode != 0:
                 return None                       # cancelled, no window server, or no one there
             # osascript answers `button returned:Allow, gave up:false`. Compare with the spaces
@@ -787,7 +828,8 @@ def to_host_path(p: str) -> str:
     if not is_wsl():
         return p
     try:
-        out = subprocess.run(["wslpath", "-w", p], capture_output=True, text=True).stdout.strip()
+        out = subprocess.run(["wslpath", "-w", p], capture_output=True, text=True,
+                             errors="replace").stdout.strip()
         return out or p
     except Exception:
         return p

@@ -34,7 +34,7 @@ def test_browser_snapshot_ref_wiring():
         assert sent["action"] == "click" and sent["ref"] == "e1", sent
         bb.BrowserType().run({"ref": "e2", "text": "hi", "submit": True}, ctx)
         assert sent == {"action": "type", "ref": "e2", "label": None, "selector": None,
-                        "text": "hi", "submit": True}, sent
+                        "text": "hi", "submit": True, "dialog": "dismiss"}, sent
         # browser_snapshot must be registered alongside the other browser_* tools
         names = []
         reg = types.SimpleNamespace(register=lambda t: names.append(t.name))
@@ -73,6 +73,38 @@ def test_webedit_write_checked():
         # 4) path traversal is refused
         assert not webedit.write_checked(d, "../../etc/passwd", "x")["ok"]
     finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_webedit_write_checked_without_pytest():
+    # The desktop install's bundled Python has no pytest, so its editor takes the run-each-file
+    # path -- which read a helper imported only on the pytest path, raised UnboundLocalError after
+    # the write, and so neither verified nor reverted it.
+    from harness import webedit
+    import shutil
+    d = tempfile.mkdtemp(prefix="webedit_nopytest_")
+    saved = sys.modules.get("pytest")
+    try:
+        os.makedirs(os.path.join(d, "tests"))
+        modp = os.path.join(d, "mod.py")
+        open(modp, "w").write("def add(a, b):\n    return a + b\n")
+        open(os.path.join(d, "tests", "test_mod.py"), "w").write(
+            "import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))\n"
+            "from mod import add\n"
+            "def test_add(): assert add(2, 3) == 5\n"
+            "if __name__ == '__main__':\n    test_add(); print('OK')\n")
+        sys.modules["pytest"] = None          # `import pytest` now raises ImportError
+        r = webedit.write_checked(d, "mod.py", "def add(a, b):\n    return a + b  # ok\n")
+        assert r["ok"] and r["tests"] and "# ok" in open(modp).read(), r
+        before = open(modp).read()
+        r = webedit.write_checked(d, "mod.py", "def add(a, b):\n    return a - b\n")
+        assert (not r["ok"]) and r["stage"] == "test" and r.get("reverted"), r
+        assert open(modp).read() == before
+    finally:
+        if saved is not None:
+            sys.modules["pytest"] = saved
+        else:
+            sys.modules.pop("pytest", None)
         shutil.rmtree(d, ignore_errors=True)
 
 def test_edit_crlf_preserved():
@@ -433,6 +465,53 @@ def test_execute_code_routes_recursion_guard_through_broker():
     assert "cannot be called" in out.split("DG:")[1], "delegate-via-RPC must be refused"
     assert [name for name, _args in brokered] == ["execute_code", "delegate"], (
         "nested amplification denials must traverse the auditable host broker")
+
+def test_execute_code_writes_its_script_as_utf8(monkeypatch):
+    # Python reads a source file as UTF-8; the script was written in the locale code page, so
+    # under 1252 a non-ASCII script failed to write and under 936 it was a SyntaxError.
+    import tempfile as _tf
+    from harness import progtool
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    assert all(ord(c) < 128 for c in progtool._PREAMBLE), "keep the preamble ASCII"
+    seen, real = [], _tf.NamedTemporaryFile
+
+    def recording(*a, **kw):
+        seen.append(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(progtool.tempfile, "NamedTemporaryFile", recording)
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    out = reg.get("execute_code").run({"code": '# 注释\nprint("ok 中文")', "timeout": 20},
+                                      _ctx(os.getcwd()))
+    assert "ok 中文" in out and seen and seen[-1].get("encoding") == "utf-8", (out, seen)
+
+def test_execute_code_survives_a_lone_surrogate_in_the_code():
+    # JSON can carry a lone "\ud83d"; writing it as UTF-8 raised out of run() and left an empty
+    # script file behind. It is written as its escape: the same code point in a string literal.
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    out = reg.get("execute_code").run({"code": 'print(len("a\ud83db"))', "timeout": 20},
+                                      _ctx(os.getcwd()))
+    assert out.strip() == "3", out
+
+def test_execute_code_prints_non_ascii_whatever_the_code_page():
+    # The host reads the script's pipes as UTF-8, and -I ignores PYTHONIOENCODING, so the script
+    # used the ANSI code page: "中文" came back as U+FFFD under 936 and raised
+    # UnicodeEncodeError under 1252 (a GitHub Windows runner's code page).
+    from harness.tools import default_registry
+    from harness.progtool import register_execute_code
+    reg = default_registry(web_search=False)
+    register_execute_code(reg)
+    out = reg.get("execute_code").run(
+        {"code": 'import sys\nprint("中文 café", sys.stdout.encoding)\n'
+                 'print("错误信息", file=sys.stderr)\nsys.exit(3)', "timeout": 20},
+        _ctx(os.getcwd()))
+    assert "中文 café utf-8" in out, out
+    assert "[exit 3] 错误信息" in out, out
 
 def test_execute_code_rpc_rejects_nonfinite_arguments_before_broker():
     from harness.tools import default_registry

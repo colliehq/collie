@@ -1134,7 +1134,7 @@ def _open_window_wsl(url, kiosk):
     try:
         from . import plat as _plat
         r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, text=True, timeout=25,
+                           capture_output=True, text=True, errors="replace", timeout=25,
                            **_plat.no_window_kwargs())
     except Exception as e:
         return False, "launch error: %s" % e
@@ -1206,6 +1206,14 @@ def cmd_update(args):
 
     print("collie %s   latest %s   (channel %s, installed via %s)"
           % (info["current"], info["latest"] or "?", info["channel"], info["kind"]))
+    expect = str(getattr(args, "expect", "") or "").strip().lstrip("vV")
+    if expect and (expect != info["latest"] or not info["newer"]):
+        # The desktop's Install button passes the version it showed. A release published since
+        # then is a different download than the one the person agreed to; ask again instead.
+        # Exit 0 is reserved for "installed or handed off", so this is never mistaken for one.
+        print("the latest release is %s, not the newer %s that was confirmed; nothing installed."
+              % (info["latest"] or "unknown", expect), file=sys.stderr)
+        return 3
     if not info["newer"]:
         print("already up to date." if info["latest"] else "no published release found.")
         return 0
@@ -1220,9 +1228,28 @@ def cmd_update(args):
 
     kind, assets = info["kind"], info["assets"]
     digests = info.get("digests") or {}
+    # One install at a time, however it was started (two terminals, the desktop card, a second
+    # web server): they would download to the same file and write the same bootstrap script.
+    from .supervisor import AlreadyRunning, InstanceLock
+    try:
+        update_lock = InstanceLock(os.path.join(os.path.expanduser("~"), ".collie", "update.lock"),
+                                   what="Another Collie update")
+    except AlreadyRunning as exc:
+        print("%s; nothing installed." % exc, file=sys.stderr)
+        return 4
+    try:
+        return _install_update(up, info, kind, assets, digests)
+    finally:
+        update_lock.close()
+
+
+def _install_update(up, info, kind, assets, digests):
+    """The download-verify-install half of cmd_update, run under its update lock."""
 
     def _fetch(name):
-        dest = os.path.join(tempfile.gettempdir(), name)
+        # A folder of its own: the lock ends when this process hands off, while Setup may still be
+        # about to run the file it verified -- a later download must never overwrite that file.
+        dest = os.path.join(tempfile.mkdtemp(prefix="collie-update-"), name)
         print("\n  downloading %s …" % name)
         last = [0]
 
@@ -1235,6 +1262,10 @@ def cmd_update(args):
         up._download(assets[name], dest, prog)
         return dest
 
+    if kind == "setup" and up.setup_running():
+        print("Collie Setup is already running; nothing installed. Try again when it finishes.",
+              file=sys.stderr)
+        return 4
     if kind == "brew":
         ok, why = up.apply_brew()
     elif kind == "setup":
@@ -1247,7 +1278,8 @@ def cmd_update(args):
         except Exception as e:
             print("download failed: %s" % e, file=sys.stderr)
             return 1
-        ok, why = up.apply_windows(exe, digests.get(name, ""), on_note=print)
+        ok, why = up.apply_windows(exe, digests.get(name, ""), on_note=print,
+                                   target_version=info["latest"])
     elif kind == "app":
         name = next((n for n in assets if n.endswith(".dmg")), "")
         if not name:
@@ -1438,10 +1470,11 @@ def _collie_procs():
         if plat.is_windows():
             # ps is absent in ordinary Windows installs (and a WSL ps cannot see native pythonw
             # processes). CIM is the native source of command lines, including windowless apps.
-            script = ("Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | "
-                      "ConvertTo-Json -Compress")
+            script = plat.PS_UTF8_OUTPUT + (
+                "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | "
+                "ConvertTo-Json -Compress")
             r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                               capture_output=True, text=True, timeout=15,
+                               capture_output=True, encoding="utf-8", errors="replace", timeout=15,
                                **plat.no_window_kwargs())
             if r.returncode != 0:
                 return []
@@ -1454,7 +1487,8 @@ def _collie_procs():
                         and _ours(cmd):
                     out.append((pid, cmd.strip()))
             return out
-        r = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True,
+                           errors="replace", timeout=10)
         for line in (r.stdout or "").splitlines()[1:]:
             pid, _, cmd = line.strip().partition(" ")
             if _ours(cmd) and "uninstall" not in cmd.lower() \
@@ -1471,7 +1505,7 @@ def _stop_collie_proc(pid):
         pid = int(pid)
         if plat.is_windows():
             r = subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"],
-                               capture_output=True, text=True, timeout=20,
+                               capture_output=True, text=True, errors="replace", timeout=20,
                                **plat.no_window_kwargs())
             if r.returncode != 0:
                 detail = (r.stderr or r.stdout or "taskkill failed").strip()
@@ -4182,6 +4216,18 @@ def cmd_jobs(args):
         elif args.action == "daemon":
             # colliejobd: catch up on start, then tick jobs plus model-driven
             # Missions on an interval (the Mission lane cannot delay reminders).
+            # One at a time. A supervisor restart leaves its children running, and the next one
+            # started another: two daemons ticking the same jobs.db is where the developer
+            # machine's "mission tick paused: database is locked" came from.
+            from .supervisor import AlreadyRunning, InstanceLock
+            try:
+                jobd_lock = InstanceLock(os.path.join(d, "jobd.lock"),
+                                         what="The Collie jobs daemon")
+            except AlreadyRunning as exc:
+                print("collie jobs daemon: %s; this copy is exiting." % exc, file=sys.stderr)
+                return 3
+            from .ops import OpsStore
+            jobd_ops = OpsStore(os.environ.get("COLLIE_OPS_DB") or os.path.join(d, "ops.db"))
             from .scheduler import Scheduler
             sched = Scheduler(acts, jobs, db_path=os.path.join(d, "jobs.db"))
             from . import settings as _mst
@@ -4200,15 +4246,32 @@ def cmd_jobs(args):
                         print("mission tick paused: %s" % msg)
                         last_mission_error[0] = msg
 
+
+            def _beat(now, mission_busy):
+                # What a supervisor started after this one adopts instead of starting a second.
+                # From the main lane, every tick: a Mission tick can take minutes, and a beat that
+                # waited for it would expire while this daemon is healthy and holds the lock.
+                jobd_ops.beat("jobs-daemon", "running",
+                              {"mission_busy": bool(mission_busy),
+                               "mission_error": last_mission_error[0][:200]},
+                              ttl=max(30.0, 3 * float(args.interval)))
+
             print("colliejobd: jobs + missions, catch-up + tick every %ss (Ctrl-C to stop)"
                   % args.interval)
             try:
-                sched.serve(interval=float(args.interval), extra_tick=_mission_tick)
+                sched.serve(interval=float(args.interval), extra_tick=_mission_tick,
+                            heartbeat=_beat)
             except KeyboardInterrupt:
                 print("\ncolliejobd stopped")
             finally:
                 msvc.close()
                 sched.close()
+                try:
+                    jobd_ops.beat("jobs-daemon", "stopped", {}, ttl=30)
+                except Exception:
+                    pass
+                jobd_ops.close()
+                jobd_lock.close()
         elif args.action == "receipts":
             rows = acts.receipts(args.text or None)
             if not rows:
@@ -5522,6 +5585,8 @@ def main(argv=None):
     pup.add_argument("--channel", choices=["stable", "beta"], default=None,
                      help="stable excludes prereleases; beta includes them (default: stable)")
     pup.add_argument("--yes", action="store_true", help="install it, not just report it")
+    pup.add_argument("--expect", default="", metavar="VERSION",
+                     help="install only if the latest release is still exactly this version")
     pup.set_defaults(fn=cmd_update)
 
     pu = sub.add_parser("uninstall", help="remove collie: the app bundle, ~/.collie, and the "

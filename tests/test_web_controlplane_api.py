@@ -961,3 +961,62 @@ def test_activity_ui_and_auto_model_contracts():
     assert "confirmed: true" in page and "PRIVATE" not in page
     assert "Auto — Collie chooses per task" in page
     assert "entry.auto ? { auto: true }" in page
+
+
+def test_health_probes_the_port_this_server_is_listening_on(web_server, monkeypatch):
+    """A server that moved off 8787 (it was taken) must not report itself unreachable."""
+    from harness import ops
+    base, token, _ = web_server
+    port = int(base.rsplit(":", 1)[1])
+    probed = []
+    real_urlopen = ops.urllib.request.urlopen
+
+    def recording(url, *args, **kwargs):
+        target = url if isinstance(url, str) else url.full_url
+        probed.append(target)
+        if target.startswith("http://127.0.0.1:8787/"):
+            raise OSError("nothing listens on the default port in this test")
+        return real_urlopen(url, *args, **kwargs)
+
+    monkeypatch.setattr(ops.urllib.request, "urlopen", recording)
+    code, report = _json(base + "/api/healthz?token=" + token)
+    assert code == 200
+    assert "http://127.0.0.1:%d/api/ver" % port in probed
+    assert report["services"]["web"]["ok"] is True
+
+
+def test_public_health_passes_reason_codes_and_nothing_else():
+    from harness.webapp import _public_health
+    report = _public_health({"ok": False, "status": "degraded", "reasons": [
+        {"code": "login_missing", "subject": "codex-oauth", "action": "run `codex login`",
+         "private": "must not cross"},
+        {"code": "slack_needs_review", "subject": "slack", "count": 3, "text": "secret task"},
+        {"code": 7}, "not a row"],
+        "credentials": [{"name": "claude-oauth", "state": "missing", "needed": False}],
+        "supervised": False})
+    assert report["reasons"] == [
+        {"code": "login_missing", "subject": "codex-oauth", "action": "run `codex login`"},
+        {"code": "slack_needs_review", "subject": "slack", "count": 3}]
+    assert report["credentials"][0]["needed"] is False
+    assert report["supervised"] is False
+    assert "must not cross" not in json.dumps(report) and "secret task" not in json.dumps(report)
+
+
+def test_an_early_refusal_still_reaches_a_client_sending_a_large_body(web_server):
+    """A 403 answered before the body was read must arrive as a 403, not a reset connection."""
+    import http.client
+    base, _token, _ = web_server
+    host, port = base.rsplit("/", 1)[-1].split(":")
+    body = b'{"action":"x","pad":"' + b"a" * (1024 * 1024) + b'"}'
+    statuses = []
+    for _ in range(8):
+        conn = http.client.HTTPConnection(host, int(port), timeout=15)
+        try:
+            conn.request("POST", "/api/doctor/repair", body=body,
+                         headers={"Content-Type": "application/json"})
+            statuses.append(conn.getresponse().status)
+        except (ConnectionError, OSError) as exc:
+            statuses.append(type(exc).__name__)
+        finally:
+            conn.close()
+    assert statuses == [403] * 8

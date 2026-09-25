@@ -87,17 +87,21 @@ def _run_tests(cwd: str, tests: list[str]) -> tuple[int, str]:
         have_pytest = True
     except Exception:
         have_pytest = False
+    # Imported ahead of the branch: both paths need it, and the one without pytest (the desktop
+    # install's bundled Python has none) used to reach it unbound.
+    from . import plat as _plat
     try:
         if have_pytest:
-            from . import plat as _plat
             p = subprocess.run([sys.executable, "-m", "pytest", "-q", *tests], cwd=cwd, env=env,
-                               capture_output=True, text=True, timeout=_TEST_TIMEOUT,
+                               capture_output=True, text=True,
+                               errors="replace", timeout=_TEST_TIMEOUT,
                                **_plat.no_window_kwargs())
             return p.returncode, (p.stdout + p.stderr)
         out, rc = "", 0
         for t in tests:
             p = subprocess.run([sys.executable, t], cwd=cwd, env=env, **_plat.no_window_kwargs(),
-                               capture_output=True, text=True, timeout=_TEST_TIMEOUT)
+                               capture_output=True, text=True,
+                               errors="replace", timeout=_TEST_TIMEOUT)
             out += "$ %s\n%s%s\n" % (os.path.relpath(t, cwd), p.stdout, p.stderr)
             rc = rc or p.returncode
         return rc, out

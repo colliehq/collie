@@ -289,8 +289,22 @@ async function main() {
   {
     // Two requests, same id, in flight together. The whole reason the ledger is a Durable Object
     // and not KV: with KV both read "nothing sent yet" and the owner is mailed twice.
-    const ctx = await fixture();
-    const [a, b] = await Promise.all([postSend(ctx, note()), postSend(ctx, note())]);
+    // The first send is held inside the mail binding until the second has been answered, so the
+    // two really overlap: left to Promise.all, a slow machine finished the first before the second
+    // arrived, and the second was (correctly) a 200 replay rather than a 202.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const ctx = await fixture({ mailer: fakeMailer(async (_m, n) => {
+      if (n === 1) await held;
+      return { messageId: "cf-" + n };
+    }) });
+    const pending = postSend(ctx, note());
+    for (let i = 0; i < 1000 && ctx.mailer.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const b = await postSend(ctx, note());
+    release();
+    const a = await pending;
     const codes = [a.status, b.status].sort();
     check(ctx.mailer.calls.length === 1,
           "two concurrent sends of one request id call the mail binding exactly once");

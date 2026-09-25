@@ -228,7 +228,7 @@ def test_a_denied_synthesis_is_not_retried_into_a_repair_loop(tmp_path):
 def test_a_denied_critic_review_costs_nothing_and_opens_no_repair_round(tmp_path, monkeypatch):
     """The reviewer never reviewed. Its error text is not a finding to argue with, and the
     reservation it was refused is not a model call."""
-    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd: "diff --git a/r.txt b/r.txt\n")
+    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd, **_kw: "diff --git a/r.txt b/r.txt\n")
     path = str(tmp_path / "r.txt")
     main = _ScriptProvider([
         Completion(tool_calls=[ToolCall("w1", "write_file", {"path": path, "content": "x\n"})],
@@ -254,7 +254,7 @@ def test_a_denied_critic_review_costs_nothing_and_opens_no_repair_round(tmp_path
 
 def test_a_reviewer_that_did_answer_is_still_billed_and_still_blocks(tmp_path, monkeypatch):
     """Control for the test above: the critic path itself is unchanged when it really runs."""
-    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd: "diff --git a/r.txt b/r.txt\n")
+    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd, **_kw: "diff --git a/r.txt b/r.txt\n")
     path = str(tmp_path / "r.txt")
     main = _ScriptProvider([
         Completion(tool_calls=[ToolCall("w1", "write_file", {"path": path, "content": "x\n"})],

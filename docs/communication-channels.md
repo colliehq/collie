@@ -1,8 +1,10 @@
 # Email and phone
 
-Open **Settings → App connections → Email & phone** in the desktop app, or visit
-`/communications` in its web interface. An account is optional: local tasks and the
-Daily Brief work without one.
+Open **Inbox** in the desktop sidebar (also reachable from **Settings → App connections →
+Email & phone**), or visit `/communications` in its web interface. The badge on Inbox counts
+what is waiting on you: messages to decide on, drafts to review on a connection that does not
+send them automatically, and deliveries whose outcome needs checking. An account is optional:
+local tasks and the Daily Brief work without one.
 The desktop starts as **Collie**; an optional display name lives in Settings and
 does not determine your email address or phone number.
 

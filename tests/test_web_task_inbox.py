@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -485,6 +486,19 @@ def test_steer_adapter_acknowledges_only_durable_acceptance(web):
 
 # ------------------------------------------------------- deletion and recovery
 
+def _once_the_lock_is_released(call, seconds=10):
+    """Repeat `call` while it is refused as still running. Windows releases a dead process's
+    byte-range locks "depending upon available system resources" (LockFileEx), not at exit: under a
+    loaded full-suite run the first request after wait() still met the lock and was (rightly)
+    refused."""
+    deadline = time.monotonic() + seconds
+    while True:
+        code, body = call()
+        if code != 409 or time.monotonic() > deadline:
+            return code, body
+        time.sleep(0.2)
+
+
 def _hold_lease_in_another_process(state, session):
     """A second process that really owns the session, until we stop it."""
     code = (
@@ -525,7 +539,8 @@ def test_delete_refuses_an_owned_session_and_never_silently_drops_pending_work(w
     finally:
         child.terminate(); child.wait(timeout=30)
 
-    code, gone = _get(base, token, "/api/delete/" + sid + "?discard_pending=1")
+    code, gone = _once_the_lock_is_released(
+        lambda: _get(base, token, "/api/delete/" + sid + "?discard_pending=1"))
     assert code == 200 and gone["ok"] is True and gone["canceled"] == ["keep-me"]
     assert sessions.load(sid) is None
     # Discarded means cancelled and recorded, not vanished.
@@ -552,8 +567,9 @@ def test_recovery_reconcile_refuses_while_another_process_owns_the_session(web):
     finally:
         child.terminate(); child.wait(timeout=30)
 
-    code, done = _post(base, token, "/api/recovery/reconcile", {
-        "session": sid, "resolution": "cancel", "confirmed": True})
+    code, done = _once_the_lock_is_released(lambda: _post(
+        base, token, "/api/recovery/reconcile",
+        {"session": sid, "resolution": "cancel", "confirmed": True}))
     assert code == 200 and done["ok"] is True
 
 

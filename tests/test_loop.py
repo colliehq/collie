@@ -252,7 +252,7 @@ def test_successful_critic_review_allows_completion(monkeypatch):
     from harness.providers import Completion, ToolCall
 
     reviews = []
-    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd: "diff --git a/result.txt b/result.txt\n")
+    monkeypatch.setattr(loop, "_tree_diff", lambda _cwd, **_kw: "diff --git a/result.txt b/result.txt\n")
     with tempfile.TemporaryDirectory(prefix="critic_success_") as cwd:
         path = os.path.join(cwd, "result.txt")
         h = make_harness(cwd, provider="mock", project="critic_success", embed="hash")
@@ -757,6 +757,8 @@ def test_loop_overflow_exactly_once():
     res = h.run("ovf2", "go")
     assert res.error.startswith("overflow:"), res.error
     assert p.calls == 2, "recover ONCE then give up (1 original + 1 retry): %d" % p.calls
+    assert "still too long after it was shrunk once" in res.error, res.error
+    assert "no known pattern" not in res.error, "an overflow is a recognised failure"
 
 def test_loop_overflow_env_off():
     from harness.cli import make_harness
@@ -772,6 +774,7 @@ def test_loop_overflow_env_off():
         res = h.run("ovf_off", "go")
         assert p.calls == 1, "recovery OFF -> no retry: %d" % p.calls
         assert res.error, "overflow with recovery off must fail"
+        assert "overflow recovery is off" in res.error, res.error
     finally:
         if old is None: os.environ.pop("COLLIE_OVERFLOW_RECOVERY", None)
         else: os.environ["COLLIE_OVERFLOW_RECOVERY"] = old

@@ -18,8 +18,9 @@ sessions beyond --max-chunks are sampled evenly (first/last always kept).
 Design rules (agreed 2026-07-14):
   * distill first — raw turns retrieve worse and cost more (the Mem0/LOCOMO lesson,
     see distill.py);
-  * redact BEFORE store — transcripts are full of plaintext keys; memories must hold
-    {{SECRET:…}} placeholders, never credentials (harness/redact.py patterns);
+  * redact BEFORE store — transcripts are full of plaintext keys; facts are redacted
+    (harness/redact.py patterns) and the memory store then refuses any fact that still
+    carries a secret, a {{SECRET:…}} placeholder included, so such a fact is dropped;
   * explicit opt-in, incremental afterwards — a state file skips already-imported
     sessions, so a cron `collie mem import` only pays for what's new;
   * provenance — every fact's keys carry `import src:<cc|codex> sid:<id8>`, so a bad
@@ -581,14 +582,14 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
         src, path, mt = item
         sess = parsers[src](path)
         if not sess:
-            return (path, mt, None, [])
+            return (src, path, mt, None, [])
         if SKIP_TITLE_RE.search(sess.get("title") or ""):
-            return (path, mt, "low-value", [])     # templated chore — no distiller call
+            return (src, path, mt, "low-value", [])     # templated chore — no distiller call
         facts = heuristic_facts(sess) if no_llm else \
             _distiller().session_facts(chunk_turns(sess["turns"], max_chunks))
-        return (path, mt, sess, facts)
+        return (src, path, mt, sess, facts)
 
-    def _consume(path, mt, sess, facts):
+    def _consume(src, path, mt, sess, facts):
         if sess is None or sess == "low-value":
             if sess == "low-value":
                 stats["lowvalue"] += 1
@@ -601,8 +602,9 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
             red = _redact.redact(fact, {})     # vault discarded — memories keep placeholders only
             if red != fact:
                 stats["redacted"] += 1
-            keys = "import src:%s sid:%s %s" % (
-                "cc" if "/.claude/" in str(path) else "codex", sess["sid"][:8], sess["title"][:60])
+            # The source the file was discovered under, not a guess from its path: "/.claude/"
+            # is never in a Windows path, so every Claude Code session was filed as codex.
+            keys = "import src:%s sid:%s %s" % (src, sess["sid"][:8], sess["title"][:60])
             if dry_run:
                 log("  would store: %s" % red[:140])
             # created_at = the session file's mtime: recency weighting must see when the

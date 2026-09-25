@@ -324,6 +324,14 @@ SCHEMA = [
     {"group": "Remote", "key": "REMOTE", "label": "Phone remote access", "label_zh": "手机远程访问", "type": "bool", "default": "off",
      "hint": "Let your phone drive this Collie from anywhere, via the relay. When on, remote starts automatically whenever Collie's web server runs — manage paired devices on the /remote panel. Off cuts all remote access.",
      "hint_zh": "让手机在任何地方通过 relay 控制这台 Collie。开启后，每次 Collie 的 web 服务启动都会自动开远程；在 /remote 面板管理已配对设备。关闭即切断所有远程访问。"},
+
+    {"group": "Updates", "key": "UPDATE_CHECK", "label": "Check for updates automatically",
+     "label_zh": "自动检查更新", "type": "bool", "default": "off",
+     "hint": "About once a day, ask GitHub (api.github.com) whether a newer Collie release exists and "
+             "show it here. Only the request itself is sent; nothing about you or your work. Off: "
+             "Collie checks only when you press Check for updates. Installing always waits for you.",
+     "hint_zh": "大约每天一次向 GitHub（api.github.com）询问是否有更新的 Collie 版本，并显示在这里。"
+                "只发送这次查询本身，不含你或你工作的任何信息。关闭时只在你按「检查更新」时查询。安装永远等你确认。"},
 ]
 # ---- panel localization (zh) ----------------------------------------------------------------
 # label/hint translations applied onto SCHEMA at import; the GUI picks label_zh/hint_zh when the

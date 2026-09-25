@@ -328,3 +328,47 @@ def test_landing_rate_limit_uses_secret_keyed_daily_bucket_and_fails_closed():
     assert 'idFromName(bucket)' in script
     assert 'idFromName(`${day}:${ip}`)' not in script
     assert 'request.headers.get("CF-Connecting-IP") || "unknown"' not in script
+
+
+_EXT_DIR = ROOT / "harness" / "browser_ext"
+_EXT_LOCK = ROOT / "tests" / "extension_release_lock.json"
+
+
+def _extension_digest() -> str:
+    """What ships in the extension, independent of line endings and of the version field itself."""
+    h = hashlib.sha256()
+    for path in sorted(_EXT_DIR.rglob("*")):
+        if not path.is_file() or path.name in ("token.txt", "STORE_RELEASE.md"):
+            continue
+        raw = path.read_bytes()
+        if path.suffix == ".json":
+            value = json.loads(raw.decode("utf-8"))
+            value.pop("version", None)
+            raw = json.dumps(value, sort_keys=True).encode("utf-8")
+        elif path.suffix in (".js", ".html", ".css"):
+            raw = raw.replace(b"\r\n", b"\n")
+        h.update(path.relative_to(_EXT_DIR).as_posix().encode("utf-8") + b"\0" + raw + b"\0")
+    return h.hexdigest()
+
+
+def test_the_extension_version_moves_whenever_the_extension_changes():
+    """Chrome identifies a stale unpacked extension only by the version it reports. From Collie 0.24
+    to 0.29.1 the extension changed many times at version 4.0, so a browser still running the old
+    copy looked current to `collie doctor` and to health. Change the extension, bump its version."""
+    power = json.loads((_EXT_DIR / "manifest.json").read_text(encoding="utf-8"))["version"]
+    store = json.loads((_EXT_DIR / "manifest.store.json").read_text(encoding="utf-8"))["version"]
+    assert power == store, f"manifest.json is {power} but manifest.store.json is {store}"
+    lock = json.loads(_EXT_LOCK.read_text(encoding="utf-8"))
+    digest = _extension_digest()
+    if digest == lock["sha256"]:
+        assert power == lock["version"], (
+            f"the extension files are unchanged since {lock['version']} but the manifests say "
+            f"{power}; set {_EXT_LOCK.name} version to {power}")
+        return
+    assert power != lock["version"], (
+        f"the browser extension changed but its version is still {power}: bump \"version\" in "
+        f"manifest.json and manifest.store.json, then set {_EXT_LOCK.name} to "
+        f'{{"version": "<new>", "sha256": "{digest}"}}')
+    raise AssertionError(
+        f"the extension is now {power}; record it: set {_EXT_LOCK.name} to "
+        f'{{"version": "{power}", "sha256": "{digest}"}}')

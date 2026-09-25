@@ -534,9 +534,11 @@ class ClaudeAgentSdkProvider(ModelProvider):
         # and nothing here claims parallel disk I/O.  A parent enables it for a
         # controlled experiment with
         # ``ClaudeAgentSdkProvider(..., read_batch=True)`` (see
-        # ``harness/providers.py`` for the envelope contract); the default stays
-        # off until a recorded comparison decides whether fewer turns actually
-        # beat the extra refusal surface.
+        # ``harness/providers.py`` for the envelope contract). The default stays
+        # off: the recorded comparison (bench/experiments/2026-09-24-read-batch,
+        # 12 real runs) found 24% fewer model calls but no faster runs, and two
+        # of six `on` runs ended on "SDK emitted more than one Assistant message
+        # id" while every `off` run passed.
         self.read_batch = bool(read_batch)
         self._process_condition = threading.Condition(threading.RLock())
         self._active_runs: dict[str, dict] = {}

@@ -29,7 +29,7 @@ def _command_version(path: str, timeout: float = 5.0) -> dict:
         return {"path": "", "version": "", "ok": False, "error": "not found on PATH"}
     try:
         result = subprocess.run(
-            [path, "--version"], capture_output=True, text=True, timeout=timeout,
+            [path, "--version"], capture_output=True, text=True, errors="replace", timeout=timeout,
             stdin=subprocess.DEVNULL, **plat.no_window_kwargs())
         output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
         return {"path": os.path.abspath(path), "version": _version(output),
@@ -41,6 +41,9 @@ def _command_version(path: str, timeout: float = 5.0) -> dict:
 
 
 def _get_json(url: str, timeout: float = 1.0) -> dict:
+    from .httpserver import loopback_url_down
+    if loopback_url_down(url):
+        return {}
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             value = json.loads(response.read(65536) or b"{}")
@@ -75,7 +78,8 @@ def report(state_root: str | None = None, *, probe_services: bool = True,
     now = float(time.time() if now is None else now)
     root = state_dir(state_root)
     active = _command_version(shutil.which("collie") or "")
-    bridge = _get_json("http://127.0.0.1:8677/health") if probe_services else {}
+    bridge = _get_json("http://127.0.0.1:%s/health" % (
+        os.environ.get("COLLIE_BROWSER_BRIDGE_PORT") or 8677)) if probe_services else {}
     shipped_extension = _shipped_extension_version()
     loaded_extension = str(bridge.get("extension_version") or "")
     runtime = {
