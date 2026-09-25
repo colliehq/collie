@@ -1,7 +1,16 @@
 # Changelog
 
-## v0.30.1 — Updates that finish, and desktop clicks on the element you named
+## v0.30.1 — Windows updates that run and finish, and desktop clicks on the element you named
 
+- Run Windows updates at all on Western and Central European Windows. The update script was saved
+  as UTF-8 without a byte-order mark, which Windows PowerShell reads in the ANSI code page. There
+  (1252, 1250) the last byte of its one em dash is a closing curly quote, PowerShell ended the
+  string there, and the script failed to parse. Since 0.20.31, `collie update --yes` on an
+  installer copy reported the update as handed off, Setup never started, and Collie stayed on the
+  old version on those machines. Every script Collie writes for PowerShell now carries the
+  mark, so non-ASCII paths such as `C:\Users\José` read back
+  intact as well. The running version writes the script, so on those machines install 0.30.1
+  once by running Collie-Setup.exe from the release page; later updates install themselves.
 - Finish the Windows update script. It waited for the installer with `Start-Process -Wait`, which
   in Windows PowerShell also waits for every process the installer leaves running, and the
   installer starts the supervisor. Since 0.21.23 the script therefore never got past the install:

@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from harness import update as up
+from harness import plat, update as up
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell bootstrap")
 
@@ -59,8 +59,10 @@ def test_bootstrap_does_not_wait_for_what_the_installer_leaves_running(tmp_path)
                       '"[collie-update] PROBE STARTED"'),
     ])
     script = tmp_path / "bootstrap.ps1"
-    script.write_text(up._BOOTSTRAP.format(pid=gone.pid, exe=str(installer), root=str(root),
-                                           log=str(log), restarts=restarts), encoding="utf-8")
+    # Written the way apply_windows writes it: without the UTF-8 mark, Windows PowerShell on a
+    # 1252 machine (the CI runner) reads the file in ANSI and the script does not parse at all.
+    plat.write_ps1(str(script), up._BOOTSTRAP.format(pid=gone.pid, exe=str(installer), root=str(root),
+                                                     log=str(log), restarts=restarts))
     listener = _bridge_port_up()
     try:
         started = time.time()

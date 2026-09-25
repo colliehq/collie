@@ -646,7 +646,7 @@ $p.WaitForExit()
 "[collie-update] installer exit code: $($p.ExitCode)"
 $dl = Split-Path -Parent "{exe}"
 if ((Split-Path -Leaf $dl) -like 'collie-update-*') {{ Remove-Item -LiteralPath $dl -Recurse -Force -ErrorAction SilentlyContinue }}
-if ($p.ExitCode -ne 0) {{ "[collie-update] installer FAILED — not restarting anything"; Stop-Transcript | Out-Null; exit $p.ExitCode }}
+if ($p.ExitCode -ne 0) {{ "[collie-update] installer FAILED - not restarting anything"; Stop-Transcript | Out-Null; exit $p.ExitCode }}
 $pyw = "{root}\python\pythonw.exe"
 if (-not (Test-Path $pyw)) {{ "[collie-update] no pythonw at $pyw"; Stop-Transcript | Out-Null; exit 1 }}
 function Up-Lines($pattern) {{
@@ -800,9 +800,7 @@ def apply_windows(exe, digest, on_note=print, target_version=""):
     restarts = "\n".join(line for line in (_restart_script(p, root) for p in ordered) if line) or \
         '"[collie-update] nothing was running; not starting anything"'
     script = _BOOTSTRAP.format(pid=os.getpid(), exe=exe, root=root, log=log, restarts=restarts)
-    sp = os.path.join(tempfile.gettempdir(), "collie-update.ps1")
-    with open(sp, "w", encoding="utf-8") as f:
-        f.write(script)
+    sp = plat.write_ps1(os.path.join(tempfile.gettempdir(), "collie-update.ps1"), script)
 
     # CREATE_NO_WINDOW ALONE. Not DETACHED_PROCESS: a detached console application gets no console
     # at all, and powershell.exe then exits without running a line — while Popen returns a healthy

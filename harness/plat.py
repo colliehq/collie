@@ -145,6 +145,28 @@ def pid_alive(pid) -> bool:
 PS_UTF8_OUTPUT = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
 
 
+def write_ps1(path: str, text: str) -> str:
+    """Write a PowerShell script so Windows PowerShell 5.1 reads back exactly `text`; returns path.
+
+    5.1 decodes a .ps1 that has no byte-order mark in the ANSI code page. The update script was
+    written as UTF-8 without one, and its single em dash is E2 80 94: on Western and Central
+    European Windows (1252, 1250) 0x94 is a closing curly quote, which PowerShell takes as the end
+    of the string, so the script failed to parse and no update since 0.20.31 ever started Setup there.
+    With the mark it is read as UTF-8 on every code page, and so are paths like C:\\Users\\José
+    that get written into it. Left alone when it already holds these bytes.
+    """
+    data = b"\xef\xbb\xbf" + text.encode("utf-8")
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return path
+    except OSError:
+        pass
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
 def no_window_kwargs() -> dict:
     """Popen kwargs that keep a child from flashing a console window.
 

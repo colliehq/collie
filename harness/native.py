@@ -434,17 +434,8 @@ Write-Output ($out | ConvertTo-Json -Depth 6 -Compress)
 
 def _ensure_driver():
     os.makedirs(COLLIE_DIR, exist_ok=True)
-    # rewrite if missing or stale (content drift), so upgrades take effect
-    try:
-        if os.path.exists(_DRIVER):
-            with open(_DRIVER, "r", encoding="utf-8") as f:
-                if f.read() == _DRIVER_PS:
-                    return _DRIVER
-    except OSError:
-        pass
-    with open(_DRIVER, "w", encoding="utf-8") as f:
-        f.write(_DRIVER_PS)
-    return _DRIVER
+    # rewritten if missing or stale (content drift), so upgrades take effect
+    return plat.write_ps1(_DRIVER, _DRIVER_PS)
 
 
 def available():
