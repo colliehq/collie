@@ -23,7 +23,10 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # 90, not 60: the Windows job takes 43 to 55 minutes, and on a slow runner it was cancelled at
+    # the cap with the suite at 97% and nothing failing (2026-09-25). A test that stalls still has
+    # its stacks dumped after 120 s (faulthandler_timeout in pytest.ini).
+    timeout-minutes: 90
     strategy:
       fail-fast: false          # one OS failing must not hide the status of the others
       matrix:
