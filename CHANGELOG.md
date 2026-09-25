@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.30.1 — Updates that finish, and desktop clicks on the element you named
+
+- Finish the Windows update script. It waited for the installer with `Start-Process -Wait`, which
+  in Windows PowerShell also waits for every process the installer leaves running, and the
+  installer starts the supervisor. Since 0.21.23 the script therefore never got past the install:
+  it logged no exit code, restarted nothing, and stayed asleep until the next update's installer
+  closed that supervisor, then started the old runtime again in the middle of that install. It
+  now waits for Setup itself, and the installer stops scripts left asleep by older versions before
+  it closes anything. After an update each piece is started only if it is not already running:
+  the supervisor brings back the browser bridge and the Slack dogs, and a second copy beside them
+  fought over the port or the per-dog lock.
+- Make desktop control act on the element you named. With an automation id, the second of two
+  matching buttons (`occurrence: 1`) used to be the first one, and a name given with the id was
+  ignored. On chrome://extensions that removed the wrong extension. Every selector given must now
+  hold. An index from `desktop_inspect` passed with a name or control type is checked before
+  anything is done, because apps rebuild their accessibility tree between calls; if the element
+  there has changed, the call is refused and says what is there now.
+- Remove each update's download once nothing will run it. Since 0.30.0 every update left its
+  installer (about 140 MB) or disk image (about 270 MB) in a new temporary folder.
+
 ## v0.30.0 — Updates on the desktop, the inbox in the sidebar, and health you can act on
 
 - Show new Collie releases on the desktop. Settings → General → Updates checks GitHub when you
