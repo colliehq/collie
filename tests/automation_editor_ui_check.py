@@ -186,8 +186,15 @@ def main():
               "trigger fields the form does not show survive the edit")
 
         # Saving reloads the panel, which closes the editor. Reopen it to edit the new field.
-        check(pg.eval_on_selector_all(".control-editor", "els => els.length") == 0,
-              "a saved editor closes with the panel reload")
+        # save() returns on the upsert response and the reload comes after it, so wait for the
+        # close: counting at once failed on a slow Ubuntu runner (PR #16) with nothing wrong.
+        try:
+            pg.wait_for_function("document.querySelectorAll('.control-editor').length === 0",
+                                 timeout=10000)
+            closed = True
+        except Exception:
+            closed = False
+        check(closed, "a saved editor closes with the panel reload")
         edit(pg, "nightly-notes")
         pg.fill("#autoActions", "250")
         check(save(pg, answers), "an edited action budget is accepted by the store")
