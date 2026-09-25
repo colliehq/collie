@@ -421,19 +421,49 @@ def test_the_cli_refuses_while_collie_setup_is_already_running(monkeypatch, tmp_
     assert "Collie Setup is already running" in capsys.readouterr().err
 
 
-def test_each_download_gets_its_own_folder(monkeypatch, tmp_path):
-    from harness import cli
+def _fake_release(monkeypatch, tmp_path, kind="setup", asset="Collie-Setup.exe"):
+    import tempfile
     monkeypatch.setenv("USERPROFILE", str(tmp_path)); monkeypatch.setenv("HOME", str(tmp_path))
+    # Downloads go to tempfile's folder: without this, every run left two in the real %TEMP%.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(update, "check", lambda channel: {
         "current": "0.29.1", "latest": "0.30.0", "newer": True, "channel": "stable",
-        "kind": "setup", "notes": "", "url": "", "assets": {"Collie-Setup.exe": "x"}, "digests": {}})
+        "kind": kind, "notes": "", "url": "", "assets": {asset: "x"}, "digests": {}})
     monkeypatch.setattr(update, "setup_running", lambda: False)
     dests = []
-    monkeypatch.setattr(update, "_download", lambda url, dest, progress=None: dests.append(dest))
+
+    def download(url, dest, progress=None):
+        open(dest, "wb").close()
+        dests.append(dest)
+    monkeypatch.setattr(update, "_download", download)
+    return dests
+
+
+def test_each_download_gets_its_own_folder(monkeypatch, tmp_path):
+    from harness import cli
+    dests = _fake_release(monkeypatch, tmp_path)
     monkeypatch.setattr(update, "apply_windows", lambda *a, **k: (False, "stop here"))
     cli.cmd_update(_cli_args()); cli.cmd_update(_cli_args())
     assert len(dests) == 2 and dests[0] != dests[1]
     assert all(os.path.basename(d) == "Collie-Setup.exe" for d in dests)
+
+
+def test_a_download_is_removed_once_nothing_will_run_it(monkeypatch, tmp_path):
+    from harness import cli
+    dests = _fake_release(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "apply_windows", lambda *a, **k: (False, "digest mismatch"))
+    cli.cmd_update(_cli_args())
+    assert not os.path.exists(os.path.dirname(dests[0])), "a refused installer stays on disk"
+
+    # Handed off: the update script runs it later, and removes it itself.
+    monkeypatch.setattr(update, "apply_windows", lambda *a, **k: (True, "handed off"))
+    cli.cmd_update(_cli_args())
+    assert os.path.exists(dests[1])
+
+    dests = _fake_release(monkeypatch, tmp_path, kind="app", asset="Collie-arm64.dmg")
+    monkeypatch.setattr(update, "apply_macos", lambda *a, **k: (True, "replaced"))
+    cli.cmd_update(_cli_args())
+    assert not os.path.exists(os.path.dirname(dests[0])), "the disk image is not needed again"
 
 
 def test_setup_running_reads_the_process_list(monkeypatch):

@@ -169,7 +169,10 @@ def test_update_bootstrap_waits_installs_and_refuses_to_restart_after_a_failure(
     s = up._BOOTSTRAP.format(pid=4242, exe="C:\\x\\setup.exe", root="C:\\r",
                              log="C:\\l.log", restarts='"noop"')
     assert "Get-Process -Id 4242" in s, "it must wait for the caller to exit before installing"
-    assert "-Wait" in s, "it must wait for the installer, or it restarts Collie mid-install"
+    launch = next(l for l in s.splitlines() if "Start-Process" in l and "setup.exe" in l)
+    assert "$p.WaitForExit()" in s, "it must wait for the installer, or it restarts Collie mid-install"
+    assert "-Wait" not in launch, \
+        "Start-Process -Wait also waits for the supervisor the installer starts, i.e. forever"
     assert "installer exit code" in s, "the installer's exit code has to be recorded somewhere"
     assert "not restarting anything" in s, \
         "a failed install must not be followed by a restart that hides it"
@@ -208,6 +211,8 @@ def test_update_inventory_and_restart_include_live_slack_listener():
         parts = up.running_parts(root)
     finally:
         up.subprocess.run, up.os.path.expanduser = real_run, real_expand
+        import shutil
+        shutil.rmtree(home, ignore_errors=True)
     assert "slack:slack-cornetto.pyw" in parts, \
         "the active bundled Slack launcher must survive installer process teardown"
     restart = up._restart_script("slack:slack-cornetto.pyw", root)

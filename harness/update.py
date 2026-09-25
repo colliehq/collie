@@ -615,39 +615,90 @@ def running_parts(root):
 
 # Runs AFTER collie has exited. PowerShell, not python: the only interpreter guaranteed to exist
 # outside the directory the installer is about to overwrite.
+#
+# The installer is waited for with WaitForExit, NOT `Start-Process -Wait`. Windows PowerShell's -Wait
+# waits for the process and every descendant, and the installer itself starts the supervisor (its
+# last [Run] step, nowait), which never exits. So from 0.21.23 to 0.30.0 this script never got past
+# the installer: no exit code logged, no restart, and the script stayed asleep. The next update's
+# installer then closed that supervisor and woke the old script, which started the wallpaper,
+# supervisor and bridge again while the new installer was still replacing their files.
+# Older copies of this script are stopped first for that reason (only ones over 15 minutes old: a
+# live update is done well before that).
+#
+# After the install, each piece is started only if it is not already up. The installer brings back
+# the supervisor, and the supervisor brings back the bridge and the Slack dogs. A second bridge or
+# dog launched beside them fights over the port or the per-dog lock (the false circuit-open alarm).
 _BOOTSTRAP = r'''
 $ErrorActionPreference = "Continue"
 Start-Transcript -Path "{log}" -Append | Out-Null
+Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+  Where-Object {{ $_.ProcessId -ne $PID -and ([string]$_.CommandLine) -match 'collie-update\.ps1' -and $_.CreationDate -lt (Get-Date).AddMinutes(-15) }} |
+  ForEach-Object {{ "[collie-update] stopping an earlier update's script (pid $($_.ProcessId)), still waiting on its installer"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
 "[collie-update] waiting for pid {pid} to exit"
 for ($i = 0; $i -lt 120; $i++) {{
   if (-not (Get-Process -Id {pid} -ErrorAction SilentlyContinue)) {{ break }}
   Start-Sleep -Milliseconds 500
 }}
 "[collie-update] running the installer"
-$p = Start-Process -FilePath "{exe}" -ArgumentList "/SILENT","/NORESTART","/SUPPRESSMSGBOXES" -Wait -PassThru
+$p = Start-Process -FilePath "{exe}" -ArgumentList "/SILENT","/NORESTART","/SUPPRESSMSGBOXES" -PassThru
+$null = $p.Handle
+$p.WaitForExit()
 "[collie-update] installer exit code: $($p.ExitCode)"
+$dl = Split-Path -Parent "{exe}"
+if ((Split-Path -Leaf $dl) -like 'collie-update-*') {{ Remove-Item -LiteralPath $dl -Recurse -Force -ErrorAction SilentlyContinue }}
 if ($p.ExitCode -ne 0) {{ "[collie-update] installer FAILED — not restarting anything"; Stop-Transcript | Out-Null; exit $p.ExitCode }}
 $pyw = "{root}\python\pythonw.exe"
 if (-not (Test-Path $pyw)) {{ "[collie-update] no pythonw at $pyw"; Stop-Transcript | Out-Null; exit 1 }}
+function Up-Lines($pattern) {{
+  $rows = Get-CimInstance Win32_Process -Filter "Name like 'collie-wallpaper%' or Name like 'cw-build%' or Name = 'python.exe' or Name = 'pythonw.exe'"
+  foreach ($r in $rows) {{ if (([string]$r.CommandLine) -match $pattern) {{ return $true }} }}
+  return $false
+}}
+function Port-Up($port) {{
+  $c = New-Object System.Net.Sockets.TcpClient
+  try {{ return $c.ConnectAsync("127.0.0.1", $port).Wait(300) }} catch {{ return $false }} finally {{ $c.Close() }}
+}}
+function Wait-Up($test, $seconds) {{
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ($true) {{
+    if (& $test) {{ return $true }}
+    if ((Get-Date) -ge $deadline) {{ return $false }}
+    Start-Sleep -Milliseconds 500
+  }}
+}}
 {restarts}
 "[collie-update] done"
 Stop-Transcript | Out-Null
 '''
 
+def _unless_up(what, test, seconds, start):
+    """PowerShell that starts a piece only if it is not up within `seconds`."""
+    return ('if (Wait-Up { %s } %d) { "[collie-update] %s is already running" }\n'
+            'else { "[collie-update] restarting %s"\n%s }' % (test, seconds, what, what, start))
+
+
 _RESTART = {
-    "supervisor": '"[collie-update] restarting supervisor"\n'
-                  'Start-Process -FilePath "schtasks.exe" -ArgumentList "/Run","/TN","\\Collie\\Supervisor" '
-                  '-WindowStyle Hidden\nStart-Sleep -Seconds 2',
-    "wallpaper": '"[collie-update] restarting wallpaper"\n'
-                 'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\wallpaper-boot.pyw" '
-                 '-WindowStyle Hidden\nStart-Sleep -Seconds 3',
-    "bridge":    '"[collie-update] restarting browser bridge"\n'
-                 'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\bridge-boot.pyw" '
-                 '-WindowStyle Hidden\nStart-Sleep -Seconds 2',
-    "window":    '"[collie-update] reopening the Collie window"\n'
-                 'Start-Process -FilePath $pyw -ArgumentList "-m","harness.cli","app" '
-                 '-WorkingDirectory "{root}\\python" -WindowStyle Hidden',
+    "supervisor": _unless_up(
+        "supervisor", "Up-Lines 'harness\\.supervisor'", 15,
+        'Start-Process -FilePath "schtasks.exe" -ArgumentList "/Run","/TN","\\Collie\\Supervisor" '
+        '-WindowStyle Hidden\nStart-Sleep -Seconds 2'),
+    "wallpaper": _unless_up(
+        "wallpaper", "Up-Lines '^(?!.*--window).*(collie-wallpaper|cw-build)'", 10,
+        'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\wallpaper-boot.pyw" '
+        '-WindowStyle Hidden\nStart-Sleep -Seconds 3'),
+    "bridge": _unless_up(
+        "browser bridge", "Port-Up 8677", 20,
+        'Start-Process -FilePath $pyw -ArgumentList "$env:USERPROFILE\\.collie\\bridge-boot.pyw" '
+        '-WindowStyle Hidden\nStart-Sleep -Seconds 2'),
+    # A silent install does not open the window (its launch step is skipifsilent), so nothing to wait for.
+    "window": _unless_up(
+        "Collie window", "Up-Lines '(collie-wallpaper|cw-build).*--window'", 0,
+        'Start-Process -FilePath $pyw -ArgumentList "-m","harness.cli","app" '
+        '-WorkingDirectory "{root}\\python" -WindowStyle Hidden'),
 }
+
+# The supervisor first: the bridge and the dogs come back through it.
+_RESTART_ORDER = {"supervisor": 0, "wallpaper": 1, "slack": 2, "bridge": 3, "window": 4}
 
 
 def _restart_script(part, root):
@@ -657,11 +708,14 @@ def _restart_script(part, root):
         launcher = part.split(":", 1)[1]
         if not re.fullmatch(r"slack-[A-Za-z0-9_-]+\.pyw", launcher):
             return ""
-        return ('"[collie-update] restarting %s"\n' % launcher
-                + 'Start-Process -FilePath $pyw -ArgumentList '
-                  '([char]34 + "$env:USERPROFILE\\.collie\\%s" + [char]34) '
-                  '-WindowStyle Hidden\n' % launcher
-                + 'Start-Sleep -Seconds 2')
+        dog = launcher[len("slack-"):-len(".pyw")]
+        return _unless_up(
+            launcher, "Up-Lines '%s|harness\\.cli slack .*--name %s(\\s|$)'"
+            % (re.escape(launcher), dog), 20,
+            'Start-Process -FilePath $pyw -ArgumentList '
+            '([char]34 + "$env:USERPROFILE\\.collie\\%s" + [char]34) '
+            '-WindowStyle Hidden\n' % launcher
+            + 'Start-Sleep -Seconds 2')
     return ""
 
 
@@ -742,7 +796,8 @@ def apply_windows(exe, digest, on_note=print, target_version=""):
     except Exception as exc:
         return False, "could not record the update recovery journal: %s" % exc
     log = os.path.join(tempfile.gettempdir(), "collie-update.log")
-    restarts = "\n".join(line for line in (_restart_script(p, root) for p in parts) if line) or \
+    ordered = sorted(parts, key=lambda p: _RESTART_ORDER.get(p.split(":", 1)[0], 9))
+    restarts = "\n".join(line for line in (_restart_script(p, root) for p in ordered) if line) or \
         '"[collie-update] nothing was running; not starting anything"'
     script = _BOOTSTRAP.format(pid=os.getpid(), exe=exe, root=root, log=log, restarts=restarts)
     sp = os.path.join(tempfile.gettempdir(), "collie-update.ps1")
