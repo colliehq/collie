@@ -388,7 +388,7 @@ def test_verification_timeout_prevents_grandchild_from_surviving(tmp_path):
     child_code = (
         "import time; from pathlib import Path; "
         f"Path({str(ready)!r}).write_text('ready'); "
-        "time.sleep(3); "
+        "time.sleep(6); "
         f"Path({str(survived)!r}).write_text('survived')"
     )
     launcher = tmp_path / "launcher.py"
@@ -407,8 +407,11 @@ def test_verification_timeout_prevents_grandchild_from_surviving(tmp_path):
     python = Path(sys.executable).as_posix().replace('"', '\\"')
 
     # Budgets with room for two interpreter starts on a loaded machine (a 1 s timeout failed
-    # under coverage's subprocess patching); the survival check waits out the grandchild's own
-    # 3 s from when it actually started, so a slow start cannot turn it into a false pass.
+    # under coverage's subprocess patching). The grandchild writes 6 s after it starts, 3 s past
+    # the timeout: with 3 s against 3 s, a grandchild that started fast wrote before a kill that
+    # came a moment late, and the test failed with the kill working (macOS CI, 2026-09-25). The
+    # survival check waits out those 6 s from when it really started, so a slow start cannot
+    # turn it into a false pass either.
     evidence = run_verification_command(
         f'"{python}" launcher.py', str(tmp_path), timeout=3, source="test")
 
@@ -416,7 +419,7 @@ def test_verification_timeout_prevents_grandchild_from_surviving(tmp_path):
     assert evidence["exit_code"] is None
     assert evidence["command_passed"] is False
     assert "check timed out after 3s" in evidence["output"]
-    time.sleep(max(0.0, ready.stat().st_mtime + 3.5 - time.time()))
+    time.sleep(max(0.0, ready.stat().st_mtime + 6.5 - time.time()))
     assert not survived.exists(), "the verification timeout must kill descendants, not just the shell"
 
 
@@ -477,7 +480,7 @@ def test_verification_success_prevents_background_descendant_from_surviving(tmp_
     child_code = (
         "import time; from pathlib import Path; "
         f"Path({str(ready)!r}).write_text('ready'); "
-        "time.sleep(1.5); "
+        "time.sleep(4); "
         f"Path({str(survived)!r}).write_text('survived')"
     )
     launcher = workspace / "launcher.py"
@@ -502,8 +505,8 @@ def test_verification_success_prevents_background_descendant_from_surviving(tmp_
     assert evidence["exit_code"] == 0
     assert evidence["command_passed"] is True
     assert evidence["passed"] is True
-    # Waited out from when the descendant really started (its own 1.5 s), so a slow start on a
+    # Waited out from when the descendant really started (its own 4 s), so a slow start on a
     # loaded machine can neither fail the launcher nor make the survival check pass early.
-    time.sleep(max(0.0, ready.stat().st_mtime + 2.0 - time.time()))
+    time.sleep(max(0.0, ready.stat().st_mtime + 4.5 - time.time()))
     assert not survived.exists(), (
         "a background verifier descendant must not edit after an exit-zero receipt")
