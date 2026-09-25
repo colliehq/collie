@@ -181,34 +181,67 @@ function Elem-Info($e, $i) {
   }
 }
 
+function Is-Match($e) {
+  # name: case-insensitive substring; control_type: exact. An empty selector matches anything.
+  $wantName = $Name.ToLower()
+  $wantType = $ControlType.ToLower() -replace '^controltype\.',''
+  $gotName = ($e.Current.Name + "").ToLower()
+  $gotType = (($e.Current.ControlType.ProgrammaticName -replace 'ControlType\.','') + "").ToLower()
+  return (($Name -eq "" -or $gotName.Contains($wantName)) -and ($ControlType -eq "" -or $gotType -eq $wantType))
+}
+
+$script:PickWhy = ""
 function Pick($win) {
-  # select an element in $win by AutomationId (preferred) or by descendant index
+  # Every selector given must hold. aid, name and control_type narrow the candidates and occurrence
+  # takes the Nth (from 0) of what is left. An aid used to end the search at its FIRST match, with
+  # occurrence and name ignored: "the second Remove button" (aid=removeButton, occurrence=1) on
+  # chrome://extensions removed the first extension in the list instead.
+  # An index names one element directly, but it comes from an earlier `tree`, and Chromium and
+  # other apps rebuild their tree between calls. So when a name or type comes with it, the element
+  # now at that index must still be it, or nothing is picked.
+  $script:PickWhy = ""
+  $filtered = ($Name -ne "" -or $ControlType -ne "")
   if ($Aid -ne "") {
     $c = New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $Aid)
-    return $win.FindFirst($SCOPE::Descendants, $c)
+    if (-not $filtered -and $Occurrence -le 0) { return $win.FindFirst($SCOPE::Descendants, $c) }
+    $seen = 0
+    foreach ($e in $win.FindAll($SCOPE::Descendants, $c)) {
+      try { if (Is-Match $e) { if ($seen -eq $Occurrence) { return $e }; $seen++ } } catch {}
+    }
+    $script:PickWhy = "; $seen element(s) match, occurrence $Occurrence asked for"
+    return $null
   }
   if ($Index -ge 0) {
     $ds = Descendants $win
-    if ($Index -lt $ds.Count) { return $ds[$Index] }
+    if ($Index -ge $ds.Count) {
+      $script:PickWhy = "; the window has $($ds.Count) elements now; inspect it again"
+      return $null
+    }
+    $e = $ds[$Index]
+    if ($filtered) {
+      $ok = $false
+      try { $ok = Is-Match $e } catch {}
+      if (-not $ok) {
+        $got = "another element"
+        try { $got = "a " + ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\.','') + " named '" + $e.Current.Name + "'" } catch {}
+        $script:PickWhy = "; index $Index is now $got, so the window changed since it was inspected; inspect it again"
+        return $null
+      }
+    }
+    return $e
   }
-  if ($Name -ne "" -or $ControlType -ne "") {
-    $wantName = $Name.ToLower()
-    $wantType = $ControlType.ToLower() -replace '^controltype\.',''
+  if ($filtered) {
     $seen = 0
     foreach ($e in (Descendants $win)) {
-      try {
-        $gotName = ($e.Current.Name + "").ToLower()
-        $gotType = (($e.Current.ControlType.ProgrammaticName -replace 'ControlType\.','') + "").ToLower()
-        $nameOK = ($Name -eq "" -or $gotName -eq $wantName -or $gotName.Contains($wantName))
-        $typeOK = ($ControlType -eq "" -or $gotType -eq $wantType)
-        if ($nameOK -and $typeOK) {
-          if ($seen -eq $Occurrence) { return $e }
-          $seen++
-        }
-      } catch {}
+      try { if (Is-Match $e) { if ($seen -eq $Occurrence) { return $e }; $seen++ } } catch {}
     }
+    $script:PickWhy = "; $seen element(s) match, occurrence $Occurrence asked for"
   }
   return $null
+}
+
+function Not-Found {
+  "element not found (aid='$Aid' index=$Index name='$Name' control_type='$ControlType' occurrence=$Occurrence)" + $script:PickWhy
 }
 
 function Fg-Info {
@@ -241,14 +274,14 @@ switch ($Action) {
       }
       "element" {
         $e = Pick $win
-        if (-not $e) { $out = @{ ok = $false; error = "element not found (aid='$Aid' index=$Index)" } }
+        if (-not $e) { $out = @{ ok = $false; error = (Not-Found) } }
         else { $out = @{ ok = $true; element = (Elem-Info $e $Index) } }
       }
       "invoke" {
         $e = Pick $win
         if (-not $e -and $Index -lt 0 -and $Aid -eq "" -and $Name -eq "" -and $ControlType -eq "" -and
             $Operation -in @("move","resize","rotate","dock","set_view","window_minimize","window_maximize","window_restore","window_close","wait_ready")) { $e = $win }
-        if (-not $e) { $out = @{ ok = $false; error = "element not found (aid='$Aid' index=$Index)" }; break }
+        if (-not $e) { $out = @{ ok = $false; error = (Not-Found) }; break }
         $targetInfo = Elem-Info $e $Index
         $done = ""; $method = ""; $p = $null; $details = [ordered]@{}
         try {
@@ -340,7 +373,7 @@ switch ($Action) {
       }
       "setvalue" {
         $e = Pick $win
-        if (-not $e) { $out = @{ ok = $false; error = "element not found (aid='$Aid' index=$Index)" }; break }
+        if (-not $e) { $out = @{ ok = $false; error = (Not-Found) }; break }
         $vp = $null
         if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
           $v = $vp -as [System.Windows.Automation.ValuePattern]
@@ -355,7 +388,7 @@ switch ($Action) {
       }
       "setrange" {
         $e = Pick $win
-        if (-not $e) { $out = @{ ok = $false; error = "element not found" }; break }
+        if (-not $e) { $out = @{ ok = $false; error = (Not-Found) }; break }
         $rp = $null
         if ($e.TryGetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern, [ref]$rp)) {
           $range = $rp -as [System.Windows.Automation.RangeValuePattern]
@@ -367,7 +400,7 @@ switch ($Action) {
       }
       "gettext" {
         $e = Pick $win
-        if (-not $e) { $out = @{ ok = $false; error = "element not found (aid='$Aid' index=$Index)" }; break }
+        if (-not $e) { $out = @{ ok = $false; error = (Not-Found) }; break }
         $vp = $null; $tp = $null; $txt = $null; $method = ""
         if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
           try { $txt = ($vp -as [System.Windows.Automation.ValuePattern]).Current.Value; $method = "uia.ValuePattern" } catch {}
@@ -401,17 +434,8 @@ Write-Output ($out | ConvertTo-Json -Depth 6 -Compress)
 
 def _ensure_driver():
     os.makedirs(COLLIE_DIR, exist_ok=True)
-    # rewrite if missing or stale (content drift), so upgrades take effect
-    try:
-        if os.path.exists(_DRIVER):
-            with open(_DRIVER, "r", encoding="utf-8") as f:
-                if f.read() == _DRIVER_PS:
-                    return _DRIVER
-    except OSError:
-        pass
-    with open(_DRIVER, "w", encoding="utf-8") as f:
-        f.write(_DRIVER_PS)
-    return _DRIVER
+    # rewritten if missing or stale (content drift), so upgrades take effect
+    return plat.write_ps1(_DRIVER, _DRIVER_PS)
 
 
 def available():
@@ -1268,9 +1292,15 @@ def _register_windows(registry):
         "pid": {"type": "integer"}, "hwnd": {"type": "integer"},
     }
     element_props = dict(window_props, **{
-        "index": {"type": "integer"}, "aid": {"type": "string"},
-        "name": {"type": "string"}, "control_type": {"type": "string"},
-        "occurrence": {"type": "integer"},
+        "index": {"type": "integer", "description": (
+            "index from desktop_inspect. Apps rebuild their tree, so pass name and/or control_type "
+            "too: the element at that index is then checked, and refused if it is not the one")},
+        "aid": {"type": "string", "description": "UI Automation AutomationId"},
+        "name": {"type": "string", "description": "name substring, case-insensitive"},
+        "control_type": {"type": "string", "description": "e.g. Button, Edit, CheckBox"},
+        "occurrence": {"type": "integer", "description": (
+            "which element to take, counting from 0, among those matching aid, name and "
+            "control_type together")},
     })
 
     class DesktopApps(Tool):

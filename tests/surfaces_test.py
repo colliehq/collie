@@ -216,10 +216,13 @@ def test_map_web():
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         base = "http://127.0.0.1:%d" % port
+        # Up means answering: poll a static page. /api/tree was the probe, with a 1 s timeout on
+        # the one call that takes ~4 s cold, so on a loaded runner every attempt could time out
+        # while the server was up and still building.
         up = False
-        for _ in range(40):
+        for _ in range(80):
             try:
-                urllib.request.urlopen(base + "/api/tree", timeout=1); up = True; break
+                urllib.request.urlopen(base + "/map", timeout=2); up = True; break
             except Exception:
                 time.sleep(0.25)
         check("map web: server came up", up)

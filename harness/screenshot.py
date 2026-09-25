@@ -251,17 +251,7 @@ def _script_path() -> str:
     passed with -Command is a quoting minefield, and -File is not."""
     d = os.path.join(os.path.expanduser(os.environ.get("COLLIE_STATE_DIR") or "~/.collie"), "bin")
     os.makedirs(d, exist_ok=True)
-    p = os.path.join(d, "capture.ps1")
-    try:
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                if f.read() == _CAPTURE_PS:
-                    return p
-    except OSError:
-        pass
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(_CAPTURE_PS)
-    return p
+    return plat.write_ps1(os.path.join(d, "capture.ps1"), _CAPTURE_PS)
 
 
 def capture(title: str = "", max_dim: int = _MAX_DIM, path: str = "") -> dict:

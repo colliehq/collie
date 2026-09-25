@@ -402,6 +402,17 @@ begin
   Result := '';
   app := ExpandConstant('{app}');
   if DirExists(app) then begin
+    { Stop update scripts left asleep by Collie 0.21.23 to 0.30.0. They waited for their installer
+      with Start-Process -Wait, which also waits for the supervisor that installer left running, so
+      they never finished. Ending that supervisor below would wake them, and they would start the
+      old runtime again while this install renames and replaces it. Only scripts over 15 minutes
+      old: the one that started this Setup is younger, and still has its own restarts to do. }
+    Exec(ExpandConstant('{cmd}'),
+         '/C powershell -NoProfile -Command "Get-CimInstance Win32_Process '
+         + '| Where-Object { $_.Name -eq ''powershell.exe'' -and ([string]$_.CommandLine) -match ''collie-update\.ps1'' '
+         + '-and $_.CreationDate -lt (Get-Date).AddMinutes(-15) } '
+         + '| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"',
+         '', SW_HIDE, ewWaitUntilTerminated, rc);
     { let it shut the wallpaper down cleanly first (best-effort) }
     try Exec(app + '\python\pythonw.exe', '-m harness.cli wallpaper --stop', '',
              SW_HIDE, ewWaitUntilTerminated, rc); except end;

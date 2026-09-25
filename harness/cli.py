@@ -1262,6 +1262,14 @@ def _install_update(up, info, kind, assets, digests):
         up._download(assets[name], dest, prog)
         return dest
 
+    def _discard(path):
+        # The download's own folder from _fetch; nothing else is ever put in it. Each update used to
+        # leave its 140 MB installer (or 270 MB disk image) behind in a new one.
+        folder = os.path.dirname(path)
+        if os.path.basename(folder).startswith("collie-update-"):
+            import shutil as _sh
+            _sh.rmtree(folder, ignore_errors=True)
+
     if kind == "setup" and up.setup_running():
         print("Collie Setup is already running; nothing installed. Try again when it finishes.",
               file=sys.stderr)
@@ -1280,6 +1288,8 @@ def _install_update(up, info, kind, assets, digests):
             return 1
         ok, why = up.apply_windows(exe, digests.get(name, ""), on_note=print,
                                    target_version=info["latest"])
+        if not ok:
+            _discard(exe)       # on success the update script removes it once Setup has run
     elif kind == "app":
         name = next((n for n in assets if n.endswith(".dmg")), "")
         if not name:
@@ -1291,6 +1301,7 @@ def _install_update(up, info, kind, assets, digests):
             print("download failed: %s" % e, file=sys.stderr)
             return 1
         ok, why = up.apply_macos(dest, on_note=print)
+        _discard(dest)          # copied out of the image (or refused); it is not needed again
     else:
         whl = next((n for n in assets if n.endswith(".whl")), "")
         if not whl:
