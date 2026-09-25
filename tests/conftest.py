@@ -50,6 +50,36 @@ def pytest_sessionfinish(session, exitstatus):
     shutil.rmtree(TEST_HOME, ignore_errors=True)
 
 
+#: Page loads a Windows runner refuses for a while when it is out of socket buffers
+#: (WSAENOBUFS): a browser test then ERRORs in setup without having tested anything. Seen on
+#: 2026-09-23 and again on the merge of PR #13; the same commits passed on rerun.
+_TRANSIENT_PAGE_LOAD = ("net::ERR_NO_BUFFER_SPACE",)
+
+
+def _with_transient_retry(goto, attempts=3, pause_s=2.0):
+    import time
+
+    def retrying(page, url, **kwargs):
+        for attempt in range(attempts):
+            try:
+                return goto(page, url, **kwargs)
+            except Exception as exc:
+                if attempt == attempts - 1 or not any(m in str(exc) for m in _TRANSIENT_PAGE_LOAD):
+                    raise
+                time.sleep(pause_s * (attempt + 1))
+    retrying.collie_transient_retry = True
+    return retrying
+
+
+try:
+    from playwright.sync_api import Page as _PlaywrightPage
+except Exception:                                  # playwright is optional
+    _PlaywrightPage = None
+if _PlaywrightPage is not None and not getattr(_PlaywrightPage.goto, "collie_transient_retry",
+                                               False):
+    _PlaywrightPage.goto = _with_transient_retry(_PlaywrightPage.goto)
+
+
 def _script_only(path):
     """A standalone suite: no test_* function or Test* class, only an `if __name__` entry point."""
     import ast

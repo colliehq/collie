@@ -20,6 +20,29 @@ def test_home_is_the_suites_own():
     assert os.path.normcase(conftest.TEST_HOME) != os.path.normcase(conftest.REAL_HOME)
 
 
+def test_a_transient_page_load_refusal_is_retried_and_nothing_else_is():
+    calls = []
+
+    def goto(page, url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            raise RuntimeError("Page.goto: net::ERR_NO_BUFFER_SPACE at %s" % url)
+        return "loaded"
+
+    retrying = conftest._with_transient_retry(goto, pause_s=0)
+    assert retrying(None, "http://127.0.0.1:1/") == "loaded" and len(calls) == 2
+
+    def broken(page, url, **kw):
+        calls.append(url)
+        raise RuntimeError("Page.goto: net::ERR_CONNECTION_REFUSED")
+
+    calls.clear()
+    import pytest
+    with pytest.raises(RuntimeError, match="REFUSED"):
+        conftest._with_transient_retry(broken, pause_s=0)(None, "http://127.0.0.1:1/")
+    assert len(calls) == 1, "a real failure is not retried"
+
+
 def test_import_time_state_paths_are_under_the_suites_home():
     from harness import checkpoint, mcpclient, native, ops, plantool, settings, slackbot
     paths = {
