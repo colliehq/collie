@@ -76,5 +76,15 @@ jobs:
         if: runner.os == 'macOS'
         run: python -m pytest -q -s tests/test_update.py
 
+      - name: Widen the ephemeral port range (Windows)
+        # The suite opens thousands of short loopback connections, each held in TIME_WAIT for two
+        # minutes, and Windows' default dynamic range is 16,384 ports: late browser tests were
+        # refused with net::ERR_NO_BUFFER_SPACE (WSAENOBUFS) on two consecutive main runs.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          netsh int ipv4 set dynamicport tcp start=10000 num=55535
+          netsh int ipv4 show dynamicport tcp
+
       - name: Run test suite
         run: bash tests/run_all.sh

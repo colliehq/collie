@@ -520,6 +520,8 @@ def _terminate_posix_group(proc: Any, timeout_s: float) -> bool:
     except ProcessLookupError:
         setattr(proc, "_collie_tree_extinct", True)
         return True
+    except PermissionError:
+        pass            # Darwin answers EPERM for a group of killed, unreaped members: reap, probe
     except OSError:
         return False
     _process_wait(proc, min(1.0, timeout_s))
@@ -531,7 +533,11 @@ def _terminate_posix_group(proc: Any, timeout_s: float) -> bool:
             setattr(proc, "_collie_tree_extinct", True)
             return True
         except PermissionError:
-            return False
+            # Darwin, again, while a killed group whose leader is gone is still disappearing
+            # (tool_process waits this out too). Giving up on the first EPERM made a timed-out
+            # run on a loaded macOS host report a tree it could not confirm gone. Only ESRCH is
+            # proof; keep waiting for it until the deadline.
+            pass
         if time.monotonic() >= deadline:
             return False
         time.sleep(.01)
