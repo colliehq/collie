@@ -25,11 +25,14 @@
     if (!parent) return false;
     host = document.createElement("div");
     host.id = "__colliePresenceHost";
+    // The pill sits over a corner of the page, where sites keep account menus and close buttons.
+    // Only its Stop button takes clicks; the rest lets them through to the page, for the person
+    // and for Collie's own clicks (a covered control was refused, or clicked the pill instead).
     host.style.cssText = "all:initial;position:fixed;right:14px;top:14px;z-index:2147483647;pointer-events:none";
     const root = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent = `
-      *{box-sizing:border-box}.pill{pointer-events:auto;display:none;align-items:center;gap:8px;
+      *{box-sizing:border-box}.pill{pointer-events:none;display:none;align-items:center;gap:8px;
       max-width:360px;padding:7px 8px 7px 10px;border:1px solid rgba(255,255,255,.2);
       border-radius:999px;background:rgba(25,29,38,.94);color:#f7f8fb;
       box-shadow:0 8px 28px rgba(0,0,0,.28);font:12px/1.25 system-ui,-apple-system,"Segoe UI",sans-serif;
@@ -38,7 +41,7 @@
       .pill.waiting .dot{background:#e7b657}.pill.paused .dot,.pill.disconnected .dot{background:#e58074}
       .copy{min-width:0}.status{font-weight:650;white-space:nowrap}.detail{display:block;max-width:200px;color:#b8becd;
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;margin-top:1px}
-      button{all:unset;cursor:pointer;border-left:1px solid rgba(255,255,255,.16);padding:3px 5px 3px 10px;
+      button{all:unset;pointer-events:auto;cursor:pointer;border-left:1px solid rgba(255,255,255,.16);padding:3px 5px 3px 10px;
       color:#ffaaa1;font-weight:650}button:hover{color:#fff}.paused button{display:none}`;
     const pill = document.createElement("div");
     pill.className = "pill";

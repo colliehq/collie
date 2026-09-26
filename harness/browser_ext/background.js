@@ -412,6 +412,14 @@ function pagePoint(text, selector, broad) {
   el.scrollIntoView({ block: "center", inline: "center" });
   const r = el.getBoundingClientRect();
   const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  // Collie's presence pill: clicks pass through its body but not its Stop button. When that is
+  // what covers the target, move the pill to the other side of the page before clicking.
+  const presence = document.getElementById("__colliePresenceHost");
+  if (presence && document.elementFromPoint(x, y) === presence) {
+    const atTop = presence.style.top !== "auto";
+    presence.style.top = atTop ? "auto" : "14px";
+    presence.style.bottom = atTop ? "14px" : "auto";
+  }
   const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
   const out = { x, y, inView, label: (el.innerText || el.value || selector || text || "").trim().slice(0, 80) };
   return out;
@@ -1133,6 +1141,14 @@ function pagePointRef(ref) {
   el.scrollIntoView({ block: "center", inline: "center" });
   const r = el.getBoundingClientRect();
   const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  // Collie's presence pill: clicks pass through its body but not its Stop button. When that is
+  // what covers the target, move the pill to the other side of the page before clicking.
+  const presence = document.getElementById("__colliePresenceHost");
+  if (presence && document.elementFromPoint(x, y) === presence) {
+    const atTop = presence.style.top !== "auto";
+    presence.style.top = atTop ? "auto" : "14px";
+    presence.style.bottom = atTop ? "14px" : "auto";
+  }
   const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
   return { x, y, inView, label: (el.innerText || el.value || ref || "").trim().slice(0, 80) };
 }
@@ -1149,6 +1165,14 @@ function pagePointStillRef(ref) {
   const x = r.left + r.width / 2, y = r.top + r.height / 2;
   const inView = r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
   if (!inView) return { error: "approved ref " + ref + " moved off-screen before click" };
+  // Collie's presence pill: clicks pass through its body but not its Stop button. When that is
+  // what covers the target, move the pill to the other side of the page before clicking.
+  const presence = document.getElementById("__colliePresenceHost");
+  if (presence && document.elementFromPoint(x, y) === presence) {
+    const atTop = presence.style.top !== "auto";
+    presence.style.top = atTop ? "auto" : "14px";
+    presence.style.bottom = atTop ? "14px" : "auto";
+  }
   const hit = document.elementFromPoint(x, y);
   let approved = !!hit && (hit === el || (el.contains && el.contains(hit)));
   // document.elementFromPoint() retargets a hit inside a shadow tree to its host. Walk the exact
