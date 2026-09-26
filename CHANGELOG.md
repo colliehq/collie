@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.30.2 — Collie's presence pill no longer covers the page
 
 - Stop Collie's presence pill from covering the page. While Collie observes or acts in a tab, a
   small pill sits in its top-right corner, where sites keep account menus, settings and close
