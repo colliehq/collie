@@ -206,15 +206,18 @@ def test_parallel_tick_does_not_let_hung_mission_starve_fast_one(tmp_path):
     create_mission(store, "hung", "hang", leash=leash)
     create_mission(store, "fast", "fast", leash=leash)
 
+    # The tick must not wait for the hung decision. It returns in about 0.15 s here; a loaded
+    # Windows runner took 1.14 s against a 0.8 s hang and a 0.5 s budget, which failed without
+    # the tick having waited at all. A hang far longer than the budget keeps the two apart.
     def decide(goal, *_):
         if goal == "hang":
-            time.sleep(.8)
+            time.sleep(4)
         return {"action": "needs_human", "args": {"summary": goal}}
 
     driver = MissionDriver(store, actions, decide, [])
     started = time.monotonic()
     assert driver.tick_missions(max_workers=2, max_batch=2) == 2
-    assert time.monotonic() - started < .5
+    assert time.monotonic() - started < 2
     assert store.get("hung").state == WAITING
     assert store.get("fast").state == NEEDS_YOU
 
