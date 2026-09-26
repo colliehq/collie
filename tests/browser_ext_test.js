@@ -684,13 +684,13 @@ function uploadTests() {
     /input\.files \? input\.files\.length : 0/.test(src));
 }
 
-// --- trusted input needs the tab in front of its window -----------------------------------------
-// On Chrome, CDP input to a tab that is not the active tab of its window is held: the click never
-// returned, blocked every space, and ran when someone later brought the tab forward. Spaces open
-// their tabs in the background, so focusForTrusted brings one forward before any trusted input,
-// except a tab the person has taken over.
+// --- trusted input leaves the tab where it is -------------------------------------------------
+// 0.30.3 switched a background space tab to the front before trusted input, on the theory that
+// Chrome held CDP input for it. The input was held by the cursor glide waiting for animation frames
+// a hidden page never gets (fixed in pageCursor); focus emulation delivers input to a background
+// tab. So the tab stays where it is, and the person keeps what they were looking at.
 function focusTests() {
-  function run(active, paused) {
+  function run(active) {
     const calls = [];
     const chromeStub = { tabs: {
       get: async (id) => ({ id: id, active: active }),
@@ -699,17 +699,13 @@ function focusTests() {
       'chrome', 'ensureAttached', 'dbgSend', 'sleep', 'pausedTabs', 'dbgTab',
       grab('async function focusForTrusted(tab)') + '\nreturn focusForTrusted;'
     )(chromeStub, async () => { calls.push('attach'); },
-      async (id, method) => { calls.push('send:' + method); }, async () => {},
-      new Set(paused ? [7] : []), null);
+      async (id, method) => { calls.push('send:' + method); }, async () => {}, new Set(), null);
     return focusForTrusted({ id: 7, active: active }).then((ok) => ({ ok: ok, calls: calls }));
   }
-  return Promise.all([run(false, false), run(true, false), run(false, true)]).then(([bg, fg, taken]) => {
-    eq('a background space tab comes to the front before focus emulation and input',
-       bg.calls.slice(0, 3), ['update:{"active":true}', 'attach', 'send:Emulation.setFocusEmulationEnabled']);
-    t('and trusted input may then proceed', bg.ok === true);
-    t('a tab already in front is not switched', fg.calls.indexOf('update:{"active":true}') < 0 && fg.ok);
-    t('a tab the person has taken over is not brought forward',
-      taken.calls.indexOf('update:{"active":true}') < 0);
+  return Promise.all([run(false), run(true)]).then(([bg, fg]) => {
+    eq('a background space tab gets focus emulation, not a tab switch',
+       bg.calls, ['attach', 'send:Emulation.setFocusEmulationEnabled']);
+    t('and trusted input may proceed', bg.ok === true && fg.ok === true);
   });
 }
 
