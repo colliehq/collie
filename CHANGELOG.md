@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.30.4 — The real fix for clicks that froze the browser tools
+
+- Stop Collie's visible cursor from holding a click on a page that is not on screen. Before each
+  click the cursor glides to the target on animation frames, and the click waits for it to land. A
+  page off screen gets no frames: a task's tab in the background, or a window covered by another.
+  The click then never happened. Every browser command in every task waited behind it, and it ran
+  when the tab next came on screen, long after Collie had been told it timed out. The cursor now
+  skips the glide on a hidden page, and a timer lands it if the frames stop partway.
+- Undo 0.30.3's fix, which was built on a wrong diagnosis. It brought a task's background tab to
+  the front before a real click, on the theory that Chrome held the input. What held it was the
+  cursor above, and switching tabs did not help. Collie again leaves your tabs where they are.
+  The extension is now 4.4; reload it once from chrome://extensions after updating.
+
 ## v0.30.3 — Clicks in a background tab no longer freeze the browser tools
 
 - Bring a space's tab to the front of its window before a real click or keystroke. Spaces open
