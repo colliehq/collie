@@ -2097,6 +2097,19 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
 // Bringing the tab forward is kept only as the fallback for a browser that will not emulate, and
 // synthetic input as the fallback to that — never a trusted claim we cannot back.
 async function focusForTrusted(tab) {
+  // Chrome holds CDP input for a tab that is not the active tab of its window. On Chrome
+  // (2026-09-25) a trusted click on a space's tab, opened in the background as spaces are, never
+  // returned. Every command in every space queued behind it, and the click ran minutes later, when
+  // someone brought that tab to the front, long after its tool call had timed out. Focus emulation
+  // covers a window without focus, not a tab in the background, so that tab comes to the front of
+  // its window first. A tab the person has taken over is left where it is.
+  try {
+    const fresh = await chrome.tabs.get(tab.id);
+    if (fresh && !fresh.active && !pausedTabs.has(tab.id)) {
+      await chrome.tabs.update(tab.id, { active: true });
+      await sleep(120);                     // let the switch commit before input is dispatched
+    }
+  } catch (e) {}
   try {
     await ensureAttached(tab.id);
     await dbgSend(tab.id, "Emulation.setFocusEmulationEnabled", { enabled: true });

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.30.3 — Clicks in a background tab no longer freeze the browser tools
+
+- Bring a space's tab to the front of its window before a real click or keystroke. Spaces open
+  their tabs in the background, and Chrome holds input for a tab that is not the active one in its
+  window. A click there never returned: every browser command in every space waited behind it, and
+  the click ran minutes later, when someone brought that tab forward, long after Collie had been
+  told it timed out. A tab you have taken over is left where it is. The extension is now 4.3;
+  reload it once from chrome://extensions after updating.
+
 ## v0.30.2 — Collie's presence pill no longer covers the page
 
 - Stop Collie's presence pill from covering the page. While Collie observes or acts in a tab, a
