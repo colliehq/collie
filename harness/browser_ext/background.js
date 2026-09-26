@@ -473,6 +473,12 @@ async function pageCursor(x, y, pulse) {
     } catch (e) { return Math.random(); }
   };
   x = clamp(x, 0, innerWidth); y = clamp(y, 0, innerHeight);
+  // The glide runs on requestAnimationFrame, and a page that is not on screen (a space's tab in the
+  // background, a window covered by another) gets no frames. The click waiting on this glide then
+  // never happened: every command in every space queued behind it, the extension stopped polling,
+  // and the click ran whenever the tab next came on screen, long after its tool call had timed out
+  // (2026-09-25, Chrome). Nobody can see the cursor on a hidden page, so skip the glide there.
+  if (D.visibilityState === "hidden") return { arrived: false, skipped: "page not visible", x, y };
   let host = D.getElementById(ID), state = host && host.__collieCursorState;
   if (!host || !host.isConnected || !state || !state.cursor || !state.root) {
     if (host) host.remove();
@@ -517,6 +523,14 @@ async function pageCursor(x, y, pulse) {
   const landed = await new Promise((resolve) => {
     state.finish = resolve;
     const began = performance.now();
+    // And if frames stop mid-glide (the tab goes to the background), a timer lands the cursor.
+    const guard = setTimeout(() => {
+      if (state.finish !== resolve) return;
+      if (state.raf) cancelAnimationFrame(state.raf);
+      state.raf = 0; state.x = x; state.y = y; state.finish = null;
+      state.cursor.style.transform = "translate3d(" + (x - 3).toFixed(2) + "px," + (y - 3).toFixed(2) + "px,0)";
+      resolve(true);
+    }, duration + 500);
     const frame = (now) => {
       if (sequence !== state.sequence) return resolve(false);
       const raw = Math.min(1, Math.max(0, (now - began) / duration));
@@ -544,7 +558,7 @@ async function pageCursor(x, y, pulse) {
         stretch.toFixed(3) + "," + (2 - stretch).toFixed(3) + ")";
       state.x = px; state.y = py;
       if (raw < 1) state.raf = requestAnimationFrame(frame);
-      else { state.raf = 0; state.x = x; state.y = y; state.finish = null; resolve(true); }
+      else { clearTimeout(guard); state.raf = 0; state.x = x; state.y = y; state.finish = null; resolve(true); }
     };
     state.raf = requestAnimationFrame(frame);
   });
@@ -2097,19 +2111,6 @@ async function frameActRef(tabId, tag, ref, kind, text, submit) {
 // Bringing the tab forward is kept only as the fallback for a browser that will not emulate, and
 // synthetic input as the fallback to that — never a trusted claim we cannot back.
 async function focusForTrusted(tab) {
-  // Chrome holds CDP input for a tab that is not the active tab of its window. On Chrome
-  // (2026-09-25) a trusted click on a space's tab, opened in the background as spaces are, never
-  // returned. Every command in every space queued behind it, and the click ran minutes later, when
-  // someone brought that tab to the front, long after its tool call had timed out. Focus emulation
-  // covers a window without focus, not a tab in the background, so that tab comes to the front of
-  // its window first. A tab the person has taken over is left where it is.
-  try {
-    const fresh = await chrome.tabs.get(tab.id);
-    if (fresh && !fresh.active && !pausedTabs.has(tab.id)) {
-      await chrome.tabs.update(tab.id, { active: true });
-      await sleep(120);                     // let the switch commit before input is dispatched
-    }
-  } catch (e) {}
   try {
     await ensureAttached(tab.id);
     await dbgSend(tab.id, "Emulation.setFocusEmulationEnabled", { enabled: true });
