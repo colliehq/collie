@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.30.2 — Collie's presence pill no longer covers the page
+
+- Stop Collie's presence pill from covering the page. While Collie observes or acts in a tab, a
+  small pill sits in its top-right corner, where sites keep account menus, settings and close
+  buttons. It took every click on it: a person could not reach a dialog's close button under it,
+  and Collie's own approved click on a control there was refused as covered, while a click by
+  text or selector landed on the pill and could have pressed its Stop. Clicks now pass through
+  the pill to the page, except on its Stop button, and before Collie clicks something under that
+  button it moves the pill to the other side. The extension is now 4.2; reload it once from
+  chrome://extensions after updating.
+
 ## v0.30.1 — Windows updates that run and finish, and desktop clicks on the element you named
 
 - Run Windows updates at all on Western and Central European Windows. The update script was saved
