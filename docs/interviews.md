@@ -72,9 +72,10 @@ Confirm that every participant agrees before enabling conversation capture. In t
 app the local microphone recognizer continues while the Live session is active, even when the Live
 page is closed. In a browser, the Live page records the microphone in short chunks; each chunk is
 deleted after the configured speech service returns text, and it is never placed in the agent prompt.
-Neither captures meeting or system audio. If the Live page loses its connection to Collie, it says
-so, stops its own microphone capture, and disables its controls until Collie answers again; after
-Collie restarts, the page picks up the new session token by itself. Transcript and derived state
+Neither captures meeting or system audio. If the Live page gets no answer from Collie three times in
+a row, it says the connection is interrupted, stops its own microphone capture, and disables its
+controls until Collie answers again; it then restarts that capture if the session is still
+listening. After Collie restarts, the page picks up the new session token by itself. Transcript and derived state
 stay under Collie's private local state directory, while text sent for speech/understanding follows
 the destinations disclosed in the UI.
 

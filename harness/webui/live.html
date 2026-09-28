@@ -109,8 +109,12 @@ Object.assign(ZH,{
   "Connection interrupted. Displayed context is stale; current capture status is unknown.":"连接已中断。显示的是旧记录，当前采集状态未知。"
 });
 /* When Collie stops answering, the page says so instead of showing stale state as current: capture
-   in this page stops, and every control is disabled until an answer arrives again. */
+   in this page stops, and every control is disabled until an answer arrives again. One slow or
+   failed poll is not that: only LOST_AFTER_FAILURES in a row are. When Collie answers again and
+   the session is still listening, the capture this page had running starts again. */
+var loadFailures=0,LOST_AFTER_FAILURES=3,captureBeforeLoss=false;
 function connectionLost(){
+  if(runningCapture)captureBeforeLoss=true;
   CONNECTED=false;endCapture();
   document.getElementById("status").classList.remove("on");
   document.getElementById("capture").classList.remove("on");
@@ -270,14 +274,27 @@ function render(s){connectionRestored();stateRevision++;STATE=s||{};var active=!
  var wk=document.getElementById("work");wk.innerHTML=work.length?work.slice().reverse().map(function(x){return'<div class="workrow"><b>'+esc(x.goal)+'</b><span>'+esc(tr(x.state||"queued"))+" · "+esc(x.mission_id||"")+'</span></div>'}).join(""):'<div class="empty">'+esc(tr('No work handed off yet.'))+'</div>';
  document.getElementById("toggleUnderstand").textContent=tr(s.understand?"Pause understanding":"Resume understanding");document.getElementById("capture").classList.toggle("on",active&&s.listen&&(runningCapture||NATIVE_HOST));document.getElementById("captureText").textContent=!active?tr("Session ended"):s.listen?(audio.last_error?"Speech needs attention":NATIVE_HOST?(streams.some(function(x){return x.getAudioTracks().length})?"Local microphone + shared audio active":"Local microphone active"):runningCapture?"Microphone active":"Conversation enabled"):tr("Context active");document.getElementById("captureText").textContent=tr(document.getElementById("captureText").textContent);document.getElementById("boardEdit").checked=!!s.board_edit;document.getElementById("boardState").textContent=s.board?(s.board.service_name+" · "+(s.board.title||"attached")):tr("No surface attached");document.getElementById("attach").disabled=!active;
  var avatar=s.avatar||{},avatarOn=!!avatar.active,hand=s.handoff||{},handoff=document.getElementById("handoff");handoff.hidden=!active||(NATIVE_HOST&&!hand.pending);handoff.classList.toggle("pending",!!hand.pending);if(hand.pending&&hand.suggested&&!document.getElementById("task").value)document.getElementById("task").placeholder=hand.suggested;document.getElementById("useContext").disabled=!active;document.getElementById("doNow").disabled=!active;document.getElementById("background").disabled=!active;document.getElementById("startAvatar").disabled=!active||avatarOn;document.getElementById("speakAvatar").disabled=!avatarOn||avatar.mode!=="simulation";document.getElementById("openAvatar").disabled=!AVATAR_JOIN;document.getElementById("stopAvatar").disabled=!avatarOn;document.getElementById("avatarStage").hidden=!avatarOn;if(avatar.script)document.getElementById("avatarSpeech").textContent=avatar.script;document.getElementById("avatarMeta").textContent=!active?"Start a Live Session first. This mode never represents itself as you.":avatarOn?(avatar.mode==="mcp"?"External avatar service active · maximum 10 minutes · AI disclosure enforced":"Local simulation active · connect an avatar MCP service for live video"):cap.avatar_provider_ready?"Avatar MCP service is ready. The room is private and capped at 10 minutes.":"Local simulation is ready now. No avatar MCP service is connected."}
+function resumeCaptureAfterReconnect(){
+  if(!captureBeforeLoss||!CONNECTED)return;
+  captureBeforeLoss=false;
+  if(NATIVE_HOST||runningCapture||!STATE.active||!STATE.listen)return;
+  beginCapture().then(function(){render(STATE)}).catch(function(e){
+    endCapture();audioNotice("Audio could not restart after reconnecting: "+e.message,true);
+  });
+}
 function load(){
   if(loadFlight)return loadFlight;
   var revision=stateRevision;
   loadFlight=api("/api/live-copilot").then(function(live){
+    loadFailures=0;
     if(revision!==stateRevision)return null;
     (live.work||[]).forEach(function(w){if(MISSIONS[w.mission_id])w.state=MISSIONS[w.mission_id]});
-    render(live);return live;
-  }).catch(function(){if(revision===stateRevision)connectionLost();return null}).finally(function(){loadFlight=null});
+    render(live);resumeCaptureAfterReconnect();return live;
+  }).catch(function(){
+    loadFailures++;
+    if(revision===stateRevision&&loadFailures>=LOST_AFTER_FAILURES)connectionLost();
+    return null;
+  }).finally(function(){loadFlight=null});
   if(Date.now()-missionLast>5000){
     missionLast=Date.now();
     api("/api/missions").then(function(d){MISSIONS={};(d.missions||[]).forEach(function(m){MISSIONS[m.mission_id]=m.state})}).catch(function(){});

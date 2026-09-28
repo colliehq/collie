@@ -66,6 +66,10 @@ def live_page():
             };
             window.TRACK={readyState:'live',stop(){this.readyState='ended'}};
             window.STREAM={getTracks(){return[TRACK]},getAudioTracks(){return[TRACK]}};
+            // Never the real microphone: every capture gets the synthetic track.
+            window.MIC_OPENS=0;
+            Object.defineProperty(navigator,'mediaDevices',{value:{getUserMedia:async()=>{
+              MIC_OPENS++;TRACK.readyState='live';return STREAM}}});
         """)
         page.goto("http://collie.test/live")
         page.wait_for_function("STATE.session_id==='live-first'")
@@ -177,7 +181,8 @@ def test_connection_failure_does_not_leave_green_capture_or_dispatch_draft(live_
     page.locator("#task").fill("Keep this draft")
     page.evaluate("streams.push(STREAM);beginCapture([{name:'microphone',stream:STREAM}])")
     page.route("**/api/live-copilot?*", lambda route: route.abort())
-    page.evaluate("load()")
+    for _ in range(3):
+        page.evaluate("load()")
     page.wait_for_function("document.getElementById('statusText').textContent==='Connection interrupted'")
     assert page.locator("#connectionNotice").is_visible()
     assert page.locator("#doNow").is_disabled()
@@ -193,6 +198,58 @@ def test_connection_failure_does_not_leave_green_capture_or_dispatch_draft(live_
     page.wait_for_function("document.getElementById('statusText').textContent==='Maintaining context'")
     assert page.locator("#connectionNotice").is_hidden()
     assert page.locator("#doNow").is_enabled()
+
+
+def test_one_failed_poll_is_not_a_lost_connection(live_page):
+    page, _, _, _, errors = live_page
+    page.evaluate("streams.push(STREAM);beginCapture([{name:'microphone',stream:STREAM}])")
+    page.route("**/api/live-copilot?*", lambda route: route.fulfill(
+        status=500, content_type="application/json", body='{"error":"busy"}'))
+    page.evaluate("load()")
+    assert page.locator("#statusText").inner_text() == "Maintaining context"
+    assert page.locator("#connectionNotice").is_hidden()
+    assert page.evaluate("runningCapture") and page.evaluate("TRACK.readyState") == "live"
+    page.unroute("**/api/live-copilot?*")
+    page.evaluate("load()")                   # a success resets the count
+    page.route("**/api/live-copilot?*", lambda route: route.abort())
+    page.evaluate("load()")
+    page.evaluate("load()")
+    assert page.locator("#statusText").inner_text() == "Maintaining context"
+    assert not errors
+
+
+def _lose_and_restore(page, state, listen):
+    # What the page asks for when it restarts capture on its own: the synthetic microphone.
+    # (The trailing ";0" keeps Playwright from calling the function this expression returns.)
+    page.evaluate("captureSources=async()=>{MIC_OPENS++;TRACK.readyState='live';"
+                  "streams.push(STREAM);return [{name:'microphone',stream:STREAM}]};0")
+    page.evaluate("streams.push(STREAM);beginCapture([{name:'microphone',stream:STREAM}])")
+    page.route("**/api/live-copilot?*", lambda route: route.abort())
+    for _ in range(3):
+        page.evaluate("load()")
+    page.wait_for_function("document.getElementById('statusText').textContent==='Connection interrupted'")
+    assert page.evaluate("!runningCapture && TRACK.readyState==='ended'")
+    state["listen"] = listen
+    page.unroute("**/api/live-copilot?*")
+    page.evaluate("load()")
+    page.wait_for_function("document.getElementById('statusText').textContent==='Maintaining context'")
+
+
+def test_capture_restarts_after_reconnecting_when_listening_is_still_on(live_page):
+    page, state, _, _, errors = live_page
+    _lose_and_restore(page, state, listen=True)
+    page.wait_for_function("runningCapture && RECORDERS.length===2")
+    assert page.evaluate("MIC_OPENS") == 1 and page.evaluate("TRACK.readyState") == "live"
+    assert page.locator("#capture").evaluate("(e)=>e.classList.contains('on')")
+    assert not errors
+
+
+def test_capture_stays_off_after_reconnecting_when_listening_was_turned_off(live_page):
+    page, state, _, _, errors = live_page
+    _lose_and_restore(page, state, listen=False)
+    page.wait_for_timeout(300)
+    assert not page.evaluate("runningCapture") and page.evaluate("MIC_OPENS") == 0
+    assert not errors
 
 
 def test_do_now_hands_off_once_even_when_pressed_twice(live_page):
