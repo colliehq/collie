@@ -28,6 +28,10 @@ input,select{border:1px solid var(--line);border-radius:9px;padding:8px 10px;bac
 .fields{display:grid;gap:13px;margin:14px 0 0;grid-template-columns:repeat(auto-fit,minmax(215px,1fr))}.field{display:grid;gap:5px;align-content:start}.field label{color:var(--mut);font-size:13px}.field .muted{font-size:12px}
 .facts{display:grid;gap:6px;margin:12px 0 0;padding:0;list-style:none}.facts li{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:7px;font-size:14px}.facts .key{color:var(--mut)}.facts .bad{color:var(--danger)}
 details{margin-top:14px}summary{cursor:pointer;color:var(--mut);font-size:14px;padding:9px 0}
+input[type=checkbox]{width:20px;height:20px;min-height:0;padding:0;margin:2px 0 0;flex:none;accent-color:var(--brand)}
+.todo{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}.todo .body{flex:1;min-width:0;display:grid;gap:3px}.todo.done .title{text-decoration:line-through;color:var(--mut)}.todo.found{background:var(--soft);border-radius:10px;padding:10px}.todo .late,.todos .bad{color:var(--danger)}
+.check{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:14px;margin-top:12px}.todos{list-style:none;padding:0;margin:12px 0 0}
+#newsFeeds{min-height:110px}.news .title{text-decoration:none}.news .title:hover{text-decoration:underline}.lines .bad{color:var(--danger)}
 @media(max-width:560px){.shell{padding:16px}h1{font-size:21px}.lede{font-size:18px}header{flex-direction:column}.item .row{flex-direction:column}.agenda li{grid-template-columns:54px minmax(0,1fr)}}
 </style>
 </head>
@@ -61,6 +65,48 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--mut);font-size:14px;p
   <section id="progressPanel" class="panel" hidden aria-labelledby="progressHead">
     <h2 id="progressHead" data-en="In progress and finished today" data-zh="进行中与今日完成"></h2>
     <ul id="progressList" class="items"></ul>
+  </section>
+
+  <section id="todoPanel" class="panel" aria-labelledby="todoHead">
+    <h2 id="todoHead" data-en="Your to-dos" data-zh="你的待办"></h2>
+    <p class="muted" data-en="Your own list, kept on this computer. A to-do that is late or due today also appears under Needs you, and one you finish today is counted as finished today. Hiding it there does not tick it off here." data-zh="你自己的清单，保存在这台电脑上。已逾期或今天到期的待办也会出现在“需要你”中，今天完成的会计入今日完成。在那里隐藏不会把它标为完成。"></p>
+    <form id="todoForm" novalidate>
+      <div class="fields">
+        <p class="field"><label for="todoTitle" data-en="To-do" data-zh="待办内容"></label><input id="todoTitle" type="text" maxlength="300" autocomplete="off"></p>
+        <p class="field"><label for="todoDue" data-en="Due date (optional)" data-zh="截止日期（可选）"></label><input id="todoDue" type="date"></p>
+      </div>
+      <div class="actions" style="margin-top:12px"><button id="todoSave" class="primary" type="submit" data-en="Add to-do" data-zh="添加待办"></button><button id="todoCancel" type="button" class="quiet" hidden data-en="Cancel edit" data-zh="取消编辑"></button></div>
+    </form>
+    <div id="todoNotice" class="notice" role="status" aria-live="polite" hidden style="margin-top:12px"></div>
+    <ul id="todoList" class="todos"></ul>
+    <p id="todoEmpty" class="muted" hidden data-en="Nothing on your list. Add a to-do when you need one." data-zh="清单是空的，需要时再添加。"></p>
+    <label class="check"><input id="todoShowDone" type="checkbox"><span data-en="Show finished to-dos" data-zh="显示已完成的待办"></span></label>
+  </section>
+
+  <section id="newsPanel" class="panel" aria-labelledby="newsHead">
+    <h2 id="newsHead" data-en="News" data-zh="新闻"></h2>
+    <p class="muted" data-en="Headlines from feeds you add, kept to your topics. They are there to read: a headline is never a task, never ranks above your day, and is never handed to a model as something to do." data-zh="来自你添加的订阅源、并按你的主题筛选的标题。它们只供阅读：标题不会变成任务，不会排在你今天的事项之前，也不会作为指令交给模型。"></p>
+    <ul id="newsList" class="items news"></ul>
+    <p id="newsEmpty" class="muted" hidden></p>
+    <ul id="feedStatus" class="lines"></ul>
+    <details id="newsOptions">
+      <summary data-en="News feeds and topics" data-zh="新闻订阅源与主题"></summary>
+      <form id="newsForm" novalidate>
+        <div class="fields">
+          <p class="field"><label for="newsFeeds" data-en="Feeds · one RSS or Atom address per line, starting with https://" data-zh="订阅源 · 每行一个 RSS 或 Atom 地址，以 https:// 开头"></label><textarea id="newsFeeds" spellcheck="false" autocapitalize="off"></textarea></p>
+          <p class="field"><label for="newsTopics" data-en="Topics · separated by commas; empty shows every headline" data-zh="主题 · 用逗号分隔；留空则显示全部标题"></label><input id="newsTopics" type="text" autocomplete="off"><span class="muted" data-en="Matched against each headline and its summary, whole words only. Nothing is translated or rewritten." data-zh="与每条标题及摘要比对，只匹配完整的词。不会翻译或改写任何内容。"></span></p>
+          <p class="field"><label for="newsEvery" data-en="Check for new headlines every" data-zh="检查新标题的间隔"></label><select id="newsEvery"><option value="15">15 min</option><option value="30">30 min</option><option value="60">1 h</option><option value="180">3 h</option><option value="360">6 h</option><option value="720">12 h</option><option value="1440">24 h</option></select></p>
+          <p class="field"><label for="newsMax" data-en="Headlines in the brief" data-zh="简报中的标题数"></label><input id="newsMax" type="number" inputmode="numeric" min="1" max="20" step="1"></p>
+        </div>
+        <div class="actions" style="margin-top:12px"><button id="newsSave" class="primary" type="submit" data-en="Save feeds" data-zh="保存订阅源"></button><button id="newsCheck" type="button" data-en="Check now" data-zh="立即检查"></button><button id="newsRevert" type="button" class="quiet" hidden data-en="Undo my edits" data-zh="撤销我的修改"></button></div>
+      </form>
+      <ul class="lines">
+        <li data-en="Off until you add a feed. With no feed saved, Collie fetches nothing." data-zh="添加订阅源之前不会开启；没有保存订阅源时，Collie 不会抓取任何内容。"></li>
+        <li data-en="Collie asks only the addresses listed here, only over https, and only when they point to the public internet. It sends no account or cookie, just a request that names Collie." data-zh="Collie 只访问这里列出的地址，只用 https，且只在地址指向公共互联网时访问。请求不带账户或 Cookie，只表明来自 Collie。"></li>
+        <li data-en="While Collie is running, after you open the brief, each feed is checked at most once per interval — never more often than every 15 minutes. Saving or Check now reads them at once." data-zh="Collie 运行期间、打开简报之后，每个订阅源在每个间隔内最多检查一次——最短 15 分钟。保存或“立即检查”会马上读取。"></li>
+      </ul>
+    </details>
+    <div id="newsNotice" class="notice" role="status" aria-live="polite" hidden style="margin-top:12px"></div>
   </section>
 
   <section id="quiet" class="panel empty" hidden>
@@ -170,7 +216,7 @@ async function api(path,body=null,params={},retry=true){
   const res=await fetch(url(path,params),body?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}:{cache:"no-store"});
   if(res.status===403&&retry){const auth=await fetch("/api/session-token");if(auth.ok){token=(await auth.json()).token;return api(path,body,params,false);}}
   let payload={};try{payload=await res.json();}catch(e){payload={};}
-  if(!res.ok||payload.ok===false)throw new Error(payload.error||tr("The request failed.","请求失败。"));
+  if(!res.ok||payload.ok===false){const failed=new Error(payload.error||tr("The request failed.","请求失败。"));failed.conflict=payload.conflict===true;throw failed;}
   return payload;
 }
 async function busy(button,work,target="notice"){if(button&&button.disabled)return;if(button)button.disabled=true;notice("",false,target);try{await work();}catch(e){notice(e.message,true,target);}finally{if(button)button.disabled=false;}}
@@ -190,9 +236,9 @@ function ago(seconds){
   const days=Math.round(hours/24);
   return tr(days+" d ago",days+" 天前");
 }
-const SOURCES={personal:["Personal","个人事项"],missions:["Missions","任务"],approvals:["Needs you","需要你"],procedures:["Routines","习惯"],runs:["Runs","运行"],meetings:["Calendar","日历"],task_inbox:["Sessions","会话"],communications:["Email & phone","邮箱与电话"]};
+const SOURCES={personal:["Personal","个人事项"],missions:["Missions","任务"],approvals:["Needs you","需要你"],procedures:["Routines","习惯"],runs:["Runs","运行"],meetings:["Calendar","日历"],task_inbox:["Sessions","会话"],communications:["Email & phone","邮箱与电话"],todos:["To-dos","待办"]};
 const sourceName=key=>{const row=SOURCES[key];return row?tr(row[0],row[1]):key;};
-const STATUS={overdue:["Late","已逾期"],possibly_delayed:["May be late","可能延迟"],soon:["Soon","即将"],pending:["Waiting for you","等待你"],needs_you:["Needs you","需要你"],failed:["Failed","失败"],recovery_required:["Needs recovery","需要恢复"],review_required:["Needs review","需要查看"],blocked:["Blocked","已阻塞"],running:["Running","进行中"],queued:["Queued","排队中"],waiting:["Waiting","等待中"],done:["Done","已完成"],completed:["Done","已完成"],succeeded:["Done","已完成"],scheduled:["Scheduled","已安排"],proposed:["Suggested","建议"]};
+const STATUS={overdue:["Late","已逾期"],due_today:["Due today","今天到期"],possibly_delayed:["May be late","可能延迟"],soon:["Soon","即将"],pending:["Waiting for you","等待你"],needs_you:["Needs you","需要你"],failed:["Failed","失败"],recovery_required:["Needs recovery","需要恢复"],review_required:["Needs review","需要查看"],blocked:["Blocked","已阻塞"],running:["Running","进行中"],queued:["Queued","排队中"],waiting:["Waiting","等待中"],done:["Done","已完成"],completed:["Done","已完成"],succeeded:["Done","已完成"],scheduled:["Scheduled","已安排"],proposed:["Suggested","建议"]};
 const statusName=key=>{const row=STATUS[key];return row?tr(row[0],row[1]):(key||"").replace(/_/g," ");};
 function sourceStamp(name){const row=(data&&data.sources||[]).find(s=>s.name===name);return row?row.collected_at:0;}
 
@@ -222,7 +268,12 @@ function itemRow(item,options={}){
   li.append(head,metaLine(item));
   const row=node("div","","actions");
   const href=(item.source_ref||{}).href;
-  if(href){const open=node("a",tr("Open ","打开 ")+sourceName(item.source),"button");open.href=href;row.append(open);}
+  if(href){
+    const open=node("a",tr("Open ","打开 ")+sourceName(item.source),"button");open.href=href;
+    // A to-do lives further down this page: go to it instead of reloading the brief.
+    if(item.source==="todos")open.addEventListener("click",event=>{event.preventDefault();showTodo((item.source_ref||{}).label||"");});
+    row.append(open);
+  }
   if(options.controls){
     if(item.kind==="approval"){
       row.append(node("span",tr("A waiting decision cannot be hidden.","等待决定的事项无法隐藏。"),"muted"));
@@ -321,6 +372,215 @@ function render(){
     hiddenList.append(li);
   });
   $("hiddenPanel").hidden=!hidden.length;
+  renderTodos();
+  renderNews();
+}
+
+// ── news ────────────────────────────────────────────────────────────────────
+// Headlines are the feeds' own words: drawn as text, followed only as an https link, and
+// never offered as a task or a prompt. The settings form keeps a half-typed edit through
+// refreshes, and a save from a window that is behind is refused rather than overwriting.
+let newsDirty=false,newsRevision=0;
+const NEWS_FIELDS=["newsFeeds","newsTopics","newsEvery","newsMax"];
+const newsDraft=()=>NEWS_FIELDS.map(id=>$(id).value);
+function fillNews(){
+  const panel=(data&&data.news)||{},s=panel.settings;
+  // A half-typed edit is the person's, and so is the revision it was started from: a
+  // refresh replaces neither, so a save still says which settings it meant to change.
+  if(!s||newsDirty)return;
+  newsRevision=s.revision;
+  $("newsFeeds").value=(s.feeds||[]).join("\n");
+  $("newsTopics").value=(s.topics||[]).join(", ");
+  const every=String(s.refresh_minutes||60);
+  if(![...$("newsEvery").options].some(option=>option.value===every))
+    $("newsEvery").append(Object.assign(node("option",every+" min"),{value:every}));
+  $("newsEvery").value=every;
+  $("newsMax").value=String(s.max_items||8);
+}
+function renderNews(){
+  const panel=(data&&data.news)||{},brief=(data&&data.brief)||{},rows=brief.news||[];
+  const feeds=panel.feeds||[],list=$("newsList"),status=$("feedStatus");
+  list.replaceChildren();
+  rows.forEach(item=>{
+    const li=node("li","","item");
+    const ref=item.source_ref||{},link=node("a",item.title,"title");
+    if(/^https:\/\//.test(ref.href||"")){link.href=ref.href;link.target="_blank";link.rel="noopener noreferrer";}
+    li.append(link);
+    const bits=[ref.label||""];
+    if(item.when)bits.push(tr("published ","发布于 ")+ago(item.when));
+    li.append(node("p",bits.filter(Boolean).join(" · "),"meta"));
+    if(item.detail)li.append(node("p",item.detail,"meta"));
+    list.append(li);
+  });
+  status.replaceChildren();
+  feeds.forEach(feed=>{
+    const bits=[feed.host];
+    bits.push(feed.success_at?tr("read ","读取于 ")+ago(feed.success_at):tr("not read yet","尚未读取"));
+    if(feed.skipped)bits.push(tr(feed.skipped+" without an https link left out","已略过 "+feed.skipped+" 条非 https 链接"));
+    if(feed.error)bits.push(feed.error);
+    status.append(node("li",bits.join(" · "),feed.error?"bad":""));
+  });
+  const on=feeds.length>0,empty=$("newsEmpty");
+  text(empty,panel.state==="unavailable"?tr("News settings could not be read. Nothing was changed.","无法读取新闻设置，没有做任何更改。")
+    :!on?tr("Off. Add a feed under News feeds and topics to see headlines here.","未开启。在“新闻订阅源与主题”中添加订阅源后，标题会显示在这里。")
+    :panel.refreshing?tr("Checking your feeds…","正在检查订阅源…")
+    :tr("No headlines match your topics right now.","目前没有符合你主题的标题。"));
+  empty.classList.toggle("bad",panel.state==="unavailable");
+  empty.hidden=rows.length>0;
+  $("newsCheck").disabled=!on;
+  $("newsSave").disabled=panel.state==="unavailable";
+  $("newsRevert").hidden=!newsDirty;
+  fillNews();
+}
+function newsBody(){
+  const [feeds,topics,every,most]=newsDraft();
+  return {revision:newsRevision,
+    feeds:feeds.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),
+    topics:topics.split(/[,，、\n]/).map(word=>word.trim()).filter(Boolean),
+    refresh_minutes:Number(every),max_items:Number(most)};
+}
+function newsSaid(panel){
+  const failed=(panel.feeds||[]).filter(feed=>feed.error);
+  return failed.length?tr("Saved. Some feeds could not be read — see the reason beside each.","已保存。有订阅源无法读取——原因见各项旁。")
+    :tr("Saved.","已保存。");
+}
+async function saveNews(){
+  const sent=newsDraft();
+  let payload;
+  try{payload=await api("/api/brief/news",{action:"settings",settings:newsBody()});}
+  catch(e){
+    if(!e.conflict)throw e;
+    // Another window saved first. Keep this edit, show that window's settings in the
+    // brief, and let a second, deliberate Save replace them.
+    await load();
+    const current=((data&&data.news)||{}).settings;
+    if(current)newsRevision=current.revision;
+    throw new Error(tr("Feeds were changed in another window, so nothing was saved. Your edits are still here: save again to replace them, or undo them to see what is saved.",
+      "订阅源已在其他窗口中修改，因此没有保存。你的修改仍保留在这里：再次保存即可替换，或撤销修改查看已保存的设置。"));
+  }
+  newsRevision=payload.news.settings.revision;
+  // Only what nobody touched while the save was on its way may be replaced by the saved copy.
+  newsDirty=newsDraft().some((value,index)=>value!==sent[index]);
+  notice(newsSaid(payload.news),false,"newsNotice");
+  await load();
+}
+async function checkNews(){
+  const payload=await api("/api/brief/news",{action:"refresh"});
+  notice((payload.news.feeds||[]).some(feed=>feed.error)?tr("Checked. Some feeds could not be read — see the reason beside each.","已检查。有订阅源无法读取——原因见各项旁。"):tr("Checked.","已检查。"),false,"newsNotice");
+  await load();
+}
+
+// ── your to-dos ─────────────────────────────────────────────────────────────
+// The one list this page writes. Each row carries the revision it was read at, so a
+// save from a window that is behind is refused (409) instead of overwriting, and a new
+// to-do gets its id before it is sent, so re-sending a create whose answer was lost
+// finds the same row rather than adding a second one.
+function newId(){try{return crypto.randomUUID();}catch(e){return Date.now().toString(36)+Math.random().toString(36).slice(2);}}
+let todoEdit=null,todoCreateId=newId(),todoFocus=new URLSearchParams(location.search).get("todo")||"";
+const TODO_FIELDS=["todoTitle","todoDue"];
+const todoDraft=()=>TODO_FIELDS.map(id=>$(id).value);
+function syncTodoForm(){
+  text($("todoSave"),todoEdit?tr("Save to-do","保存待办"):tr("Add to-do","添加待办"));
+  $("todoCancel").hidden=!todoEdit;
+}
+function resetTodoForm(){todoEdit=null;todoCreateId=newId();$("todoForm").reset();syncTodoForm();}
+function startEdit(row){
+  todoEdit={...row};$("todoTitle").value=row.title;$("todoDue").value=row.due||"";
+  syncTodoForm();$("todoTitle").focus();
+}
+function renderTodos(){
+  const box=(data&&data.todos)||{state:"ok",items:[]},list=$("todoList");
+  const today=((data||{}).brief||{}).date||"",showDone=$("todoShowDone").checked;
+  list.replaceChildren();
+  if(box.state!=="ok"){
+    // Unreadable is never shown as an empty list: that invites starting over.
+    list.append(node("li",tr("Your list could not be read. Nothing in it was changed.","无法读取你的清单，其中内容没有被改动。"),"muted bad"));
+  }
+  const rows=(box.items||[]).filter(row=>!row.done||showDone);
+  rows.forEach(row=>{
+    const li=node("li","","todo"+(row.done?" done":""));li.dataset.todo=row.id;
+    const tick=document.createElement("input");tick.type="checkbox";tick.checked=!!row.done;
+    tick.setAttribute("aria-label",tr("Finished: ","已完成：")+row.title);
+    tick.addEventListener("change",()=>busy(tick,()=>saveTodo({...row,done:tick.checked}),"todoNotice"));
+    const body=node("div","","body");
+    body.append(node("span",row.title,"title"));
+    if(row.due){
+      const late=!row.done&&today&&row.due<today;
+      body.append(node("span",(late?tr("Late · due ","已逾期 · 截止 "):tr("Due ","截止 "))+row.due,"meta"+(late?" late":"")));
+    }
+    const actions=node("div","","actions");
+    const edit=node("button",tr("Edit","编辑"));
+    edit.setAttribute("aria-label",tr("Edit to-do: ","编辑待办：")+row.title);
+    edit.addEventListener("click",()=>startEdit(row));
+    const drop=node("button",tr("Delete","删除"));
+    drop.setAttribute("aria-label",tr("Delete to-do: ","删除待办：")+row.title);
+    drop.addEventListener("click",()=>busy(drop,()=>deleteTodo(row),"todoNotice"));
+    actions.append(edit,drop);
+    li.append(tick,body,actions);
+    list.append(li);
+  });
+  $("todoEmpty").hidden=box.state!=="ok"||(box.items||[]).length>0;
+  $("todoSave").disabled=box.state!=="ok";
+  syncTodoForm();
+}
+function showTodo(id){
+  const row=((data&&data.todos||{}).items||[]).find(item=>item.id===id);
+  if(!row){notice(tr("That to-do is no longer on your list.","这项待办已不在清单中。"),false,"todoNotice");return;}
+  if(row.done&&!$("todoShowDone").checked){$("todoShowDone").checked=true;renderTodos();}
+  const li=[...$("todoList").children].find(el=>el.dataset.todo===id);
+  if(!li)return;
+  li.classList.add("found");li.scrollIntoView({block:"center"});
+  const tick=li.querySelector("input");if(tick)tick.focus();
+}
+// Another window got there first: nothing was written. Show the list as it is now, and
+// say so -- never retry by ourselves, which would overwrite the other window's change.
+async function stale(error){
+  if(!error.conflict)throw error;
+  await load();
+  throw new Error(tr("This to-do changed in another window, so nothing was changed here. The list now shows it as it is.",
+    "这项待办已在其他窗口中修改，因此这里没有做任何更改。清单现在显示的是它的当前状态。"));
+}
+async function saveTodo(row){
+  try{await api("/api/brief/todos",{action:"save",todo:row});}catch(e){await stale(e);}
+  await load();
+}
+async function deleteTodo(row){
+  if(!confirm(tr("Delete this to-do? ","删除这项待办？")+row.title))return;
+  try{await api("/api/brief/todos",{action:"delete",todo:{id:row.id,revision:row.revision}});}catch(e){await stale(e);}
+  if(todoEdit&&todoEdit.id===row.id)resetTodoForm();
+  await load();
+}
+// The form's save was refused because the row moved. The person's words stay in the
+// form; the form now points at the row as it is, so a second, deliberate Save replaces
+// it -- or, if it was deleted, adds the words as a new to-do.
+async function rebase(id){
+  await load();
+  const current=((data&&data.todos||{}).items||[]).find(item=>item.id===id);
+  if(current)todoEdit={...current};else{todoEdit=null;todoCreateId=newId();}
+  syncTodoForm();
+  throw new Error(current
+    ?tr("This to-do was changed elsewhere first. The list shows that version and your words are still here: save again to replace it, or cancel.",
+        "这项待办已先在其他地方被修改。清单中显示的是那个版本，你的内容仍保留在这里：再次保存即可替换，或取消编辑。")
+    :tr("This to-do was deleted in another window. Your words are still here: Add to-do saves them as a new one.",
+        "这项待办已在其他窗口中删除。你的内容仍保留在这里：点击“添加待办”会将其另存为新的一项。"));
+}
+async function submitTodo(){
+  if(!$("todoTitle").value.trim())throw new Error(tr("Write what the to-do is first.","请先写下待办内容。"));
+  const edit=todoEdit,sent=todoDraft();
+  const base=edit?{id:edit.id,revision:edit.revision,done:!!edit.done}:{id:todoCreateId,revision:0,done:false};
+  let payload;
+  try{payload=await api("/api/brief/todos",{action:"save",todo:{...base,title:sent[0],due:sent[1]}});}
+  catch(e){if(!e.conflict||todoEdit!==edit)throw e;await rebase(base.id);}
+  // Accepted. Clear only what the person has not changed since pressing Save: anything
+  // typed while the answer was on its way is theirs, and stays.
+  if(todoEdit===edit){
+    if(!todoDraft().some((value,index)=>value!==sent[index]))resetTodoForm();
+    else if(edit)todoEdit={...edit,...payload.todo};   // keep editing the same row, now current
+    else todoCreateId=newId();                         // the newer words are a new to-do
+    syncTodoForm();
+  }
+  notice(tr("Saved.","已保存。"),false,"todoNotice");
+  await load();
 }
 
 // A second request may start before the first answers -- switching language does exactly
@@ -336,6 +596,8 @@ async function load(button){
     catch(e){if(mine!==briefSeq)return;throw e;}
     if(mine!==briefSeq)return;
     data=payload;render();
+    // Arrived from a to-do's link (/brief?todo=...): show that one, once.
+    if(todoFocus){const id=todoFocus;todoFocus="";showTodo(id);}
   });
 }
 
@@ -534,6 +796,22 @@ $("schedReload").addEventListener("click",()=>{
     if(dirty&&prefsDirty)notice(tr("Status re-read. The unsaved changes below were kept — undo them to see what is saved.",
       "已重新读取状态。下方未保存的修改已保留——如需查看已保存的设置，请撤销修改。"),false,"schedNotice");
   });
+});
+$("todoForm").addEventListener("submit",event=>{
+  event.preventDefault();
+  busy($("todoSave"),submitTodo,"todoNotice");
+});
+$("todoCancel").addEventListener("click",()=>{resetTodoForm();notice("",false,"todoNotice");});
+$("todoShowDone").addEventListener("change",renderTodos);
+$("newsForm").addEventListener("input",()=>{newsDirty=true;$("newsRevert").hidden=false;});
+$("newsForm").addEventListener("submit",event=>{
+  event.preventDefault();
+  busy($("newsSave"),saveNews,"newsNotice");
+});
+$("newsCheck").addEventListener("click",()=>busy($("newsCheck"),checkNews,"newsNotice"));
+$("newsRevert").addEventListener("click",()=>{
+  newsDirty=false;renderNews();
+  notice(tr("Your edits were dropped. These are the saved feeds.","已放弃修改，以下是已保存的订阅源。"),false,"newsNotice");
 });
 $("schedRevert").addEventListener("click",()=>{
   prefsDirty=false;fillFields();renderSched();

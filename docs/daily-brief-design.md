@@ -12,12 +12,16 @@ able to point at the three rows, and a sentence a model wrote cannot be pointed 
 
 ## What it is not
 
-* Not a second agent loop. It does not fetch, schedule, send, crawl, or call a model.
-* Not an authority. Titles, agendas and mail-derived text are **data**. They are
+* Not a second agent loop. The builder does not fetch, schedule, send, crawl, or call a
+  model. The brief's one outbound request, the opt-in feed reader (see *News* below),
+  lives outside it and hands it headlines already stored.
+* Not an authority. Titles, agendas, headlines and mail-derived text are **data**. They are
   collapsed to one bounded line, stripped of control characters, and HTML-escaped
   again in the renderers. Nothing in a payload can become an instruction or a link.
-* Not a task store. It never writes to the sources it reads. The only file it owns is
-  its own small preferences/seen store.
+* Not a task store. The builder never writes to the sources it reads. The only file it
+  owns is its own small preferences/seen store. The one source the brief *page* writes
+  is the person's own to-do list (see *To-dos* below), through its own route and its
+  own store — never a mission, session, calendar or message.
 
 ## Integration API
 
@@ -34,7 +38,8 @@ brief = daily_brief.build(
     state_dir=None,               # enables dismiss/snooze + staleness; omit for pure
     profile="default",
     remember=True,                # record seen-bookkeeping when state_dir is set
-    news=None,                    # None = off. A list of already-sourced items.
+    news=None,                    # None = off. A list of already-sourced items
+                                  # (the web layer passes the feed reader's headlines).
     top_limit=3,
 )
 
@@ -55,6 +60,7 @@ email = daily_brief.render_email(brief, bilingual=False)  # -> subject/text/html
 | `meetings` | `/api/meetings/schedule` | the real calendar agenda |
 | `task_inbox` | `/api/task-inbox/pending` | queued work, and what is stranded on a person |
 | `communications` | `/api/channels` | messages already received, replies already written |
+| `todos` | `/api/brief/todos` | the person's own to-do list (`<state>/daily-brief/todos.db`) |
 
 Each value is read three ways, and the difference is the whole point:
 
@@ -148,6 +154,102 @@ and get opposite words: `setup["reason"]` is `"no sources are configured"` only 
 every source was `absent`, and `"no source responded"` when any of them errored. A
 fresh profile whose endpoints all answered with empty bodies is `ok` and reaches
 neither — an empty store is an answer.
+
+### To-dos
+
+`todos` is the one source a person writes directly, on the brief page, and it follows
+the rules the brief already applies to personal reminders and events:
+
+| to-do | where it appears |
+| --- | --- |
+| open, due date before the reader's local date | **needs you** — *Past its due date.* (`overdue`) |
+| open, due today | **needs you** — *Due today.* (`due_today`) |
+| open, due later, or no due date | not in the snapshot; it stays in the list on the page |
+| ticked off during this local day | **done today**, at the time it was ticked |
+
+"Late" is decided against the brief's own local date, never UTC's. Severity comes from
+the due date alone (3 late, 4 due today), so a to-do never outranks a waiting decision
+or a failed run however it is worded. The title is the person's own sentence and is
+never translated; only the detail line is ours. Rows link to `/brief?todo=<id>`, which
+the page reads to show that row. Hiding one from the brief is, as everywhere else, not
+ticking it off: it stays open in the list, and a changed due date or title brings it
+back.
+
+`harness/daily_brief_todos.py` owns the list (at most `TODO_LIMIT`, 2000, so the builder
+always reads every row). Every row carries a revision. `POST /api/brief/todos`
+`{"action": "save" | "delete", "todo": {...}}` must name the revision it was made
+against; a row another window moved first is refused with 409 and `conflict: true`,
+and nothing is written — a stale tab can neither overwrite a newer edit nor bring back
+a deleted row. The page picks a new row's id before sending, so a create whose answer
+was lost is safe to send again: it finds its own untouched row instead of adding a
+second one. After an accepted save the page clears only fields nobody changed while
+the answer was on its way. A list that cannot be read makes the source `unavailable`
+and the page says so, rather than showing an empty list to start again in.
+
+### News
+
+`news=` is filled from RSS and Atom feeds the person adds on the brief page, by
+`harness/daily_brief_news.py`. It is **off until a feed is saved**: with none, the web
+layer passes `news=None`, nothing is fetched and no thread runs. News is not one of
+`SOURCE_NAMES` — a feed being down is not a fact about the person's day, so it never
+makes coverage partial or the day unclear — and its per-feed state is reported in the
+page's own news panel instead.
+
+What a fetch may do, each rule a guard:
+
+* Request only a saved feed address: `https`, port 443, a host name, no user name or
+  password. Never an item link, image or icon.
+* Connect only to the public internet. Every address the name resolves to must be
+  `is_global` (IPv4 carried in IPv6 — mapped, 6to4, Teredo, NAT64 — is checked as
+  IPv4; the deprecated IPv4-compatible `::/96` and site-local `fec0::/10`, which
+  Python calls global, are refused outright), and the socket is pinned to the checked
+  address, so DNS rebinding cannot swap
+  one in between check and connect. TLS still names the original host (SNI) and
+  verifies its certificate. Every redirect, at most four, is checked again from the
+  start.
+* Stay bounded: no proxy from the environment, `Accept-Encoding: identity` (a
+  compressed answer is refused), at most 2 MiB (refused, not cut), a 7 s socket
+  timeout per read, and a 20 s deadline for the whole fetch. A socket timeout alone
+  restarts with every byte, so a watchdog timer shuts the connection down at the
+  deadline — during the TLS handshake, the headers, a chunk-size line or the body
+  alike — through a duplicate of the socket taken when it was created. Name
+  resolution is the one step it cannot interrupt; the operating system's resolver
+  bounds that, and nothing is sent until it answers.
+* Parse plain XML only, in one linear streaming pass (expat). A DTD or an entity is
+  refused, by a byte scan and again by the parser. Deeper than 32 levels or more than
+  50,000 elements is refused as it is read; only an item's own children are read,
+  never an item nested in one; each field keeps at most 4,096 characters and is cut
+  again before tags are stripped with a pattern that cannot backtrack; reading stops
+  after 100 items. A 2 MiB hostile feed is read or refused in hundredths of a second.
+  Only items whose link passes `safe_href(external=True)` are kept; the rest are
+  counted and the page says how many were left out.
+* The User-Agent is `Collie-DailyBrief/1.0 (+https://github.com/colliehq/collie)`;
+  no cookie, credential or topic is sent. `docs/privacy.md` lists this destination.
+
+When it happens: on `POST /api/brief/news` (`settings` saves at a named revision and
+reads the feeds that are due — a new one always is; `refresh` is *Check now*, which
+still skips a feed read in the last minute), and in a lazy background worker that
+`GET /api/brief` starts once a feed is saved. The worker reads a feed at most once per
+its interval (15 minutes to a day), and ends by itself when no feed is saved. Opening
+the brief never waits on a fetch: headlines are whatever the last fetch stored, and a
+failed fetch keeps the last good headlines with its reason beside the feed. Nor does a
+save or *Check now* wait for the worker: each refresh claims the feeds it fetches and
+leaves feeds another refresh has claimed alone, and no lock is held while fetching,
+so removing a feed that hangs is answered at once.
+
+Settings carry a revision, as to-dos do: a stale window's save is a 409 and saves
+nothing. A fetch that finishes after its feed was removed is not written back, so it
+cannot resurrect the feed's headlines.
+
+Remote text stays display-only. Titles and summaries are reduced to one plain line
+when read, bounded again by the builder, drawn with `textContent`, and linked only as
+a validated `https` URL opened with no opener or referrer. Headlines are `tone:
+"news"` at the lowest severity: never in `top`, `attention` or any other section,
+never a suggestion's evidence or prompt, and "URGENT" in a headline changes nothing.
+The only route by which any brief text reaches a model is a reply to the emailed
+brief (`daily_brief_reply`), which quotes that morning's text inside markers saying it
+is an untrusted historical snapshot that authorizes nothing; a headline is one line
+there, so it cannot forge the quote's end marker on a line of its own.
 
 ### The snapshot
 
@@ -267,7 +369,7 @@ summary came to open with *"Good evening."*
 ### Links
 
 `source_ref["href"]` is either a local whitelisted UI route (first segment in
-`_LOCAL_ROUTES`) or, for caller-supplied news only, a validated `https` URL with a
+`_LOCAL_ROUTES`) or, for news only, a validated `https` URL with a
 hostname and no embedded credentials. `javascript:`, `data:`, `//host`, `http`,
 traversal, backslashes, interior whitespace and control characters are **dropped**,
 not escaped — a link is an action target, not text. Nothing in a brief executes; each
@@ -277,7 +379,8 @@ The allowlist is the set of paths `webapp.Handler` actually serves. Missions, Ne
 You, Today, sessions, the Library and Activity are **panes of the single-page app at
 `/`**, not routes: rows that linked to `/missions` or `/needs-you` 404ed. They are now
 reached the way the page reaches them itself — `/?mission=<id>` and `/?session=<id>`,
-the query keys `index.html` reads on load. The identifier is percent-encoded data and
+the query keys `index.html` reads on load; a to-do links to `/brief?todo=<id>`, which
+the brief page reads the same way. The identifier is percent-encoded data and
 the finished link still has to satisfy `safe_href`, so no id can change a link's
 target; a row whose id will not survive that simply renders as unlinked text.
 
@@ -289,23 +392,31 @@ stores under <state root>        harness/daily_brief_web.py      harness/daily_b
  approvals / procedures          (read-only, one                  |
  meetings / task_inbox            guard per source)               +-> render_text()
  channels + communications                                        +-> render_email()
-                                                                        |
+ todos (daily-brief/todos.db)                                           |
+ news.db (stored headlines) -----------------> news= -------------->    |
  webapp.Handler  --  GET /brief (daily_brief.html)   <- fetch --  GET/POST /api/brief
                      GET/POST /api/brief/preferences  ------------> daily_brief_schedule
+                     POST /api/brief/todos  -----------------------> daily_brief_todos
+                     POST /api/brief/news  ------------------------> daily_brief_news
+                                                  (the only fetch: saved feeds, https,
+                                                   public addresses, lazy worker)
 ```
 
 | surface | state |
 | --- | --- |
 | `GET /brief` — the page, in-app and in a browser | mounted, authenticated |
-| `GET /api/brief` — snapshot + freshness + email preview | mounted, authenticated |
+| `GET /api/brief` — snapshot + freshness + email preview + the to-do list + feed state | mounted, authenticated; starts the feed worker only if a feed is saved |
 | `POST /api/brief` — `dismiss` / `snooze` / `restore` / `preview` | mounted, authenticated |
+| `POST /api/brief/todos` — `save` / `delete` one to-do, at a named revision | mounted, authenticated |
+| `POST /api/brief/news` — `settings` (at a named revision) / `refresh` | mounted, authenticated; the only route that reaches the internet |
 | `GET`/`POST /api/brief/preferences` — the opt-in email settings | mounted, authenticated |
 | the opt-in daily email (`daily_brief_schedule`) | implemented and **off** by default; the settings routes are mounted, and the periodic `tick(root)` that actually sends is called from the app's pump (parent-owned wiring). A profile that never opts in never sends, and nothing here starts a send by itself. |
 | mobile | not started; it would be the same endpoint and the same snapshot |
 
-Every route is an authenticated read or write of local state. Opening the brief runs no
-model and no tool, and `_preview` renders the mail text without sending it
-(`sendable: false`).
+Every route but `POST /api/brief/news` is an authenticated read or write of local
+state, and that one fetches only the person's saved feeds. Opening the brief runs no
+model and no tool, never waits on a feed, and `_preview` renders the mail text without
+sending it (`sendable: false`).
 
 **A brief is a snapshot, not a live check.** Each source is read from disk (or, for
 runs and approvals, from this process's memory) when the brief is built, and every
@@ -325,8 +436,9 @@ in the schedule's own outbox row.
 
 ### Not built, and not claimed
 
-* **No news fetching.** `news=` still takes items a caller already has. Nothing in this
-  work added a crawler, a feed reader or an outbound request of any kind.
+* **No news discovery.** News is only the RSS/Atom feeds the person saved (see *News*).
+  There is no crawler, no recommended or default feed, no fetching of the linked
+  articles, and no summarising, translating or ranking of headlines by a model.
 * **No semantic reading of your mail.** The messages source summarises *connected local
   work* — what is waiting, what is drafted, what failed to send. It does not extract
   commitments, deadlines, prices or intent from message bodies; it never reads a body
@@ -346,9 +458,10 @@ in the schedule's own outbox row.
 
 * **Offline / partial.** Only local sources are read. A source that is down is
   `unavailable`, which visibly shrinks the brief's claims; it never widens them.
-* **News is off by default** and this module contains no crawler. `news=` accepts
-  items the caller already obtained, and each one is dropped unless it carries both a
-  publisher name and a safe `https` link. There is no speculative discovery.
+* **News is off by default.** With no feed saved nothing is fetched. With feeds, the
+  builder still fetches nothing: it takes the headlines the feed reader last stored,
+  and drops any row without both a publisher (the feed's host) and a safe `https` link.
+  Headlines are only as fresh as the last fetch, which happens only while Collie runs.
 * **Replies and actions need explicit intent.** A reply to a digest is a *description*
   of a request, routed through the existing untrusted-data framing in
   `harness/communications.py`. It cannot approve, send, buy or cancel anything.
@@ -371,7 +484,14 @@ in the schedule's own outbox row.
 drives real stores under `tmp_path`, including a configured message connection whose
 transport raises on every call. No network, no mail server, no credentials, no model
 and no real user state: addresses are `example.test` fixtures and message bodies are
-literals written in the test file.
+literals written in the test file. `tests/test_daily_brief_todos.py` covers the to-do
+store, builder and route; `tests/test_daily_brief_todos_browser.py` drives the real page
+in Chromium against the real server — stale windows, lost answers and words typed while
+a save is on its way. `tests/test_daily_brief_news.py` covers every fetch rule without
+the network — DNS is an injected resolver, feeds come from a local server behind an
+injected pinned connection, and the real TLS connection is aimed at a local socket that
+records its hello — plus the feed store, the worker, and what a hostile headline can and
+cannot become; `tests/test_daily_brief_news_browser.py` drives the page's news panel.
 
 The builder suite covers item identity and cross-source dedupe, counts equal to real
 entries, no phantom agenda rows, empty vs unavailable vs absent vs partly-read sources,

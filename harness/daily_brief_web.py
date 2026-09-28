@@ -1,4 +1,4 @@
-"""The Daily Brief surface: collect the eight sources, build one brief, serve it.
+"""The Daily Brief surface: collect the local sources, build one brief, serve it.
 
 :mod:`daily_brief` is deliberately transport-free -- it takes payloads and returns a
 snapshot.  This module reads Today's local stores and the communication inbox,
@@ -288,17 +288,24 @@ def _communications(root, live, now):
     return payload
 
 
+def _todos(root, live, now):
+    """The person's own list.  A root that never had one reads as empty, not absent."""
+    from . import daily_brief_todos
+    return daily_brief_todos.read(root)
+
+
 class _Unwired(RuntimeError):
     """This source exists, but not from here.  Carries its own explanation."""
 
 
 COLLECTORS = {"personal": _personal, "missions": _missions, "approvals": _approvals,
               "procedures": _procedures, "runs": _runs, "meetings": _meetings,
-              "task_inbox": _task_inbox, "communications": _communications}
+              "task_inbox": _task_inbox, "communications": _communications,
+              "todos": _todos}
 
 
 def collect(root, *, now=None):
-    """``(payloads, report)`` for all eight sources.  Never raises for one bad source.
+    """``(payloads, report)`` for every source.  Never raises for one bad source.
 
     ``payloads`` is exactly what :func:`daily_brief.build` wants.  ``report`` records,
     per source, when it was read and why it could not be -- the freshness evidence the
@@ -352,14 +359,49 @@ def _offset(value):
     return minutes if -840 <= minutes <= 840 else None
 
 
+def _news(root):
+    """``(rows for build(news=...), the news panel)`` from the feeds already fetched.
+
+    Never a fetch: the brief shows what the background refresh last stored.  With no
+    feed saved the rows are ``None`` -- news is off -- and no store is created.  A
+    store that cannot be read gives no headlines and says why in the panel, rather
+    than silently looking like "no news today".
+    """
+    from . import daily_brief_news
+    off = {"state": "ok", "error": "", "settings": daily_brief_news.defaults(),
+           "feeds": [], "refreshing": False}
+    if not os.path.isfile(daily_brief_news.path_for(root)):
+        return None, off
+    try:
+        store = daily_brief_news.NewsStore(root)
+        return store.headlines(), dict(store.panel(), state="ok", error="")
+    except Exception as exc:                          # noqa: BLE001 - reported, not raised
+        return [], dict(off, state="unavailable", settings=None,
+                        error=_reason("news", exc))
+
+
 def _brief(root, *, timezone, utc_offset_minutes, language, profile, now=None,
            remember=True):
     payloads, report = collect(root, now=now)
+    headlines, news_panel = _news(root)
     brief = daily_brief.build(
         payloads, now=now, timezone=timezone, language=language, state_dir=root,
         profile=profile, remember=remember, utc_offset_minutes=_offset(utc_offset_minutes),
-        fallback_timezone="utc")
-    return brief, report
+        fallback_timezone="utc", news=headlines)
+    return brief, report, {"todos": payloads.get("todos"), "news": news_panel}
+
+
+def _todo_list(payload):
+    """The whole list for the page's editor -- the same read the brief was built from.
+
+    A list that could not be read is said to be unreadable, never shown as empty: an
+    empty editor invites the person to start again over a list that still exists.
+    """
+    if not isinstance(payload, dict) or payload.get("__unavailable"):
+        return {"state": "unavailable", "items": [],
+                "error": str((payload or {}).get("error") or "")[:200]
+                if isinstance(payload, dict) else ""}
+    return {"state": "ok", "items": list(payload.get("todos") or []), "error": ""}
 
 
 def read(root, *, timezone="UTC", utc_offset_minutes=None, language="en",
@@ -367,14 +409,16 @@ def read(root, *, timezone="UTC", utc_offset_minutes=None, language="en",
     """The whole Daily Brief surface in one authenticated GET.
 
     Builds today's brief from live stores, and returns it with the per-source freshness
-    report, the user's current hide/snooze preferences, and a preview of the email
-    rendering of this same snapshot.  Opening the brief runs no model and no tool, and
-    reaches no mailbox or provider: it is a read of eight local stores plus one pure
-    function.
+    report, the user's current hide/snooze preferences, the to-do list the page edits,
+    the news feeds and how each last answered, and a preview of the email rendering of
+    this same snapshot.  Opening the brief runs no model and no tool, and reaches no
+    mailbox, provider or feed: it is a read of local stores plus one pure function.
+    Headlines are whatever the feeds' background refresh last stored.
     """
     language = _language(language)
-    brief, report = _brief(root, timezone=timezone, utc_offset_minutes=utc_offset_minutes,
-                           language=language, profile=profile, now=now)
+    brief, report, extra = _brief(
+        root, timezone=timezone, utc_offset_minutes=utc_offset_minutes,
+        language=language, profile=profile, now=now)
     try:
         state = daily_brief.feedback_state(state_dir=root, profile=profile)
     except (OSError, BriefError):
@@ -383,6 +427,8 @@ def read(root, *, timezone="UTC", utc_offset_minutes=None, language="en",
     return {"schema": SCHEMA, "brief": brief, "sources": report,
             "email": _preview(brief, language),
             "feedback": {"hidden": hidden, "count": len(hidden)},
+            "todos": _todo_list(extra["todos"]),
+            "news": extra["news"],
             "profile": profile,
             "unsuppressible": sorted(daily_brief.UNSUPPRESSIBLE_KINDS),
             "collected_at": max([row["collected_at"] for row in report] or [time.time()])}
@@ -448,9 +494,10 @@ def perform(root, body, *, profile="default", now=None):
 
     if action == "preview":
         language = _language(body.get("language"))
-        brief, report = _brief(root, timezone=body.get("timezone", "UTC"),
-                               utc_offset_minutes=body.get("utc_offset_minutes"),
-                               language=language, profile=profile, now=now, remember=False)
+        brief, report, _ = _brief(root, timezone=body.get("timezone", "UTC"),
+                                  utc_offset_minutes=body.get("utc_offset_minutes"),
+                                  language=language, profile=profile, now=now,
+                                  remember=False)
         return {"ok": True, "action": action, "brief_id": brief["id"], "sources": report,
                 "email": _preview(brief, language)}
 
@@ -473,3 +520,72 @@ def perform(root, body, *, profile="default", now=None):
         return {"ok": False, "action": action, "item_id": result.get("item_id", ""),
                 "error": result["refused"]}
     return {"ok": True, "action": action, **result}
+
+
+# ---------------------------------------------------------------- the person's to-dos
+
+#: What ``todo`` will do to the list.  Anything else is refused by name.
+TODO_ACTIONS = ("save", "delete")
+
+
+def todo(root, body):
+    """Create, edit, complete or delete one to-do on the person's own list.
+
+    ``{"action": "save" | "delete", "todo": {...}}``.  The row names the revision it
+    was edited from; when another window moved it first, nothing is written and the
+    answer is ``ok: False`` with ``conflict: True`` (the route turns it into a 409), so
+    a stale tab reloads instead of overwriting.  A malformed request raises
+    :class:`BriefError` or ``TodoError`` -- both ``ValueError`` -- and changes nothing.
+
+    This is the only write the brief page makes to a source, and it writes only the
+    list the person keeps here: no task, mission, calendar or message is touched.
+    """
+    from . import daily_brief_todos
+    if not isinstance(body, dict):
+        raise BriefError("expected a JSON object")
+    action = body.get("action")
+    if not isinstance(action, str) or action not in TODO_ACTIONS:
+        raise BriefError("unknown to-do action")
+    store = daily_brief_todos.TodoStore(root)
+    try:
+        if action == "save":
+            return {"ok": True, "action": action, "todo": store.save(body.get("todo"))}
+        return {"ok": True, "action": action, **store.delete(body.get("todo"))}
+    except daily_brief_todos.TodoConflict as exc:
+        return {"ok": False, "action": action, "conflict": True, "error": str(exc)}
+
+
+# ---------------------------------------------------------------- news feeds
+
+#: What ``news`` will do.  Anything else is refused by name.
+NEWS_ACTIONS = ("settings", "refresh")
+
+
+def news(root, body, *, fetch=None):
+    """Save the feed settings, or check the feeds now -- the page's two news buttons.
+
+    ``{"action": "settings", "settings": {revision, feeds, topics, refresh_minutes,
+    max_items}}`` saves at a named revision (a window that is behind gets ``ok: False``
+    and ``conflict: True``, and nothing is saved), then fetches the feeds that are due --
+    a newly added one always is -- so the answer can say at once whether it worked.
+    ``{"action": "refresh"}`` fetches every saved feed not fetched in the last minute.
+    Neither waits for the background worker: a feed it is already fetching is left to
+    it, so removing a feed that hangs is answered at once.
+
+    These are the only requests in the brief that reach the internet, and only the
+    feed addresses the person saved, under the rules in :mod:`daily_brief_news`.
+    """
+    from . import daily_brief_news
+    if not isinstance(body, dict):
+        raise BriefError("expected a JSON object")
+    action = body.get("action")
+    if not isinstance(action, str) or action not in NEWS_ACTIONS:
+        raise BriefError("unknown news action")
+    store = daily_brief_news.NewsStore(root)
+    if action == "settings":
+        try:
+            store.save_settings(body.get("settings"))
+        except daily_brief_news.NewsConflict as exc:
+            return {"ok": False, "action": action, "conflict": True, "error": str(exc)}
+    store.refresh(fetch=fetch, force=action == "refresh")
+    return {"ok": True, "action": action, "news": dict(store.panel(), state="ok", error="")}

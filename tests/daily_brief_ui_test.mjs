@@ -91,9 +91,9 @@ check(fetched.every((target) => target.startsWith("/")),
 check(fetched.every((t) => t.startsWith("/api/brief") || t === "/api/session-token"),
   "the page talks only to its own route and the token refresh");
 const called = all(/\bapi\("([^"]+)"/g);
-const routes = ["/api/brief", "/api/brief/preferences"];
+const routes = ["/api/brief", "/api/brief/preferences", "/api/brief/todos", "/api/brief/news"];
 check(called.length >= 3 && called.every((t) => routes.includes(t)),
-  `every api() call is the brief or its preferences (${[...new Set(called)].join(" ")})`);
+  `every api() call is the brief, its preferences, the to-do list or the feeds (${[...new Set(called)].join(" ")})`);
 for (const noisy of ["setInterval", "EventSource", 'addEventListener("focus"', 'addEventListener("blur"',
   "visibilitychange", "location.reload"]) {
   check(!script.includes(noisy), `no ${noisy}: the brief refreshes when asked, not on its own`);
@@ -143,9 +143,14 @@ check(posted.length === 6 && ["enabled", "connection", "timezone", "at", "langua
 check(!/recipient|收件人/i.test(markup) && !/(destination|to|address|email):/.test(
   (script.match(/return \{enabled:true,[\s\S]*?\};/) || [""])[0]),
   "there is nowhere to type a destination, and none is ever posted");
+// The to-do list and the news topics are the other things a person types here: words,
+// a date and a number. Feed addresses go in a plain textarea, never an address field.
 const inputs = [...markup.matchAll(/<input[^>]*>/g)].map((m) => m[0]);
-check(inputs.length > 0 && inputs.every((tag) => /\sid="(schedAt|schedZone|schedGrace)"/.test(tag)),
-  `the only inputs are the schedule's own (${inputs.length})`);
+check(inputs.length > 0 && inputs.every((tag) =>
+  /\sid="(schedAt|schedZone|schedGrace|todoTitle|todoDue|todoShowDone|newsTopics|newsMax)"/.test(tag)),
+  `the only inputs are the schedule's, the to-do list's and the news topics' (${inputs.length})`);
+check(/<input id="todoTitle" type="text"/.test(markup) && /<input id="todoDue" type="date"/.test(markup),
+  "a to-do is a line of text and an optional date");
 check(!/type="(email|password|tel|url)"/.test(markup),
   "no field asks for an address, a password or a phone number");
 check(/destination_masked/.test(script) && !/\.owner\b/.test(script),
@@ -200,6 +205,40 @@ check(/\$\("schedRevert"\)\.hidden=!prefsDirty/.test(script) && /were kept/.test
   "re-reading the status says the unsaved changes were kept, and offers the undo");
 check(/const want=select\.value\|\|saved/.test(script),
   "rebuilding the account list for a new language keeps the chosen account");
+
+// ── the to-do list: the one source this page writes ─────────────────────────────
+check(/\{id:todoCreateId,revision:0,done:false\}/.test(script) && /todoCreateId=newId\(\)/.test(script),
+  "a new to-do has its id before it is sent, so a resent create finds the same row");
+check(/revision:edit\.revision/.test(script) && /revision:row\.revision/.test(script),
+  "every edit and delete names the revision it was made against");
+check(/if\(!todoDraft\(\)\.some\(\(value,index\)=>value!==sent\[index\]\)\)resetTodoForm\(\)/.test(script),
+  "an accepted save clears only fields nobody changed while it was on its way");
+check(/async function stale\(error\)\{\s*if\(!error\.conflict\)throw error;\s*await load\(\);\s*throw new Error/.test(script) &&
+  /failed\.conflict=payload\.conflict===true/.test(script),
+  "a stale window is told and shown the current list, and nothing is retried behind its back");
+check(/Your list could not be read/.test(script) && /box\.state!=="ok"/.test(script),
+  "an unreadable list is said to be unreadable, never drawn as empty");
+check(/item\.source==="todos"/.test(script) && /event\.preventDefault\(\);showTodo\(/.test(script),
+  "a to-do in Needs you opens its row on this page instead of reloading it");
+
+// ── news: display only ───────────────────────────────────────────────────────────
+// A headline was written by whoever runs the feed. On this page it is text and, when the
+// brief validated it as https, a link that opens away from Collie -- nothing else.
+check(/link=node\("a",item\.title,"title"\)/.test(script) &&
+  /if\(\/\^https:\\\/\\\/\/\.test\(ref\.href\|\|""\)\)\{link\.href=ref\.href;link\.target="_blank";link\.rel="noopener noreferrer";\}/.test(script),
+  "a headline is text, and only an https link that opens with no opener or referrer");
+const newsBodies = [...script.matchAll(/api\("\/api\/brief\/news",(\{[^;]*?\})\)/g)].map((m) => m[1]);
+check(newsBodies.length === 2 && newsBodies.includes('{action:"settings",settings:newsBody()}') &&
+  newsBodies.includes('{action:"refresh"}'),
+  `the page sends feed settings and "check now", never a headline (${newsBodies.join(" ")})`);
+check(!/item\.title[^\n]*api\(|api\([^\n]*item\.title/.test(script) && !/todayStartTask|composer/.test(script),
+  "no headline or row title is ever sent anywhere, or put in a composer");
+check(/if\(!s\|\|newsDirty\)return;\s*newsRevision=s\.revision;/.test(script),
+  "a refresh keeps a half-typed feed edit and the revision it was started from");
+check(/if\(current\)newsRevision=current\.revision;/.test(script) && /nothing was saved/.test(script),
+  "a stale window is told, keeps its edit, and replaces the other only on a second save");
+check(/Off until you add a feed/.test(markup) && /never more often than every 15 minutes/.test(markup),
+  "news is off without a feed, and says how often feeds are read");
 
 // ── stale answers and hostile storage ───────────────────────────────────────────
 check(/const mine=\+\+briefSeq/.test(script) && /if\(mine!==briefSeq\)return/.test(script) &&

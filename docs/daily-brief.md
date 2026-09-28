@@ -25,6 +25,36 @@ conversation. It tells you how many session inboxes were not checked, and never
 assumes that the unread portion is clear. This does not change task scheduling or
 remove older work.
 
+## Your to-dos
+
+**Your to-dos** is a list you keep yourself, on this computer. Add a line and,
+if you like, a due date. A to-do that is late or due today also appears under
+**Needs you**; one you tick off today is listed as finished today. To-dos with a
+later date, or none, stay in the list without crowding your day. Hiding a to-do from
+the brief does not tick it off.
+
+If you edit the same to-do in two windows, the second save is refused and your
+words stay in the form: the list shows the other window's version, and saving again
+replaces it. Anything you type while a save is still on its way is kept.
+
+## News from your feeds
+
+News is off until you add a feed. Expand **News feeds and topics**, list RSS or
+Atom addresses that start with `https://` (up to eight), and optionally some topics.
+With topics, only headlines whose title or summary contains one of them as a whole
+word are shown. Choose how often to check, from every 15 minutes to once a day, and
+how many headlines the brief keeps.
+
+Saving reads new feeds at once; **Check now** reads them all again. Otherwise Collie
+checks in the background while it is running, after you have opened the brief. Each
+feed shows when it was last read and, if the last attempt failed, why; its earlier
+headlines stay until a later read succeeds.
+
+Headlines are for reading. Each one opens the article in your browser. A headline
+never becomes a task, never appears under Needs you, and is never given to a model as
+something to do. If the morning email is on, the headlines are included in it. See
+the [privacy policy](privacy.md) for exactly what these requests send.
+
 ## Receive a morning email
 
 1. Connect an email account in [Email & phone](communication-channels.md).
@@ -61,8 +91,9 @@ approve project work or external actions.
 
 The desktop and email share one brief snapshot, with English and Chinese display.
 The page supports a narrow browser; there is no standalone mobile app. The brief
-reads local calendar, task, approval and communication records. It does not yet
-perform a full semantic review of a Gmail mailbox or fetch general news.
+reads local calendar, task, approval and communication records, and your own to-do
+list; the only news is from feeds you add. It does not yet
+perform a full semantic review of a Gmail mailbox.
 
 Live email delivery requires a configured service account. The core brief remains
 useful without one. Developers can read the [implementation and API details](daily-brief-design.md).

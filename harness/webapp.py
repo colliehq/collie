@@ -2297,13 +2297,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/brief":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
-                from . import daily_brief_web
+                from . import daily_brief_news, daily_brief_web
                 try:
                     query = urllib.parse.parse_qs(parsed.query)
-                    return self._send_json(daily_brief_web.read(
+                    answer = daily_brief_web.read(
                         _state_root(), timezone=query.get("timezone", ["UTC"])[0],
                         utc_offset_minutes=query.get("utc_offset_minutes", [None])[0],
-                        language=query.get("language", ["en"])[0]))
+                        language=query.get("language", ["en"])[0])
+                    try:
+                        # Lazy: feeds refresh in the background only once the brief has
+                        # been opened, and only if a feed is saved (news is off otherwise).
+                        daily_brief_news.start_refresh(_state_root())
+                    except Exception:
+                        pass
+                    return self._send_json(answer)
                 except ValueError as exc:
                     return self._send_json({"error": str(exc)}, 400)
                 except Exception:
@@ -3849,6 +3856,41 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": str(exc)}, 400)
                 except Exception:
                     return self._send_json({"error": "Brief preferences could not be saved. Existing work was kept."}, 409)
+            if path == "/api/brief/todos":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import daily_brief_web
+                try:
+                    result = daily_brief_web.todo(_state_root(), body)
+                    # ok:False is another window's newer edit: nothing was written.
+                    return self._send_json(result, 409 if result.get("ok") is False else 200)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "The to-do could not be saved. Your list was kept as it was."}, 409)
+            if path == "/api/brief/news":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(65536)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import daily_brief_news, daily_brief_web
+                try:
+                    result = daily_brief_web.news(_state_root(), body)
+                    if result.get("ok") is False:
+                        return self._send_json(result, 409)
+                    try:
+                        daily_brief_news.start_refresh(_state_root())
+                    except Exception:
+                        pass              # the save stands; the next brief open retries
+                    return self._send_json(result)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "The news feeds could not be saved or checked. Your settings were kept."}, 409)
             if path == "/api/brief/preferences":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
