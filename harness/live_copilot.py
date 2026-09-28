@@ -2731,9 +2731,15 @@ class LiveCopilotRuntime:
 
     def _observe_ui(self, value: dict, now: int, foreground: dict) -> bool:
         """Keep a semantic, value-free UI delta; never retain keys, clipboard, or screenshots."""
-        if not value.get("observe_ui") or now - self.last_ui_poll_ms < 2_000:
+        if not value.get("observe_ui"):
+            self.focused_control = ""
+            return False
+        if now - self.last_ui_poll_ms < 2_000:
             return False
         self.last_ui_poll_ms = now
+        # Whatever this read finds, or fails to find, replaces the previous one: a failed read must
+        # not leave the previous app's focused control in this app's interaction pulses.
+        self.focused_control = ""
         try:
             current_app = foreground.get("app") or ""
             if not current_app:
@@ -2747,9 +2753,6 @@ class LiveCopilotRuntime:
             return False
         elements = result.get("elements") or result.get("tree") or result.get("controls") or []
         labels = []
-        # The focused control belongs to this observation only; one from an earlier app or
-        # window must not be reported for this one.
-        self.focused_control = ""
         for item in elements:
             if not isinstance(item, dict):
                 continue

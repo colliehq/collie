@@ -487,6 +487,36 @@ def test_the_focused_control_does_not_outlive_the_ui_it_came_from(monkeypatch, t
     assert runtime.focused_control == ""
 
 
+@pytest.mark.parametrize("failure", ["error", "not_ok", "raises", "no_app", "observe_off"])
+def test_a_failed_ui_read_does_not_keep_the_previous_apps_focused_control(monkeypatch, tmp_path,
+                                                                          failure):
+    from harness import native
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    reads = [{"ok": True, "elements": [{"type": "Edit", "name": "Search", "focused": True}]}]
+
+    def tree(**_kwargs):
+        if reads:
+            return reads.pop(0)
+        if failure == "raises":
+            raise RuntimeError("UIA driver failed")
+        return {"ok": False, "error": "window gone"} if failure == "not_ok" else None
+    monkeypatch.setattr(native, "tree", tree)
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=True, observe_input=False)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    now = int(time.time() * 1000)
+    runtime._observe_ui(store.snapshot(), now, {"app": "chrome", "pid": 1, "hwnd": 2})
+    assert runtime.focused_control == "Edit"
+    value = store.snapshot()
+    if failure == "observe_off":
+        value = dict(value, observe_ui=False)
+    foreground = {"app": "" if failure == "no_app" else "dota2", "pid": 3, "hwnd": 4}
+    runtime._observe_ui(value, now + 2_500, foreground)
+    assert runtime.focused_control == ""
+
+
 def test_explicit_handoff_can_create_durable_mission(monkeypatch, tmp_path):
     from harness import missionweb
     from harness.live_copilot import LiveSessionStore
