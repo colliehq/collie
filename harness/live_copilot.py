@@ -2055,7 +2055,8 @@ class LiveSessionStore:
         return plan
 
     def apply_diagram(self, plan_id) -> dict:
-        from .live_surfaces import detect_board, draw_with_shortcuts, safe_display_url
+        from . import browserbridge as bb
+        from .live_surfaces import BOARD_SPACE, detect_board, draw_with_shortcuts, safe_display_url
         with self._transaction():
             value = self._read()
         if not value.get("active") or not value.get("board_edit"):
@@ -2077,14 +2078,48 @@ class LiveSessionStore:
                 raise LiveCopilotError("live surface authority changed")
 
         try:
+            # The extension pauses the attached tab as soon as the person touches it. Applying a
+            # previewed diagram is a new, explicit edit instruction, so it resumes that one board
+            # space here, after the authority check; previews and status reads never resume it.
+            authority()
+            if not bb._bridge_live():
+                raise LiveCopilotError("Collie Browser Bridge is not connected")
+            with bb.browser_space(BOARD_SPACE):
+                resumed = bb._call({"action": "resume", "space": BOARD_SPACE})
+            data = resumed.get("data", resumed) if isinstance(resumed, dict) else None
+            if (not isinstance(resumed, dict) or not resumed.get("ok") or
+                    not isinstance(data, dict) or data.get("error") or
+                    data.get("resumed") is False):
+                details = data if isinstance(data, dict) else {}
+                outer = resumed if isinstance(resumed, dict) else {}
+                reason = details.get("error") or details.get("note") or outer.get("error") or ""
+                raise LiveCopilotError("the attached board could not be resumed for this edit%s" %
+                                       (": " + _text(reason, 300) if reason else ""))
             result = draw_with_shortcuts(
                 profile, plan, authority=authority, expected_tab_id=board.get("tab_id"),
                 expected_url=safe_display_url(board.get("url")))
         except Exception as exc:
             raise LiveCopilotError(str(exc)) from exc
+        nodes, edges = len(plan.get("nodes") or []), len(plan.get("edges") or [])
         with self._transaction():
             current = self._read()
             current["pending_diagram"] = None
+            if current.get("active") and current.get("session_id") == expected_session:
+                # The board change becomes part of the Live context, so the understanding and the
+                # next capsule command know it happened, with a reminder that placement is unchecked.
+                now = _now_ms()
+                current["events"] = (current.get("events") or [])[-(MAX_EVENTS - 1):] + [{
+                    "id": "evt-" + os.urandom(8).hex(), "at_ms": now, "received_at_ms": now,
+                    "source": "system", "speaker": "", "kind": "board",
+                    "app": profile.get("id") or "board", "title": _text(board.get("title"), 300),
+                    "text": "Diagram writer completed %d nodes and %d edges on the attached %s "
+                            "surface; inspect the visible board to verify placement." %
+                            (nodes, edges, profile.get("name") or "board")}]
+                current["last_meaningful_at_ms"] = now
+                current["audit"] = (current.get("audit") or [])[-79:] + [{
+                    "at_ms": now, "action": "diagram_applied",
+                    "detail": "plan_id=%s nodes=%d edges=%d service=%s" %
+                              (plan.get("id"), nodes, edges, profile.get("id"))}]
             self._write(current)
         return result
 
