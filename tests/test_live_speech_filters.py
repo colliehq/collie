@@ -220,6 +220,66 @@ def test_a_short_fragment_of_a_long_spoken_cue_is_still_collie(clock, tmp_path):
     assert not reply.get("ignored")
 
 
+def _after_cue(clock, tmp_path, cue):
+    """A session in which Collie has just finished speaking ``cue``."""
+    store = live.LiveSessionStore(tmp_path)
+    state = store.start(context="Review", listen=True, consent=True, understand=False,
+                        observe_apps=False, voice_dialogue=True)
+    _with_cue(store, cue)
+    store.set_voice_playback(session_id=state["session_id"], cue_id="cue-fence", speaking=True)
+    clock[0] += 2_000
+    store.set_voice_playback(session_id=state["session_id"], cue_id="cue-fence", speaking=False)
+    clock[0] += 1_000
+    return store, state
+
+
+@pytest.mark.parametrize("cue", ["Send the invoice to Alex",
+                                 "Send the invoice to Alex and Maria today"])
+@pytest.mark.parametrize("said", [
+    "No, don't send the invoice to Alex until Maria approves it",
+    "Wait, before you send the invoice to Alex, fix the total",
+    "Send the invoice to Alex now",
+    "No, send the invoice to Alex",
+])
+def test_the_person_repeating_part_of_collies_cue_with_their_own_words_is_kept(clock, tmp_path,
+                                                                               cue, said):
+    store, _ = _after_cue(clock, tmp_path, cue)
+    row = store.add_event(source="you", kind="speech", text=said)
+    assert not row.get("ignored")
+    assert [event["text"] for event in _speech(store)] == [said]
+
+
+def test_a_capsule_command_is_never_treated_as_collies_voice(clock, tmp_path):
+    # Opening the capsule cuts Collie's voice first, so a capsule clip cannot contain its echo.
+    store, state = _after_cue(clock, tmp_path, "Open the quarterly report now")
+    store.ingest_audio(session_id=state["session_id"], source="capsule", seq=0,
+                       mime_type="audio/webm", data=b"clip",
+                       transcriber=lambda *_a, **_k: {"text": "Open the quarterly report now."})
+    _drain(store)
+    receipts = store.snapshot()["audio"]["capsule_results"]
+    assert receipts == [{"seq": 0, "text": "Open the quarterly report now.", "error": ""}]
+    assert [e["kind"] for e in store.snapshot()["events"]][-1] == "capsule_speech"
+
+
+@pytest.mark.parametrize("transcript,echo", [
+    ("Use a monotonic fencing token and reject every stale commit atomically.", True),
+    ("monotonic fencing token and reject every stale commit", True),
+    ("fencing token and reject every stale commit atomically please", False),   # a word added
+    ("reject every stale commit", True),
+    ("reject stale", False),                                                     # too short
+    ("先用 Postgres 做事务认领", False),
+])
+def test_collie_echo_is_one_directional(transcript, echo):
+    cue = "Use a monotonic fencing token and reject every stale commit atomically."
+    assert live._collie_echo(transcript, cue) is echo
+
+
+def test_a_chinese_fragment_of_collies_cue_is_collie():
+    cue = "先用 Postgres 做事务认领，再加 fencing token 防止过期 worker 提交。"
+    assert live._collie_echo("再加fencing token防止过期worker提交", cue) is True
+    assert live._collie_echo("我觉得用 Postgres 就行，事务更简单", cue) is False
+
+
 def test_voice_playback_is_bound_to_the_session_and_a_current_cue(tmp_path):
     store = live.LiveSessionStore(tmp_path)
     state = store.start(context="Review", listen=False, consent=False, observe_apps=False)

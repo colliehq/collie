@@ -171,12 +171,10 @@ def _speech_echo_key(value) -> str:
     return "".join(char for char in str(value or "").casefold() if char.isalnum())
 
 
-def _speech_echo_match(left, right, *, allow_fragment=False) -> bool:
+def _speech_echo_match(left, right) -> bool:
     """Match only substantial near-verbatim speech; semantic similarity is unsafe here.
 
-    ``allow_fragment`` accepts a piece of a longer utterance (a microphone chunk that caught part
-    of Collie's spoken cue): at least 90% of the shorter text must appear, in order, in runs of
-    four or more characters of the longer one.
+    Symmetric: for one utterance that reached two audio sources, either copy can be the longer.
     """
     first, second = _speech_echo_key(left), _speech_echo_key(right)
     shortest, longest = sorted((first, second), key=len)
@@ -184,10 +182,6 @@ def _speech_echo_match(left, right, *, allow_fragment=False) -> bool:
         return False
     if shortest == longest:
         return True
-    if allow_fragment and len(shortest) >= 16:
-        matcher = difflib.SequenceMatcher(None, shortest, longest, autojunk=False)
-        covered = sum(block.size for block in matcher.get_matching_blocks() if block.size >= 4)
-        return covered / len(shortest) >= 0.9
     if len(longest) > max(18, len(shortest) * 2.2):
         return False
     length_ratio = len(shortest) / len(longest)
@@ -196,6 +190,27 @@ def _speech_echo_match(left, right, *, allow_fragment=False) -> bool:
     if length_ratio < 0.72:
         return False
     return difflib.SequenceMatcher(None, first, second, autojunk=False).ratio() >= 0.91
+
+
+_CJK = "㐀-鿿぀-ヿ가-힯"
+# Words for echo matching: each CJK, kana or Hangul character is its own word.
+_SPEECH_WORD = re.compile(r"[%s]|[^\W_%s]+" % (_CJK, _CJK))
+
+
+def _collie_echo(transcript, cue) -> bool:
+    """True when a transcript is Collie's own spoken cue heard back, whole or in part.
+
+    One-directional: at least 90% of the transcript's words must occur, in order, in the cue.
+    Words the cue does not contain ("no", "don't", "until Maria approves it") make it the person
+    speaking, however much of the cue it repeats. Short transcripts are never treated as echo.
+    """
+    words = _SPEECH_WORD.findall(str(transcript or "").casefold())
+    cue_words = _SPEECH_WORD.findall(str(cue or "").casefold())
+    if len(words) < 4 or len(_speech_echo_key(transcript)) < 12 or not cue_words:
+        return False
+    matcher = difflib.SequenceMatcher(None, words, cue_words, autojunk=False)
+    covered = sum(block.size for block in matcher.get_matching_blocks())
+    return covered / len(words) >= 0.9
 
 
 def _explicit_stop_intent(value) -> bool:
@@ -1114,8 +1129,13 @@ class LiveSessionStore:
         Runs inside ``add_event``'s transaction. Returns the response for a transcript that must
         not become a new event (and has already written the state), or None to append ``row``;
         in that case ``value["events"]`` may have lost a less-attributed earlier copy.
+
+        A capsule clip is never matched: it is a deliberate command, and opening the capsule cuts
+        Collie's voice before it records, so the clip cannot hold Collie's echo.
         """
         source, text = row["source"], row["text"]
+        if row["kind"] == "capsule_speech":
+            return None
         playback = {**_default_state()["voice_playback"], **dict(value.get("voice_playback") or {})}
         started = int(playback.get("started_at_ms") or 0)
         ended = int(playback.get("ended_at_ms") or 0)
@@ -1123,7 +1143,7 @@ class LiveSessionStore:
                   (not playback.get("active") and ended and 0 <= now - ended <= _PLAYBACK_TAIL_MS))
         cue = next((item for item in reversed(value.get("suggestions") or [])
                     if item.get("id") == playback.get("cue_id")), None)
-        if recent and cue and _speech_echo_match(text, cue.get("text"), allow_fragment=True):
+        if recent and cue and _collie_echo(text, cue.get("text")):
             value["audit"] = (value.get("audit") or [])[-79:] + [{
                 "at_ms": now, "action": "speech_echo_suppressed",
                 "detail": "source=%s reason=recent_collie_voice cue_id=%s" %
