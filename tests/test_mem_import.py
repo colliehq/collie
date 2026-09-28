@@ -1,9 +1,10 @@
-"""Importing past Claude Code / Codex sessions into memory, without a model (--no-llm).
+"""Importing past Claude Code / Codex sessions into memory.
 
 The module had 10% line coverage: its parsers, chunking and the import driver ran only by hand.
 What must hold: harness noise never becomes a fact, secrets are redacted before they are stored,
 every fact carries provenance that says where it came from, a session is imported once, and a
-session still being written is left alone.
+session still being written is left alone. Logs are other programs' files: a damaged record is
+skipped and the rest of the session kept.
 """
 import json
 import os
@@ -129,5 +130,80 @@ def test_a_session_still_being_written_is_left_for_later(roots, tmp_path):
         assert stats["scanned"] == 1 and stats["sessions"] == 0
         assert not mi.STATE_PATH.exists() or str(next(roots[0].rglob("*.jsonl"))) not in \
             json.loads(mi.STATE_PATH.read_text())
+    finally:
+        mem.close()
+
+
+# ------------------------------------------------------------------------- damaged logs --
+# A session log is another program's file, and a crash or a format change leaves records in it
+# that Collie did not expect. A damaged record must cost that record, not the session.
+GOOD = {
+    "cc": {"type": "user", "message": {"content": "Use the final port 8787"}},
+    "codex": {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text": "Use the final port 8787"}]}},
+}
+PARSERS = {"cc": mi.parse_cc_session, "codex": mi.parse_codex_session}
+DAMAGED = [
+    "not json", "null", "[]", "42", '"a string"',                  # JSON, but not a record
+    '{"type":"user","message":[1]}', '{"type":"assistant","message":"hi"}',
+    '{"type":"user","message":{"content":[{"type":"text","text":42}]}}',
+    '{"type":"attachment","attachment":"max_turns_reached"}',
+    '{"type":"response_item","payload":[1]}', '{"type":"session_meta","payload":"x"}',
+    '{"type":"response_item","payload":{"type":"message","role":"user",'
+    '"content":[{"type":"input_text","text":null}]}}',
+]
+
+
+@pytest.mark.parametrize("src", ["cc", "codex"])
+@pytest.mark.parametrize("damaged", DAMAGED)
+def test_a_damaged_record_is_skipped_and_the_rest_of_the_log_is_kept(tmp_path, src, damaged):
+    log = _jsonl(tmp_path / "rollout-x.jsonl", [damaged, GOOD[src]])
+    assert PARSERS[src](log)["turns"] == [("user", "Use the final port 8787")]
+    # The family gate reads every log's opening prompt before any session is imported.
+    clean = _jsonl(tmp_path / "clean.jsonl", [GOOD[src]])
+    assert mi.prompt_sig(src, log) == mi.prompt_sig(src, clean) is not None
+
+
+@pytest.mark.parametrize("src", ["cc", "codex"])
+def test_bytes_that_are_not_utf8_cost_only_their_own_record(tmp_path, src):
+    log = tmp_path / "rollout-x.jsonl"
+    log.write_bytes(b'{"type":"note","text":"caf\xff"}\n' + json.dumps(GOOD[src]).encode()
+                    + b'\n{"type":"user","message":{"content":"caf\xc3')   # cut off mid-character
+    assert PARSERS[src](log)["turns"] == [("user", "Use the final port 8787")]
+    clean = _jsonl(tmp_path / "clean.jsonl", [GOOD[src]])
+    assert mi.prompt_sig(src, log) == mi.prompt_sig(src, clean) is not None
+
+
+def test_a_tool_error_keeps_its_readable_text(tmp_path):
+    log = _jsonl(tmp_path / "s.jsonl", [{"type": "assistant", "message": {"content": [
+        {"type": "tool_result", "is_error": True,
+         "content": [{"type": "text", "text": 7}, {"type": "text", "text": "port 8787 in use"}]}]}}])
+    assert mi.parse_cc_session(log)["turns"] == [("assistant", "[tool-error] port 8787 in use")]
+
+
+def test_a_title_or_session_id_that_is_not_text_is_ignored(tmp_path):
+    cc = _jsonl(tmp_path / "abc.jsonl", [{"type": "ai-title", "aiTitle": ["x"]}, GOOD["cc"]])
+    assert mi.parse_cc_session(cc)["title"] == ""
+    codex = _jsonl(tmp_path / "rollout-x.jsonl", [
+        {"type": "session_meta", "payload": {"session_id": 42}}, GOOD["codex"]])
+    assert mi.parse_codex_session(codex)["sid"] == "rollout-x"
+
+
+def test_an_import_reads_damaged_logs_alongside_clean_ones(roots, tmp_path):
+    _cc_session(roots[0], "aaaaaaaa11111111")
+    _cc_session(roots[0], "bbbbbbbb22222222",
+                extra=DAMAGED + [{"type": "ai-title", "aiTitle": 42}])
+    _jsonl(roots[1] / "2026" / "rollout-damaged.jsonl", [
+        {"type": "session_meta", "payload": {"session_id": 42}}, *DAMAGED,
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "Keep the relay on port 8799. " + "context " * 300}]}},
+    ])
+    mem = SqliteMemory(str(tmp_path / "mem.db"))
+    try:
+        stats = mi.run_import(mem, source="all", no_llm=True, log=lambda *_: None)
+        assert stats["sessions"] == 3 and stats.get("failed", 0) == 0
+        keys = {r[0] for r in mem.db.execute("SELECT keys FROM facts WHERE keys LIKE 'import %'")}
+        assert "import src:cc sid:bbbbbbbb Deploy the relay" in keys
+        assert any(k.startswith("import src:codex sid:rollout-") for k in keys), keys
     finally:
         mem.close()

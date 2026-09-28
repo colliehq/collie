@@ -98,7 +98,9 @@ def prompt_sig(src: str, path: Path) -> str | None:
     import hashlib
     txt = None
     try:
-        with open(path, encoding="utf-8") as f:
+        # Runs on every log before any session is imported: a damaged record here would stop
+        # the whole import, so it gets the same tolerance as the parsers below.
+        with open(path, encoding="utf-8", errors="replace") as f:
             for i, ln in enumerate(f):
                 if i > 400:
                     break
@@ -109,9 +111,12 @@ def prompt_sig(src: str, path: Path) -> str | None:
                         d = json.loads(ln)
                     except ValueError:
                         continue
-                    if d.get("type") != "user" or d.get("isSidechain"):
+                    if not isinstance(d, dict) or d.get("type") != "user" or d.get("isSidechain"):
                         continue
-                    t = _text_items((d.get("message") or {}).get("content"))
+                    message = d.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    t = _text_items(message.get("content"))
                 else:
                     if '"response_item"' not in ln:
                         continue
@@ -119,8 +124,9 @@ def prompt_sig(src: str, path: Path) -> str | None:
                         d = json.loads(ln)
                     except ValueError:
                         continue
-                    p = d.get("payload") or {}
-                    if p.get("type") != "message" or p.get("role") != "user":
+                    p = d.get("payload") if isinstance(d, dict) else None
+                    if (not isinstance(p, dict) or p.get("type") != "message"
+                            or p.get("role") != "user"):
                         continue
                     t = _text_items(p.get("content"))
                 if t and _keep("user", t) and not t.lstrip().startswith("[tool-error]"):
@@ -264,7 +270,8 @@ def _text_items(content) -> str:
     """CC/Codex message content -> plain text. Tool dumps stay excluded (90% noise) with
     ONE exception: ERROR tool-results — failures are durable knowledge (root causes,
     gotchas), and dropping them made the distiller store 'what was tried' but never
-    'why it failed' (membench fair-v2 autopsy, 2026-07-17)."""
+    'why it failed' (membench fair-v2 autopsy, 2026-07-17). A part whose text is not a string
+    (a damaged or unfamiliar record) contributes nothing rather than raising."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -273,11 +280,13 @@ def _text_items(content) -> str:
             if not isinstance(p, dict):
                 continue
             if p.get("type") in ("text", "input_text", "output_text"):
-                parts.append(p.get("text", ""))
+                if isinstance(p.get("text"), str):
+                    parts.append(p["text"])
             elif p.get("type") == "tool_result" and p.get("is_error"):
                 err = p.get("content")
                 if isinstance(err, list):
-                    err = " ".join(x.get("text", "") for x in err if isinstance(x, dict))
+                    err = " ".join(x["text"] for x in err
+                                   if isinstance(x, dict) and isinstance(x.get("text"), str))
                 parts.append("[tool-error] " + str(err or "")[:300])
         return "\n".join(parts)
     return ""
@@ -294,23 +303,36 @@ def _keep(role: str, text: str) -> bool:
 
 
 def parse_cc_session(path: Path) -> dict | None:
-    """One CC session jsonl -> {sid, title, turns:[(role, text)…]}; None if nothing usable."""
+    """One CC session jsonl -> {sid, title, turns:[(role, text)…]}; None if nothing usable.
+
+    The log is another program's file, and a crash or a format change leaves records in it
+    that are not what this expects: bytes that are not UTF-8, JSON that is not an object, a
+    message that is not an object, a title that is not text. Each such record is skipped and
+    the rest of the session kept, as an unparseable line always was; parse_codex_session and
+    prompt_sig do the same."""
     turns, title, sid = [], "", path.stem
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 try:
                     d = json.loads(ln)
                 except ValueError:
                     continue
+                if not isinstance(d, dict):
+                    continue
                 t = d.get("type")
                 if t == "ai-title":
-                    title = d.get("aiTitle") or title
+                    if isinstance(d.get("aiTitle"), str):
+                        title = d["aiTitle"] or title
                 elif t in ("user", "assistant") and not d.get("isSidechain"):
-                    txt = _text_items((d.get("message") or {}).get("content"))
+                    message = d.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    txt = _text_items(message.get("content"))
                     if _keep(t, txt):
                         turns.append((t, txt.strip()))
-                elif t == "attachment" and (d.get("attachment") or {}).get("type") == "max_turns_reached":
+                elif (t == "attachment" and isinstance(d.get("attachment"), dict)
+                      and d["attachment"].get("type") == "max_turns_reached"):
                     # terminal outcome marker — without it a failed run reads as merely unfinished
                     turns.append(("user", "[run-outcome] max_turns_reached — turn budget exhausted"))
     except OSError:
@@ -324,16 +346,19 @@ def parse_codex_session(path: Path) -> dict | None:
     """One Codex rollout jsonl -> same shape as parse_cc_session."""
     turns, title, sid = [], "", path.stem
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 try:
                     d = json.loads(ln)
                 except ValueError:
                     continue
+                if not isinstance(d, dict) or not isinstance(d.get("payload"), dict):
+                    continue
                 if d.get("type") == "session_meta":
-                    sid = (d.get("payload") or {}).get("session_id") or sid
+                    if isinstance(d["payload"].get("session_id"), str):
+                        sid = d["payload"]["session_id"] or sid
                 elif d.get("type") == "response_item":
-                    p = d.get("payload") or {}
+                    p = d["payload"]
                     role = p.get("role")
                     if p.get("type") == "message" and role in ("user", "assistant"):
                         txt = _text_items(p.get("content"))
