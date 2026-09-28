@@ -171,10 +171,10 @@ def test_same_source_exact_repeat_is_one_event_moved_to_the_end(clock, tmp_path)
     assert len(_speech(store)) == 1
 
 
-def _with_cue(store, text, cue_id="cue-fence"):
+def _with_cue(store, text, cue_id="cue-fence", lane="dialogue"):
     with store._transaction():
         value = store._read()
-        value["suggestions"] = [{"id": cue_id, "lane": "dialogue", "kind": "answer",
+        value["suggestions"] = [{"id": cue_id, "lane": lane, "kind": "answer",
                                  "urgency": "now", "text": text}]
         store._write(value)
 
@@ -220,12 +220,12 @@ def test_a_short_fragment_of_a_long_spoken_cue_is_still_collie(clock, tmp_path):
     assert not reply.get("ignored")
 
 
-def _after_cue(clock, tmp_path, cue):
+def _after_cue(clock, tmp_path, cue, lane="dialogue"):
     """A session in which Collie has just finished speaking ``cue``."""
     store = live.LiveSessionStore(tmp_path)
     state = store.start(context="Review", listen=True, consent=True, understand=False,
                         observe_apps=False, voice_dialogue=True)
-    _with_cue(store, cue)
+    _with_cue(store, cue, lane=lane)
     store.set_voice_playback(session_id=state["session_id"], cue_id="cue-fence", speaking=True)
     clock[0] += 2_000
     store.set_voice_playback(session_id=state["session_id"], cue_id="cue-fence", speaking=False)
@@ -272,6 +272,28 @@ def test_a_capsule_command_is_never_treated_as_collies_voice(clock, tmp_path):
 def test_collie_echo_is_one_directional(transcript, echo):
     cue = "Use a monotonic fencing token and reject every stale commit atomically."
     assert live._collie_echo(transcript, cue) is echo
+
+
+def test_collies_echo_is_recognized_after_the_understanding_lane_replaces_its_cue(clock,
+                                                                                tmp_path):
+    cue = "Remind Alex that the invoice is due on Friday"
+    # An understanding-lane cue: the next analysis replaces it in the suggestions list.
+    store, _ = _after_cue(clock, tmp_path, cue, lane="understanding")
+    with store._transaction():
+        value = store._read()
+        value["understand"] = True
+        store._write(value)
+    store.add_event(source="system", kind="window", text="Foreground app changed to chrome.")
+    runtime = live.LiveCopilotRuntime(tmp_path, analyzer=lambda payload: {
+        "summary": "s", "suggestions": [{"kind": "note", "urgency": "later", "text": "new"}]},
+        debounce_ms=0, min_interval_ms=0)
+    runtime.activity_source = None
+    runtime._foreground_window = lambda: {}
+    runtime.tick()
+    assert [row["text"] for row in store.snapshot()["suggestions"]] == ["new"]
+    heard = store.add_event(source="you", kind="speech", text=cue + ".")
+    assert heard["ignored"] and heard["reason"] == "recent_collie_voice"
+    assert store.snapshot()["voice_playback"]["cue_text"] == cue
 
 
 def test_a_chinese_fragment_of_collies_cue_is_collie():

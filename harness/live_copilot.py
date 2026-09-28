@@ -307,7 +307,7 @@ def _default_state() -> dict:
         "notes": [],
         "board": None,
         "pending_diagram": None,
-        "voice_playback": {"active": False, "cue_id": "", "started_at_ms": 0,
+        "voice_playback": {"active": False, "cue_id": "", "cue_text": "", "started_at_ms": 0,
                            "ended_at_ms": 0},
         "avatar": {"active": False, "mode": "simulation", "provider": "local",
                    "conversation_id": "", "started_at_ms": 0, "ended_at_ms": 0,
@@ -1141,9 +1141,12 @@ class LiveSessionStore:
         ended = int(playback.get("ended_at_ms") or 0)
         recent = ((playback.get("active") and 0 <= now - started <= _PLAYBACK_ACTIVE_MS) or
                   (not playback.get("active") and ended and 0 <= now - ended <= _PLAYBACK_TAIL_MS))
-        cue = next((item for item in reversed(value.get("suggestions") or [])
-                    if item.get("id") == playback.get("cue_id")), None)
-        if recent and cue and _collie_echo(text, cue.get("text")):
+        # What Collie actually said was recorded when it started speaking. The cue itself may be
+        # gone from the suggestions by now: the understanding lane replaces them on each analysis.
+        spoken = playback.get("cue_text") or next(
+            (item.get("text") for item in reversed(value.get("suggestions") or [])
+             if item.get("id") == playback.get("cue_id")), "")
+        if recent and spoken and _collie_echo(text, spoken):
             value["audit"] = (value.get("audit") or [])[-79:] + [{
                 "at_ms": now, "action": "speech_echo_suppressed",
                 "detail": "source=%s reason=recent_collie_voice cue_id=%s" %
@@ -1214,11 +1217,13 @@ class LiveSessionStore:
             current = {**_default_state()["voice_playback"],
                        **dict(value.get("voice_playback") or {})}
             if speaking:
-                if not cue_id or not any(item.get("id") == cue_id
-                                         for item in value.get("suggestions") or []):
+                cue = next((item for item in value.get("suggestions") or []
+                            if cue_id and item.get("id") == cue_id), None)
+                if cue is None:
                     raise LiveCopilotError("voice playback cue is no longer available")
-                current = {"active": True, "cue_id": cue_id, "started_at_ms": now,
-                           "ended_at_ms": 0}
+                current = {"active": True, "cue_id": cue_id,
+                           "cue_text": _text(cue.get("text"), 1_000),
+                           "started_at_ms": now, "ended_at_ms": 0}
             elif not cue_id or cue_id == current.get("cue_id"):
                 current["active"] = False
                 current["ended_at_ms"] = now
