@@ -340,6 +340,27 @@ def test_a_tls_handshake_that_drips_cannot_hold_a_fetch_past_its_deadline():
     assert elapsed < 3.0, elapsed
 
 
+def test_a_socket_timeout_that_beats_the_watchdog_still_reads_as_too_slow():
+    """The socket's own timeout is never longer than the time left, so it can end the fetch a
+    moment before the watchdog runs; macOS CI reported the TLS handshake timing out that way.
+    Whichever fires first, the fetch failed for taking too long, not with a raw TimeoutError."""
+    class TimesOut:
+        def request(self, *args, **kwargs):
+            raise TimeoutError("_ssl.c:993: The handshake operation timed out")
+
+        def close(self):
+            pass
+
+    outcome = None
+    try:
+        news.fetch_feed("https://feeds.example.com/rss",
+                        resolve=lambda host: [(socket.AF_INET, None, None, "", ("93.184.216.34", 443))],
+                        connect=lambda *args: TimesOut(), deadline=30)
+    except Exception as exc:          # noqa: BLE001 - the type is what this test checks
+        outcome = exc
+    assert isinstance(outcome, news.NewsError) and "too long" in str(outcome), outcome
+
+
 def test_a_fetch_that_finishes_in_time_leaves_nothing_running(feeds):
     feeds.routes[("feeds.example.com", "/rss")] = (200, {}, RSS)
     before = threading.active_count()

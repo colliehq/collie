@@ -290,8 +290,11 @@ def fetch_feed(url, *, resolve=None, connect=None, deadline=FETCH_DEADLINE):
         return _fetch(url, resolve, connect, stop, watchdog)
     except NewsError:
         raise
-    except Exception:
-        if watchdog.fired:
+    except Exception as exc:
+        # The deadline is reached by the watchdog or, a moment earlier, by the socket's own
+        # timeout, which is never longer than the time left; which one fires first differs by
+        # platform (macOS reports the TLS handshake timing out before the watchdog has run).
+        if watchdog.fired or isinstance(exc, TimeoutError) or time.monotonic() >= stop:
             raise NewsError(_TOO_SLOW) from None
         raise
     finally:
