@@ -428,7 +428,10 @@ def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
     assert "LIVE CAPSULE COMMAND" in capsule and "/api/stream" in capsule
     assert "authority_text=" in capsule and "runner=collie" in capsule
     assert '/api/live-copilot/event' in capsule and 'kind:"command"' in capsule
-    assert "capsule-speech-final" in capsule and "capsule-context" in capsule
+    # Only the server's receipt for the capsule's own clip becomes a voice command; a native
+    # recognizer callback never does.
+    assert "capsule-context" in capsule and "capsule_results" in capsule
+    assert "capsule-speech-final" not in capsule
     assert "TARGET.hwnd" in capsule and "TARGET.pid" in capsule
     assert "OpenLiveCapsule(CaptureLiveTarget())" in native_host
     hotkey = native_host.split("m.Msg == WM_HOTKEY", 1)[1].split("return;", 1)[0]
@@ -441,7 +444,12 @@ def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
     ready = native_host.split('raw.IndexOf("capsule-ready"', 1)[1].split(
         'else if (raw.IndexOf("capsule-listen"', 1)[0]
     assert "PostCapsuleTarget(target)" in ready and "StartCapsuleSpeech" not in ready
-    assert 'if(STATE.active)host({type:"capsule-listen"' in capsule
+    # The host starts the recording on capsule-ready; the page must not ask for a second one.
+    assert "BeginCapsuleRecording(_capsulePttMode)" in ready
+    assert "capsule-record-start" in native_host.split("static void BeginCapsuleRecording(", 1)[1]
+    assert "load().then(beginHandoff)" in capsule
+    assert "load().then(beginHandoff).then(function(){if(STATE.active)host" not in capsule
+    assert 'host({type:"capsule-listen"' in capsule          # the mic button still can
 
 
 def test_missions_activity_and_settings_do_not_overstate_success_or_hide_failures():

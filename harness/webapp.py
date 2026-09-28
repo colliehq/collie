@@ -1482,8 +1482,10 @@ class Handler(BaseHTTPRequestHandler):
         if REMOTE is None:
             return
         try:
-            REMOTE.notify("Collie needs your approval",
-                          ("%s — %s" % (item.tool, item.body))[:180],
+            # Bounded, but never silently: the card carries the whole proposal (every step of
+            # a script), and the notice says how much of it did not fit.
+            from .inbox import notice_text
+            REMOTE.notify("Collie needs your approval", notice_text(item),
                           session=sid, thread=sid)
         except Exception:
             pass                      # never fail a run over a notification
@@ -1771,7 +1773,9 @@ class Handler(BaseHTTPRequestHandler):
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: blob:",
             "media-src 'self' data: blob:",
-            "connect-src 'self' https://ipapi.co https://api.open-meteo.com",
+            # No outside origins: the wallpaper's weather is fetched by this server
+            # (/api/desktop/weather), so no page needs to reach ipapi.co or Open-Meteo itself.
+            "connect-src 'self'",
             "frame-src 'self'",
             "frame-ancestors " + frame_ancestors,
             "object-src 'none'",
@@ -2575,6 +2579,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/desktop/sys":
                 from . import desktop as dt
                 return self._send_json(dt.sysinfo())
+            if path == "/api/desktop/weather":
+                # The wallpaper clock's weather, asked by this server for every desktop window
+                # (one shared cache, backoff after failures). desktop.json's clock.weather=false is
+                # checked here, so turning it off stops the outside requests at the source.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import desktop as dt
+                from . import desktop_weather
+                if not dt.weather_enabled():
+                    return self._send_json({"ok": False, "off": True})
+                return self._send_json(desktop_weather.weather())
             if path == "/api/desktop/nowplaying":
                 from . import desktop as dt
                 # Two different questions, and conflating them would be wrong. `track` is whatever
@@ -3932,6 +3947,22 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
+            if path == "/api/live-copilot/audio-preview":
+                # Display-only text for the capsule recording so far; the final clip still decides.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .live_copilot import LiveCopilotError, LiveSessionStore, MAX_AUDIO_BYTES
+                query = urllib.parse.parse_qs(parsed.query)
+                raw = self._read_bytes(MAX_AUDIO_BYTES)
+                if raw is None:
+                    return self._send_json({"error": "expected a non-empty bounded audio preview"},
+                                           400)
+                try:
+                    return self._send_json(LiveSessionStore(_state_root()).preview_audio(
+                        session_id=str((query.get("session") or [""])[0]),
+                        mime_type=self.headers.get("content-type") or "audio/webm", data=raw))
+                except LiveCopilotError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path == "/api/live-copilot/audio":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -3954,10 +3985,14 @@ class Handler(BaseHTTPRequestHandler):
                 except LiveCopilotError as exc:
                     return self._send_json({"error": str(exc)}, 409)
             live_paths = {
-                "/api/live-copilot/start", "/api/live-copilot/stop",
+                "/api/live-copilot/start", "/api/live-copilot/resume",
+                "/api/live-copilot/stop", "/api/live-copilot/context",
+                "/api/live-copilot/voice-state",
                 "/api/live-copilot/permissions", "/api/live-copilot/event", "/api/live-copilot/note",
                 "/api/live-copilot/work", "/api/live-copilot/dismiss",
                 "/api/live-copilot/handoff", "/api/live-copilot/handoff/resolve",
+                "/api/live-copilot/intent", "/api/live-copilot/dictate",
+                "/api/live-copilot/capsule-text",
                 "/api/live-copilot/board/attach",
                 "/api/live-copilot/avatar/start", "/api/live-copilot/avatar/stop",
                 # Compatibility for the one released preview URL. It now creates a general session.
@@ -3996,6 +4031,23 @@ class Handler(BaseHTTPRequestHandler):
                             started_from=("interview_ui" if path.startswith("/api/interview/")
                                           else "live_ui"),
                             max_duration_minutes=body.get("max_duration_minutes", 120)), 201)
+                    if path.endswith("/resume"):
+                        return self._send_json(store.resume(
+                            context=body.get("context") or "",
+                            listen=body.get("listen", False),
+                            understand=body.get("understand", True),
+                            observe_apps=body.get("observe_apps", True),
+                            observe_ui=body.get("observe_ui", True),
+                            observe_input=body.get("observe_input", True),
+                            observe_screen=body.get("observe_screen", False),
+                            voice_dialogue=body.get("voice_dialogue", False),
+                            board_edit=body.get("board_edit", False),
+                            consent=body.get("consent", False),
+                            resumed_from="live_ui",
+                            max_duration_minutes=body.get("max_duration_minutes", 120)), 201)
+                    if path.endswith("/context"):
+                        return self._send_json(store.update_context(
+                            body.get("context") or body.get("text") or ""))
                     if path.endswith("/stop"):
                         try:
                             from .avatar_rehearsal import AvatarRehearsalService
@@ -4023,6 +4075,11 @@ class Handler(BaseHTTPRequestHandler):
                             board_edit=(body.get("board_edit")
                                         if "board_edit" in body else None),
                             consent=(body.get("consent") if "consent" in body else None)))
+                    if path.endswith("/voice-state"):
+                        return self._send_json(store.set_voice_playback(
+                            session_id=body.get("session_id") or "",
+                            cue_id=body.get("cue_id") or "",
+                            speaking=body.get("speaking")))
                     if path.endswith("/note"):
                         return self._send_json(store.add_note(
                             text=body.get("text"), kind=body.get("kind") or "note",
@@ -4044,6 +4101,19 @@ class Handler(BaseHTTPRequestHandler):
                     if path.endswith("/handoff/resolve"):
                         return self._send_json(store.resolve_handoff(
                             handoff_id=body.get("handoff_id") or ""))
+                    if path.endswith("/intent"):
+                        return self._send_json(store.classify_capsule_intent(
+                            text=body.get("text") or "",
+                            handoff_id=body.get("handoff_id") or ""))
+                    if path.endswith("/capsule-text"):
+                        return self._send_json(store.ingest_capsule_text(
+                            session_id=body.get("session_id") or "", seq=body.get("seq"),
+                            text=body.get("text") if isinstance(body.get("text"), str) else ""),
+                            202)
+                    if path.endswith("/dictate"):
+                        return self._send_json(store.dictate(
+                            text=body.get("text") or "",
+                            handoff_id=body.get("handoff_id") or ""), 201)
                     if path.endswith("/handoff"):
                         return self._send_json(store.request_handoff(
                             app=body.get("app") or "", title=body.get("title") or "",
@@ -4199,7 +4269,10 @@ class Handler(BaseHTTPRequestHandler):
                 if body is None:
                     return self._send_json({"error": "expected JSON object"}, 400)
                 if action == "config":
-                    return self._send_json(dt.save_config(body))
+                    try:
+                        return self._send_json(dt.save_config(body))
+                    except ValueError as exc:      # desktop.json is there but unreadable: kept
+                        return self._send_json({"error": str(exc)}, 409)
                 if action == "launch":
                     return self._send_json({"ok": dt.launch(body.get("target") or "")})
                 if action == "media":
@@ -5523,8 +5596,8 @@ class Handler(BaseHTTPRequestHandler):
         return web_tasks.serve_managed_stream(self, qs)
 
     def _run_stream(self, qs):
-        from .cli import (configure_run_options, default_gate, make_harness,
-                          normalize_run_options, _worker_model)
+        from .cli import (configure_host_verification, configure_run_options, default_gate,
+                          make_harness, normalize_run_options, _worker_model)
         from . import sessions, settings, task_inbox, web_tasks
         settings.apply()   # a Settings-panel save takes effect on the next query, no restart
 
@@ -5797,7 +5870,9 @@ class Handler(BaseHTTPRequestHandler):
                              speed_caps["speed_tiers"] else "standard")
         try:
             decision = resolve_run_decision(
-                q, provider=prov, model=configured_model, effort=effort_request,
+                # A focused surface's framing (the capsule's target and safety wording) is model
+                # context; its length and words are not the task. Route by the person's words.
+                authority_text or q, provider=prov, model=configured_model, effort=effort_request,
                 speed=speed_request, route_kind=qs.get("route_kind", [""])[0],
                 intent=requested_opts["intent"], quality=requested_opts["quality"],
                 verification=requested_opts["verification"], workspace=workspace,
@@ -7046,6 +7121,8 @@ class Handler(BaseHTTPRequestHandler):
             should_check = (run_opts["intent"] == "test" or
                             run_opts["verification"] == "required")
             h.defer_memory_promotion = bool(should_check and verify_command)
+            if should_check and verify_command:
+                configure_host_verification(h, verify_command)
             try:
                 # One Web turn owns one isolated browser lane.  Releasing it in
                 # the context manager's finally is the safety net for completed,

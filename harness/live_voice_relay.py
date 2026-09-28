@@ -161,6 +161,13 @@ def run(session_id: str, poll_seconds: float = 0.8) -> int:
         if not cue:
             continue
         spoken_text.add(cue.casefold())
+        cue_id = str(fresh[0].get("id") or "")
+        try:
+            # Say that Collie is speaking this cue before it does, so a microphone or loopback
+            # transcript of it is recognized as Collie rather than as someone in the room.
+            store.set_voice_playback(session_id=session_id, cue_id=cue_id, speaking=True)
+        except LiveCopilotError:
+            continue                        # dismissed or replaced meanwhile: do not speak it
         pause_token = ""
         try:
             pause_token = store.pause_listening_for_voice(session_id=session_id)
@@ -171,6 +178,10 @@ def run(session_id: str, poll_seconds: float = 0.8) -> int:
                 if voice.speak(cue):
                     last_spoken_at = time.monotonic()
         finally:
+            try:
+                store.set_voice_playback(session_id=session_id, cue_id=cue_id, speaking=False)
+            except LiveCopilotError:
+                pass                        # the session ended while Collie was speaking
             if pause_token:
                 try:
                     store.resume_listening_after_voice(session_id=session_id, token=pause_token)

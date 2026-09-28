@@ -29,7 +29,8 @@ def test_live_ui_never_uses_screen_sharing_for_audio_capture():
     assert 'id="systemAudio"' not in source
     start = source.index('document.getElementById("start").onclick=async function()')
     start_flow = source[start:source.index('document.getElementById("stop").onclick', start)]
-    assert start_flow.index('var s=await api("/api/live-copilot/start"') < \
+    assert '"/api/live-copilot/resume":"/api/live-copilot/start"' in start_flow
+    assert start_flow.index('var s=await api(endpoint') < \
         start_flow.index('await beginCapture()')
 
 
@@ -57,6 +58,8 @@ def test_live_defaults_to_local_sensevoice_not_a_cloud_transcriber(tmp_path, mon
             for event in store.snapshot()["events"]):
         time.sleep(.02)
     assert seen and seen[0][1]["language"] == ""
+    # Continuous Live audio goes through the optional speech check before recognition.
+    assert seen[0][1]["speech_gate"] is True
     assert any(event.get("text") == "Collie 能看到当前浏览器。"
                for event in store.snapshot()["events"])
 
@@ -437,6 +440,81 @@ def test_input_observation_is_throttled_metadata_not_a_keylogger(tmp_path):
     before = len(store.snapshot()["events"])
     runtime.tick()
     assert len(store.snapshot()["events"]) == before
+
+
+@pytest.mark.parametrize("container", ["Pane", "Window", "Document", "Custom", "Group"])
+def test_a_focused_container_is_not_reported_as_the_focused_control(monkeypatch, tmp_path,
+                                                                    container):
+    from harness import native
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    class Source:
+        def idle_seconds(self):
+            return 0.01
+
+    monkeypatch.setattr(native, "tree", lambda **_kwargs: {
+        "ok": True, "elements": [{"type": container, "name": "Game canvas", "focused": True}]})
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=True, observe_input=True)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    runtime.activity_source = Source()
+    foreground = {"app": "dota2", "title": "Dota 2", "pid": 42, "hwnd": 9001}
+    now = int(time.time() * 1000)
+    runtime._observe_ui(store.snapshot(), now, foreground)
+    assert runtime.focused_control == ""
+    runtime._observe_input(store.snapshot(), now + 4_000, foreground)
+    row = store.snapshot()["events"][-1]
+    assert row["kind"] == "interaction" and "focused" not in row["text"]
+
+
+def test_the_focused_control_does_not_outlive_the_ui_it_came_from(monkeypatch, tmp_path):
+    from harness import native
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    trees = [[{"type": "Edit", "name": "Search", "focused": True}],
+             [{"type": "Button", "name": "Play", "focused": False}]]
+    monkeypatch.setattr(native, "tree",
+                        lambda **_kwargs: {"ok": True, "elements": trees.pop(0)})
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=True, observe_input=False)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    now = int(time.time() * 1000)
+    runtime._observe_ui(store.snapshot(), now, {"app": "chrome", "pid": 1, "hwnd": 2})
+    assert runtime.focused_control == "Edit"
+    runtime._observe_ui(store.snapshot(), now + 2_500, {"app": "spotify", "pid": 3, "hwnd": 4})
+    assert runtime.focused_control == ""
+
+
+@pytest.mark.parametrize("failure", ["error", "not_ok", "raises", "no_app", "observe_off"])
+def test_a_failed_ui_read_does_not_keep_the_previous_apps_focused_control(monkeypatch, tmp_path,
+                                                                          failure):
+    from harness import native
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    reads = [{"ok": True, "elements": [{"type": "Edit", "name": "Search", "focused": True}]}]
+
+    def tree(**_kwargs):
+        if reads:
+            return reads.pop(0)
+        if failure == "raises":
+            raise RuntimeError("UIA driver failed")
+        return {"ok": False, "error": "window gone"} if failure == "not_ok" else None
+    monkeypatch.setattr(native, "tree", tree)
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=True, observe_input=False)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    now = int(time.time() * 1000)
+    runtime._observe_ui(store.snapshot(), now, {"app": "chrome", "pid": 1, "hwnd": 2})
+    assert runtime.focused_control == "Edit"
+    value = store.snapshot()
+    if failure == "observe_off":
+        value = dict(value, observe_ui=False)
+    foreground = {"app": "" if failure == "no_app" else "dota2", "pid": 3, "hwnd": 4}
+    runtime._observe_ui(value, now + 2_500, foreground)
+    assert runtime.focused_control == ""
 
 
 def test_explicit_handoff_can_create_durable_mission(monkeypatch, tmp_path):

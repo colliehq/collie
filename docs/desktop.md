@@ -14,7 +14,7 @@ Opens Collie in a real desktop window (WebView2) with the full web GUI inside �
 verification gate, diffs, and the star-map — instead of a browser tab. This is what the Start-menu
 and desktop shortcuts launch. It falls back to the browser GUI on non-Windows platforms.
 
-## Live star-map wallpaper
+## Live desktop wallpaper
 
 ```bash
 collie wallpaper --install     # behind your desktop icons, starts at logon
@@ -22,9 +22,14 @@ collie wallpaper --stop        # stop the running engine
 collie wallpaper --uninstall   # remove the logon autostart
 ```
 
-A live desktop background that renders Collie's star-map. On Windows it draws *behind* your icons
-via a WebView2 engine (built once on first run from the shipped C# source — no .NET SDK needed);
-elsewhere it degrades to a borderless full-screen window. Per-user, no admin.
+A live desktop background: a clock with the weather, music controls, an app dock and a command bar
+on a calm backdrop. On Windows it draws *behind* your icons via a WebView2 engine (built once on
+first run from the shipped C# source — no .NET SDK needed); elsewhere it degrades to a borderless
+full-screen window. Per-user, no admin.
+
+While Collie edits code, the background can switch to Collie's star-map (the code map) until the
+run ends. That is off by default; turn on *Show the code map while Collie edits code* in Settings →
+Desktop. The map always opens from **Map** in Collie.
 
 ## Native application control
 

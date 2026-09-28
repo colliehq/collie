@@ -183,6 +183,32 @@ class _RECT(ctypes.Structure):
                 ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
 
 
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
+                ("rcCaret", _RECT)]
+
+
+def keyboard_focus() -> dict:
+    """The foreground window and the window inside it that has keyboard focus.
+
+    Two direct Win32 reads, microseconds apart and with no UI walk, so a caller can confirm that
+    focus has not moved immediately before it sends keys.
+    """
+    u = _user32()
+    foreground = int(u.GetForegroundWindow() or 0)
+    focus = 0
+    if foreground:
+        thread = int(u.GetWindowThreadProcessId(wintypes.HWND(foreground), None) or 0)
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if thread and u.GetGUIThreadInfo(wintypes.DWORD(thread), ctypes.byref(info)):
+            focus = int(info.hwndFocus or 0)
+    return {"foreground": foreground, "focus": focus}
+
+
 def _window_text(hwnd: int) -> str:
     u = _user32()
     n = u.GetWindowTextLengthW(wintypes.HWND(hwnd))

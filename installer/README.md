@@ -101,7 +101,7 @@ so a future compiler/schema change cannot silently reintroduce translation drift
   is already in your language.
 - Registers a per-user supervisor at logon. It crash-restarts the Web app, job daemon, automation
   daemon, optional browser bridge, and discovered Slack launchers.
-- Optional tasks: the live star-map wallpaper and the real-browser bridge. The bridge is enabled or
+- Optional tasks: the live desktop wallpaper (clock, weather, apps) and the real-browser bridge. The bridge is enabled or
   disabled in the supervisor config; the wallpaper retains its own logon entry.
 - Start-menu + desktop shortcuts to `collie app` (the native window), plus a *Collie Settings*
   shortcut.

@@ -155,10 +155,26 @@ _RAN_CHECK_VERIFY_NUDGE = (
     "them. If anything fails, read the error, fix it, and re-run. "
     + _VERIFY_HYGIENE + _VERIFY_TAIL)
 
+# The reminder when the surface will itself run an exact check once the model answers (Required
+# with a user-supplied or detected command) and record THAT as the verdict. Naming it matters most
+# for a command the in-loop gate cannot recognize, such as a project's own `python verify.py`:
+# every other variant would send the model to a runner that is not what decides this run.
+_HOST_CHECK_VERIFY_NUDGE = (
+    "Before finalizing, use the bash tool to run the check this run is required to pass: `%s`. "
+    "The host runs that exact command after you answer, and its result decides whether this "
+    "run succeeded. If it fails, read the error, fix it, and re-run. "
+    + _VERIFY_HYGIENE + _VERIFY_TAIL)
+
 _VERIFY_EDITED_NAMES = 4
 # A reminder quotes a command back to the model, so keep it to something a person would
 # recognize as one line of shell rather than pasting an arbitrarily long payload.
 _VERIFY_COMMAND_CHARS = 300
+
+
+def _quotable_command(command) -> str:
+    """``command`` stripped, or ``""`` when it is too long or multi-line to quote back."""
+    text = command.strip() if isinstance(command, str) else ""
+    return text if len(text) <= _VERIFY_COMMAND_CHARS and "\n" not in text else ""
 
 
 def _same_dir(a, b) -> bool:
@@ -189,15 +205,13 @@ def _reusable_check_command(ran_checks, cwd=None) -> str:
             command = entry
         else:
             continue
-        if not isinstance(command, str):
-            continue
-        text = command.strip()
-        if text and len(text) <= _VERIFY_COMMAND_CHARS and "\n" not in text:
+        text = _quotable_command(command)
+        if text:
             return text
     return ""
 
 
-def verify_nudge_for(cwd, edited_paths=(), ran_checks=()) -> str:
+def verify_nudge_for(cwd, edited_paths=(), ran_checks=(), host_check="") -> str:
     """The post-edit reminder, chosen from what this workspace can actually verify.
 
     ``detect_verification_commands`` is the product's existing evidence-based answer to "what
@@ -213,7 +227,14 @@ def verify_nudge_for(cwd, edited_paths=(), ran_checks=()) -> str:
     with the host check receipt; neither is consulted or relaxed here.  In particular a reused
     command is named precisely because its earlier run is stale — it is never counted as the
     fresh evidence the gate is asking for.
+
+    ``host_check`` is the command the surface will run after this answer and judge the run by
+    (``Harness.host_check_command``). It outranks everything else: it is not a guess about what
+    the project owns, it is the check that decides.
     """
+    required = _quotable_command(host_check)
+    if required:
+        return _HOST_CHECK_VERIFY_NUDGE % required
     reusable = _reusable_check_command(ran_checks, cwd)
     if reusable:
         return _RAN_CHECK_VERIFY_NUDGE % reusable
@@ -575,6 +596,19 @@ def _is_repro_cmd(name, args):
             or bool(_REPRO_OTHER_RE.search(c)))
 
 
+def gate_counts_command(command) -> bool:
+    """Whether the model running exactly ``command`` in bash could satisfy the Required gate.
+
+    The gate only sees evidence in a command it recognizes as an asserting check: a real test
+    runner, or a reproduction whose own text asserts. A project's own ``python verify.py`` or
+    ``make check`` is opaque to it, however strict the script is -- the model can run it word for
+    word and the gate still sees nothing, so reminders bounded by ``verify_max`` would keep asking
+    for a check that already ran.
+    """
+    c = command.strip() if isinstance(command, str) else ""
+    return bool(c) and _is_repro_cmd("bash", {"command": c}) and _is_asserting_cmd(c)
+
+
 def _repro_failed(output, name: str = "bash", command: str = "", receipt=None) -> bool:
     """Did a post-edit reproduction actually FAIL? Ground truth is the process exit code (the bash
     tool prefixes '[exit N]' for nonzero) or a tool-level ERROR — NOT a bare 'Traceback' substring.
@@ -894,6 +928,12 @@ class Harness:
         # passed them. Requiring an assert turns the model's own correctness judgment into a
         # gate-checkable signal (a wrong fix -> AssertionError -> Traceback -> repair round).
         self.require_assert = False
+        # The exact check the calling surface runs itself once this run returns, and records as
+        # the verdict (`collie run` / a Web run with Required and a check command). Reminders name
+        # it, and the gate leaves the verdict to it: not having watched the model run a check is
+        # then no run error, because that error is what stops the surface from starting the real
+        # one (cli.stopped_before_verification). Set by cli.configure_host_verification.
+        self.host_check_command = ""
         self.coverage_gate = False # SWE multi-file: re-surface uncovered siblings at finish
         self.coverage_max = 2      # bounded coverage rounds (ADVISORY, not hard-forced)
         self.cov_thresh = 1.9      # min related_scored to re-surface (same-package strong match)
@@ -1897,11 +1937,15 @@ class Harness:
         # An explicit required-verification wording owns what counts here; naming a detected
         # command beside it would invite the wrong check (SWE's reproduction, not pytest).
         if not self.verify_nudge:
-            # Same precedence as verify_nudge_for: a command this host watched succeed here
-            # beats a marker file. Still only wording — its run predates the edit above.
-            command = _reusable_check_command(host_checks, self.cwd)
-            if command:
-                source = "already ran successfully in this workspace"
+            # Same precedence as verify_nudge_for: the check the host will judge this run by
+            # comes first, then a command this host watched succeed here beats a marker file.
+            # Still only wording — neither has run on the edit above.
+            host_check = _quotable_command(self.host_check_command)
+            reusable = "" if host_check else _reusable_check_command(host_checks, self.cwd)
+            if host_check:
+                command, source = host_check, "the host runs this exact check after you answer"
+            elif reusable:
+                command, source = reusable, "already ran successfully in this workspace"
             elif detect_cache.get("generation") == edit_generation:
                 # Same workspace contents as when this was detected: no edit has landed
                 # since, so re-walking the markers could only produce the same answer.
@@ -3393,7 +3437,8 @@ class Harness:
                             # until a reproduction has actually run. Only which check the text
                             # names is workspace-selected.
                             nudge = ((self.verify_nudge
-                                      or verify_nudge_for(self.cwd, edited_files, host_checks))
+                                      or verify_nudge_for(self.cwd, edited_files, host_checks,
+                                                          self.host_check_command))
                                      if last_repro_turn < last_edit_turn
                                      else (self.repair_nudge or REPAIR_NUDGE))
                             session["messages"].append({"role": "assistant", "content": comp.text})
@@ -3410,7 +3455,8 @@ class Harness:
                             {"role": "user",
                              "content": (self.verify_nudge
                                          or verify_nudge_for(self.cwd, edited_files,
-                                                             host_checks)),
+                                                             host_checks,
+                                                             self.host_check_command)),
                              "source": "harness", "kind": "verification_reminder"})
                         verified = True
                         res.turns = turn + 1
@@ -3698,11 +3744,13 @@ class Harness:
             # turns, but exhausting that retry allowance must be a hard FAILED result rather than
             # silently accepting the model's next "done". Keep the partial answer for diagnosis and
             # mark it explicitly so a resumed/saved thread cannot remember it as a success.
+            # When the surface runs its own check next, that check is the verdict: failing here
+            # would only stop it from starting. res.verified still stays False here.
             res.verified = self._repro_verified(
                 did_edit, last_edit_turn, last_repro_turn,
                 last_repro_failed, last_repro_asserted)
             if (self.verify_gate and did_edit and not res.verified
-                    and not canceled and not res.error):
+                    and not canceled and not res.error and not self.host_check_command):
                 evidence = "executed post-edit assertion" if self.require_assert else \
                            "executed post-edit check"
                 res.error = "verification required but no %s passed" % evidence

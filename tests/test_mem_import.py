@@ -1,16 +1,21 @@
-"""Importing past Claude Code / Codex sessions into memory, without a model (--no-llm).
+"""Importing past Claude Code / Codex sessions into memory.
 
 The module had 10% line coverage: its parsers, chunking and the import driver ran only by hand.
 What must hold: harness noise never becomes a fact, secrets are redacted before they are stored,
 every fact carries provenance that says where it came from, a session is imported once, and a
-session still being written is left alone.
+session still being written is left alone. Logs are other programs' files: a damaged record is
+skipped, a session that still fails is counted and retried rather than ending the import, and only
+text that a distiller returned is ever stored as a fact.
 """
+import contextlib
+import io
 import json
 import os
 import time
 
 import pytest
 
+from harness import distill, providers
 from harness import mem_import as mi
 from harness.memory import SqliteMemory
 
@@ -128,6 +133,191 @@ def test_a_session_still_being_written_is_left_for_later(roots, tmp_path):
         stats = mi.run_import(mem, source="cc", no_llm=True, log=lambda *_: None)
         assert stats["scanned"] == 1 and stats["sessions"] == 0
         assert not mi.STATE_PATH.exists() or str(next(roots[0].rglob("*.jsonl"))) not in \
+            json.loads(mi.STATE_PATH.read_text())
+    finally:
+        mem.close()
+
+
+# ------------------------------------------------------------------------- damaged logs --
+# A session log is another program's file, and a crash or a format change leaves records in it
+# that Collie did not expect. A damaged record must cost that record, not the session.
+GOOD = {
+    "cc": {"type": "user", "message": {"content": "Use the final port 8787"}},
+    "codex": {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text": "Use the final port 8787"}]}},
+}
+PARSERS = {"cc": mi.parse_cc_session, "codex": mi.parse_codex_session}
+DAMAGED = [
+    "not json", "null", "[]", "42", '"a string"',                  # JSON, but not a record
+    '{"type":"user","message":[1]}', '{"type":"assistant","message":"hi"}',
+    '{"type":"user","message":{"content":[{"type":"text","text":42}]}}',
+    '{"type":"attachment","attachment":"max_turns_reached"}',
+    '{"type":"response_item","payload":[1]}', '{"type":"session_meta","payload":"x"}',
+    '{"type":"response_item","payload":{"type":"message","role":"user",'
+    '"content":[{"type":"input_text","text":null}]}}',
+]
+
+
+@pytest.mark.parametrize("src", ["cc", "codex"])
+@pytest.mark.parametrize("damaged", DAMAGED)
+def test_a_damaged_record_is_skipped_and_the_rest_of_the_log_is_kept(tmp_path, src, damaged):
+    log = _jsonl(tmp_path / "rollout-x.jsonl", [damaged, GOOD[src]])
+    assert PARSERS[src](log)["turns"] == [("user", "Use the final port 8787")]
+    # The family gate reads every log's opening prompt before any session is imported.
+    clean = _jsonl(tmp_path / "clean.jsonl", [GOOD[src]])
+    assert mi.prompt_sig(src, log) == mi.prompt_sig(src, clean) is not None
+
+
+@pytest.mark.parametrize("src", ["cc", "codex"])
+def test_bytes_that_are_not_utf8_cost_only_their_own_record(tmp_path, src):
+    log = tmp_path / "rollout-x.jsonl"
+    log.write_bytes(b'{"type":"note","text":"caf\xff"}\n' + json.dumps(GOOD[src]).encode()
+                    + b'\n{"type":"user","message":{"content":"caf\xc3')   # cut off mid-character
+    assert PARSERS[src](log)["turns"] == [("user", "Use the final port 8787")]
+    clean = _jsonl(tmp_path / "clean.jsonl", [GOOD[src]])
+    assert mi.prompt_sig(src, log) == mi.prompt_sig(src, clean) is not None
+
+
+def test_a_tool_error_keeps_its_readable_text(tmp_path):
+    log = _jsonl(tmp_path / "s.jsonl", [{"type": "assistant", "message": {"content": [
+        {"type": "tool_result", "is_error": True,
+         "content": [{"type": "text", "text": 7}, {"type": "text", "text": "port 8787 in use"}]}]}}])
+    assert mi.parse_cc_session(log)["turns"] == [("assistant", "[tool-error] port 8787 in use")]
+
+
+def test_a_title_or_session_id_that_is_not_text_is_ignored(tmp_path):
+    cc = _jsonl(tmp_path / "abc.jsonl", [{"type": "ai-title", "aiTitle": ["x"]}, GOOD["cc"]])
+    assert mi.parse_cc_session(cc)["title"] == ""
+    codex = _jsonl(tmp_path / "rollout-x.jsonl", [
+        {"type": "session_meta", "payload": {"session_id": 42}}, GOOD["codex"]])
+    assert mi.parse_codex_session(codex)["sid"] == "rollout-x"
+
+
+def test_an_import_reads_damaged_logs_alongside_clean_ones(roots, tmp_path):
+    _cc_session(roots[0], "aaaaaaaa11111111")
+    _cc_session(roots[0], "bbbbbbbb22222222",
+                extra=DAMAGED + [{"type": "ai-title", "aiTitle": 42}])
+    _jsonl(roots[1] / "2026" / "rollout-damaged.jsonl", [
+        {"type": "session_meta", "payload": {"session_id": 42}}, *DAMAGED,
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "Keep the relay on port 8799. " + "context " * 300}]}},
+    ])
+    mem = SqliteMemory(str(tmp_path / "mem.db"))
+    try:
+        stats = mi.run_import(mem, source="all", no_llm=True, log=lambda *_: None)
+        assert stats["sessions"] == 3 and stats.get("failed", 0) == 0
+        keys = {r[0] for r in mem.db.execute("SELECT keys FROM facts WHERE keys LIKE 'import %'")}
+        assert "import src:cc sid:bbbbbbbb Deploy the relay" in keys
+        assert any(k.startswith("import src:codex sid:rollout-") for k in keys), keys
+    finally:
+        mem.close()
+
+
+# ---------------------------------------------------------------------------- chunking --
+def test_a_one_chunk_budget_keeps_the_final_state_instead_of_crashing(monkeypatch):
+    monkeypatch.setattr(mi, "MAX_CHUNK_CHARS", 60)
+    turns = [("user", "First choose an interim configuration. " * 2),
+             ("assistant", "Explore an alternative configuration. " * 2),
+             ("user", "Correction: use port 8787.")]
+    assert mi.chunk_turns(turns, max_chunks=1) == ["U: Correction: use port 8787."]
+    full = mi.chunk_turns(turns, max_chunks=0)
+    assert mi.chunk_turns(turns, max_chunks=2) == [full[0], full[-1]]
+
+
+# -------------------------------------------------------------------------- distillers --
+@pytest.mark.parametrize("response,expected", [
+    ('["Keep the verified configuration", null, 7, {"speculation": true}, "", "  "]',
+     ["Keep the verified configuration"]),
+    ("Here are some facts without JSON.", []),
+    ('["None of the tests passed"]', ["None of the tests passed"]),
+])
+def test_the_chunk_extractor_returns_only_facts_that_are_text(monkeypatch, response, expected):
+    monkeypatch.setattr(distill, "_chat", lambda *args, **kwargs: response)
+    assert distill.ChunkExtractor("unused", "", "fixture")("conversation") == expected
+
+
+class _Answer:
+    def __init__(self, text):
+        self.model = "fixture"
+        self.text = text
+
+    def complete(self, *_args):
+        return self                      # the reply is itself the completion: .text, no stop_reason
+
+
+@pytest.mark.parametrize("reply,expected", [
+    ('["Relay runs on port 8799", null, 7, {"speculation": true}]', ["Relay runs on port 8799"]),
+    ('[null, 7, {"speculation": true}]', ["Verified fact"]),        # nothing usable: keep the list
+])
+def test_the_rolling_distiller_keeps_only_facts_that_are_text(reply, expected):
+    assert mi.RollingDistiller(_Answer(reply)).update(["Verified fact"], "excerpt") == expected
+
+
+# ------------------------------------------------------------- one failed session --
+def _parsing_fails_for(monkeypatch, bad):
+    real = mi.parse_cc_session
+
+    def parse(path):
+        if path == bad:
+            raise RuntimeError("simulated parser defect")
+        return real(path)
+    monkeypatch.setattr(mi, "parse_cc_session", parse)
+    return real
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_a_session_that_fails_is_reported_and_retried_without_ending_the_import(
+        roots, tmp_path, monkeypatch, workers):
+    good = _cc_session(roots[0], "aaaaaaaa11111111")
+    bad = _cc_session(roots[0], "bbbbbbbb22222222")
+    real = _parsing_fails_for(monkeypatch, bad)
+    lines = []
+    mem = SqliteMemory(str(tmp_path / "mem.db"))
+    try:
+        stats = mi.run_import(mem, source="cc", no_llm=True, workers=workers, log=lines.append)
+        assert stats["sessions"] == 1 and stats["failed"] == 1
+        failed = [ln for ln in lines if str(bad) in ln]
+        assert failed and "RuntimeError: simulated parser defect" in failed[0], lines
+        assert "1 failed" in lines[-1], lines[-1]
+        state = json.loads(mi.STATE_PATH.read_text())
+        assert str(good) in state and str(bad) not in state, "a failed session is tried again"
+
+        monkeypatch.setattr(mi, "parse_cc_session", real)
+        again = mi.run_import(mem, source="cc", no_llm=True, log=lambda *_: None)
+        assert again["sessions"] == 1 and again["failed"] == 0 and again["skipped"] == 1
+    finally:
+        mem.close()
+
+
+def test_mem_import_names_a_failed_session_and_exits_nonzero(roots, tmp_path, monkeypatch):
+    from harness import cli
+    _cc_session(roots[0], "aaaaaaaa11111111")
+    bad = _cc_session(roots[0], "bbbbbbbb22222222")
+    _parsing_fails_for(monkeypatch, bad)
+    monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("COLLIE_EMBED", "bm25")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = cli.main(["mem", "import", "--no-llm", "--source", "cc", "--embed", "bm25"])
+    printed = out.getvalue()
+    assert code == 1, printed
+    assert str(bad) in printed and "simulated parser defect" in printed
+    assert "1 failed" in printed.strip().splitlines()[-1], printed
+
+
+def test_a_distiller_that_cannot_be_built_stops_the_import(roots, tmp_path, monkeypatch):
+    """A configuration error is not a bad session: it stops the run instead of being counted
+    against every session in it."""
+    session = _cc_session(roots[0])
+
+    def no_provider(*_args, **_kwargs):
+        raise ValueError("unknown provider: nope")
+    monkeypatch.setattr(providers, "make_provider", no_provider)
+    mem = SqliteMemory(str(tmp_path / "mem.db"))
+    try:
+        with pytest.raises(ValueError, match="unknown provider"):
+            mi.run_import(mem, source="cc", provider_name="nope", log=lambda *_: None)
+        assert not mi.STATE_PATH.exists() or str(session) not in \
             json.loads(mi.STATE_PATH.read_text())
     finally:
         mem.close()

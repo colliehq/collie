@@ -705,6 +705,10 @@
                 margin-top: 2px; overflow-x: auto; white-space: nowrap; max-width: 100%;
                 padding-bottom: 1px; }
   .ev .detail::-webkit-scrollbar { height: 5px; }
+  /* An approval card is read before it is allowed: its body wraps instead of scrolling off to
+     the right, so every step of a script is on screen, and a long one scrolls down. */
+  .ev.ask .detail { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: visible;
+                    max-height: 18em; overflow-y: auto; }
   .ev .at { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
 
   /* diff */
@@ -3070,6 +3074,11 @@
                                at_ms:Number(data.at_ms)||Date.now()})
         }).catch(function () {});
       }
+      if (data.type === "live-native-voice-state" && data.session) {
+        // The native voice finished or was cut off; hearing it back after this is only an echo.
+        postLiveVoiceState(String(data.session), String(data.cue_id || ""), !!data.speaking)
+          .catch(function () {});
+      }
       if (data.type === "live-native-speech-status" && !data.active && data.session && data.message) {
         fetch("/api/live-copilot/event?token=" + encodeURIComponent(CT), {
           method:"POST", headers:{"content-type":"application/json"},
@@ -5138,7 +5147,7 @@
     { id: "caps", label: "Capabilities", zh: "能力",
       keys: ["WEBSEARCH", "BROWSER_BRIDGE", "PLAN_FIRST", "MCP_MANAGE", "MCP_DISCOVERY"] },
     { id: "devices", label: "Desktop & devices", zh: "桌面与设备",
-      keys: ["WALLPAPER", "DESKTOP_CONTROL", "SCREEN_CAPTURE", "REMOTE"] },
+      keys: ["WALLPAPER", "DESKTOP_CODE_MAP", "DESKTOP_CONTROL", "SCREEN_CAPTURE", "REMOTE"] },
     { id: "mcp", label: "Connections", zh: "连接",
       keys: [], mcp: true },
     { id: "memory", label: "Privacy & security", zh: "记忆与隐私",
@@ -6585,6 +6594,19 @@
     // user's exact decision without resurrecting the actionable inbox item.
     delete PENDING_PERMS[id]; delete GLOBAL_PERMS[id]; updateNeedsYou();
   }
+  // A script is allowed whole, so its card lists every step on a line of its own; as one line
+  // of JSON the later steps (a delete after the snapshots) sat off to the right, unread.
+  function permBody(d) {
+    var body = d.body || "";
+    if (d.tool !== "browser_script" && d.tool !== "desktop_script") return body;
+    var args;
+    try { args = JSON.parse(body); } catch (e) { return body; }
+    if (!args || !Array.isArray(args.steps)) return body;
+    var rest = Object.keys(args).filter(function (k) { return k !== "steps"; })
+      .map(function (k) { return k + ": " + JSON.stringify(args[k]); });
+    var lines = args.steps.map(function (s, i) { return (i + 1) + ". " + JSON.stringify(s); });
+    return (rest.length ? rest.join(" · ") + "\n" : "") + lines.join("\n");
+  }
   function addPermission(d, sid) {
     if (!d || !d.id) return;
     trackPermission(d, sid);
@@ -6610,7 +6632,7 @@
     row.innerHTML =
       '<span class="ico">' + ICON["flag"] + '</span>' +
       '<span class="lead"><div class="name">' + esc(d.title || ("Run " + (d.tool || "") + "?")) + '</div>' +
-      '<div class="detail">' + esc(d.body || "") +
+      '<div class="detail">' + esc(permBody(d)) +
       (d.target ? '  ·  on ' + esc(d.target) : '') + '</div>' +
       '<div class="perm-actions">' + btns + '</div></span>' +
       '<span class="at">' + elapsed() + '</span>';
@@ -10503,6 +10525,12 @@
   $("navLive").onclick = function () { openEmbeddedSurface("Live Copilot", "/live?embedded=1" +
     (NATIVE_SHELL ? "&native_shell=1" : ""), "live"); };
   var LIVE_SPOKEN_SESSION = "", LIVE_SPOKEN_CUES = {};
+  function postLiveVoiceState(session, cueId, speaking) {
+    return fetch("/api/live-copilot/voice-state?token=" + encodeURIComponent(CT), {
+      method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({session_id:session, cue_id:cueId, speaking:!!speaking})
+    }).then(function (response) { if (!response.ok) throw new Error("voice-state rejected"); });
+  }
   function dispatchLiveVoice(value) {
     if (!NATIVE_SHELL || !window.chrome || !window.chrome.webview ||
         !value || !value.active || !value.voice_dialogue) return;
@@ -10523,10 +10551,17 @@
     fresh.forEach(function (row) { LIVE_SPOKEN_CUES[row.id] = true; });
     var cue = fresh[0], spoken = String(cue.text || "").trim().slice(0, 260);
     if (!spoken) return;
-    try { window.chrome.webview.postMessage({
-      type:"live-native-speak", session:session, cue_id:String(cue.id || ""),
+    var cueId = String(cue.id || ""), payload = {
+      type:"live-native-speak", session:session, cue_id:cueId,
       text:spoken, language:document.documentElement.lang || navigator.language || "zh-CN"
-    }); } catch (e) {}
+    };
+    // Record that Collie is about to speak this cue first, so the microphone hearing it is
+    // recognized as Collie. A cue the server no longer has is not spoken.
+    postLiveVoiceState(session, cueId, true).then(function () {
+      try { window.chrome.webview.postMessage(payload); } catch (e) {
+        postLiveVoiceState(session, cueId, false).catch(function () {});
+      }
+    }).catch(function () {});
   }
   function syncLiveNav() {
     var dot = $("liveNavStatus"); if (!dot) return;

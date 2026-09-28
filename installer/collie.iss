@@ -85,7 +85,7 @@ StatusLang=Applying your language...
 StatusWallpaper=Setting up the desktop wallpaper...
 StatusBridge=Setting up the browser bridge...
 StatusSupervisor=Setting up 24/7 recovery...
-TaskWallpaper=Live star-map wallpaper on my desktop
+TaskWallpaper=Live desktop behind my icons (clock, weather, apps)
 TaskBridge=Let collie use my real browser (already logged in)
 RunApp=Start Collie now
 zh.LangTitle=语言
@@ -96,7 +96,7 @@ zh.StatusWebView2=正在安装 WebView2 运行时...
 zh.StatusLang=正在应用你选择的语言...
 zh.StatusWallpaper=正在设置桌面壁纸...
 zh.StatusBridge=正在设置浏览器桥接...
-zh.TaskWallpaper=把实时星图设为桌面壁纸
+zh.TaskWallpaper=在桌面图标后启用动态桌面（时钟、天气、应用）
 zh.TaskBridge=允许 collie 使用我已登录的真实浏览器
 zh.RunApp=立即启动 Collie
 zhtw.LangTitle=語言
@@ -107,7 +107,7 @@ zhtw.StatusWebView2=正在安裝 WebView2 執行階段...
 zhtw.StatusLang=正在套用你選擇的語言...
 zhtw.StatusWallpaper=正在設定桌面桌布...
 zhtw.StatusBridge=正在設定瀏覽器橋接...
-zhtw.TaskWallpaper=把即時星圖設為桌面桌布
+zhtw.TaskWallpaper=在桌面圖示後啟用動態桌面（時鐘、天氣、應用程式）
 zhtw.TaskBridge=允許 collie 使用我已登入的真實瀏覽器
 zhtw.RunApp=立即啟動 Collie
 ja.LangTitle=言語
@@ -149,8 +149,11 @@ Name: "wallpaper";   Description: "{cm:TaskWallpaper}"; Flags: unchecked
 Name: "bridge";      Description: "{cm:TaskBridge}"; Flags: unchecked
 
 [Files]
-; the self-contained runtime: embeddable CPython + collie + deps + engine source + extension
-Source: "payload\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
+; the self-contained runtime: embeddable CPython + collie + deps + engine source + extension.
+; build_payload.ps1 refuses a payload holding the bridge token, but anything run from the payload
+; after that check (a bridge, the verify step's own imports) can still write the token or bytecode
+; stamped with build-machine paths; the compiler itself leaves them out.
+Source: "payload\python\*"; DestDir: "{app}\python"; Excludes: "Lib\site-packages\harness\browser_ext\token.txt,Lib\site-packages\harness\browser_ext\auth.js,__pycache__\*,*.pyc"; Flags: recursesubdirs createallsubdirs ignoreversion
 ; tiny bootstrapper; installs the WebView2 runtime only if the machine lacks it
 Source: "payload\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; the full-bleed welcome splash — extracted to {tmp} and painted over the whole welcome page ([Code])

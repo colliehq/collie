@@ -101,6 +101,78 @@ def args_preview(args, limit: int = 240) -> str:
     return (out[:limit - 1] + "…") if len(out) > limit else out
 
 
+#: Tools that run a batch of steps on ONE approval.
+SCRIPT_TOOLS = frozenset(("browser_script", "desktop_script"))
+
+#: The longest line a push notification about a parked approval carries. The card holds the
+#: whole proposal; a notice only has to bring the person to it.
+NOTICE_LIMIT = 180
+_NOTICE_STEP = 48
+
+
+def approval_body(tool_name: str, args) -> str:
+    """What the approval card shows.
+
+    A script is approved whole, so its card carries every step exactly as proposed (still in
+    placeholder form, like the preview). `args_preview` cuts each value at 80 characters,
+    which left a script's later steps, say a delete after fifteen snapshots, off the very card
+    the person was approving. Single calls keep the compact preview.
+    """
+    if tool_name in SCRIPT_TOOLS:
+        return json.dumps(args or {}, ensure_ascii=False, default=str)
+    return args_preview(args)
+
+
+def notice_text(item, limit: int = NOTICE_LIMIT) -> str:
+    """A parked approval as one bounded line for a push notification.
+
+    It never passes for complete when it is not: what does not fit is counted in an explicit
+    "… N more steps" (or "… N more chars") at the end, so fifteen snapshots and a delete
+    cannot read like fifteen snapshots.
+    """
+    tool = item.tool or "a tool"
+    steps = _script_steps(item)
+    if steps is None:
+        text = " ".join(("%s — %s" % (tool, item.body) if item.body else tool).split())
+        if len(text) <= limit:
+            return text
+        cut = limit
+        while cut > 0 and cut + len(" … %d more chars" % (len(text) - cut)) > limit:
+            cut -= 1
+        return text[:cut] + " … %d more chars" % (len(text) - cut)
+    out = "%s — %d step%s:" % (tool, len(steps), "" if len(steps) == 1 else "s")
+    for i, step in enumerate(steps):
+        piece = (" · " if i else " ") + _step_label(step)
+        left = len(steps) - i - 1
+        tail = " … %d more steps" % left if left else ""
+        if len(out) + len(piece) + len(tail) > limit:
+            return out + " … %d more steps" % (left + 1)
+        out += piece
+    return out
+
+
+def _script_steps(item):
+    if item.tool not in SCRIPT_TOOLS:
+        return None
+    try:
+        steps = json.loads(item.body).get("steps")
+    except (ValueError, AttributeError):
+        return None
+    return steps if isinstance(steps, list) else None
+
+
+def _step_label(step) -> str:
+    if isinstance(step, dict):
+        bits = ", ".join("%s: %s" % (k, v if isinstance(v, str) else
+                                     json.dumps(v, ensure_ascii=False, default=str))
+                         for k, v in step.items() if k != "action")
+        label = str(step.get("action") or "?") + ("(%s)" % bits if bits else "")
+    else:
+        label = json.dumps(step, ensure_ascii=False, default=str)
+    label = " ".join(label.split())
+    return label if len(label) <= _NOTICE_STEP else label[:_NOTICE_STEP - 1] + "…"
+
+
 def outcome_of(resolution: str):
     """Map a stored resolution onto a gate Outcome. Everything unrecognised — an empty
     string, a stale value, a garbled reply from a phone — is a refusal. Consent has to be
@@ -131,7 +203,13 @@ class InboxStore:
         self.on_new = on_new
         self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self._lock = threading.Lock()
+        # Every use of the connection holds this lock, reads and close included. Cancelling a
+        # web run closes the store from one thread while the approval poll may be reading it on
+        # another, and sqlite3 lets go of the GIL while it steps a query: a close in that window
+        # frees the connection under the reader and kills the whole process with an access
+        # violation. Re-entrant because add() and wait() read while already holding it.
+        self._lock = threading.RLock()
+        self._closed = False
         self._waiters: dict = {}
         try:
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -168,6 +246,8 @@ class InboxStore:
                          grant_options=grant_options or "", visibility=visibility,
                          call_id=call_id or "", created_at=now)
         with self._lock:
+            if self._closed:
+                raise RuntimeError("approval inbox is closed")
             try:
                 self.db.execute(
                     """INSERT INTO inbox_items(
@@ -199,6 +279,8 @@ class InboxStore:
         """Resolve exactly once. False when the item is unknown or already answered —
         the losing surface is told nothing happened, not handed an error."""
         with self._lock:
+            if self._closed:
+                return False
             cur = self.db.execute(
                 "UPDATE inbox_items SET state=?, resolution=?, resolved_at=? "
                 "WHERE id=? AND state=?",
@@ -226,13 +308,18 @@ class InboxStore:
 
         threading.Event, not asyncio: collie's loop is synchronous, and the surfaces that
         answer (a TUI thread, an HTTP handler, the relay socket) are threads too.
+
+        A closed store — the run was cancelled — answers R_ORPHANED, which is a refusal:
+        whatever was clicked in the meantime, the run it would have applied to is gone.
         """
         cur = self.get(item_id)
         if cur is None:
-            return ""
+            return R_ORPHANED if self._closed else ""
         if not cur.pending:
             return cur.resolution
         with self._lock:
+            if self._closed:
+                return R_ORPHANED
             ev = self._waiters.setdefault(item_id, threading.Event())
             again = self.get(item_id)          # re-read under the lock: it may have been
             if again is not None and not again.pending:   # resolved between the two reads
@@ -242,18 +329,29 @@ class InboxStore:
         finally:
             with self._lock:
                 self._waiters.pop(item_id, None)
-        done = self.get(item_id)
-        return (done.resolution if done else "") or ""
+        with self._lock:
+            if self._closed:
+                return R_ORPHANED
+            done = self.get(item_id)
+            return (done.resolution if done else "") or ""
 
     # -- reading ------------------------------------------------------------
+    # A closed store reads as empty: whoever still holds it (a poll that looked it up just
+    # before the cancel) is told nothing is waiting any more, not handed an error.
     def get(self, item_id: str):
-        r = self.db.execute("SELECT * FROM inbox_items WHERE id=?", (item_id,)).fetchone()
-        return self._row(r)
+        with self._lock:
+            if self._closed:
+                return None
+            r = self.db.execute("SELECT * FROM inbox_items WHERE id=?", (item_id,)).fetchone()
+            return self._row(r)
 
     def _by_call(self, session, call_id):
-        r = self.db.execute("SELECT * FROM inbox_items WHERE session=? AND call_id=?",
-                            (session, call_id)).fetchone()
-        return self._row(r)
+        with self._lock:
+            if self._closed:
+                return None
+            r = self.db.execute("SELECT * FROM inbox_items WHERE session=? AND call_id=?",
+                                (session, call_id)).fetchone()
+            return self._row(r)
 
     def list(self, session=None, state=None, visibility=None, limit=200) -> list:
         sql, params = "SELECT * FROM inbox_items", []
@@ -266,7 +364,10 @@ class InboxStore:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at ASC LIMIT ?"
         params.append(int(limit))
-        return [self._row(r) for r in self.db.execute(sql, params).fetchall()]
+        with self._lock:
+            if self._closed:
+                return []
+            return [self._row(r) for r in self.db.execute(sql, params).fetchall()]
 
     def pending(self, session=None) -> list:
         return self.list(session=session, state=STATE_PENDING)
@@ -288,10 +389,19 @@ class InboxStore:
         return InboxItem(**{k: r[k] for k in r.keys() if k in known}) if r is not None else None
 
     def close(self):
-        try:
-            self.db.close()
-        except Exception:
-            pass
+        """Close the connection once, under the same lock every reader holds, and wake any
+        run still parked in wait() so it refuses instead of waiting on a dead store."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self.db.close()
+            except Exception:
+                pass
+            finally:
+                for ev in self._waiters.values():
+                    ev.set()
 
 
 # -- the approver ---------------------------------------------------------------
@@ -309,7 +419,7 @@ def inbox_approver(store: InboxStore, session: str, *, visibility=VIS_INBOX,
         item = store.add(
             session,
             title="Run %s?" % tool_name,
-            body=args_preview(args),
+            body=approval_body(tool_name, args),
             tool=tool_name,
             target=getattr(decision, "target", "") or "",
             risk=getattr(decision, "risk", "") or "",

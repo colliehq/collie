@@ -24,7 +24,8 @@ previous bundled runtime until the new install succeeds and restores it if copyi
 fails; your `~/.collie` settings, memory, and missions are outside that replacement boundary.
 
 !!! tip "Optional extras during setup"
-    Two checkboxes let you turn on the **live star-map wallpaper** and the **real-browser bridge**
+    Two checkboxes let you turn on the **live desktop** (a clock, weather and your apps behind your
+    icons) and the **real-browser bridge**
     at logon. Both are off by default and covered in [The desktop app](desktop.md).
 
 ## macOS — signed app

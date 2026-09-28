@@ -24,7 +24,7 @@ from .memory import SqliteMemory
 from .tools import default_registry
 from .context import ContextComposer, TokenBudgeter
 from .recorder import Recorder, note_host_error
-from .loop import Harness
+from .loop import Harness, gate_counts_command
 from . import compare as cmp
 from . import dashboard as dash
 
@@ -397,6 +397,31 @@ def configure_run_options(h, intent="build", quality="balanced", verification="a
         h.verify_max = max(int(getattr(h, "verify_max", 2) or 2), 4)
 
     return options
+
+
+def configure_host_verification(h, command):
+    """Hand a run's verdict to the check its surface executes after it.
+
+    ``command`` is the exact check `collie run` or a Web run executes once the model is done,
+    for Test or Required (typed by the user or detected from the repo). The in-loop gate can
+    only count a command it recognizes as an asserting check, so with a project's own
+    ``python verify.py`` it failed a correct edit with "verification required but no executed
+    post-edit assertion passed" -- and ``stopped_before_verification`` then refused to start the
+    one check that could have decided it.
+
+    Here the gate keeps nudging but gives up the verdict: its reminders name this command, and
+    not having seen it run is no longer a run error. A command the gate cannot count at all gets
+    the single advisory reminder instead of ``verify_max`` rounds it could never satisfy.
+    Cancellation, real run errors and the check's own result still decide completion, and
+    memory promotion waits for that result.
+    """
+    command = command.strip() if isinstance(command, str) else ""
+    if not command:
+        return
+    h.host_check_command = command
+    h.defer_memory_promotion = True
+    if getattr(h, "verify_gate", False) and not gate_counts_command(command):
+        h.verify_gate = False
 
 
 _TURN_OPTION_FIELDS = (
@@ -2311,6 +2336,8 @@ def _cmd_run_owned(args, sid, lease):
             _base_emit(kind, data)
     h.emit = _emit_with_inbox_errors
     h.defer_memory_promotion = will_verify
+    if will_verify and hd.runner == "collie":
+        configure_host_verification(h, verify_command)
     runner_payload = None
     if hd.runner != "collie":
         from .runner_slice import receipt_of, transcript_text
@@ -3530,10 +3557,15 @@ def cmd_mem(args):
 
     if args.action == "import":
         from .mem_import import run_import
-        run_import(m, source=args.source, limit=args.limit, dry_run=args.dry_run,
-                   no_llm=args.no_llm, force=args.force,
-                   provider_name=args.provider, model=args.model,
-                   max_chunks=args.max_chunks, workers=args.workers)
+        stats = run_import(m, source=args.source, limit=args.limit, dry_run=args.dry_run,
+                           no_llm=args.no_llm, force=args.force,
+                           provider_name=args.provider, model=args.model,
+                           max_chunks=args.max_chunks, workers=args.workers)
+        if stats.get("failed"):
+            # The rest imported, and the summary names what did not; a scheduled import
+            # still has to see that something failed, as it did when one session ended the run.
+            m.close()
+            return 1
     elif args.action == "purge-imported":
         from .mem_import import purge
         print("purged %d imported facts" % purge(m))

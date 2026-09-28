@@ -88,7 +88,8 @@ class ChunkExtractor:
         out = _chat(self.base, self.key, self.model, _CHUNK_SYS, chunk_text, max_tokens=700)
         try:
             arr = json.loads(out[out.find("["): out.rfind("]") + 1])
-            return [str(x).strip() for x in arr if str(x).strip()]
+            # only strings are facts: str() made a null, a number or an object into "None" etc.
+            return [x.strip() for x in arr if isinstance(x, str) and x.strip()]
         except Exception:
             # model didn't emit clean JSON -> store NOTHING. Line-splitting the prose stored the
             # model's preamble ("Here are the durable facts:") as a fake memory, corrupting recall.

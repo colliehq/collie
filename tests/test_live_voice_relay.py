@@ -95,3 +95,64 @@ def test_relay_respects_user_disabling_listening_during_playback(store, monkeypa
     monkeypatch.setattr(relay.time, "sleep", lambda _: None)
     assert relay.run(session) == 0
     assert spoken == ["A useful answer."]
+
+
+def _relay_once(store, monkeypatch, suggestions, speak):
+    """Run the relay until it has handled one batch of cues, then end the session."""
+    session = store.snapshot()["session_id"]
+    original_snapshot = store.snapshot
+    calls = 0
+
+    def snapshot():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            value = store._read()
+            value["suggestions"] = suggestions
+            store._write(value)
+        elif calls > 3 and original_snapshot()["active"]:
+            store.stop()
+        return original_snapshot()
+
+    class Voice:
+        def prewarm(self):
+            return True
+
+        def speak(self, text):
+            return speak(text)
+
+    monkeypatch.setattr(store, "snapshot", snapshot)
+    monkeypatch.setattr(relay, "LiveSessionStore", lambda: store)
+    monkeypatch.setattr(relay, "LocalNeuralVoice", Voice)
+    monkeypatch.setattr(relay.time, "sleep", lambda _: None)
+    assert relay.run(session) == 0
+
+
+def test_relay_marks_collie_speaking_for_exactly_the_spoken_cue(store, monkeypatch):
+    during = []
+
+    def speak(text):
+        during.append(dict(store._read()["voice_playback"]))
+        return True
+
+    _relay_once(store, monkeypatch, [{"id": "cue-1", "kind": "answer", "lane": "dialogue",
+                                      "urgency": "now", "text": "Check the lease first."}], speak)
+    assert during and during[0]["active"] is True and during[0]["cue_id"] == "cue-1"
+    after = store._read()["voice_playback"]
+    assert after["active"] is False and after["ended_at_ms"] >= during[0]["started_at_ms"]
+
+
+def test_relay_skips_a_cue_that_disappeared_before_it_spoke(store, monkeypatch):
+    spoken = []
+    original = store.set_voice_playback
+
+    def vanished(**kwargs):
+        if kwargs.get("speaking"):
+            raise live.LiveCopilotError("voice playback cue is no longer available")
+        return original(**kwargs)
+
+    monkeypatch.setattr(store, "set_voice_playback", vanished)
+    _relay_once(store, monkeypatch, [{"id": "cue-1", "kind": "answer", "lane": "dialogue",
+                                      "urgency": "now", "text": "Dismissed meanwhile."}],
+                lambda text: spoken.append(text) or True)
+    assert spoken == []

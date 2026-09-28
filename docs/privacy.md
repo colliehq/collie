@@ -61,10 +61,18 @@ feature inherently requires:
   `~/.collie/update-status.json`. Installing always waits for you to press *Install* or run
   `collie update --yes`, and downloads only the release you were shown, from GitHub.
 - **Weather on the live wallpaper (opt-in wallpaper).** While the desktop wallpaper runs with its
-  clock showing, the clock's weather line asks `ipapi.co` for an approximate location from your
-  network address, then `api.open-meteo.com` for the current weather at that point, about every 30
-  minutes. Nothing about you or your work is sent. Set `"weather": false` under `"clock"` in
-  `~/.collie/desktop.json` to stop both requests; the clock stays.
+  clock showing, Collie's local server asks `ipapi.co` for an approximate location from your
+  network address, then `api.open-meteo.com` for the current weather at that point (the forecast
+  request carries only that latitude and longitude). It asks at most once every 15 minutes, however
+  many desktop windows are open; after a failed attempt it waits 1 minute, then 2, 4, 8 and 16, and
+  then 30 minutes between tries. Both requests identify themselves with the User-Agent
+  `collie-desktop-weather (+https://github.com/colliehq/collie)`. Nothing about you or your work is
+  sent. To stop both requests, untick *Weather* in the desktop's edit mode (the pencil at the
+  bottom right), which saves `{"widgets": {"clock": {"weather": false}}}` into
+  `~/.collie/desktop.json`, or write that setting there yourself (create the file if it does not
+  exist, and merge it into what is already there). Turning the clock off stops them too. The
+  server checks this before asking, and the clock stays. If that file exists but cannot be read,
+  for example after a typo, the weather stays off until it is fixed.
 - **News in the Daily Brief (opt-in; off until you add a feed).** When you save RSS or Atom feed
   addresses under *News feeds and topics* in the Daily Brief, Collie requests exactly those
   addresses: over HTTPS only, and only when the host name resolves to a public internet address
