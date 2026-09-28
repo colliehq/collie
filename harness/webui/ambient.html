@@ -231,6 +231,22 @@
   .editbtn:hover{opacity:1;}
   body.editing .editbtn{opacity:1; background:rgba(var(--accent),.95); color:var(--send-ink); border-color:transparent;}
   .editbtn svg{width:17px; height:17px;}
+  /* edit mode's widget panel: each widget on/off and its corner */
+  .widget-panel{position:fixed; right:16px; bottom:58px; z-index:11; width:min(300px,calc(100vw - 32px)); padding:11px 12px 9px;
+    border:1px solid var(--panel-line); border-radius:12px; background:var(--panel); color:var(--panel-ink); font-size:12.5px;
+    box-shadow:0 16px 44px rgba(0,0,0,.22); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); pointer-events:auto;}
+  .widget-panel[hidden]{display:none;}
+  .widget-panel h2{margin-bottom:5px; font-size:11px; font-weight:650; letter-spacing:.06em; text-transform:uppercase; color:var(--mut);}
+  .wp-row{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 0; border-top:1px solid var(--panel-line);}
+  .wp-name{display:flex; align-items:center; gap:7px; min-width:0; cursor:pointer;}
+  .wp-name input{accent-color:rgb(var(--accent));}
+  .wp-slots{display:flex; flex:none; gap:3px;}
+  .wp-slots button{width:24px; height:24px; padding:0; border:1px solid var(--panel-line); border-radius:6px; background:transparent;
+    color:var(--mut); font:inherit; font-size:12px; line-height:1; cursor:pointer;}
+  .wp-slots button:hover{background:var(--hover);}
+  .wp-slots button[aria-pressed="true"]{background:rgba(var(--accent),.9); color:var(--send-ink); border-color:transparent;}
+  .wp-slots button:disabled, .wp-name input:disabled{opacity:.55; cursor:wait;}
+  .wp-error{margin-top:6px; color:#e36b79; font-size:11px;}
   .edithint{position:fixed; left:50%; top:5vh; transform:translateX(-50%); z-index:9; display:none;
     padding:8px 16px; border-radius:999px; background:var(--panel); border:1px solid var(--panel-line);
     color:var(--panel-ink); font-size:13px; pointer-events:none; backdrop-filter:blur(12px);}
@@ -366,6 +382,7 @@
   <audio id="au" preload="none"></audio>
 
   <div class="edithint">Drag any widget to a corner · click ✓ when done</div>
+  <section class="widget-panel" id="widgetPanel" aria-labelledby="widgetPanelTitle" hidden></section>
   <button class="editbtn" id="editbtn" type="button" title="Edit layout" aria-label="Edit desktop layout">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
   </button>
@@ -400,7 +417,10 @@
     "Current conditions":"当前天气","Last available conditions":"上次获取的天气",
     "Clear":"晴","Mainly clear":"大致晴朗","Partly cloudy":"局部多云","Overcast":"阴","Fog":"雾",
     "Drizzle":"毛毛雨","Rain":"雨","Heavy rain":"大雨","Freezing rain":"冻雨","Snow":"雪","Heavy snow":"大雪",
-    "Snow grains":"米雪","Showers":"阵雨","Violent showers":"强阵雨","Snow showers":"阵雪","Thunderstorm":"雷雨"});
+    "Snow grains":"米雪","Showers":"阵雨","Violent showers":"强阵雨","Snow showers":"阵雪","Thunderstorm":"雷雨",
+    "Desktop widgets":"桌面组件","Name and logo":"名称与标志","Clock & weather":"时钟与天气","Apps":"应用",
+    "Music":"音乐","System":"系统状态","Projects":"项目","Position":"位置","Top left":"左上","Top right":"右上",
+    "Bottom left":"左下","Bottom right":"右下","Center":"中间","Layout was not saved":"布局未保存"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
     "Starting":"啟動中","Restarting":"重新啟動中","Not healthy":"狀態異常","Restarts paused":"已暫停重新啟動",
@@ -411,7 +431,10 @@
     "Current conditions":"目前天氣","Last available conditions":"上次取得的天氣",
     "Clear":"晴","Mainly clear":"大致晴朗","Partly cloudy":"局部多雲","Overcast":"陰","Fog":"霧",
     "Drizzle":"毛毛雨","Rain":"雨","Heavy rain":"大雨","Freezing rain":"凍雨","Snow":"雪","Heavy snow":"大雪",
-    "Snow grains":"米雪","Showers":"陣雨","Violent showers":"強陣雨","Snow showers":"陣雪","Thunderstorm":"雷雨"});
+    "Snow grains":"米雪","Showers":"陣雨","Violent showers":"強陣雨","Snow showers":"陣雪","Thunderstorm":"雷雨",
+    "Desktop widgets":"桌面元件","Name and logo":"名稱與標誌","Clock & weather":"時鐘與天氣","Apps":"應用程式",
+    "Music":"音樂","System":"系統狀態","Projects":"專案","Position":"位置","Top left":"左上","Top right":"右上",
+    "Bottom left":"左下","Bottom right":"右下","Center":"中間","Layout was not saved":"版面未儲存"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
   function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}
@@ -421,7 +444,7 @@
     document.querySelectorAll("[data-ops-aria]").forEach(function(node){node.setAttribute("aria-label",tOps(node.getAttribute("data-ops-aria")));});
     document.querySelectorAll("[data-ops-title]").forEach(function(node){node.title=tOps(node.getAttribute("data-ops-title"));});
     document.querySelectorAll("[data-ops-open-name]").forEach(function(node){var name=node.getAttribute("data-ops-open-name");node.setAttribute("aria-label",tOps("Open")+" "+(name||tOps("app")));});
-    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();paintWeather();if(opsPanelOpen)refreshAmbientActivity();
+    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();paintWeather();paintWidgetPanel();if(opsPanelOpen)refreshAmbientActivity();
   }
   function ambientName(){return String(OPS_IDENTITY.name||"Collie");}
   function paintIdentity(){
@@ -740,6 +763,7 @@
       var wel = slot.lastElementChild;               // tag the just-rendered widget so it can be dragged
       if (wel) { wel.classList.add("widget"); wel.setAttribute("data-widget", name); wel.addEventListener("mousedown", onWidgetDown); }
     });
+    if (editMode) paintWidgetPanel();
   }
   function loadConfig(){ fetch("/api/desktop/config").then(function(r){return r.json();}).then(applyConfig).catch(function(){}); }
   loadConfig(); setInterval(loadConfig, 5000);
@@ -788,12 +812,65 @@
   // so the gesture is handed back here. Double, not single, so it never fights the page's own
   // controls; ignored entirely when the click landed on a widget or the composer.
   document.addEventListener("dblclick", function(e){
-    if (e.target.closest && e.target.closest(".slot, .composer, .reply, .editbtn")) return;
+    if (e.target.closest && e.target.closest(".slot, .composer, .reply, .editbtn, .widget-panel")) return;
     api("/api/desktop/reveal", {show: true});
   });
   var PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
   var CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
-  $("editbtn").onclick = function(){ editMode = !editMode; document.body.classList.toggle("editing", editMode); $("editbtn").innerHTML = editMode ? CHECK : PENCIL; };
+  $("editbtn").onclick = function(){ editMode = !editMode; document.body.classList.toggle("editing", editMode); $("editbtn").innerHTML = editMode ? CHECK : PENCIL; widgetPanelError = ""; paintWidgetPanel(); };
+
+  // ── widget panel (edit mode): turn each widget on or off and choose its corner ─────────────────
+  // Dragging can only move a widget that is showing; this is how one that is off comes back.
+  var WIDGET_NAMES = {brand:"Name and logo", clock:"Clock & weather", launcher:"Apps", music:"Music", system:"System", projects:"Projects"};
+  var WIDGET_SLOTS = [["tl","Top left","↖"],["tr","Top right","↗"],["bl","Bottom left","↙"],["br","Bottom right","↘"],["center","Center","●"]];
+  var widgetSaving = false, widgetPanelError = "", widgetFocus = "";
+  function saveWidget(name, change){
+    if (widgetSaving) return;
+    widgetSaving = true; widgetPanelError = ""; paintWidgetPanel();
+    // Start from what is on disk, not this page's copy: Collie may have edited desktop.json since
+    // the page last polled it, and saving the stale copy would undo that.
+    fetch("/api/desktop/config", {cache:"no-store"}).then(function(r){ if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function(cfg){
+        cfg.widgets = cfg.widgets || {};
+        cfg.widgets[name] = Object.assign({}, cfg.widgets[name] || {}, change);
+        return opsPost("/api/desktop/config", cfg).then(function(){ lastCfg = ""; applyConfig(cfg); });
+      })
+      .catch(function(){ widgetPanelError = tOps("Layout was not saved"); })
+      .then(function(){ widgetSaving = false; paintWidgetPanel(); });
+  }
+  function paintWidgetPanel(){
+    var panel = $("widgetPanel"); if (!panel) return;
+    panel.hidden = !editMode; if (!editMode) { widgetFocus = ""; return; }
+    // Repainting replaces the controls; put focus back on the same one, unless it has moved on to
+    // something outside the panel (the composer, say) in the meantime.
+    var active = document.activeElement, keep = !active || active === document.body || panel.contains(active);
+    if (active && panel.contains(active) && active.getAttribute("data-wp")) widgetFocus = active.getAttribute("data-wp");
+    var W = (curConfig && curConfig.widgets) || {};
+    panel.textContent = "";
+    var title = document.createElement("h2"); title.id = "widgetPanelTitle"; title.textContent = tOps("Desktop widgets"); panel.appendChild(title);
+    ORDER.forEach(function(name){
+      var w = W[name] || {}, label = tOps(WIDGET_NAMES[name] || name), slot = w.slot || "center";
+      var row = document.createElement("div"); row.className = "wp-row";
+      var toggle = document.createElement("label"); toggle.className = "wp-name";
+      var check = document.createElement("input"); check.type = "checkbox"; check.checked = !!w.on; check.disabled = widgetSaving;
+      check.setAttribute("data-wp", name + ":on");
+      check.onchange = function(){ saveWidget(name, {on: check.checked}); };
+      toggle.appendChild(check); toggle.appendChild(document.createTextNode(label)); row.appendChild(toggle);
+      var slots = document.createElement("div"); slots.className = "wp-slots"; slots.setAttribute("role", "group");
+      slots.setAttribute("aria-label", tOps("Position") + ": " + label);
+      WIDGET_SLOTS.forEach(function(s){
+        var b = document.createElement("button"); b.type = "button"; b.textContent = s[2];
+        b.title = tOps(s[1]); b.setAttribute("aria-label", tOps(s[1])); b.setAttribute("data-wp", name + ":" + s[0]);
+        b.setAttribute("aria-pressed", String(!!w.on && slot === s[0])); b.disabled = widgetSaving;
+        // A corner for a widget that is off also shows it there.
+        b.onclick = function(){ saveWidget(name, {on: true, slot: s[0]}); };
+        slots.appendChild(b);
+      });
+      row.appendChild(slots); panel.appendChild(row);
+    });
+    if (widgetPanelError) { var err = document.createElement("p"); err.className = "wp-error"; err.setAttribute("role", "status"); err.textContent = widgetPanelError; panel.appendChild(err); }
+    if (keep && widgetFocus) { var again = panel.querySelector('[data-wp="' + widgetFocus + '"]'); if (again && !again.disabled) again.focus(); }
+  }
 
   // ── dynamic data (resilient: look widgets up by id each tick; skip if that widget is off) ────
   function two(n){ return (n < 10 ? "0" : "") + n; }
