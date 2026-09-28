@@ -67,8 +67,10 @@ feature inherently requires:
   many desktop windows are open; after a failed attempt it waits 1 minute, then 2, 4, 8 and 16, and
   then 30 minutes between tries. Both requests identify themselves with the User-Agent
   `collie-desktop-weather (+https://github.com/colliehq/collie)`. Nothing about you or your work is
-  sent. Set `"weather": false` under `"clock"` in `~/.collie/desktop.json` (or turn the clock off)
-  to stop both requests; the server checks this before asking, and the clock stays.
+  sent. To stop both requests, turn the clock off, or give `~/.collie/desktop.json` (create it if it
+  does not exist) the setting `{"widgets": {"clock": {"weather": false}}}`, merged into what is
+  already there. The server checks this before asking, and the clock stays. If that file exists but
+  cannot be read, for example after a typo, the weather stays off until it is fixed.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,

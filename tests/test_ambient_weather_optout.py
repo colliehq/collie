@@ -100,6 +100,41 @@ def test_weather_false_asks_neither_service_and_keeps_the_clock(ambient):
     assert clock.strip() and clock.strip() != "--:--"
 
 
+@pytest.mark.parametrize("raw", [
+    # Windows PowerShell 5.1: Set-Content / Out-File -Encoding utf8 write a byte-order mark.
+    b"\xef\xbb\xbf" + json.dumps({"widgets": {"clock": {"weather": False}}}).encode(),
+    # A hand edit with one trailing comma: unreadable, so the switch it holds is unknown.
+    b'{"widgets": {"clock": {"weather": false},}}',
+    # The shape the 0.30.0 notes and the privacy policy described.
+    json.dumps({"clock": {"weather": False}}).encode(),
+], ids=["utf8-bom", "trailing-comma", "top-level-clock"])
+def test_a_desktop_json_saying_off_keeps_both_page_and_server_quiet(ambient, raw):
+    base, config, server_asked = ambient
+    config.write_bytes(raw)
+    page_asked, text, clock = _load(base)
+    assert page_asked == [] and server_asked == []
+    assert text == ""
+    assert clock.strip() and clock.strip() != "--:--"
+
+
+def test_an_unreadable_desktop_json_is_not_overwritten_by_the_page(ambient):
+    from harness import webapp
+    base, config, _server_asked = ambient
+    raw = b'{"widgets": {"clock": {"weather": false},}}'
+    config.write_bytes(raw)
+    request = urllib.request.Request(
+        base + "/api/desktop/config?token=" + webapp.TOKEN, method="POST",
+        data=json.dumps({"widgets": {"clock": {"on": True, "slot": "bl"}}}).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(request, timeout=10)
+        code, body = 200, {}
+    except urllib.error.HTTPError as exc:
+        code, body = exc.code, json.loads(exc.read())
+    assert code == 409 and "desktop.json was not changed" in body["error"]
+    assert config.read_bytes() == raw
+
+
 def test_the_server_itself_honours_weather_false(ambient):
     from harness import webapp
     base, config, server_asked = ambient

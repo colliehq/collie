@@ -174,8 +174,8 @@ def test_the_forecast_request_carries_only_the_rounded_point(weather_io):
     ({"widgets": {"clock": {"weather": False}}}, False),
     ({"widgets": {"clock": {"on": False}}}, False),                  # no clock, no weather line
     ({"widgets": {"clock": {"weather": 0}}}, True),                  # only false turns it off
-    ("{not json", True),                                             # unreadable: the defaults
-    ([], True),
+    ("{not json", False),                            # there but unreadable: off, never the default
+    ([], False),
 ])
 def test_weather_enabled_reads_the_clock_switch(tmp_path, monkeypatch, saved, enabled):
     path = tmp_path / "desktop.json"

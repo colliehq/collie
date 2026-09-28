@@ -118,6 +118,19 @@ def test_choosing_a_corner_moves_the_widget_and_keeps_everything_else(ambient):
     assert _saved(config, "system") == {"on": True, "slot": "tl"}
 
 
+def test_an_unreadable_desktop_json_is_explained_and_not_overwritten(ambient):
+    base, config, browser = ambient
+    raw = b'{"widgets": {"clock": {"weather": false},}}'
+    config.write_bytes(raw)
+    page = _open(base, browser)
+    page.click("#editbtn")
+    assert "desktop.json could not be read" in page.inner_text("#widgetPanel .wp-error")
+    music = _row(page, "Music").locator("input[type=checkbox]")
+    assert music.is_disabled()
+    assert _row(page, "Clock & weather").get_by_role("button", name="Bottom left").is_disabled()
+    assert config.read_bytes() == raw
+
+
 def test_the_panel_speaks_the_desktops_language(ambient, monkeypatch):
     base, _config, browser = ambient
     monkeypatch.setenv("COLLIE_LANG", "zh-tw")

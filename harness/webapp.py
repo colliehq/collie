@@ -4170,7 +4170,10 @@ class Handler(BaseHTTPRequestHandler):
                 if body is None:
                     return self._send_json({"error": "expected JSON object"}, 400)
                 if action == "config":
-                    return self._send_json(dt.save_config(body))
+                    try:
+                        return self._send_json(dt.save_config(body))
+                    except ValueError as exc:      # desktop.json is there but unreadable: kept
+                        return self._send_json({"error": str(exc)}, 409)
                 if action == "launch":
                     return self._send_json({"ok": dt.launch(body.get("target") or "")})
                 if action == "media":

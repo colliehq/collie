@@ -156,17 +156,58 @@ def _seed_apps():
     return out[:6]
 
 
+def _read_saved():
+    """desktop.json as saved: ``(dict, "")``, ``({}, "")`` when there is none, or ``(None, why)``
+    when the file is there but cannot be used.
+
+    "Cannot be used" used to mean "use the defaults", and the defaults have the weather on: a
+    file saying ``"weather": false`` behind a UTF-8 byte-order mark (what Windows PowerShell 5.1
+    writes with ``-Encoding utf8``) or with one trailing comma turned the weather back on, and the
+    page and the server both asked ipapi.co and Open-Meteo. The mark is now read past, and the
+    callers treat a file they cannot read as saying the weather is off.
+    """
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}, ""
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, "it could not be read (%s)" % type(exc).__name__
+    if not text.strip():
+        return {}, ""
+    try:
+        saved = json.loads(text)
+    except ValueError as exc:
+        return None, "it is not valid JSON (%s)" % exc
+    if not isinstance(saved, dict) or not isinstance(saved.get("widgets", {}), dict) or \
+            not isinstance(saved.get("widgets", {}).get("clock", {}), dict):
+        return None, "it does not have the shape {\"widgets\": {...}}"
+    return saved, ""
+
+
+def _weather_said_off(saved):
+    """The saved file turns the weather off: ``widgets.clock.weather`` is false, or the top-level
+    ``clock.weather`` that the 0.30.0 notes and privacy policy described (the real path was always
+    under ``widgets``; a file written from those words must still be honoured)."""
+    legacy = saved.get("clock")
+    return ((saved.get("widgets") or {}).get("clock") or {}).get("weather") is False or \
+        (isinstance(legacy, dict) and legacy.get("weather") is False)
+
+
 def load_config():
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            saved = json.load(f) or {}
+    saved, problem = _read_saved()
+    if problem:
+        # Fail closed. What the file says about the weather is unknown, so the page and the server
+        # (weather_enabled) both treat it as off, and saving is refused until it is fixed.
+        cfg["widgets"]["clock"]["weather"] = False
+        cfg["config_error"] = "~/.collie/desktop.json is not used because " + problem
+    else:
         for k, v in (saved.get("widgets") or {}).items():
-            cfg["widgets"].setdefault(k, {}).update(v)
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+            if isinstance(v, dict):
+                cfg["widgets"].setdefault(k, {}).update(v)
+        if _weather_said_off(saved):
+            cfg["widgets"]["clock"]["weather"] = False
     # seed the dock once if empty so the launcher isn't blank on a fresh install
     la = cfg["widgets"].get("launcher", {})
     if not la.get("apps"):
@@ -179,22 +220,25 @@ def weather_enabled():
 
     Reads only the clock entry, not load_config(), which would seed the launcher from the Start
     Menu on every weather poll. The answer matches what the page renders from load_config(): the
-    clock must be on, and only an explicit ``"weather": false`` turns the weather off. A missing or
-    unreadable desktop.json means the defaults, as it does everywhere else.
+    clock must be on, and ``"weather": false`` turns the weather off. A missing desktop.json means
+    the defaults (on); one that is there but cannot be read means off.
     """
+    saved, problem = _read_saved()
+    if problem or _weather_said_off(saved):
+        return False
     clock = dict(DEFAULT_CONFIG["widgets"]["clock"])
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            saved = json.load(f) or {}
-        mine = (saved.get("widgets") or {}).get("clock")
-        if isinstance(mine, dict):
-            clock.update(mine)
-    except (OSError, ValueError, AttributeError):
-        pass
-    return bool(clock.get("on")) and clock.get("weather") is not False
+    clock.update((saved.get("widgets") or {}).get("clock") or {})
+    return bool(clock.get("on"))
 
 
 def save_config(cfg):
+    _saved, problem = _read_saved()
+    if problem:
+        # Replacing it would throw away what the person wrote, and with it a weather switch that
+        # is currently being honoured as off.
+        raise ValueError("~/.collie/desktop.json was not changed because %s. Fix or delete it, "
+                         "then try again." % problem)
+    cfg = {k: v for k, v in (cfg or {}).items() if k != "config_error"}
     os.makedirs(COLLIE_DIR, exist_ok=True)
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

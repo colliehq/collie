@@ -10,9 +10,9 @@ reload. Asking here gives every window one answer from one cache:
 - a failed refresh keeps the last conditions for up to an hour, marked ``stale``, instead of
   showing them as current, and after that says the weather is unavailable.
 
-The off switch is desktop.json's ``"clock": {"weather": false}`` (see
-``desktop.weather_enabled``). The web handler reads it before calling ``weather`` so that, when it
-is off, nothing leaves the machine.
+The off switch is desktop.json's ``{"widgets": {"clock": {"weather": false}}}`` (see
+``desktop.weather_enabled``, which also reads an unreadable desktop.json as off). The web handler
+reads it before calling ``weather`` so that, when it is off, nothing leaves the machine.
 """
 import http.client
 import json

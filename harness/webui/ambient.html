@@ -420,7 +420,8 @@
     "Snow grains":"米雪","Showers":"阵雨","Violent showers":"强阵雨","Snow showers":"阵雪","Thunderstorm":"雷雨",
     "Desktop widgets":"桌面组件","Name and logo":"名称与标志","Clock & weather":"时钟与天气","Apps":"应用",
     "Music":"音乐","System":"系统状态","Projects":"项目","Position":"位置","Top left":"左上","Top right":"右上",
-    "Bottom left":"左下","Bottom right":"右下","Center":"中间","Layout was not saved":"布局未保存"});
+    "Bottom left":"左下","Bottom right":"右下","Center":"中间","Layout was not saved":"布局未保存",
+    "desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted.":"无法读取 desktop.json。在修复或删除它之前，这里的更改不会保存，天气也保持关闭。"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
     "Starting":"啟動中","Restarting":"重新啟動中","Not healthy":"狀態異常","Restarts paused":"已暫停重新啟動",
@@ -434,7 +435,8 @@
     "Snow grains":"米雪","Showers":"陣雨","Violent showers":"強陣雨","Snow showers":"陣雪","Thunderstorm":"雷雨",
     "Desktop widgets":"桌面元件","Name and logo":"名稱與標誌","Clock & weather":"時鐘與天氣","Apps":"應用程式",
     "Music":"音樂","System":"系統狀態","Projects":"專案","Position":"位置","Top left":"左上","Top right":"右上",
-    "Bottom left":"左下","Bottom right":"右下","Center":"中間","Layout was not saved":"版面未儲存"});
+    "Bottom left":"左下","Bottom right":"右下","Center":"中間","Layout was not saved":"版面未儲存",
+    "desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted.":"無法讀取 desktop.json。在修正或刪除它之前，這裡的變更不會儲存，天氣也維持關閉。"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
   function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}
@@ -846,13 +848,17 @@
     var active = document.activeElement, keep = !active || active === document.body || panel.contains(active);
     if (active && panel.contains(active) && active.getAttribute("data-wp")) widgetFocus = active.getAttribute("data-wp");
     var W = (curConfig && curConfig.widgets) || {};
+    // The server could not read desktop.json: it will not overwrite it, so nothing here can save.
+    var broken = curConfig && curConfig.config_error, busy = widgetSaving || !!broken;
     panel.textContent = "";
     var title = document.createElement("h2"); title.id = "widgetPanelTitle"; title.textContent = tOps("Desktop widgets"); panel.appendChild(title);
+    if (broken) { var note = document.createElement("p"); note.className = "wp-error"; note.title = String(broken);
+      note.textContent = tOps("desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted."); panel.appendChild(note); }
     ORDER.forEach(function(name){
       var w = W[name] || {}, label = tOps(WIDGET_NAMES[name] || name), slot = w.slot || "center";
       var row = document.createElement("div"); row.className = "wp-row";
       var toggle = document.createElement("label"); toggle.className = "wp-name";
-      var check = document.createElement("input"); check.type = "checkbox"; check.checked = !!w.on; check.disabled = widgetSaving;
+      var check = document.createElement("input"); check.type = "checkbox"; check.checked = !!w.on; check.disabled = busy;
       check.setAttribute("data-wp", name + ":on");
       check.onchange = function(){ saveWidget(name, {on: check.checked}); };
       toggle.appendChild(check); toggle.appendChild(document.createTextNode(label)); row.appendChild(toggle);
@@ -861,7 +867,7 @@
       WIDGET_SLOTS.forEach(function(s){
         var b = document.createElement("button"); b.type = "button"; b.textContent = s[2];
         b.title = tOps(s[1]); b.setAttribute("aria-label", tOps(s[1])); b.setAttribute("data-wp", name + ":" + s[0]);
-        b.setAttribute("aria-pressed", String(!!w.on && slot === s[0])); b.disabled = widgetSaving;
+        b.setAttribute("aria-pressed", String(!!w.on && slot === s[0])); b.disabled = busy;
         // A corner for a widget that is off also shows it there.
         b.onclick = function(){ saveWidget(name, {on: true, slot: s[0]}); };
         slots.appendChild(b);
@@ -937,8 +943,9 @@
   // never contacts either service, so asking the server every minute costs nothing outside.
   var weatherData = null, weatherLoading = null;
   function weatherOff(){
-    // Off in desktop.json ("clock": {"weather": false}): then neither weather service is asked. The
-    // server checks the same switch before it asks anyone, so this is not the only guard.
+    // Off in desktop.json ({"widgets": {"clock": {"weather": false}}}, or a desktop.json the server
+    // could not read, which it reports as off): then neither weather service is asked. The server
+    // checks the same switch before it asks anyone, so this is not the only guard.
     var clock = curConfig && curConfig.widgets && curConfig.widgets.clock;
     return !!(clock && clock.weather === false);
   }
