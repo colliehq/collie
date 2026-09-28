@@ -3530,10 +3530,15 @@ def cmd_mem(args):
 
     if args.action == "import":
         from .mem_import import run_import
-        run_import(m, source=args.source, limit=args.limit, dry_run=args.dry_run,
-                   no_llm=args.no_llm, force=args.force,
-                   provider_name=args.provider, model=args.model,
-                   max_chunks=args.max_chunks, workers=args.workers)
+        stats = run_import(m, source=args.source, limit=args.limit, dry_run=args.dry_run,
+                           no_llm=args.no_llm, force=args.force,
+                           provider_name=args.provider, model=args.model,
+                           max_chunks=args.max_chunks, workers=args.workers)
+        if stats.get("failed"):
+            # The rest imported, and the summary names what did not; a scheduled import
+            # still has to see that something failed, as it did when one session ended the run.
+            m.close()
+            return 1
     elif args.action == "purge-imported":
         from .mem_import import purge
         print("purged %d imported facts" % purge(m))

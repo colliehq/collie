@@ -98,7 +98,9 @@ def prompt_sig(src: str, path: Path) -> str | None:
     import hashlib
     txt = None
     try:
-        with open(path, encoding="utf-8") as f:
+        # Runs on every log before any session is imported: a damaged record here would stop
+        # the whole import, so it gets the same tolerance as the parsers below.
+        with open(path, encoding="utf-8", errors="replace") as f:
             for i, ln in enumerate(f):
                 if i > 400:
                     break
@@ -109,9 +111,12 @@ def prompt_sig(src: str, path: Path) -> str | None:
                         d = json.loads(ln)
                     except ValueError:
                         continue
-                    if d.get("type") != "user" or d.get("isSidechain"):
+                    if not isinstance(d, dict) or d.get("type") != "user" or d.get("isSidechain"):
                         continue
-                    t = _text_items((d.get("message") or {}).get("content"))
+                    message = d.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    t = _text_items(message.get("content"))
                 else:
                     if '"response_item"' not in ln:
                         continue
@@ -119,8 +124,9 @@ def prompt_sig(src: str, path: Path) -> str | None:
                         d = json.loads(ln)
                     except ValueError:
                         continue
-                    p = d.get("payload") or {}
-                    if p.get("type") != "message" or p.get("role") != "user":
+                    p = d.get("payload") if isinstance(d, dict) else None
+                    if (not isinstance(p, dict) or p.get("type") != "message"
+                            or p.get("role") != "user"):
                         continue
                     t = _text_items(p.get("content"))
                 if t and _keep("user", t) and not t.lstrip().startswith("[tool-error]"):
@@ -264,7 +270,8 @@ def _text_items(content) -> str:
     """CC/Codex message content -> plain text. Tool dumps stay excluded (90% noise) with
     ONE exception: ERROR tool-results — failures are durable knowledge (root causes,
     gotchas), and dropping them made the distiller store 'what was tried' but never
-    'why it failed' (membench fair-v2 autopsy, 2026-07-17)."""
+    'why it failed' (membench fair-v2 autopsy, 2026-07-17). A part whose text is not a string
+    (a damaged or unfamiliar record) contributes nothing rather than raising."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -273,11 +280,13 @@ def _text_items(content) -> str:
             if not isinstance(p, dict):
                 continue
             if p.get("type") in ("text", "input_text", "output_text"):
-                parts.append(p.get("text", ""))
+                if isinstance(p.get("text"), str):
+                    parts.append(p["text"])
             elif p.get("type") == "tool_result" and p.get("is_error"):
                 err = p.get("content")
                 if isinstance(err, list):
-                    err = " ".join(x.get("text", "") for x in err if isinstance(x, dict))
+                    err = " ".join(x["text"] for x in err
+                                   if isinstance(x, dict) and isinstance(x.get("text"), str))
                 parts.append("[tool-error] " + str(err or "")[:300])
         return "\n".join(parts)
     return ""
@@ -294,23 +303,36 @@ def _keep(role: str, text: str) -> bool:
 
 
 def parse_cc_session(path: Path) -> dict | None:
-    """One CC session jsonl -> {sid, title, turns:[(role, text)…]}; None if nothing usable."""
+    """One CC session jsonl -> {sid, title, turns:[(role, text)…]}; None if nothing usable.
+
+    The log is another program's file, and a crash or a format change leaves records in it
+    that are not what this expects: bytes that are not UTF-8, JSON that is not an object, a
+    message that is not an object, a title that is not text. Each such record is skipped and
+    the rest of the session kept, as an unparseable line always was; parse_codex_session and
+    prompt_sig do the same."""
     turns, title, sid = [], "", path.stem
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 try:
                     d = json.loads(ln)
                 except ValueError:
                     continue
+                if not isinstance(d, dict):
+                    continue
                 t = d.get("type")
                 if t == "ai-title":
-                    title = d.get("aiTitle") or title
+                    if isinstance(d.get("aiTitle"), str):
+                        title = d["aiTitle"] or title
                 elif t in ("user", "assistant") and not d.get("isSidechain"):
-                    txt = _text_items((d.get("message") or {}).get("content"))
+                    message = d.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    txt = _text_items(message.get("content"))
                     if _keep(t, txt):
                         turns.append((t, txt.strip()))
-                elif t == "attachment" and (d.get("attachment") or {}).get("type") == "max_turns_reached":
+                elif (t == "attachment" and isinstance(d.get("attachment"), dict)
+                      and d["attachment"].get("type") == "max_turns_reached"):
                     # terminal outcome marker — without it a failed run reads as merely unfinished
                     turns.append(("user", "[run-outcome] max_turns_reached — turn budget exhausted"))
     except OSError:
@@ -324,16 +346,19 @@ def parse_codex_session(path: Path) -> dict | None:
     """One Codex rollout jsonl -> same shape as parse_cc_session."""
     turns, title, sid = [], "", path.stem
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 try:
                     d = json.loads(ln)
                 except ValueError:
                     continue
+                if not isinstance(d, dict) or not isinstance(d.get("payload"), dict):
+                    continue
                 if d.get("type") == "session_meta":
-                    sid = (d.get("payload") or {}).get("session_id") or sid
+                    if isinstance(d["payload"].get("session_id"), str):
+                        sid = d["payload"]["session_id"] or sid
                 elif d.get("type") == "response_item":
-                    p = d.get("payload") or {}
+                    p = d["payload"]
                     role = p.get("role")
                     if p.get("type") == "message" and role in ("user", "assistant"):
                         txt = _text_items(p.get("content"))
@@ -365,7 +390,8 @@ def chunk_turns(turns: list[tuple[str, str]], max_chunks: int = DEFAULT_MAX_CHUN
     The whole session is chunked in ORDER (rolling distillation needs the narrative);
     only when a giant session exceeds `max_chunks` do we sample evenly across it —
     always keeping the first and last chunk, where the task statement and the final
-    state live."""
+    state live. A budget of one chunk cannot keep both, and keeps the last: the final
+    state is what the rolling distiller exists to capture."""
     lines = ["%s: %s" % ("U" if r == "user" else "A",
                          t[:MAX_USER_CHARS if r == "user" else MAX_ASST_CHARS])
              for r, t in turns]
@@ -379,6 +405,8 @@ def chunk_turns(turns: list[tuple[str, str]], max_chunks: int = DEFAULT_MAX_CHUN
     n = len(chunks)
     if max_chunks <= 0 or n <= max_chunks:   # 0 = no sampling: full-coverage rolling pass
         return chunks
+    if max_chunks == 1:                      # the spacing below divides by max_chunks - 1
+        return [chunks[-1]]
     idx = sorted({round(i * (n - 1) / (max_chunks - 1)) for i in range(max_chunks)})
     return [chunks[i] for i in idx]
 
@@ -431,7 +459,9 @@ class RollingDistiller:
         out = (getattr(comp, "text", "") or "")
         try:
             arr = json.loads(out[out.find("["): out.rfind("]") + 1])
-            got = [str(x).strip() for x in arr if str(x).strip()][:cap]
+            # only strings are facts: str() turned a null, a number or an object in the
+            # array into the stored facts "None", "7" and "{'…': …}"
+            got = [x.strip() for x in arr if isinstance(x, str) and x.strip()][:cap]
             return got or notes            # an empty/failed round keeps prior state
         except Exception:
             return notes                   # parse failure must never lose accumulated facts
@@ -520,7 +550,8 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
     # touches — the per-file skip below already honors the flag.
     state = _load_state()
     parsers = {"cc": parse_cc_session, "codex": parse_codex_session}
-    stats = {"scanned": 0, "skipped": 0, "sessions": 0, "facts": 0, "redacted": 0, "lowvalue": 0}
+    stats = {"scanned": 0, "skipped": 0, "sessions": 0, "facts": 0, "redacted": 0, "lowvalue": 0,
+             "failed": 0}
     t0 = time.time()
 
     todo = []
@@ -576,20 +607,38 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
         _save_famreg(famreg)
     if gated:
         log("[family] gated %d template-family session(s)" % len(gated))
+    if todo and not no_llm:
+        # A distiller that cannot be built is a configuration error, not a bad session: it
+        # stops the run here instead of being counted against every session below.
+        _distiller()
 
     def _one(item):
-        """worker: parse + distill only — no db, no state, no shared mutability."""
+        """worker: parse + distill only — no db, no state, no shared mutability.
+
+        A session that raises comes back as "failed" with the error in place of its facts:
+        one session (a log the parser trips on, a distiller call that raised) must not end
+        the import of all the others, which is what re-raising it from here did."""
         src, path, mt = item
-        sess = parsers[src](path)
-        if not sess:
-            return (src, path, mt, None, [])
-        if SKIP_TITLE_RE.search(sess.get("title") or ""):
-            return (src, path, mt, "low-value", [])     # templated chore — no distiller call
-        facts = heuristic_facts(sess) if no_llm else \
-            _distiller().session_facts(chunk_turns(sess["turns"], max_chunks))
-        return (src, path, mt, sess, facts)
+        try:
+            sess = parsers[src](path)
+            if not sess:
+                return (src, path, mt, None, [])
+            if SKIP_TITLE_RE.search(sess.get("title") or ""):
+                return (src, path, mt, "low-value", [])     # templated chore — no distiller call
+            facts = heuristic_facts(sess) if no_llm else \
+                _distiller().session_facts(chunk_turns(sess["turns"], max_chunks))
+            return (src, path, mt, sess, facts)
+        except Exception as e:
+            return (src, path, mt, "failed", "%s: %s" % (type(e).__name__, e))
 
     def _consume(src, path, mt, sess, facts):
+        if sess == "failed":
+            # Named, counted in the summary, and left out of the state file, so the next run
+            # tries it again: a provider outage heals, and a parser defect stays visible in
+            # every run until it is fixed rather than being marked done with nothing stored.
+            stats["failed"] += 1
+            log("[failed] %s: %s" % (path, facts))    # facts holds the error here
+            return
         if sess is None or sess == "low-value":
             if sess == "low-value":
                 stats["lowvalue"] += 1
@@ -639,6 +688,10 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
                 _consume(*fut.result())
 
     stats["secs"] = round(time.time() - t0, 1)
-    log("done: %(sessions)d sessions -> %(facts)d facts (%(redacted)d redacted, "
-        "%(lowvalue)d low-value skipped, %(skipped)d already imported, %(secs)ss)" % stats)
+    summary = ("done: %(sessions)d sessions -> %(facts)d facts (%(redacted)d redacted, "
+               "%(lowvalue)d low-value skipped, %(skipped)d already imported, %(secs)ss)" % stats)
+    if stats["failed"]:
+        summary += ("; %d failed and skipped, listed above as [failed]; the next run tries "
+                    "them again" % stats["failed"])
+    log(summary)
     return stats
