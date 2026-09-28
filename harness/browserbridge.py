@@ -1103,10 +1103,26 @@ def _space():
 
     Two collie runs driving the same browser used to land in the same tab and fight over it — the
     reason a run once walked into the middle of another job's half-filled form. Set
-    COLLIE_BROWSER_SPACE per run and they get a tab each; a tool can also switch this process's
-    space explicitly (browser_open space=…)."""
-    return (_SPACE_CONTEXT.get() or _CURRENT_SPACE[0] or
+    COLLIE_BROWSER_SPACE per run and they get a tab each; a tool can also switch space
+    explicitly (browser_open space=…) — inside a bound run (browser_space) for that run only."""
+    bound = _SPACE_CONTEXT.get()
+    return ((bound.get("space") if isinstance(bound, dict) else bound) or _CURRENT_SPACE[0] or
             os.environ.get("COLLIE_BROWSER_SPACE") or "default")
+
+
+def _select_space(name):
+    """Make `name` the space for the rest of this run's browser commands.
+
+    Inside browser_space the choice goes into the run's own cell, which copies of the run's
+    context share, so it holds for tool calls made from a worker context too. Writing only the
+    process-wide fallback, as tools once did, lost to the run's bound lane every time and leaked
+    the choice into every unbound caller in the process."""
+    name = str(name or "default")[:40]
+    bound = _SPACE_CONTEXT.get()
+    if isinstance(bound, dict):
+        bound["space"] = name
+    else:
+        _CURRENT_SPACE[0] = name
 
 
 @contextlib.contextmanager
@@ -1116,7 +1132,8 @@ def browser_space(name, release=False):
     ContextVar (rather than a process environment variable) keeps concurrent Web
     ticker/daemon threads from changing each other's tab.
     """
-    token = _SPACE_CONTEXT.set((name or "default")[:40])
+    own = (name or "default")[:40]
+    token = _SPACE_CONTEXT.set({"space": own})
     activity_token = _SPACE_ACTIVITY.set({"used": False}) if release else None
     try:
         yield
@@ -1124,10 +1141,12 @@ def browser_space(name, release=False):
         activity = _SPACE_ACTIVITY.get() if release else None
         # End control ownership even when the run crashed or its client went
         # away.  Tabs are left open by default: the safety invariant is release,
-        # while closing a deliverable is a separate deliberate choice.
+        # while closing a deliverable is a separate deliberate choice.  The lane
+        # is named: the current space may be one the run selected (such as the
+        # tab the user attached to Live), which is not this run's to end.
         if release and activity and activity.get("used"):
             try:
-                _call({"action": "finalize", "close_owned": False}, timeout=4)
+                _call({"action": "finalize", "space": own, "close_owned": False}, timeout=4)
             except Exception:
                 pass
         if activity_token is not None:
@@ -1431,7 +1450,7 @@ class BrowserOpen(Tool):
     def run(self, args, ctx):
         space = (args.get("space") or "").strip()
         if space:
-            _CURRENT_SPACE[0] = space[:40]      # sticky: the rest of this run works in that lane
+            _select_space(space)                # sticky: the rest of this run works in that lane
         return _fence(_fmt(_call({"action": "open", "url": args.get("url", ""),
                                   "adopt": bool(args.get("adopt")),
                                   "window": bool(args.get("window")),
@@ -1887,7 +1906,7 @@ class BrowserTabs(Tool):
         act = (args.get("action") or "list").strip().lower()
         space = (args.get("space") or "").strip()
         if space:
-            _CURRENT_SPACE[0] = space[:40]
+            _select_space(space)
         if act == "attach":
             cmd = {"action": "attach"}
             if args.get("tab_id") is not None:
