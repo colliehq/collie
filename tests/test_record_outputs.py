@@ -65,11 +65,12 @@ def test_a_capture_that_never_got_going_keeps_what_it_wrote(private_state, tmp_p
     assert not os.path.exists(record.STATE)
 
 
-def _post(tmp_path, monkeypatch, returncode, written):
+def _post(tmp_path, monkeypatch, returncode, written, earlier=True):
     src = tmp_path / "clip.ts"
     src.write_bytes(b"t" * 20_000)
     dst = tmp_path / "clip.mp4"
-    dst.write_bytes(b"the export that already worked")
+    if earlier:
+        dst.write_bytes(b"the export that already worked")
     monkeypatch.setattr(record, "_ffmpeg", lambda: "ffmpeg")
     seen = []
 
@@ -92,11 +93,31 @@ def test_a_failed_export_leaves_the_previous_one_and_no_partial_file(tmp_path, m
     assert sorted(p.name for p in tmp_path.iterdir()) == ["clip.mp4", "clip.ts"]
 
 
-def test_a_successful_export_replaces_the_file_only_at_the_end(tmp_path, monkeypatch):
-    result, _src, dst, seen = _post(tmp_path, monkeypatch, 0, b"n" * 50_000)
+def test_a_successful_export_appears_only_at_the_end(tmp_path, monkeypatch):
+    result, _src, dst, _seen = _post(tmp_path, monkeypatch, 0, b"n" * 50_000, earlier=False)
     assert result == str(dst)
     assert dst.read_bytes() == b"n" * 50_000
     assert sorted(p.name for p in tmp_path.iterdir()) == ["clip.mp4", "clip.ts"]
+
+
+def test_a_successful_export_never_replaces_an_earlier_one(tmp_path, monkeypatch):
+    """Recording twice with --out clip.ts: the first take's clip.mp4 survives the second."""
+    result, _src, dst, _seen = _post(tmp_path, monkeypatch, 0, b"n" * 50_000)
+    assert dst.read_bytes() == b"the export that already worked"
+    assert result == str(tmp_path / "clip-1.mp4")
+    assert (tmp_path / "clip-1.mp4").read_bytes() == b"n" * 50_000
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["clip-1.mp4", "clip.mp4", "clip.ts"]
+
+
+def test_start_refuses_when_the_export_would_land_on_an_existing_file(private_state, tmp_path,
+                                                                      monkeypatch):
+    _startable(monkeypatch)
+    (tmp_path / "talk.mp4").write_bytes(b"the first take")
+    monkeypatch.setattr(record.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("ffmpeg started although talk.mp4 exists"))
+    with pytest.raises(FileExistsError, match="talk.mp4"):
+        record.start(out=str(tmp_path / "talk.ts"), no_cam=True, no_mic=True)
+    assert (tmp_path / "talk.mp4").read_bytes() == b"the first take"
 
 
 def test_a_tiny_export_is_not_success(tmp_path, monkeypatch):

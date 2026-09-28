@@ -376,7 +376,7 @@ def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region, window, screen=0):
 def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirror):
     """Turn the raw multi-stream .ts into a clean .mp4: composite the circular webcam bubble (if a cam
     was recorded) and mix mic+system audio. Returns the .mp4 path on success, else None."""
-    dst = src[:-3] + ".mp4" if src.lower().endswith(".ts") else src + ".mp4"
+    dst = _export_path(src)
     args = [_ffmpeg(), "-hide_banner", "-y", "-i", src]
     parts = []
     vmap = "0:v:0"
@@ -414,8 +414,7 @@ def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirr
         result = subprocess.run(args, capture_output=True, **plat.no_window_kwargs())
         if result.returncode != 0 or os.path.getsize(pending) <= 1024:
             return None
-        os.replace(pending, dst)
-        return dst
+        return _place_without_overwrite(pending, dst)
     except Exception:
         return None
     finally:
@@ -423,6 +422,33 @@ def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirr
             os.remove(pending)
         except OSError:
             pass
+
+
+def _export_path(src):
+    return src[:-3] + ".mp4" if src.lower().endswith(".ts") else src + ".mp4"
+
+
+def _place_without_overwrite(pending, dst):
+    """Give the finished export its name without ever replacing an existing file.
+
+    ``dst`` if it is free, else ``name-1.mp4``, ``name-2.mp4``, ... A hard link claims a name
+    atomically (it fails if the name exists); where the file system has no hard links, the name is
+    checked and then moved to. The caller removes ``pending``.
+    """
+    stem, ext = os.path.splitext(dst)
+    for n in range(0, 1000):
+        candidate = dst if n == 0 else "%s-%d%s" % (stem, n, ext)
+        try:
+            os.link(pending, candidate)
+            return candidate
+        except FileExistsError:
+            continue
+        except OSError:
+            if os.path.lexists(candidate):
+                continue
+            os.replace(pending, candidate)
+            return candidate
+    return None
 
 
 def _load():
@@ -512,6 +538,10 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
         out = os.path.join(_default_outdir(), time.strftime("collie-%Y%m%d-%H%M%S.ts"))
     if os.path.lexists(out):
         raise FileExistsError("recording output already exists; choose another path: %s" % out)
+    if os.path.lexists(_export_path(out)):
+        # stop() turns the raw capture into this .mp4; an earlier take already has that name.
+        raise FileExistsError("a recording is already saved as %s; choose another path"
+                              % _export_path(out))
 
     # a window source and a region are mutually exclusive; a chosen window wins.
     if window:
