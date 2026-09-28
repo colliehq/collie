@@ -325,6 +325,94 @@ def test_a_document_with_a_dtd_or_entities_or_not_a_feed_is_refused(data):
         news.parse_feed(data, FEED)
 
 
+def test_a_dtd_the_byte_scan_missed_is_still_refused_by_the_parser(monkeypatch):
+    monkeypatch.setattr(news, "_declares_dtd", lambda data: False)
+    with pytest.raises(news.NewsError, match="DTD"):
+        news.parse_feed(b'<!DOCTYPE rss [<!ENTITY a "aaaa">]><rss><channel><item>'
+                        b'<title>&a;</title><link>https://example.com/a</link></item>'
+                        b'</channel></rss>', FEED)
+
+
+def test_an_encoding_the_parser_refuses_is_a_plain_refusal():
+    with pytest.raises(news.NewsError, match="RSS or Atom"):
+        news.parse_feed(b'<?xml version="1.0" encoding="UTF-7"?><rss/>', FEED)
+
+
+# --------------------------------------------------------------- what a feed may cost
+
+
+def biggest(head, unit, tail):
+    """The largest document of this shape that still fits under the size cap."""
+    return head + unit * ((news.MAX_FEED_BYTES - len(head) - len(tail)) // len(unit)) + tail
+
+
+def timed_parse(data):
+    started = time.perf_counter()
+    try:
+        return news.parse_feed(data, FEED), time.perf_counter() - started
+    except news.NewsError as exc:
+        return exc, time.perf_counter() - started
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+@pytest.mark.parametrize("unit", [b"<", b"<a", b"<<>", b"&lt;b"],
+                         ids=["open", "open-word", "open-and-tag", "escaped-open"])
+def test_a_2_mib_field_built_to_make_tag_stripping_slow_is_read_in_linear_time(field, unit):
+    """`<[^>]*>` over a whole field was quadratic: 200 KB of `<` took 15 s, holding the
+    interpreter lock the whole time. Every Collie request thread stood still with it."""
+    if unit.startswith(b"&"):                   # entity-escaped, outside CDATA
+        open_, close = b"<%s>" % field.encode(), b"</%s>" % field.encode()
+    else:
+        open_, close = b"<%s><![CDATA[" % field.encode(), b"]]></%s>" % field.encode()
+    title = b"" if field == "title" else b"<title>Kept</title>"
+    data = biggest(b"<rss><channel><item>" + title + open_, unit,
+                   close + b"<link>https://example.com/1</link></item></channel></rss>")
+    assert len(data) <= news.MAX_FEED_BYTES
+    (rows, _), elapsed = timed_parse(data)
+    assert elapsed < 1.0, elapsed
+    assert len(rows) == 1
+    assert len(rows[0]["title"]) <= 300 and len(rows[0]["summary"]) <= 240
+
+
+def test_a_2_mib_feed_of_nested_items_is_refused_as_it_is_read():
+    """Walking each child's whole subtree made this take five minutes of CPU."""
+    depth = (news.MAX_FEED_BYTES - len(b"<rss></rss>")) // len(b"<item></item>")
+    error, elapsed = timed_parse(b"<rss>" + b"<item>" * depth + b"</item>" * depth + b"</rss>")
+    assert isinstance(error, news.NewsError) and "deep" in str(error)
+    assert elapsed < 1.0, elapsed
+
+
+def test_a_2_mib_feed_of_empty_elements_is_refused_as_it_is_read():
+    error, elapsed = timed_parse(biggest(b"<rss>", b"<a/>", b"</rss>"))
+    assert isinstance(error, news.NewsError) and "elements" in str(error)
+    assert elapsed < 1.0, elapsed
+
+
+def test_items_without_titles_count_and_reading_stops_after_the_limit():
+    untitled = b"<item><link>https://example.com/u</link></item>" * news.ITEMS_PER_FEED
+    (rows, skipped), elapsed = timed_parse(
+        b"<rss><channel>" + untitled +
+        b"<item><title>Too late</title><link>https://example.com/late</link></item>"
+        b"<broken" + b"</channel></rss>")               # never reached: parsing stopped
+    assert rows == [] and skipped == 0 and elapsed < 1.0
+
+
+def test_an_item_inside_an_item_is_never_read_as_one():
+    rows, _ = news.parse_feed(
+        b"<rss><channel><item><title>Outer</title><link>https://example.com/o</link>"
+        b"<item><title>Inner</title><link>https://example.com/i</link></item>"
+        b"</item></channel></rss>", FEED)
+    assert [(row["title"], row["url"]) for row in rows] == [("Outer", "https://example.com/o")]
+
+
+def test_markup_inside_a_field_still_reads_as_its_text():
+    rows, _ = news.parse_feed(
+        b'<feed xmlns="http://www.w3.org/2005/Atom"><entry><title type="xhtml">'
+        b'<div xmlns="http://www.w3.org/1999/xhtml">Hello <b>world</b></div></title>'
+        b'<link href="https://example.com/x"/></entry></feed>', FEED)
+    assert [row["title"] for row in rows] == ["Hello world"]
+
+
 def test_topics_match_whole_words_in_any_script():
     assert news.matches_topic("AI inference platform", "ai")
     assert news.matches_topic("The C++ release", "c++")

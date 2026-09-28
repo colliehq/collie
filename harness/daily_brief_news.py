@@ -18,8 +18,11 @@ through the same guards, and each one is a guard rather than an optimisation:
 * **Bounded.**  No proxy is read from the environment.  The answer must be
   uncompressed and at most 2 MiB -- a bigger one is refused, not cut -- and one fetch
   has a total deadline, so a server that drips a byte at a time cannot hold a worker.
-* **Plain XML.**  A document that declares a DTD or an entity is refused before
-  parsing, which closes entity expansion and external entities together.
+* **Plain XML, read in linear time.**  A document that declares a DTD or an entity is
+  refused, which closes entity expansion and external entities together.  One
+  streaming pass reads it: deeper than 32 levels or more than 50,000 elements is
+  refused, only an item's own fields are read, each is cut before any pattern runs,
+  and reading stops after 100 items.  No feed can make parsing slow.
 * **Rarely.**  In the background a feed is fetched at most once per the chosen
   interval, never more often than every 15 minutes, and only while Collie runs and
   after the brief has been opened.  Saving a feed, or pressing *Check now*, fetches
@@ -51,9 +54,9 @@ import ssl
 import threading
 import time
 import urllib.parse
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from xml.parsers import expat
 
 from . import daily_brief
 
@@ -67,7 +70,14 @@ URL_LIMIT = 2048
 MAX_REDIRECTS = 4
 SOCKET_TIMEOUT = 7.0
 FETCH_DEADLINE = 20.0
+#: Items read from one feed, with or without a title; parsing stops after the last.
 ITEMS_PER_FEED = 100
+#: A feed nested deeper, or holding more elements, is refused as it is read.  Real
+#: feeds sit near depth 5 and a few thousand elements.
+MAX_DEPTH = 32
+MAX_ELEMENTS = 50_000
+#: Characters kept from one field of one item before it is reduced to a plain line.
+FIELD_CHARS = 4096
 REFRESH_RANGE = (15, 1440)
 HEADLINE_RANGE = (1, 20)
 #: A feed the person asked for by hand is still not fetched twice in this many seconds.
@@ -227,8 +237,17 @@ def fetch_feed(url, *, resolve=None, connect=None, deadline=FETCH_DEADLINE):
 
 
 def _plain(value, limit):
-    """One line of plain text: tags dropped, entities decoded, whitespace collapsed."""
-    text = html.unescape(re.sub(r"<[^>]*>", " ", value or ""))
+    """One line of plain text: tags dropped, entities decoded, whitespace collapsed.
+
+    The input is cut *before* any pattern runs, and the patterns cannot backtrack: a tag
+    is ``<`` and ``>`` with neither between them.  The old ``<[^>]*>`` over a whole
+    field was quadratic on a title of ``<`` with no ``>`` -- 15 s for 200 KB, all of it
+    holding the interpreter lock, so every request thread in Collie stood still.
+    """
+    text = (value or "")[:limit * 8]
+    text = re.sub(r"<[^<>]*>", " ", text)
+    text = re.sub(r"<[^<>]*$", " ", text)             # a tag the cut left half-open
+    text = html.unescape(text)
     return " ".join("".join(ch if ch >= " " else " " for ch in text).split())[:limit]
 
 
@@ -246,6 +265,22 @@ def _stamp(value):
         return 0.0
 
 
+class _Enough(Exception):
+    """Every item this feed may contribute has been read; parsing stops here."""
+
+
+def _declares_dtd(data):
+    """The byte scan: a DTD or entity in any ASCII-compatible or UTF-16/32 encoding."""
+    return bool(re.search(br"<!\s*(DOCTYPE|ENTITY)", data.replace(b"\x00", b""), re.I))
+
+
+_NOT_A_FEED = "The address did not return an RSS or Atom feed"
+_ROOTS = ("rss", "feed", "RDF")
+_ITEMS = ("item", "entry")
+_FIELDS = ("title", "link", "description", "summary", "pubDate", "published", "updated",
+           "date")
+
+
 def parse_feed(data, source):
     """``(rows, skipped)`` from an RSS 2.0, RSS 1.0 or Atom document.
 
@@ -253,54 +288,111 @@ def parse_feed(data, source):
     brief itself would show (``https``, a host, nothing private, see
     :func:`daily_brief.safe_href`) are kept, and ``skipped`` says how many were left
     out for that, so the page can say so.
+
+    One streaming pass, linear in the document whatever it holds.  A document nested
+    deeper than ``MAX_DEPTH`` or holding more than ``MAX_ELEMENTS`` elements is refused
+    as it is read.  Only an item's own children are read -- never an item inside an
+    item -- and each field keeps at most ``FIELD_CHARS`` characters.  Parsing stops
+    after ``ITEMS_PER_FEED`` items, with or without a title.  (Walking every child's
+    whole subtree made a 2 MiB feed of nested items take five minutes.)  A DTD or an
+    entity declaration is refused twice: by a byte scan before parsing, and by the
+    parser itself whatever the document's encoding.
     """
     if not isinstance(data, bytes):
-        raise NewsError("The address did not return an RSS or Atom feed")
+        raise NewsError(_NOT_A_FEED)
     if len(data) > MAX_FEED_BYTES:
         raise NewsError("The feed is larger than 2 MiB")
-    if re.search(br"<!\s*(DOCTYPE|ENTITY)", data.replace(b"\x00", b""), re.I):
+    if _declares_dtd(data):
         raise NewsError("The feed declares a DTD or entities, which Collie does not read")
+    rows, counts = [], {"skipped": 0, "examined": 0, "elements": 0, "depth": 0}
+    open_item, field = None, None
+
+    def finish(item):
+        counts["examined"] += 1
+        values = item["fields"]
+        title = _plain(values.get("title"), 300)
+        link = item["link"].strip()
+        target = urllib.parse.urljoin(source, link) if link else ""
+        if title and not daily_brief.safe_href(target, external=True):
+            counts["skipped"] += 1    # the brief's own link rule: kept here means shown
+        elif title:
+            rows.append({"id": hashlib.sha256(target.encode("utf-8")).hexdigest()[:24],
+                         "title": title, "url": target,
+                         "published_at": _stamp(values.get("pubDate") or values.get("published")
+                                                or values.get("updated") or values.get("date")),
+                         "summary": _plain(values.get("description") or values.get("summary"),
+                                           240)})
+        if counts["examined"] >= ITEMS_PER_FEED:
+            raise _Enough()
+
+    def start(name, attrs):
+        nonlocal open_item, field
+        counts["depth"] += 1
+        counts["elements"] += 1
+        depth = counts["depth"]
+        if depth > MAX_DEPTH:
+            raise NewsError("The feed nests elements more than %d deep, which Collie does "
+                            "not read" % MAX_DEPTH)
+        if counts["elements"] > MAX_ELEMENTS:
+            raise NewsError("The feed holds more than %d elements, which Collie does not "
+                            "read" % MAX_ELEMENTS)
+        local = name.rsplit("}", 1)[-1]
+        if depth == 1:
+            if local not in _ROOTS:
+                raise NewsError(_NOT_A_FEED)
+        elif open_item is None:
+            if local in _ITEMS:
+                open_item = {"depth": depth, "fields": {}, "link": ""}
+        elif field is None and depth == open_item["depth"] + 1:
+            # Only the item's own children.  Anything else inside it -- including an
+            # item nested in an item -- is passed over, never read as another item.
+            if local == "link" and "href" in attrs:
+                if not open_item["link"] and attrs.get("rel", "alternate") == "alternate":
+                    open_item["link"] = attrs.get("href") or ""
+            elif local in _FIELDS and local not in open_item["fields"]:
+                field = {"name": local, "depth": depth, "parts": [], "size": 0}
+
+    def text(value):
+        if field is not None and field["size"] < FIELD_CHARS:
+            piece = value[:FIELD_CHARS - field["size"]]
+            field["parts"].append(piece)
+            field["size"] += len(piece)
+
+    def end(_name):
+        nonlocal open_item, field
+        depth = counts["depth"]
+        counts["depth"] -= 1
+        if field is not None and depth == field["depth"]:
+            value = "".join(field["parts"])
+            open_item["fields"][field["name"]] = value
+            if field["name"] == "link" and not open_item["link"]:
+                open_item["link"] = value
+            field = None
+        elif open_item is not None and depth == open_item["depth"]:
+            item, open_item = open_item, None
+            finish(item)
+
+    def refuse(*_args):
+        raise NewsError("The feed declares a DTD or entities, which Collie does not read")
+
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.buffer_text = True
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = text
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.ExternalEntityRefHandler = refuse
     try:
-        root = ET.fromstring(data)
-    except ET.ParseError:
-        raise NewsError("The address did not return an RSS or Atom feed") from None
-
-    def local(node):
-        return node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
-
-    if local(root) not in ("rss", "feed", "RDF"):
-        raise NewsError("The address did not return an RSS or Atom feed")
-    rows, skipped = [], 0
-    for node in root.iter():
-        if local(node) not in ("item", "entry"):
-            continue
-        parts = {}
-        link = ""
-        for child in node:
-            name = local(child)
-            parts.setdefault(name, "".join(child.itertext()))
-            if name == "link":
-                if child.get("href") is not None:
-                    if child.get("rel", "alternate") == "alternate" and not link:
-                        link = child.get("href") or ""
-                elif not link:
-                    link = "".join(child.itertext()).strip()
-        title = _plain(parts.get("title"), 300)
-        if not title:
-            continue
-        target = urllib.parse.urljoin(source, link.strip()) if link.strip() else ""
-        # The brief's own link rule, so what is kept here is exactly what it will show.
-        if not daily_brief.safe_href(target, external=True):
-            skipped += 1
-            continue
-        rows.append({"id": hashlib.sha256(target.encode("utf-8")).hexdigest()[:24],
-                     "title": title, "url": target,
-                     "published_at": _stamp(parts.get("pubDate") or parts.get("published")
-                                            or parts.get("updated") or parts.get("date")),
-                     "summary": _plain(parts.get("description") or parts.get("summary"), 240)})
-        if len(rows) >= ITEMS_PER_FEED:
-            break
-    return rows, skipped
+        parser.Parse(data, True)
+    except _Enough:
+        pass
+    except NewsError:
+        raise
+    except (expat.ExpatError, ValueError, LookupError):
+        # Malformed XML, or an encoding the parser refuses (UTF-7 raises ValueError).
+        raise NewsError(_NOT_A_FEED) from None
+    return rows, counts["skipped"]
 
 
 def matches_topic(text, topic):
