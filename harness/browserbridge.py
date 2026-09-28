@@ -1096,6 +1096,14 @@ _PENDING_DIALOGS = {}                  # space -> dialogs answered while no tool
 _PENDING_LOCK = threading.Lock()
 _SPACE_CONTEXT = contextvars.ContextVar("collie_browser_space", default="")
 _SPACE_ACTIVITY = contextvars.ContextVar("collie_browser_space_activity", default=None)
+# Lanes that bindings in this process hold right now: lane -> the binding cells holding it. A
+# binding holds its own lane while it lasts, and each lane its run selects until it ends.
+_LANE_HOLDERS = {}
+_LANE_LOCK = threading.Lock()
+# Lanes Collie names for one owner: a Web conversation's turns (web-<session>) and a Mission's
+# steps (mission-<job>). The owner binds its lane only while a turn or step runs, possibly in
+# another process, so nobody holding one here does not make it free.
+_OWNED_LANE_PREFIXES = ("web-", "mission-")
 
 
 def _space():
@@ -1110,19 +1118,57 @@ def _space():
             os.environ.get("COLLIE_BROWSER_SPACE") or "default")
 
 
+def _run_of(cell):
+    """The outermost binding: a binding nested inside a run (a Mission step inside a Web run)
+    belongs to that run."""
+    while isinstance(cell, dict) and isinstance(cell.get("parent"), dict):
+        cell = cell["parent"]
+    return cell if isinstance(cell, dict) else None
+
+
+def _hold_lane(cell, lane):
+    # Caller holds _LANE_LOCK.
+    holders = _LANE_HOLDERS.setdefault(lane, [])
+    if not any(holder is cell for holder in holders):
+        holders.append(cell)
+        cell["held"].append(lane)
+
+
 def _select_space(name):
     """Make `name` the space for the rest of this run's browser commands.
 
     Inside browser_space the choice goes into the run's own cell, which copies of the run's
     context share, so it holds for tool calls made from a worker context too. Writing only the
     process-wide fallback, as tools once did, lost to the run's bound lane every time and leaked
-    the choice into every unbound caller in the process."""
+    the choice into every unbound caller in the process.
+
+    Choosing a space is how a run reaches a tab it was not started in, and the extension cannot
+    tell runs apart, so the choice is refused for a lane another run is holding or one Collie
+    named for another owner. Returns "" when the space is now this run's, else why not."""
     name = str(name or "default")[:40]
     bound = _SPACE_CONTEXT.get()
-    if isinstance(bound, dict):
-        bound["space"] = name
-    else:
-        _CURRENT_SPACE[0] = name
+    cell = bound if isinstance(bound, dict) else None
+    run, own, link = _run_of(cell), set(), cell
+    while link is not None:
+        own.add(link["own"])
+        link = link.get("parent")
+    with _LANE_LOCK:
+        if name not in own:
+            if name.startswith(_OWNED_LANE_PREFIXES):
+                return ("space '%s' is reserved: names starting with web- or mission- are the "
+                        "lanes of Collie's conversations and Missions, and working in another's "
+                        "would take its tab out from under it. Leave space out to stay in this "
+                        "run's tab, or pick a name without that prefix." % name)
+            if any(_run_of(holder) is not run for holder in _LANE_HOLDERS.get(name, ())):
+                return ("space '%s' is in use by another Collie run right now; working there "
+                        "would take its tab out from under it. Leave space out to stay in this "
+                        "run's tab, or name a different space." % name)
+        if cell is None:
+            _CURRENT_SPACE[0] = name
+        else:
+            cell["space"] = name
+            _hold_lane(cell, name)
+    return ""
 
 
 @contextlib.contextmanager
@@ -1133,7 +1179,12 @@ def browser_space(name, release=False):
     ticker/daemon threads from changing each other's tab.
     """
     own = (name or "default")[:40]
-    token = _SPACE_CONTEXT.set({"space": own})
+    parent = _SPACE_CONTEXT.get()
+    cell = {"space": own, "own": own, "held": [],
+            "parent": parent if isinstance(parent, dict) else None}
+    with _LANE_LOCK:
+        _hold_lane(cell, own)
+    token = _SPACE_CONTEXT.set(cell)
     activity_token = _SPACE_ACTIVITY.set({"used": False}) if release else None
     try:
         yield
@@ -1149,6 +1200,14 @@ def browser_space(name, release=False):
                 _call({"action": "finalize", "space": own, "close_owned": False}, timeout=4)
             except Exception:
                 pass
+        # Only after the finalize: another run must not get the lane before it has been let go.
+        with _LANE_LOCK:
+            for lane in cell["held"]:
+                holders = [h for h in _LANE_HOLDERS.get(lane, ()) if h is not cell]
+                if holders:
+                    _LANE_HOLDERS[lane] = holders
+                else:
+                    _LANE_HOLDERS.pop(lane, None)
         if activity_token is not None:
             _SPACE_ACTIVITY.reset(activity_token)
         _SPACE_CONTEXT.reset(token)
@@ -1449,8 +1508,9 @@ class BrowserOpen(Tool):
 
     def run(self, args, ctx):
         space = (args.get("space") or "").strip()
-        if space:
-            _select_space(space)                # sticky: the rest of this run works in that lane
+        refused = _select_space(space) if space else ""   # sticky: the rest of this run works there
+        if refused:
+            return "ERROR(browser): " + refused
         return _fence(_fmt(_call({"action": "open", "url": args.get("url", ""),
                                   "adopt": bool(args.get("adopt")),
                                   "window": bool(args.get("window")),
@@ -1905,8 +1965,9 @@ class BrowserTabs(Tool):
         args = args or {}
         act = (args.get("action") or "list").strip().lower()
         space = (args.get("space") or "").strip()
-        if space:
-            _select_space(space)
+        refused = _select_space(space) if space else ""
+        if refused:
+            return "ERROR(browser): " + refused
         if act == "attach":
             cmd = {"action": "attach"}
             if args.get("tab_id") is not None:
