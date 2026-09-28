@@ -705,6 +705,10 @@
                 margin-top: 2px; overflow-x: auto; white-space: nowrap; max-width: 100%;
                 padding-bottom: 1px; }
   .ev .detail::-webkit-scrollbar { height: 5px; }
+  /* An approval card is read before it is allowed: its body wraps instead of scrolling off to
+     the right, so every step of a script is on screen, and a long one scrolls down. */
+  .ev.ask .detail { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: visible;
+                    max-height: 18em; overflow-y: auto; }
   .ev .at { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
 
   /* diff */
@@ -6585,6 +6589,19 @@
     // user's exact decision without resurrecting the actionable inbox item.
     delete PENDING_PERMS[id]; delete GLOBAL_PERMS[id]; updateNeedsYou();
   }
+  // A script is allowed whole, so its card lists every step on a line of its own; as one line
+  // of JSON the later steps (a delete after the snapshots) sat off to the right, unread.
+  function permBody(d) {
+    var body = d.body || "";
+    if (d.tool !== "browser_script" && d.tool !== "desktop_script") return body;
+    var args;
+    try { args = JSON.parse(body); } catch (e) { return body; }
+    if (!args || !Array.isArray(args.steps)) return body;
+    var rest = Object.keys(args).filter(function (k) { return k !== "steps"; })
+      .map(function (k) { return k + ": " + JSON.stringify(args[k]); });
+    var lines = args.steps.map(function (s, i) { return (i + 1) + ". " + JSON.stringify(s); });
+    return (rest.length ? rest.join(" · ") + "\n" : "") + lines.join("\n");
+  }
   function addPermission(d, sid) {
     if (!d || !d.id) return;
     trackPermission(d, sid);
@@ -6610,7 +6627,7 @@
     row.innerHTML =
       '<span class="ico">' + ICON["flag"] + '</span>' +
       '<span class="lead"><div class="name">' + esc(d.title || ("Run " + (d.tool || "") + "?")) + '</div>' +
-      '<div class="detail">' + esc(d.body || "") +
+      '<div class="detail">' + esc(permBody(d)) +
       (d.target ? '  ·  on ' + esc(d.target) : '') + '</div>' +
       '<div class="perm-actions">' + btns + '</div></span>' +
       '<span class="at">' + elapsed() + '</span>';

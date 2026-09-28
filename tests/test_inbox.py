@@ -455,3 +455,33 @@ def test_a_short_call_notice_is_unchanged(store, monkeypatch):
     sent, notify = _phone_notices(monkeypatch)
     _approve_and_capture(store, "browser_click", {"ref": "e1"}, also=notify)
     assert sent == ["browser_click — ref: e1"]
+
+
+def test_the_desktop_card_lists_every_script_step_on_its_own_line():
+    """The body reaching the card is complete; the desktop card must also put it on screen.
+    As one unwrapped line of JSON, the steps after the first few sat off to the right."""
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    with open(os.path.join(ROOT, "harness", "webui", "index.html"), encoding="utf-8") as fh:
+        page = fh.read()
+    fn = re.search(r"\n  function permBody\(d\) \{\n.*?\n  \}\n", page, re.S)
+    assert fn, "permBody is missing from index.html"
+    assert "esc(permBody(d))" in page
+    assert re.search(r"\.ev\.ask \.detail \{[^}]*white-space: pre-wrap", page)
+    steps = [{"action": "snapshot"}] * 15 + [{"action": "click", "text": "Delete account"}]
+    cases = [
+        {"tool": "browser_script", "body": json.dumps({"steps": steps, "space": "work"})},
+        {"tool": "browser_click", "body": "ref: e1"},
+        {"tool": "browser_script", "body": "not json"},
+    ]
+    script = fn.group(0) + "\nprocess.stdout.write(JSON.stringify(%s.map(permBody)));" % json.dumps(cases)
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=60)
+    assert done.returncode == 0, done.stderr
+    script_card, single, broken = json.loads(done.stdout)
+    lines = script_card.split("\n")
+    assert lines[0] == 'space: "work"'
+    assert len(lines) == 17 and lines[16] == '16. {"action":"click","text":"Delete account"}'
+    assert single == "ref: e1" and broken == "not json"
