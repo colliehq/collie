@@ -299,7 +299,72 @@ def test_capsule_context_does_not_ask_the_host_for_a_second_recording(capsule_pa
     page.wait_for_function("document.getElementById('target').textContent.includes('notes.md')")
     page.wait_for_timeout(300)
     assert page.evaluate("HOST_MESSAGES.map(x=>x.type)").count("capsule-listen") == 0
+    assert page.evaluate("HOST_MESSAGES.map(x=>x.type)").count("capsule-recording-ended") == 0
     assert not errors
+
+
+def _ended(page):
+    return page.evaluate("HOST_MESSAGES.filter(x=>x.type==='capsule-recording-ended')"
+                         ".map(x=>x.recording)")
+
+
+def test_the_host_hears_when_its_recording_ends_so_live_listening_resumes(capsule_page):
+    page, _previews, _finals, _commands, errors, _control = capsule_page
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'7'})")
+    page.wait_for_function("REC && REC.state==='recording'")
+    assert _ended(page) == []                        # still recording: listening stays off
+    page.evaluate("REC.emit('words');sendHostMessage({type:'capsule-record-stop'})")
+    page.wait_for_function("HOST_MESSAGES.some(x=>x.type==='capsule-recording-ended')")
+    page.wait_for_timeout(300)
+    assert _ended(page) == ["7"]                     # exactly once, for exactly that recording
+    assert not errors
+
+
+def test_a_recording_the_page_cannot_make_is_ended_at_once(capsule_page):
+    page, _previews, _finals, _commands, errors, _control = capsule_page
+    page.evaluate("ROUTING=true;sendHostMessage({type:'capsule-record-start',push_to_talk:true,"
+                  "recording:'8'})")
+    assert _ended(page) == ["8"]
+    page.evaluate("ROUTING=false")
+    assert not errors
+
+
+def test_a_replaced_session_ends_the_hosts_recording(capsule_page):
+    page, _previews, _finals, _commands, errors, control = capsule_page
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'9'})")
+    page.wait_for_function("REC && REC.state==='recording'")
+    control["state"]["session_id"] = "live-replacement"
+    page.evaluate("load()")
+    page.wait_for_function("HOST_MESSAGES.some(x=>x.type==='capsule-recording-ended')")
+    assert _ended(page) == ["9"] and not errors
+
+
+def test_a_second_press_while_recording_is_ended_once_under_its_new_id(capsule_page):
+    page, _previews, _finals, _commands, errors, _control = capsule_page
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'10'})")
+    page.wait_for_function("REC && REC.state==='recording'")
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'11'})")
+    page.evaluate("REC.emit('words');sendHostMessage({type:'capsule-record-stop'})")
+    page.wait_for_function("HOST_MESSAGES.some(x=>x.type==='capsule-recording-ended')")
+    page.wait_for_timeout(300)
+    assert _ended(page) == ["11"] and not errors
+
+
+def test_native_shell_pauses_continuous_listening_while_the_capsule_records():
+    native = (Path(__file__).parents[1] / "harness" / "wallpaper" / "Program.cs").read_text(
+        encoding="utf-8")
+    resume = native.split("static void ResumeLiveSpeech()", 1)[1].split("try", 1)[0]
+    assert "_capsuleRecording" in resume          # nothing restarts it mid-recording
+    opening = native.split("void OpenLiveCapsule", 1)[1].split("try", 1)[0]
+    assert "_capsuleRecording = true;" in opening and "SuspendLiveSpeech();" in opening
+    begin = native.split("static void BeginCapsuleRecording(", 1)[1].split("static void", 1)[0]
+    assert "SuspendLiveSpeech();" in begin and '\\"recording\\"' in begin
+    end = native.split("static void EndCapsuleRecording(", 1)[1].split("static void", 1)[0]
+    assert "_capsuleRecordingId" in end and "ResumeLiveSpeech();" in end
+    assert 'EndCapsuleRecording(JsonField(raw, "recording"))' in native
+    assert native.count("BeginCapsuleRecording(") == 4   # the definition and all three starts
+    closed = native.split("form.FormClosed += delegate", 1)[1].split("};", 1)[0]
+    assert "_capsuleRecording = false;" in closed
 
 
 def test_untagged_native_speech_never_authorizes_a_command(capsule_page):

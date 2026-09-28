@@ -445,7 +445,8 @@ def test_live_capsule_is_a_native_hotkey_surface_not_a_full_window_handoff():
         'else if (raw.IndexOf("capsule-listen"', 1)[0]
     assert "PostCapsuleTarget(target)" in ready and "StartCapsuleSpeech" not in ready
     # The host starts the recording on capsule-ready; the page must not ask for a second one.
-    assert "capsule-record-start" in ready
+    assert "BeginCapsuleRecording(_capsulePttMode)" in ready
+    assert "capsule-record-start" in native_host.split("static void BeginCapsuleRecording(", 1)[1]
     assert "load().then(beginHandoff)" in capsule
     assert "load().then(beginHandoff).then(function(){if(STATE.active)host" not in capsule
     assert 'host({type:"capsule-listen"' in capsule          # the mic button still can

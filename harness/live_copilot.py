@@ -1135,6 +1135,19 @@ class LiveSessionStore:
         """
         source, text = row["source"], row["text"]
         if row["kind"] == "capsule_speech":
+            # If the continuous recognizer also caught the command (it should be suspended while
+            # the capsule records, but may not have been), that copy is the command, not
+            # conversation: remove it so hands-free dialogue does not answer it aloud.
+            events = value.get("events") or []
+            copy = next((item for item in reversed(events[-16:])
+                         if item.get("kind") == "speech" and item.get("source") == "you" and
+                         0 <= now - int(item.get("received_at_ms") or 0) <= 12_000 and
+                         _speech_echo_match(item.get("text"), text)), None)
+            if copy is not None:
+                value["events"] = [item for item in events if item.get("id") != copy.get("id")]
+                value["audit"] = (value.get("audit") or [])[-79:] + [{
+                    "at_ms": now, "action": "speech_superseded_by_capsule",
+                    "detail": "removed_event_id=%s" % _text(copy.get("id"), 96)}]
             return None
         playback = {**_default_state()["voice_playback"], **dict(value.get("voice_playback") or {})}
         started = int(playback.get("started_at_ms") or 0)

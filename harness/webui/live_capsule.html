@@ -56,7 +56,13 @@ function api(path,method,body,op){return authenticatedFetch(path,{method:method|
    late network results for an ended operation are dropped instead of acting. */
 function operation(){return {generation:REC_GENERATION,session:STATE.session_id}}
 function operationCurrent(op){return !!op&&!CLOSED&&op.generation===REC_GENERATION&&op.session===STATE.session_id&&!!STATE.active}
-function discardVoice(){
+/* The native shell turns the continuous Live recognizer off for each capsule recording it starts,
+   and back on when the page reports that recording ended. HOST_REC is the host's id for it; a
+   report for an older id is ignored by the host, so it never ends a newer recording. */
+var HOST_REC="";
+function hostRecordingEnded(){if(HOST_REC){host({type:"capsule-recording-ended",recording:HOST_REC});HOST_REC=""}}
+function discardVoice(ended){
+  if(ended)hostRecordingEnded();
   REC_GENERATION++;VOICE_STARTING=false;
   if(REC_CLIP){REC_CLIP.controller.abort();clearTimeout(REC_CLIP.timer)}REC_CLIP=null;
   clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;REC_PREVIEW_BUSY=false;
@@ -71,7 +77,7 @@ function discardVoice(){
 var FILLER_ONLY=/^(?:(?:a|an|and|but|eh|er|hm|hmm|mm|oh|or|the|uh|um)\b[^\p{L}\p{N}]*)+$/iu;
 function meaningfulVoice(text){text=String(text||"").trim();return /[\p{L}\p{N}]/u.test(text)&&!FILLER_ONLY.test(text)}
 function closeCapsule(){
-  if(CLOSED)return;CLOSED=true;discardVoice();
+  if(CLOSED)return;discardVoice(true);CLOSED=true;
   if(ES){ES.close();ES=null}if(RUN)clearTimeout(RUN.timer);
   host({type:"capsule-close"});
 }
@@ -85,7 +91,7 @@ function load(quiet){
     if(CLOSED||version!==LOAD_VERSION)return null;
     s=s||{};
     var changed=!!STATE.session_id&&STATE.session_id!==s.session_id;
-    if(changed||!s.active){discardVoice();HAND=null;ROUTING=false;if(changed){CAPSULE_SEQ=-1;$("command").value=""}$("answer").textContent="";hidePermission()}
+    if(changed||!s.active){discardVoice(true);HAND=null;ROUTING=false;if(changed){CAPSULE_SEQ=-1;$("command").value=""}$("answer").textContent="";hidePermission()}
     STATE=s;var recovered=OFFLINE;OFFLINE=false;var seen=Number((STATE.audio||{}).capsule_seq);
     if(Number.isFinite(seen)&&seen>CAPSULE_SEQ)CAPSULE_SEQ=seen;
     $("dot").classList.toggle("on",!!s.active);
@@ -192,7 +198,7 @@ async function run(command,source,op){
   command=String(command||"").trim();if(CLOSED||!command||RUN||ROUTING)return;
   if(op&&!operationCurrent(op))return;
   if(source==="voice"&&!meaningfulVoice(command)){$("command").value="";status("I didn't catch that. Speak again or type the command.",true);return}
-  if(!op){discardVoice();op=operation()}
+  if(!op){discardVoice(true);op=operation()}
   ROUTING=true;
   try{
     var fresh=await load(true);
@@ -276,12 +282,13 @@ function sendFinalVoice(blob,mime,clip,attempt){
 }
 function uploadVoice(blob,mime,clip){if(!operationCurrent(clip))return;clip.seq=++CAPSULE_SEQ;sendFinalVoice(blob,mime,clip,0)}
 async function startVoice(pushToTalk){
-  if(CLOSED||REC||VOICE_STARTING||RUN||ROUTING)return;
-  var mime=recordMime();if(!mime){status("This runtime cannot record supported audio chunks.",true);return}
+  if(CLOSED||REC||VOICE_STARTING)return;
+  if(RUN||ROUTING){hostRecordingEnded();return}
+  var mime=recordMime();if(!mime){hostRecordingEnded();status("This runtime cannot record supported audio chunks.",true);return}
   discardVoice();var clip=Object.assign(operation(),{controller:new AbortController(),preview:"",consumed:false,timer:0,released:false});REC_CLIP=clip;VOICE_STARTING=true;
   var fresh=await load(true);
   if(!fresh||!fresh.active||CLOSED||clip.generation!==REC_GENERATION||clip.released){
-    if(clip.generation===REC_GENERATION){VOICE_STARTING=false;REC_CLIP=null;setListening(false)}return;
+    if(clip.generation===REC_GENERATION){VOICE_STARTING=false;REC_CLIP=null;setListening(false);hostRecordingEnded()}return;
   }
   clip.session=fresh.session_id;
   // Continue from the last clip this session accepted; the server refuses a gap.
@@ -291,7 +298,7 @@ async function startVoice(pushToTalk){
   var stream=null,ctx=null;
   try{
     stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
-    if(!operationCurrent(clip)||clip.released){stream.getTracks().forEach(function(t){t.stop()});if(operationCurrent(clip)){VOICE_STARTING=false;setListening(false)}return}
+    if(!operationCurrent(clip)||clip.released){stream.getTracks().forEach(function(t){t.stop()});if(operationCurrent(clip)){VOICE_STARTING=false;setListening(false);hostRecordingEnded()}return}
     REC_STREAM=stream;ctx=new (window.AudioContext||window.webkitAudioContext)();REC_CONTEXT=ctx;
     var src=ctx.createMediaStreamSource(stream);REC_AUDIO=ctx.createAnalyser();REC_AUDIO.fftSize=512;src.connect(REC_AUDIO);
     REC_PARTS=[];var recorder=new MediaRecorder(stream,{mimeType:mime,audioBitsPerSecond:48000});REC=recorder;VOICE_STARTING=false;
@@ -301,6 +308,7 @@ async function startVoice(pushToTalk){
       var parts=REC_PARTS;REC=null;REC_STREAM=null;REC_AUDIO=null;REC_PARTS=[];REC_CONTEXT=null;
       clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;
       stream.getTracks().forEach(function(t){t.stop()});if(ctx.close)ctx.close().catch(function(){});
+      hostRecordingEnded();
       if(parts.length)uploadVoice(new Blob(parts,{type:mime}),mime,clip);else voiceFailed(clip,"No final audio was captured.");
     };
     // Short slices make the recording so far available for the live text preview.
@@ -309,7 +317,7 @@ async function startVoice(pushToTalk){
   }catch(e){
     if(stream)stream.getTracks().forEach(function(t){t.stop()});if(ctx&&ctx.close)ctx.close().catch(function(){});
     if(!operationCurrent(clip))return;VOICE_STARTING=false;REC=null;REC_STREAM=null;REC_CONTEXT=null;
-    voiceFailed(clip,e.message||"Microphone unavailable.");
+    hostRecordingEnded();voiceFailed(clip,e.message||"Microphone unavailable.");
   }
 }
 $("command").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();run(this.value,"typed")}});
@@ -322,7 +330,7 @@ $("status").onclick=function(){if(!STATE.active)host({type:"capsule-open-main"})
    not accepted as commands: only the receipt for this capsule's own clip is. */
 try{window.chrome.webview.addEventListener("message",function(e){
   var d=e.data||{};if(CLOSED)return;
-  if(d.type==="capsule-record-start")startVoice(d.push_to_talk===true);
+  if(d.type==="capsule-record-start"){HOST_REC=String(d.recording||"");startVoice(d.push_to_talk===true)}
   else if(d.type==="capsule-record-stop")stopVoice();
   else if(d.type==="capsule-context"){discardVoice();ROUTING=false;HAND=null;TARGET=d.target||{};load().then(beginHandoff)}
 })}catch(_){}

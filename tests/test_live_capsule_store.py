@@ -89,6 +89,39 @@ def test_hands_free_voice_does_not_answer_a_capsule_command(tmp_path):
     assert asked == []
 
 
+def test_a_continuous_copy_of_a_capsule_command_is_not_conversation(tmp_path):
+    """The native continuous recognizer heard the command before the capsule clip was decoded."""
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=True, consent=True, understand=False, observe_apps=False,
+                          voice_dialogue=True)
+    store.add_event(source="you", kind="speech", text="Open my project notes",
+                    session_id=session["session_id"])
+    store.ingest_audio(session_id=session["session_id"], source="capsule", seq=0,
+                       mime_type="audio/webm", data=b"c",
+                       transcriber=lambda *_a, **_k: {"text": "Open my project notes."})
+    assert _wait(lambda: _receipts(store))
+    mine = [(e["kind"], e["text"]) for e in store.snapshot()["events"] if e["source"] == "you"]
+    assert mine == [("capsule_speech", "Open my project notes.")]
+    assert _receipts(store) == [{"seq": 0, "text": "Open my project notes.", "error": ""}]
+    asked = []
+    assert live.run_voice_dialogue_once(tmp_path, analyzer=lambda p: asked.append(p) or "OK.") \
+        is False
+    assert asked == []
+
+
+def test_a_capsule_command_leaves_unrelated_conversation_alone(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=True, consent=True, understand=False, observe_apps=False)
+    store.add_event(source="you", kind="speech", text="We should ship on Friday",
+                    session_id=session["session_id"])
+    store.ingest_audio(session_id=session["session_id"], source="capsule", seq=0,
+                       mime_type="audio/webm", data=b"c",
+                       transcriber=lambda *_a, **_k: {"text": "Open my project notes."})
+    assert _wait(lambda: _receipts(store))
+    assert [e["kind"] for e in store.snapshot()["events"] if e["source"] == "you"] == [
+        "speech", "capsule_speech"]
+
+
 # --- Live text while the person is still talking ------------------------------------------------
 
 def test_capsule_preview_is_ephemeral_and_does_not_touch_the_log(tmp_path):

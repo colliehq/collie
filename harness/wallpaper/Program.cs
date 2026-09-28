@@ -252,6 +252,11 @@ class CollieWallpaper : Form
     static SpeechRecognitionEngine _capsuleSpeech;
     static bool _capsuleSpeechDelivered;
     static bool _capsuleStopOnRelease;
+    // While the capsule records a command, the continuous Live recognizer is off: otherwise the same
+    // words arrive first as conversation, and hands-free dialogue answers the command aloud. The id
+    // lets the page end exactly the recording it was asked to make, never a newer one.
+    static bool _capsuleRecording;
+    static int _capsuleRecordingId;
     static bool _capsulePttMode, _capsulePttHeld;
     static CollieWallpaper _mainForm;
     static WebView2 _mainWeb;
@@ -837,8 +842,8 @@ class CollieWallpaper : Form
 
     static void ResumeLiveSpeech()
     {
-        if (!_liveSpeechWanted || _liveVoiceSpeaking || _capsuleSpeech != null || _liveSpeech != null ||
-            string.IsNullOrEmpty(_liveSpeechSession)) return;
+        if (!_liveSpeechWanted || _liveVoiceSpeaking || _capsuleRecording || _capsuleSpeech != null ||
+            _liveSpeech != null || string.IsNullOrEmpty(_liveSpeechSession)) return;
         string desiredKey = _liveSpeechSession + "\0" + _liveSpeechLanguage;
         if (_liveSpeechFailedFor == desiredKey) return;
         try
@@ -897,6 +902,24 @@ class CollieWallpaper : Form
     static void SuspendLiveSpeech()
     {
         StopLiveSpeechEngine();
+    }
+
+    static void BeginCapsuleRecording(bool pushToTalk)
+    {
+        _capsuleRecording = true;
+        int id = ++_capsuleRecordingId;
+        SuspendLiveSpeech();
+        PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                    (pushToTalk ? "true" : "false") + ",\"recording\":" +
+                    JsonString(id.ToString(CultureInfo.InvariantCulture)) + "}");
+    }
+
+    static void EndCapsuleRecording(string recording)
+    {
+        // A late message about an earlier recording must not end the one in progress.
+        if (recording != _capsuleRecordingId.ToString(CultureInfo.InvariantCulture)) return;
+        _capsuleRecording = false;
+        ResumeLiveSpeech();
     }
 
     static void PostCapsule(string json)
@@ -1013,8 +1036,11 @@ class CollieWallpaper : Form
     void OpenLiveCapsule(LiveTarget target, bool pushToTalk = false)
     {
         // The capsule gesture is also a barge-in: cut Collie's current spoken cue before the
-        // microphone opens, so the capsule never records the tail of Collie's own voice.
+        // microphone opens, so the capsule never records the tail of Collie's own voice. The
+        // continuous recognizer stops too, until the page says this recording has ended.
         StopLiveVoice();
+        _capsuleRecording = true;
+        SuspendLiveSpeech();
         try
         {
             if (_capsuleForm != null && !_capsuleForm.IsDisposed)
@@ -1025,8 +1051,7 @@ class CollieWallpaper : Form
                 _capsulePttHeld = pushToTalk;
                 PostCapsuleTarget(target);
                 if (!pushToTalk || _capsulePttHeld)
-                    PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
-                                (pushToTalk ? "true" : "false") + "}");
+                    BeginCapsuleRecording(pushToTalk);
                 return;
             }
             _capsuleStopOnRelease = false;
@@ -1065,19 +1090,25 @@ class CollieWallpaper : Form
                 {
                     string raw = "";
                     try { raw = m.WebMessageAsJson ?? ""; } catch { }
-                    if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
+                    if (raw.IndexOf("capsule-recording-ended", StringComparison.Ordinal) >= 0)
+                        EndCapsuleRecording(JsonField(raw, "recording"));
+                    else if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
                     {
                         PostCapsuleTarget(target);
                         if (!_capsulePttMode || _capsulePttHeld)
-                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
-                                        (_capsulePttMode ? "true" : "false") + "}");
+                            BeginCapsuleRecording(_capsulePttMode);
+                        else
+                        {
+                            // X2 was released before the page loaded: nothing will be recorded.
+                            _capsuleRecording = false;
+                            ResumeLiveSpeech();
+                        }
                     }
                     else if (raw.IndexOf("capsule-listen", StringComparison.Ordinal) >= 0 ||
                              raw.IndexOf("capsule-language", StringComparison.Ordinal) >= 0)
                     {
                         if (!_capsulePttMode || _capsulePttHeld)
-                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
-                                        (_capsulePttMode ? "true" : "false") + "}");
+                            BeginCapsuleRecording(_capsulePttMode);
                     }
                     else if (raw.IndexOf("capsule-open-main", StringComparison.Ordinal) >= 0)
                     {
@@ -1093,6 +1124,7 @@ class CollieWallpaper : Form
             {
                 _capsuleStopOnRelease = false;
                 _capsulePttMode = _capsulePttHeld = false;
+                _capsuleRecording = false;
                 StopCapsuleSpeech();
                 ResumeLiveSpeech();
                 try { web.Dispose(); } catch { }
