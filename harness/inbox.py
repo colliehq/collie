@@ -101,6 +101,78 @@ def args_preview(args, limit: int = 240) -> str:
     return (out[:limit - 1] + "…") if len(out) > limit else out
 
 
+#: Tools that run a batch of steps on ONE approval.
+SCRIPT_TOOLS = frozenset(("browser_script", "desktop_script"))
+
+#: The longest line a push notification about a parked approval carries. The card holds the
+#: whole proposal; a notice only has to bring the person to it.
+NOTICE_LIMIT = 180
+_NOTICE_STEP = 48
+
+
+def approval_body(tool_name: str, args) -> str:
+    """What the approval card shows.
+
+    A script is approved whole, so its card carries every step exactly as proposed (still in
+    placeholder form, like the preview). `args_preview` cuts each value at 80 characters,
+    which left a script's later steps, say a delete after fifteen snapshots, off the very card
+    the person was approving. Single calls keep the compact preview.
+    """
+    if tool_name in SCRIPT_TOOLS:
+        return json.dumps(args or {}, ensure_ascii=False, default=str)
+    return args_preview(args)
+
+
+def notice_text(item, limit: int = NOTICE_LIMIT) -> str:
+    """A parked approval as one bounded line for a push notification.
+
+    It never passes for complete when it is not: what does not fit is counted in an explicit
+    "… N more steps" (or "… N more chars") at the end, so fifteen snapshots and a delete
+    cannot read like fifteen snapshots.
+    """
+    tool = item.tool or "a tool"
+    steps = _script_steps(item)
+    if steps is None:
+        text = " ".join(("%s — %s" % (tool, item.body) if item.body else tool).split())
+        if len(text) <= limit:
+            return text
+        cut = limit
+        while cut > 0 and cut + len(" … %d more chars" % (len(text) - cut)) > limit:
+            cut -= 1
+        return text[:cut] + " … %d more chars" % (len(text) - cut)
+    out = "%s — %d step%s:" % (tool, len(steps), "" if len(steps) == 1 else "s")
+    for i, step in enumerate(steps):
+        piece = (" · " if i else " ") + _step_label(step)
+        left = len(steps) - i - 1
+        tail = " … %d more steps" % left if left else ""
+        if len(out) + len(piece) + len(tail) > limit:
+            return out + " … %d more steps" % (left + 1)
+        out += piece
+    return out
+
+
+def _script_steps(item):
+    if item.tool not in SCRIPT_TOOLS:
+        return None
+    try:
+        steps = json.loads(item.body).get("steps")
+    except (ValueError, AttributeError):
+        return None
+    return steps if isinstance(steps, list) else None
+
+
+def _step_label(step) -> str:
+    if isinstance(step, dict):
+        bits = ", ".join("%s: %s" % (k, v if isinstance(v, str) else
+                                     json.dumps(v, ensure_ascii=False, default=str))
+                         for k, v in step.items() if k != "action")
+        label = str(step.get("action") or "?") + ("(%s)" % bits if bits else "")
+    else:
+        label = json.dumps(step, ensure_ascii=False, default=str)
+    label = " ".join(label.split())
+    return label if len(label) <= _NOTICE_STEP else label[:_NOTICE_STEP - 1] + "…"
+
+
 def outcome_of(resolution: str):
     """Map a stored resolution onto a gate Outcome. Everything unrecognised — an empty
     string, a stale value, a garbled reply from a phone — is a refusal. Consent has to be
@@ -347,7 +419,7 @@ def inbox_approver(store: InboxStore, session: str, *, visibility=VIS_INBOX,
         item = store.add(
             session,
             title="Run %s?" % tool_name,
-            body=args_preview(args),
+            body=approval_body(tool_name, args),
             tool=tool_name,
             target=getattr(decision, "target", "") or "",
             risk=getattr(decision, "risk", "") or "",

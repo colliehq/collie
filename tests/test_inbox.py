@@ -4,7 +4,9 @@ The races are the point. Two surfaces can hold the same question at the same mom
 a desktop dialog and a phone — and whichever answers first has to be the one that counts,
 with the loser told nothing happened rather than handed an error.
 """
+import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -359,3 +361,97 @@ def test_args_preview_truncates():
 def test_args_preview_does_not_go_looking_for_real_values():
     """The loop hands over placeholder-form args on purpose; the preview only shortens."""
     assert "{{SECRET:deadbeef}}" in args_preview({"text": "{{SECRET:deadbeef}}"})
+
+
+# -- a script is approved whole, so its card shows all of it ----------------
+def _fifteen_harmless_steps_then_a_delete():
+    return {"steps": [{"action": "snapshot", "max": 100}] * 15 +
+                     [{"action": "click", "text": "Delete board"}]}
+
+
+def _approve_and_capture(store, tool, args, also=None):
+    """Run one approval through the real approver; answer it (deny) from on_new."""
+    seen = []
+
+    def answer(item):
+        seen.append(item)
+        if also is not None:
+            also(item)
+        store.resolve(item.id, R_DENY)
+
+    store.on_new = answer
+    assert inbox_approver(store, "batch")(tool, args, _d()) is Outcome.REJECT_ONCE
+    [item] = seen
+    return item
+
+
+@pytest.mark.parametrize("tool", ["browser_script", "desktop_script"])
+def test_a_script_approval_card_shows_every_step(store, tool):
+    """A script runs every step on one approval. Cutting each value at 80 characters left
+    the sixteenth step (the delete) off the card the person was approving."""
+    args = _fifteen_harmless_steps_then_a_delete()
+    item = _approve_and_capture(store, tool, args)
+    assert "Delete board" in item.body
+    assert json.loads(item.body) == args, "the card must carry the proposal exactly"
+
+
+def test_a_single_call_approval_card_keeps_the_compact_preview(store):
+    item = _approve_and_capture(store, "browser_type", {"text": "x" * 5000, "submit": True})
+    assert len(item.body) <= 240 and "submit: true" in item.body
+
+
+def _phone_notices(monkeypatch):
+    from harness import webapp
+    sent = []
+
+    class Remote:
+        def notify(self, title, body, session="", thread=""):
+            sent.append(body)
+    monkeypatch.setattr(webapp, "REMOTE", Remote())
+    return sent, (lambda item: webapp.Handler._notify_waiting("batch", item))
+
+
+def test_the_phone_notice_for_a_script_is_bounded_and_counts_the_steps_it_leaves_out(
+        store, monkeypatch):
+    """The card carries every step; a push notice cannot, and must not pass for complete.
+    Whatever does not fit is counted, so fifteen snapshots and a delete never read like
+    fifteen snapshots."""
+    sent, notify = _phone_notices(monkeypatch)
+    _approve_and_capture(store, "browser_script", _fifteen_harmless_steps_then_a_delete(),
+                         also=notify)
+    [text] = sent
+    assert len(text) <= 180, text
+    assert text.startswith("browser_script — 16 steps:"), text
+    more = re.search(r" … (\d+) more steps$", text)
+    assert more, "the notice hid steps without saying so: %r" % text
+    shown = text.count("snapshot(") + text.count("click(")
+    assert shown >= 1 and shown + int(more.group(1)) == 16, text
+
+
+def test_a_script_notice_that_fits_says_nothing_is_missing(store, monkeypatch):
+    sent, notify = _phone_notices(monkeypatch)
+    _approve_and_capture(store, "browser_script",
+                         {"steps": [{"action": "click", "text": "Delete board"}]}, also=notify)
+    assert sent == ["browser_script — 1 step: click(text: Delete board)"]
+
+
+def test_the_phone_notice_for_a_long_call_is_bounded_and_says_how_much_is_cut(
+        store, monkeypatch):
+    sent, notify = _phone_notices(monkeypatch)
+    item = _approve_and_capture(store, "browser_type",
+                                {"label": "Billing address " * 10, "text": "x" * 5000,
+                                 "submit": True}, also=notify)
+    [text] = sent
+    assert len("browser_type — " + item.body) > 180, "the body must be too long to fit"
+    assert len(text) <= 180, text
+    more = re.search(r" … (\d+) more chars$", text)
+    assert more, "the notice was cut without saying so: %r" % text
+    whole = "browser_type — " + item.body
+    assert whole.startswith(text[:more.start()])
+    assert more.start() + int(more.group(1)) == len(whole)
+
+
+def test_a_short_call_notice_is_unchanged(store, monkeypatch):
+    sent, notify = _phone_notices(monkeypatch)
+    _approve_and_capture(store, "browser_click", {"ref": "e1"}, also=notify)
+    assert sent == ["browser_click — ref: e1"]
