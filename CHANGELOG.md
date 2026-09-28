@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.31.0 — Your own to-dos and news in the Daily Brief, a steadier Live, and a crash fixed
+
+- Keep your own to-do list in the Daily Brief. A to-do that is late or due today appears under
+  Needs you, one you finish today counts as done today, and the list stays on this computer.
+- Add RSS or Atom feeds to the Daily Brief and see their headlines, filtered by your topics. It is
+  off until you add a feed. Collie fetches only HTTPS feeds on public addresses, within size and
+  time limits a hostile feed cannot stretch, and a headline is never handed to a model as
+  something to do. docs/privacy.md says exactly what is requested and when.
+- Stop a cancel from crashing Collie. Cancelling a run while its approvals were on screen could
+  close the approval store under a reader, and the whole process died without a word.
+- Show every step of a browser or desktop script on its approval card. The card cut each value at
+  80 characters, so a delete after a run of snapshots was never on the card you allowed.
+- Run your check when verification is Required. With your own check command (say
+  `python verify.py`), the run failed a correct edit before the check could start; the check now
+  runs and decides the result.
+- The desktop's weather is fetched once by Collie for every desktop window, backs off when the
+  services fail, and says when it is loading, old or unavailable. The desktop's edit panel has a
+  Weather switch, turning it off stops the requests at the source, and a desktop.json Collie
+  cannot read now counts as off.
+- The code map no longer takes over the desktop on every run. Turn it on in Settings, Desktop.
+- Links opened from the desktop open Collie's own pages in a Collie window and web pages in your
+  default browser, instead of navigating the desktop away.
+- Live skips silence and noise before recognition, drops transcripts that are only filler, stops
+  logging Collie's own voice as yours or the same speech twice, and answers a question you ask
+  again.
+- The Live capsule runs only what its own recording said, and only once. Its first command in a
+  session no longer fails, it shows what it hears while you talk, and it works through Windows
+  speech when the local SenseVoice model is not installed.
+- Capsule dictation types into the focused field of the window you were in and never presses
+  Enter. It refuses password and read-only fields, and types nothing if focus moves while it
+  checks.
+- `collie record` never replaces an earlier recording, and a failed export no longer passes for
+  a saved one.
+- An explicit browser space now takes effect inside a web run, and one run can no longer work in
+  a tab another run holds.
+- Memory import skips damaged records in session logs, and one failing session no longer stops
+  the import of the rest.
+- The installer no longer packs the browser bridge's token or bytecode built on the build machine.
+
 ## v0.30.4 — The real fix for clicks that froze the browser tools
 
 - Stop Collie's visible cursor from holding a click on a page that is not on screen. Before each
