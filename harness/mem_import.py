@@ -550,7 +550,8 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
     # touches — the per-file skip below already honors the flag.
     state = _load_state()
     parsers = {"cc": parse_cc_session, "codex": parse_codex_session}
-    stats = {"scanned": 0, "skipped": 0, "sessions": 0, "facts": 0, "redacted": 0, "lowvalue": 0}
+    stats = {"scanned": 0, "skipped": 0, "sessions": 0, "facts": 0, "redacted": 0, "lowvalue": 0,
+             "failed": 0}
     t0 = time.time()
 
     todo = []
@@ -606,20 +607,38 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
         _save_famreg(famreg)
     if gated:
         log("[family] gated %d template-family session(s)" % len(gated))
+    if todo and not no_llm:
+        # A distiller that cannot be built is a configuration error, not a bad session: it
+        # stops the run here instead of being counted against every session below.
+        _distiller()
 
     def _one(item):
-        """worker: parse + distill only — no db, no state, no shared mutability."""
+        """worker: parse + distill only — no db, no state, no shared mutability.
+
+        A session that raises comes back as "failed" with the error in place of its facts:
+        one session (a log the parser trips on, a distiller call that raised) must not end
+        the import of all the others, which is what re-raising it from here did."""
         src, path, mt = item
-        sess = parsers[src](path)
-        if not sess:
-            return (src, path, mt, None, [])
-        if SKIP_TITLE_RE.search(sess.get("title") or ""):
-            return (src, path, mt, "low-value", [])     # templated chore — no distiller call
-        facts = heuristic_facts(sess) if no_llm else \
-            _distiller().session_facts(chunk_turns(sess["turns"], max_chunks))
-        return (src, path, mt, sess, facts)
+        try:
+            sess = parsers[src](path)
+            if not sess:
+                return (src, path, mt, None, [])
+            if SKIP_TITLE_RE.search(sess.get("title") or ""):
+                return (src, path, mt, "low-value", [])     # templated chore — no distiller call
+            facts = heuristic_facts(sess) if no_llm else \
+                _distiller().session_facts(chunk_turns(sess["turns"], max_chunks))
+            return (src, path, mt, sess, facts)
+        except Exception as e:
+            return (src, path, mt, "failed", "%s: %s" % (type(e).__name__, e))
 
     def _consume(src, path, mt, sess, facts):
+        if sess == "failed":
+            # Named, counted in the summary, and left out of the state file, so the next run
+            # tries it again: a provider outage heals, and a parser defect stays visible in
+            # every run until it is fixed rather than being marked done with nothing stored.
+            stats["failed"] += 1
+            log("[failed] %s: %s" % (path, facts))    # facts holds the error here
+            return
         if sess is None or sess == "low-value":
             if sess == "low-value":
                 stats["lowvalue"] += 1
@@ -669,6 +688,10 @@ def run_import(mem, source="all", limit=100, dry_run=False, no_llm=False,
                 _consume(*fut.result())
 
     stats["secs"] = round(time.time() - t0, 1)
-    log("done: %(sessions)d sessions -> %(facts)d facts (%(redacted)d redacted, "
-        "%(lowvalue)d low-value skipped, %(skipped)d already imported, %(secs)ss)" % stats)
+    summary = ("done: %(sessions)d sessions -> %(facts)d facts (%(redacted)d redacted, "
+               "%(lowvalue)d low-value skipped, %(skipped)d already imported, %(secs)ss)" % stats)
+    if stats["failed"]:
+        summary += ("; %d failed and skipped, listed above as [failed]; the next run tries "
+                    "them again" % stats["failed"])
+    log(summary)
     return stats

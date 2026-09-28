@@ -4,16 +4,18 @@ The module had 10% line coverage: its parsers, chunking and the import driver ra
 What must hold: harness noise never becomes a fact, secrets are redacted before they are stored,
 every fact carries provenance that says where it came from, a session is imported once, and a
 session still being written is left alone. Logs are other programs' files: a damaged record is
-skipped and the rest of the session kept, and only text that a distiller returned is ever
-stored as a fact.
+skipped, a session that still fails is counted and retried rather than ending the import, and only
+text that a distiller returned is ever stored as a fact.
 """
+import contextlib
+import io
 import json
 import os
 import time
 
 import pytest
 
-from harness import distill
+from harness import distill, providers
 from harness import mem_import as mi
 from harness.memory import SqliteMemory
 
@@ -249,3 +251,73 @@ class _Answer:
 ])
 def test_the_rolling_distiller_keeps_only_facts_that_are_text(reply, expected):
     assert mi.RollingDistiller(_Answer(reply)).update(["Verified fact"], "excerpt") == expected
+
+
+# ------------------------------------------------------------- one failed session --
+def _parsing_fails_for(monkeypatch, bad):
+    real = mi.parse_cc_session
+
+    def parse(path):
+        if path == bad:
+            raise RuntimeError("simulated parser defect")
+        return real(path)
+    monkeypatch.setattr(mi, "parse_cc_session", parse)
+    return real
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_a_session_that_fails_is_reported_and_retried_without_ending_the_import(
+        roots, tmp_path, monkeypatch, workers):
+    good = _cc_session(roots[0], "aaaaaaaa11111111")
+    bad = _cc_session(roots[0], "bbbbbbbb22222222")
+    real = _parsing_fails_for(monkeypatch, bad)
+    lines = []
+    mem = SqliteMemory(str(tmp_path / "mem.db"))
+    try:
+        stats = mi.run_import(mem, source="cc", no_llm=True, workers=workers, log=lines.append)
+        assert stats["sessions"] == 1 and stats["failed"] == 1
+        failed = [ln for ln in lines if str(bad) in ln]
+        assert failed and "RuntimeError: simulated parser defect" in failed[0], lines
+        assert "1 failed" in lines[-1], lines[-1]
+        state = json.loads(mi.STATE_PATH.read_text())
+        assert str(good) in state and str(bad) not in state, "a failed session is tried again"
+
+        monkeypatch.setattr(mi, "parse_cc_session", real)
+        again = mi.run_import(mem, source="cc", no_llm=True, log=lambda *_: None)
+        assert again["sessions"] == 1 and again["failed"] == 0 and again["skipped"] == 1
+    finally:
+        mem.close()
+
+
+def test_mem_import_names_a_failed_session_and_exits_nonzero(roots, tmp_path, monkeypatch):
+    from harness import cli
+    _cc_session(roots[0], "aaaaaaaa11111111")
+    bad = _cc_session(roots[0], "bbbbbbbb22222222")
+    _parsing_fails_for(monkeypatch, bad)
+    monkeypatch.setattr(cli, "DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("COLLIE_EMBED", "bm25")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = cli.main(["mem", "import", "--no-llm", "--source", "cc", "--embed", "bm25"])
+    printed = out.getvalue()
+    assert code == 1, printed
+    assert str(bad) in printed and "simulated parser defect" in printed
+    assert "1 failed" in printed.strip().splitlines()[-1], printed
+
+
+def test_a_distiller_that_cannot_be_built_stops_the_import(roots, tmp_path, monkeypatch):
+    """A configuration error is not a bad session: it stops the run instead of being counted
+    against every session in it."""
+    session = _cc_session(roots[0])
+
+    def no_provider(*_args, **_kwargs):
+        raise ValueError("unknown provider: nope")
+    monkeypatch.setattr(providers, "make_provider", no_provider)
+    mem = SqliteMemory(str(tmp_path / "mem.db"))
+    try:
+        with pytest.raises(ValueError, match="unknown provider"):
+            mi.run_import(mem, source="cc", provider_name="nope", log=lambda *_: None)
+        assert not mi.STATE_PATH.exists() or str(session) not in \
+            json.loads(mi.STATE_PATH.read_text())
+    finally:
+        mem.close()
