@@ -158,6 +158,8 @@ def _meaningful_transcript(value) -> bool:
 
 
 _SPEECH_KINDS = frozenset({"speech", "capsule_speech"})
+# UI Automation types that hold focus without being an input (a game view, a canvas, a page body).
+_GENERIC_CONTAINERS = frozenset({"pane", "window", "document", "custom", "group"})
 # How long after Collie starts (or stops) speaking a transcript of its own cue is treated as the
 # microphone or loopback hearing Collie rather than a person.
 _PLAYBACK_ACTIVE_MS = 60_000
@@ -2544,6 +2546,9 @@ class LiveCopilotRuntime:
             return False
         elements = result.get("elements") or result.get("tree") or result.get("controls") or []
         labels = []
+        # The focused control belongs to this observation only; one from an earlier app or
+        # window must not be reported for this one.
+        self.focused_control = ""
         for item in elements:
             if not isinstance(item, dict):
                 continue
@@ -2554,8 +2559,9 @@ class LiveCopilotRuntime:
                 continue
             prefix = "focused " if item.get("focused") else ""
             labels.append(prefix + (control or "control") + (": " + name if name else ""))
-            if item.get("focused"):
-                # Interaction pulses use only the control type, never a field label/value.
+            if item.get("focused") and control.casefold() not in _GENERIC_CONTAINERS:
+                # Interaction pulses use only the control type, never a field label/value. A game
+                # or canvas keeps focus on a generic container, which says nothing about the input.
                 self.focused_control = control or "control"
             if len(labels) >= 10:
                 break

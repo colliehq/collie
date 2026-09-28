@@ -442,6 +442,51 @@ def test_input_observation_is_throttled_metadata_not_a_keylogger(tmp_path):
     assert len(store.snapshot()["events"]) == before
 
 
+@pytest.mark.parametrize("container", ["Pane", "Window", "Document", "Custom", "Group"])
+def test_a_focused_container_is_not_reported_as_the_focused_control(monkeypatch, tmp_path,
+                                                                    container):
+    from harness import native
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    class Source:
+        def idle_seconds(self):
+            return 0.01
+
+    monkeypatch.setattr(native, "tree", lambda **_kwargs: {
+        "ok": True, "elements": [{"type": container, "name": "Game canvas", "focused": True}]})
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=True, observe_input=True)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    runtime.activity_source = Source()
+    foreground = {"app": "dota2", "title": "Dota 2", "pid": 42, "hwnd": 9001}
+    now = int(time.time() * 1000)
+    runtime._observe_ui(store.snapshot(), now, foreground)
+    assert runtime.focused_control == ""
+    runtime._observe_input(store.snapshot(), now + 4_000, foreground)
+    row = store.snapshot()["events"][-1]
+    assert row["kind"] == "interaction" and "focused" not in row["text"]
+
+
+def test_the_focused_control_does_not_outlive_the_ui_it_came_from(monkeypatch, tmp_path):
+    from harness import native
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore
+
+    trees = [[{"type": "Edit", "name": "Search", "focused": True}],
+             [{"type": "Button", "name": "Play", "focused": False}]]
+    monkeypatch.setattr(native, "tree",
+                        lambda **_kwargs: {"ok": True, "elements": trees.pop(0)})
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, understand=False, observe_apps=False,
+                observe_ui=True, observe_input=False)
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {})
+    now = int(time.time() * 1000)
+    runtime._observe_ui(store.snapshot(), now, {"app": "chrome", "pid": 1, "hwnd": 2})
+    assert runtime.focused_control == "Edit"
+    runtime._observe_ui(store.snapshot(), now + 2_500, {"app": "spotify", "pid": 3, "hwnd": 4})
+    assert runtime.focused_control == ""
+
+
 def test_explicit_handoff_can_create_durable_mission(monkeypatch, tmp_path):
     from harness import missionweb
     from harness.live_copilot import LiveSessionStore
