@@ -10,7 +10,8 @@ through the same guards, and each one is a guard rather than an optimisation:
   name and no user name or password in it.  Nothing else is ever requested -- not the
   item links, not images, not a favicon.
 * **Only the public internet.**  Every address the host name resolves to must be a
-  public one (``is_global``; an IPv4 address carried inside IPv6 is checked as IPv4).
+  public one (``is_global``; an IPv4 address carried inside IPv6 is checked as IPv4,
+  and the deprecated ``::a.b.c.d`` and site-local ``fec0::/10`` forms are refused).
   The connection is then pinned to the address that was checked, so a second DNS
   answer cannot swap in a private address between the check and the connect.  TLS
   still names the original host and verifies its certificate.  Each redirect (at most
@@ -128,6 +129,10 @@ def feed_url(value):
                                     parts.query, ""))
 
 
+_V4_COMPATIBLE = ipaddress.ip_network("::/96")        # deprecated ::a.b.c.d
+_SITE_LOCAL = ipaddress.ip_network("fec0::/10")        # deprecated, still private
+
+
 def _public(address):
     """Is this resolved address somewhere on the public internet (never this network)?"""
     try:
@@ -135,6 +140,11 @@ def _public(address):
     except ValueError:
         return False
     if ip.version == 6:
+        # Python calls both of these global.  Neither is: ::a.b.c.d is IPv4 in the
+        # deprecated compatible form (::127.0.0.1 is loopback where a stack still
+        # routes it), and fec0::/10 is the deprecated site-local, a private range.
+        if ip in _V4_COMPATIBLE or ip in _SITE_LOCAL:
+            return False
         embedded = ip.ipv4_mapped or ip.sixtofour or (ip.teredo[1] if ip.teredo else None)
         if embedded is None and ip in ipaddress.ip_network("64:ff9b::/96"):
             embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)

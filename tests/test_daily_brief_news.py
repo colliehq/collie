@@ -166,13 +166,19 @@ def test_a_feed_address_is_normalised_not_rewritten():
 @pytest.mark.parametrize("answers", [
     "127.0.0.1", "10.0.0.8", "192.168.1.20", "172.16.4.4", "169.254.169.254", "100.64.0.9",
     "0.0.0.0", "::1", "fe80::1", "fc00::5", "::ffff:192.168.1.20", "64:ff9b::a00:1",
-    "2002:c0a8:0101::1", [PUBLIC, "127.0.0.1"], []])
+    "2002:c0a8:0101::1", "::127.0.0.1", "::169.254.169.254", "::10.0.0.1", "::8.8.8.8",
+    "fec0::1", "feff::1", [PUBLIC, "127.0.0.1"], []])
 def test_an_address_off_the_public_internet_is_refused_before_connecting(answers, feeds):
     resolve = resolver({"feeds.example.com": answers})
     with pytest.raises(news.NewsError):
         news.fetch_feed(FEED, resolve=resolve, connect=feeds.connect)
     assert resolve.asked == ["feeds.example.com"]
     assert feeds.connected == [] and feeds.requests == []
+
+
+def test_ordinary_public_addresses_still_pass():
+    for address in (PUBLIC, "8.8.8.8", "2606:4700::1111", "2a00:1450:4001::200e"):
+        assert news._public(address), address
 
 
 def test_an_unknown_host_is_a_plain_refusal(feeds):

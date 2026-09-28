@@ -201,7 +201,9 @@ What a fetch may do, each rule a guard:
   password. Never an item link, image or icon.
 * Connect only to the public internet. Every address the name resolves to must be
   `is_global` (IPv4 carried in IPv6 — mapped, 6to4, Teredo, NAT64 — is checked as
-  IPv4), and the socket is pinned to the checked address, so DNS rebinding cannot swap
+  IPv4; the deprecated IPv4-compatible `::/96` and site-local `fec0::/10`, which
+  Python calls global, are refused outright), and the socket is pinned to the checked
+  address, so DNS rebinding cannot swap
   one in between check and connect. TLS still names the original host (SNI) and
   verifies its certificate. Every redirect, at most four, is checked again from the
   start.
