@@ -149,8 +149,11 @@ Name: "wallpaper";   Description: "{cm:TaskWallpaper}"; Flags: unchecked
 Name: "bridge";      Description: "{cm:TaskBridge}"; Flags: unchecked
 
 [Files]
-; the self-contained runtime: embeddable CPython + collie + deps + engine source + extension
-Source: "payload\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
+; the self-contained runtime: embeddable CPython + collie + deps + engine source + extension.
+; build_payload.ps1 refuses a payload holding the bridge token, but anything run from the payload
+; after that check (a bridge, the verify step's own imports) can still write the token or bytecode
+; stamped with build-machine paths; the compiler itself leaves them out.
+Source: "payload\python\*"; DestDir: "{app}\python"; Excludes: "Lib\site-packages\harness\browser_ext\token.txt,Lib\site-packages\harness\browser_ext\auth.js,__pycache__\*,*.pyc"; Flags: recursesubdirs createallsubdirs ignoreversion
 ; tiny bootstrapper; installs the WebView2 runtime only if the machine lacks it
 Source: "payload\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 ; the full-bleed welcome splash — extracted to {tmp} and painted over the whole welcome page ([Code])
