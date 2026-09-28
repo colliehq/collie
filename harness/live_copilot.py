@@ -13,6 +13,7 @@ the mode's organizing concept.
 from __future__ import annotations
 
 import collections
+import difflib
 import hashlib
 import json
 import os
@@ -156,6 +157,45 @@ def _meaningful_transcript(value) -> bool:
     return not (words and all(word in _FILLER_WORDS for word in words))
 
 
+_SPEECH_KINDS = frozenset({"speech", "capsule_speech"})
+# How long after Collie starts (or stops) speaking a transcript of its own cue is treated as the
+# microphone or loopback hearing Collie rather than a person.
+_PLAYBACK_ACTIVE_MS = 60_000
+_PLAYBACK_TAIL_MS = 15_000
+
+
+def _speech_echo_key(value) -> str:
+    """Normalize speech for conservative duplicate detection: letters and digits only."""
+    return "".join(char for char in str(value or "").casefold() if char.isalnum())
+
+
+def _speech_echo_match(left, right, *, allow_fragment=False) -> bool:
+    """Match only substantial near-verbatim speech; semantic similarity is unsafe here.
+
+    ``allow_fragment`` accepts a piece of a longer utterance (a microphone chunk that caught part
+    of Collie's spoken cue): at least 90% of the shorter text must appear, in order, in runs of
+    four or more characters of the longer one.
+    """
+    first, second = _speech_echo_key(left), _speech_echo_key(right)
+    shortest, longest = sorted((first, second), key=len)
+    if len(shortest) < 8:
+        return False
+    if shortest == longest:
+        return True
+    if allow_fragment and len(shortest) >= 16:
+        matcher = difflib.SequenceMatcher(None, shortest, longest, autojunk=False)
+        covered = sum(block.size for block in matcher.get_matching_blocks() if block.size >= 4)
+        return covered / len(shortest) >= 0.9
+    if len(longest) > max(18, len(shortest) * 2.2):
+        return False
+    length_ratio = len(shortest) / len(longest)
+    if shortest in longest:
+        return length_ratio >= 0.78
+    if length_ratio < 0.72:
+        return False
+    return difflib.SequenceMatcher(None, first, second, autojunk=False).ratio() >= 0.91
+
+
 def _explicit_stop_intent(value) -> bool:
     """Recognize a short, direct request to end Live without guessing from long speech."""
     text = str(value or "").strip().casefold()
@@ -250,6 +290,8 @@ def _default_state() -> dict:
         "notes": [],
         "board": None,
         "pending_diagram": None,
+        "voice_playback": {"active": False, "cue_id": "", "started_at_ms": 0,
+                           "ended_at_ms": 0},
         "avatar": {"active": False, "mode": "simulation", "provider": "local",
                    "conversation_id": "", "started_at_ms": 0, "ended_at_ms": 0,
                    "script": "", "disclosure": "AI rehearsal — not a real interview participant"},
@@ -883,6 +925,8 @@ class LiveSessionStore:
             "board": board or None,
             "pending_diagram": value.get("pending_diagram"),
             "avatar": dict(value.get("avatar") or {}) or None,
+            "voice_playback": {**_default_state()["voice_playback"],
+                               **dict(value.get("voice_playback") or {})},
             "audio": audio,
             "analysis": analysis,
             "capabilities": capabilities(),
@@ -933,6 +977,12 @@ class LiveSessionStore:
                 raise LiveCopilotError("live event belongs to a different session")
             events = value.get("events") or []
             previous = events[-1] if events else None
+            if row["kind"] in _SPEECH_KINDS and source in {"you", "other"}:
+                echo = self._speech_echo(value, row, now)
+                if echo is not None:
+                    return echo
+                events = value.get("events") or []
+                previous = events[-1] if events else None
             if (previous and row["kind"] in {"window", "interface", "interaction"} and
                     all(previous.get(key) == row.get(key)
                         for key in ("kind", "app", "title", "text")) and
@@ -958,6 +1008,104 @@ class LiveSessionStore:
                               stopped_from="live_event")
             self._write(value)
         return row
+
+    def _speech_echo(self, value: dict, row: dict, now: int):
+        """Resolve speech that is Collie's own voice or a second copy of one utterance.
+
+        Runs inside ``add_event``'s transaction. Returns the response for a transcript that must
+        not become a new event (and has already written the state), or None to append ``row``;
+        in that case ``value["events"]`` may have lost a less-attributed earlier copy.
+        """
+        source, text = row["source"], row["text"]
+        playback = {**_default_state()["voice_playback"], **dict(value.get("voice_playback") or {})}
+        started = int(playback.get("started_at_ms") or 0)
+        ended = int(playback.get("ended_at_ms") or 0)
+        recent = ((playback.get("active") and 0 <= now - started <= _PLAYBACK_ACTIVE_MS) or
+                  (not playback.get("active") and ended and 0 <= now - ended <= _PLAYBACK_TAIL_MS))
+        cue = next((item for item in reversed(value.get("suggestions") or [])
+                    if item.get("id") == playback.get("cue_id")), None)
+        if recent and cue and _speech_echo_match(text, cue.get("text"), allow_fragment=True):
+            value["audit"] = (value.get("audit") or [])[-79:] + [{
+                "at_ms": now, "action": "speech_echo_suppressed",
+                "detail": "source=%s reason=recent_collie_voice cue_id=%s" %
+                          (source, _text(playback.get("cue_id"), 96))}]
+            self._write(value)
+            return {**row, "ignored": True, "reason": "recent_collie_voice"}
+
+        # One loudspeaker utterance can reach both the system-audio capture and the microphone.
+        # Look past incidental UI events, only inside a tight window, and only for substantial
+        # near-verbatim text.
+        events = value.get("events") or []
+        match = None
+        for candidate in reversed(events[-16:]):
+            age = now - int(candidate.get("received_at_ms") or 0)
+            if age < 0:
+                continue
+            if age > 12_000:
+                break
+            if (candidate.get("kind") not in _SPEECH_KINDS or
+                    candidate.get("source") not in {"you", "other"}):
+                continue
+            exact = _speech_echo_key(candidate.get("text")) == _speech_echo_key(text)
+            if age <= (12_000 if exact else 5_000) and _speech_echo_match(candidate.get("text"), text):
+                match = candidate
+                break
+        if match is None:
+            return None
+        if match.get("source") == source and _speech_echo_key(match.get("text")) == \
+                _speech_echo_key(text):
+            # The same person's same words twice: keep one event, but move it to the end so a
+            # repeated phrase still marks where the conversation is now.
+            repeated = dict(match)
+            repeated["last_seen_at_ms"] = now
+            repeated["repeat_count"] = int(repeated.get("repeat_count") or 1) + 1
+            value["events"] = [item for item in events
+                               if item.get("id") != match.get("id")] + [repeated]
+            value["audit"] = (value.get("audit") or [])[-79:] + [{
+                "at_ms": now, "action": "speech_duplicate_coalesced",
+                "detail": "source=%s canonical_event_id=%s" % (source, _text(match.get("id"), 96))}]
+            self._write(value)
+            return repeated
+        if match.get("source") == "other" and source == "you":
+            value["audit"] = (value.get("audit") or [])[-79:] + [{
+                "at_ms": now, "action": "speech_echo_suppressed",
+                "detail": "source=you reason=system_audio_duplicate canonical_event_id=%s" %
+                          _text(match.get("id"), 96)}]
+            self._write(value)
+            return {**row, "ignored": True, "reason": "system_audio_duplicate",
+                    "duplicate_of": match.get("id")}
+        if match.get("source") == "you" and source == "other":
+            # The microphone copy arrived first. Replace it with this better-attributed copy.
+            value["events"] = [item for item in events if item.get("id") != match.get("id")]
+            value["audit"] = (value.get("audit") or [])[-79:] + [{
+                "at_ms": now, "action": "speech_echo_reattributed",
+                "detail": "from=you to=other replaced_event_id=%s" % _text(match.get("id"), 96)}]
+        return None
+
+    def set_voice_playback(self, *, session_id, cue_id, speaking) -> dict:
+        """Record when Collie's voice is playing a cue, so hearing it back is not conversation."""
+        if type(speaking) is not bool:
+            raise LiveCopilotError("voice playback state must be a boolean")
+        session_id, cue_id = str(session_id or ""), _text(cue_id, 96)
+        now = _now_ms()
+        with self._transaction():
+            value = self._read()
+            if not value.get("active") or value.get("session_id") != session_id:
+                raise LiveCopilotError("voice playback belongs to a different live session")
+            current = {**_default_state()["voice_playback"],
+                       **dict(value.get("voice_playback") or {})}
+            if speaking:
+                if not cue_id or not any(item.get("id") == cue_id
+                                         for item in value.get("suggestions") or []):
+                    raise LiveCopilotError("voice playback cue is no longer available")
+                current = {"active": True, "cue_id": cue_id, "started_at_ms": now,
+                           "ended_at_ms": 0}
+            elif not cue_id or cue_id == current.get("cue_id"):
+                current["active"] = False
+                current["ended_at_ms"] = now
+            value["voice_playback"] = current
+            self._write(value)
+        return dict(current)
 
     def set_avatar(self, value: dict) -> dict:
         with self._transaction():

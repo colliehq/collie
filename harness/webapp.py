@@ -3913,6 +3913,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": str(exc)}, 409)
             live_paths = {
                 "/api/live-copilot/start", "/api/live-copilot/stop",
+                "/api/live-copilot/voice-state",
                 "/api/live-copilot/permissions", "/api/live-copilot/event", "/api/live-copilot/note",
                 "/api/live-copilot/work", "/api/live-copilot/dismiss",
                 "/api/live-copilot/handoff", "/api/live-copilot/handoff/resolve",
@@ -3981,6 +3982,11 @@ class Handler(BaseHTTPRequestHandler):
                             board_edit=(body.get("board_edit")
                                         if "board_edit" in body else None),
                             consent=(body.get("consent") if "consent" in body else None)))
+                    if path.endswith("/voice-state"):
+                        return self._send_json(store.set_voice_playback(
+                            session_id=body.get("session_id") or "",
+                            cue_id=body.get("cue_id") or "",
+                            speaking=body.get("speaking")))
                     if path.endswith("/note"):
                         return self._send_json(store.add_note(
                             text=body.get("text"), kind=body.get("kind") or "note",

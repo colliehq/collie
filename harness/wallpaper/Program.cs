@@ -762,12 +762,26 @@ class CollieWallpaper : Form
         try { engine.Dispose(); } catch { }
     }
 
+    // The Live session and cue the native voice is speaking right now. The page reports their end
+    // to the server, which then knows a transcript of that cue is Collie hearing itself.
+    static string _liveVoiceSession = "", _liveVoiceCue = "";
+
+    static void PostLiveVoiceEnded(string session, string cue)
+    {
+        PostMain("{\"type\":\"live-native-voice-state\",\"session\":" + JsonString(session) +
+                 ",\"cue_id\":" + JsonString(cue) + ",\"speaking\":false}");
+    }
+
     static void StopLiveVoice()
     {
         _liveVoiceGeneration++;
         SpeechSynthesizer voice = _liveVoice;
+        bool wasSpeaking = _liveVoiceSpeaking;
+        string session = _liveVoiceSession, cue = _liveVoiceCue;
         _liveVoice = null;
         _liveVoiceSpeaking = false;
+        _liveVoiceSession = _liveVoiceCue = "";
+        if (wasSpeaking) PostLiveVoiceEnded(session, cue);
         if (voice == null) return;
         try { voice.SpeakAsyncCancelAll(); } catch { }
         try { voice.Dispose(); } catch { }
@@ -783,6 +797,8 @@ class CollieWallpaper : Form
         StopLiveSpeechEngine();
         StopLiveVoice();
         _liveVoiceSpeaking = true;
+        _liveVoiceSession = session;
+        _liveVoiceCue = cueId;
         int generation = ++_liveVoiceGeneration;
         SpeechSynthesizer voice = new SpeechSynthesizer();
         _liveVoice = voice;
@@ -801,6 +817,8 @@ class CollieWallpaper : Form
             if (generation != _liveVoiceGeneration) return;
             _liveVoice = null;
             _liveVoiceSpeaking = false;
+            _liveVoiceSession = _liveVoiceCue = "";
+            PostLiveVoiceEnded(session, cueId);
             ResumeLiveSpeech();
         };
         try { voice.SpeakAsync(text); }
@@ -809,7 +827,10 @@ class CollieWallpaper : Form
             try { voice.Dispose(); } catch { }
             if (generation == _liveVoiceGeneration)
             {
-                _liveVoice = null; _liveVoiceSpeaking = false; ResumeLiveSpeech();
+                _liveVoice = null; _liveVoiceSpeaking = false;
+                _liveVoiceSession = _liveVoiceCue = "";
+                PostLiveVoiceEnded(session, cueId);
+                ResumeLiveSpeech();
             }
         }
     }
@@ -991,6 +1012,9 @@ class CollieWallpaper : Form
 
     void OpenLiveCapsule(LiveTarget target, bool pushToTalk = false)
     {
+        // The capsule gesture is also a barge-in: cut Collie's current spoken cue before the
+        // microphone opens, so the capsule never records the tail of Collie's own voice.
+        StopLiveVoice();
         try
         {
             if (_capsuleForm != null && !_capsuleForm.IsDisposed)
