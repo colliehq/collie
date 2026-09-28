@@ -669,6 +669,56 @@ if hasattr(os, "register_at_fork"):  # POSIX only; Windows has no fork
     os.register_at_fork(after_in_child=_reset_live_after_fork)
 
 
+_EDITABLE_TYPES = frozenset({"edit", "textbox", "text box"})
+
+
+def _type_into_focused_field(text, *, hwnd, pid) -> str:
+    """Type ``text`` into the focused text field of window ``hwnd``, or refuse without typing.
+
+    The window is brought back, then one UI Automation read of the focused element (no walk over
+    the window, which took over a second and missed fields deep in browser pages) must show an
+    enabled, writable, non-password Edit inside that window. The foreground window and the
+    keyboard-focus window are read directly before that UIA read and again immediately before the
+    keys are sent; if either changed (a click, Alt+Tab, a notification taking focus), nothing is
+    typed. Returns the control type typed into.
+    """
+    from . import native, native_input
+    try:
+        brought = native_input.focus_window(hwnd=hwnd, pid=pid)
+    except Exception as exc:
+        brought = {"ok": False, "error": str(exc)}
+    if not brought.get("ok"):
+        raise LiveCopilotError("could not bring back the captured window")
+    time.sleep(.12)
+    before = native_input.keyboard_focus()
+    if int(before.get("foreground") or 0) != int(hwnd):
+        raise LiveCopilotError("the captured window is not in front any more; nothing was typed")
+    try:
+        read = native.focused()
+    except Exception as exc:
+        read = {"ok": False, "error": str(exc)}
+    element = (read.get("element") or {}) if isinstance(read, dict) and read.get("ok") else {}
+    control = str(element.get("type") or "").strip()
+    owner = int(element.get("top_hwnd") or 0)
+    same_window = owner == int(hwnd) if owner else int(element.get("pid") or 0) == int(pid)
+    if (control.casefold() not in _EDITABLE_TYPES or element.get("enabled") is False or
+            element.get("focused") is False or not same_window):
+        raise LiveCopilotError(
+            "the captured window has no focused editable field; click into a text field first")
+    if element.get("password"):
+        raise LiveCopilotError("the focused field is a password field; Collie does not dictate "
+                               "into it")
+    if element.get("readonly"):
+        raise LiveCopilotError("the focused field is read-only; nothing was typed")
+    # The last check, immediately before the keys: focus has not moved since the read above.
+    if native_input.keyboard_focus() != before:
+        raise LiveCopilotError("focus moved while Collie was checking the field; nothing was typed")
+    typed = native_input.type_text(text)
+    if not typed.get("ok"):
+        raise LiveCopilotError(str(typed.get("error") or "dictation could not be inserted"))
+    return control or "Edit"
+
+
 class LiveSessionStore:
     def __init__(self, root=None):
         root = os.path.abspath(os.path.expanduser(root or _state_root()))
@@ -1969,52 +2019,64 @@ class LiveSessionStore:
         text = str(text or "").replace("\x00", "")[:4_000]
         if not text.strip():
             raise LiveCopilotError("dictation text is required")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        token = os.urandom(12).hex()
         with self._transaction():
             value = self._read()
             handoff = dict(value.get("handoff") or {})
             if not value.get("active"):
                 raise LiveCopilotError("start Live Copilot before using dictation")
-            if (not handoff or not handoff.get("pending") or
-                    handoff.get("id") != str(handoff_id or "")):
+            if not handoff or handoff.get("id") != str(handoff_id or ""):
+                raise LiveCopilotError("the captured dictation target is no longer current")
+            # One dictation per captured target. The claim is taken before anything is typed, so a
+            # second request (a retry after a dropped connection) can never type the text again.
+            claim = dict(handoff.get("dictation") or {})
+            if claim.get("state") == "done":
+                if claim.get("digest") == digest:
+                    return {**dict(claim.get("result") or {}), "repeated": True}
+                raise LiveCopilotError("the captured dictation target was already used")
+            if claim.get("state") == "typing":
+                raise LiveCopilotError("dictation is already being typed into this target")
+            if not handoff.get("pending"):
                 raise LiveCopilotError("the captured dictation target is no longer current")
             session_id = value.get("session_id")
             hwnd, pid = int(handoff.get("hwnd") or 0), int(handoff.get("pid") or 0)
             title, app = _text(handoff.get("title"), 300), _text(handoff.get("app"), 80)
-        if not hwnd:
-            raise LiveCopilotError("the captured target has no writable window")
+            if not hwnd:
+                raise LiveCopilotError("the captured target has no writable window")
+            handoff["dictation"] = {"state": "typing", "token": token, "digest": digest,
+                                    "at_ms": _now_ms()}
+            value["handoff"] = handoff
+            self._write(value)
 
-        from . import native, native_input
         try:
-            focused_window = native_input.focus_window(hwnd=hwnd, pid=pid)
-        except Exception as exc:
-            focused_window = {"ok": False, "error": str(exc)}
-        if not focused_window.get("ok"):
-            raise LiveCopilotError("could not bring back the captured window")
-        time.sleep(.12)
-        try:
-            snapshot = native.tree(hwnd=hwnd, pid=pid, max=160)
-        except Exception:
-            snapshot = {}
-        elements = (snapshot.get("elements") or []) if isinstance(snapshot, dict) else []
-        editable = next((item for item in elements if isinstance(item, dict) and
-                         item.get("focused") and item.get("enabled") is not False and
-                         str(item.get("type") or "").strip().casefold()
-                         in {"edit", "textbox", "text box"}), None)
-        if not editable:
-            raise LiveCopilotError(
-                "the captured window has no focused editable field; click into a text field first")
-        typed = native_input.type_text(text)
-        if not typed.get("ok"):
-            raise LiveCopilotError(str(typed.get("error") or "dictation could not be inserted"))
+            control = _type_into_focused_field(text, hwnd=hwnd, pid=pid)
+        except BaseException:
+            # Nothing was typed: give the target back, so the person can click into a field and
+            # dictate again.
+            with self._transaction():
+                current = self._read()
+                current_handoff = dict(current.get("handoff") or {})
+                if (current_handoff.get("id") == handoff.get("id") and
+                        (current_handoff.get("dictation") or {}).get("token") == token):
+                    current_handoff.pop("dictation", None)
+                    current["handoff"] = current_handoff
+                    self._write(current)
+            raise
 
+        result = {"ok": True, "inserted": len(text), "target": app or title,
+                  "control": control, "submitted": False}
         with self._transaction():
             current = self._read()
             current_handoff = dict(current.get("handoff") or {})
             if (not current.get("active") or current.get("session_id") != session_id or
-                    current_handoff.get("id") != handoff.get("id")):
+                    current_handoff.get("id") != handoff.get("id") or
+                    (current_handoff.get("dictation") or {}).get("token") != token):
                 raise LiveCopilotError("the Live session changed while dictation was typed")
             now = _now_ms()
-            current_handoff.update({"pending": False, "resolved_at_ms": now})
+            current_handoff.update({"pending": False, "resolved_at_ms": now,
+                                    "dictation": {"state": "done", "token": token,
+                                                  "digest": digest, "result": result}})
             current["handoff"] = current_handoff
             current["events"] = (current.get("events") or [])[-(MAX_EVENTS - 1):] + [{
                 "id": "evt-" + os.urandom(8).hex(), "at_ms": now, "received_at_ms": now,
@@ -2022,8 +2084,7 @@ class LiveSessionStore:
                 "title": title, "text": _text(text, 4_000)}]
             current["last_meaningful_at_ms"] = now
             self._write(current)
-        return {"ok": True, "inserted": len(text), "target": app or title,
-                "control": editable.get("type") or "Edit", "submitted": False}
+        return result
 
     def classify_capsule_intent(self, *, text="", handoff_id="", timeout_s=8.0) -> dict:
         """Ask the model whether capsule speech is a command, dictation, or unclear.

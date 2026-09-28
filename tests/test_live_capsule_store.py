@@ -318,24 +318,55 @@ def test_audio_preview_http_route(tmp_path, monkeypatch):
 
 @pytest.fixture
 def desktop(monkeypatch):
-    """A fake captured window: what has focus in it, and what gets typed."""
+    """A fake captured window 9001 (pid 42): what has focus, and what gets typed.
+
+    Everything that would touch the real desktop is replaced, including the old whole-window
+    UIA walk (native.tree), so no test here can read, focus or type into a real window.
+    """
     from harness import native, native_input
-    state = {"elements": [{"type": "Edit", "name": "Prompt", "focused": True, "enabled": True}],
-             "focused": [], "typed": [], "focus_ok": True}
-    monkeypatch.setattr(native, "tree", lambda **_kwargs: {"ok": True,
-                                                            "elements": state["elements"]})
+    edit = {"type": "Edit", "enabled": True, "focused": True, "password": False,
+            "readonly": False, "pid": 42, "top_hwnd": 9001}
+    state = {"element": dict(edit), "foreground": 9001, "focus_hwnd": 555,
+             "move_focus_during_read": False, "focused": [], "typed": [], "focus_ok": True,
+             "tree_calls": 0, "uia_reads": 0, "type_gate": None}
+
+    def tree(**kwargs):
+        state["tree_calls"] += 1
+        element = dict(state["element"], name="Field")
+        in_window = element.get("top_hwnd") in (None, kwargs.get("hwnd"))
+        return {"ok": True, "elements": [element] if in_window else []}
+
+    def focused():
+        state["uia_reads"] += 1
+        if state["move_focus_during_read"]:
+            state["focus_hwnd"] = 777           # a toast or a click took focus meanwhile
+        return {"ok": True, "element": dict(state["element"])}
+
+    def type_text(text):
+        if state["type_gate"] is not None:
+            state["type_gate"]()
+        state["typed"].append(text)
+        return {"ok": True}
+
+    monkeypatch.setattr(native, "tree", tree)
+    monkeypatch.setattr(native, "focused", focused, raising=False)
+    monkeypatch.setattr(native_input, "keyboard_focus", lambda: {
+        "foreground": state["foreground"], "focus": state["focus_hwnd"]}, raising=False)
     monkeypatch.setattr(native_input, "focus_window", lambda **kwargs: state["focused"].append(
         kwargs) or {"ok": state["focus_ok"]})
-    monkeypatch.setattr(native_input, "type_text",
-                        lambda text: state["typed"].append(text) or {"ok": True})
+    monkeypatch.setattr(native_input, "type_text", type_text)
     monkeypatch.setattr(native_input, "press", lambda *a, **k: pytest.fail("pressed a key"))
     return state
 
 
-def test_dictation_types_only_into_the_captured_edit_and_never_submits(tmp_path, desktop):
+def _notes_target(tmp_path):
     store = live.LiveSessionStore(tmp_path)
     store.start(context="Notes", listen=False, consent=False, observe_ui=True)
-    handoff = store.request_handoff(app="chrome", title="Notes", pid=42, hwnd=9001)
+    return store, store.request_handoff(app="chrome", title="Notes", pid=42, hwnd=9001)
+
+
+def test_dictation_types_only_into_the_captured_edit_and_never_submits(tmp_path, desktop):
+    store, handoff = _notes_target(tmp_path)
 
     result = store.dictate(text="whole truth and although", handoff_id=handoff["id"])
 
@@ -348,20 +379,95 @@ def test_dictation_types_only_into_the_captured_edit_and_never_submits(tmp_path,
     assert after["events"][-1]["text"] == "whole truth and although"
 
 
-@pytest.mark.parametrize("elements", [
-    [{"type": "Pane", "name": "Excalidraw", "focused": True}],
-    [{"type": "Edit", "name": "Search", "focused": False}],
-    [{"type": "Edit", "name": "Locked", "focused": True, "enabled": False}],
+def test_dictation_reads_the_focused_element_once_instead_of_walking_the_window(tmp_path,
+                                                                               desktop):
+    store, handoff = _notes_target(tmp_path)
+    desktop["tree_calls"] = 0              # the handoff itself captured the window's labels
+    store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    assert desktop["uia_reads"] == 1 and desktop["tree_calls"] == 0
+
+
+@pytest.mark.parametrize("element", [
+    {"type": "Pane"},
+    {"focused": False},
+    {"enabled": False},
+    {"top_hwnd": 1234},                    # focus is in another window
+    {"top_hwnd": 0, "pid": 99},            # no window reported, and another process
 ])
-def test_dictation_refuses_a_target_without_a_focused_editable_field(tmp_path, desktop, elements):
-    desktop["elements"] = elements
-    store = live.LiveSessionStore(tmp_path)
-    store.start(context="Board", listen=False, consent=False, observe_ui=True)
-    handoff = store.request_handoff(app="chrome", title="Board", pid=42, hwnd=9001)
+def test_dictation_refuses_a_target_without_a_focused_editable_field(tmp_path, desktop, element):
+    desktop["element"].update(element)
+    store, handoff = _notes_target(tmp_path)
     with pytest.raises(live.LiveCopilotError, match="focused editable"):
         store.dictate(text="clear the board", handoff_id=handoff["id"])
     assert desktop["typed"] == []
     assert store.snapshot()["handoff"]["pending"] is True
+
+
+@pytest.mark.parametrize("element,reason", [({"password": True}, "password"),
+                                            ({"readonly": True}, "read-only")])
+def test_dictation_never_types_into_a_password_or_read_only_field(tmp_path, desktop, element,
+                                                                 reason):
+    desktop["element"].update(element)
+    store, handoff = _notes_target(tmp_path)
+    with pytest.raises(live.LiveCopilotError, match=reason):
+        store.dictate(text="hunter2", handoff_id=handoff["id"])
+    assert desktop["typed"] == []
+
+
+def test_dictation_refuses_when_the_captured_window_is_not_in_front(tmp_path, desktop):
+    desktop["foreground"] = 5555           # Windows refused, or something else came forward
+    store, handoff = _notes_target(tmp_path)
+    with pytest.raises(live.LiveCopilotError, match="not in front"):
+        store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    assert desktop["typed"] == []
+
+
+def test_dictation_refuses_when_focus_moves_during_the_check(tmp_path, desktop):
+    desktop["move_focus_during_read"] = True
+    store, handoff = _notes_target(tmp_path)
+    with pytest.raises(live.LiveCopilotError, match="focus moved"):
+        store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    assert desktop["typed"] == []
+
+
+def test_a_refused_dictation_can_be_tried_again(tmp_path, desktop):
+    desktop["element"]["type"] = "Pane"
+    store, handoff = _notes_target(tmp_path)
+    with pytest.raises(live.LiveCopilotError, match="focused editable"):
+        store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    desktop["element"]["type"] = "Edit"    # the person clicked into the field
+    store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    assert desktop["typed"] == ["ship it Friday"]
+
+
+def test_one_captured_target_is_dictated_into_once(tmp_path, desktop):
+    import threading
+    store, handoff = _notes_target(tmp_path)
+    typing, release = threading.Event(), threading.Event()
+
+    def slow():
+        typing.set()
+        assert release.wait(5)
+    desktop["type_gate"] = slow
+    first = {}
+    worker = threading.Thread(target=lambda: first.update(
+        result=store.dictate(text="ship it Friday", handoff_id=handoff["id"])))
+    worker.start()
+    assert typing.wait(5)
+    desktop["type_gate"] = None
+    # A second request while the first is typing (a retry after a dropped connection).
+    with pytest.raises(live.LiveCopilotError, match="already being typed"):
+        store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    release.set()
+    worker.join(5)
+    assert first["result"]["inserted"] == len("ship it Friday")
+    # The same request again after it finished gets the first answer; nothing is typed again.
+    again = store.dictate(text="ship it Friday", handoff_id=handoff["id"])
+    assert again["repeated"] is True and again["inserted"] == first["result"]["inserted"]
+    with pytest.raises(live.LiveCopilotError, match="already used"):
+        store.dictate(text="something else", handoff_id=handoff["id"])
+    assert desktop["typed"] == ["ship it Friday"]
+    assert [e["kind"] for e in store.snapshot()["events"]].count("dictation") == 1
 
 
 def test_dictation_needs_the_current_handoff_and_a_window(tmp_path, desktop):
@@ -459,6 +565,8 @@ def test_intent_and_dictate_http_routes_reach_the_store(tmp_path, monkeypatch, d
     store = live.LiveSessionStore(str(tmp_path))
     store.start(context="Notes", listen=False, consent=False, observe_ui=True)
     hand = store.request_handoff(app="notepad", title="notes.txt", pid=5, hwnd=77)
+    desktop["foreground"] = 77
+    desktop["element"].update(top_hwnd=77, pid=5)
     server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

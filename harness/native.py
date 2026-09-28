@@ -262,6 +262,31 @@ switch ($Action) {
     $out = @{ ok = $true; windows = $arr }
   }
   "foreground" { $out = @{ ok = $true; pid = (Fg-Info) } }
+  "focused" {
+    # One read of the element that has keyboard focus: no walk over the window's tree.
+    $e = $AE::FocusedElement
+    if (-not $e) { $out = @{ ok = $false; error = "nothing has keyboard focus" }; break }
+    $c = $e.Current
+    $ro = $null; $vp = $null
+    try {
+      if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+        $ro = ($vp -as [System.Windows.Automation.ValuePattern]).Current.IsReadOnly
+      }
+    } catch {}
+    $top = $e; $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    try {
+      for ($i = 0; $i -lt 64; $i++) {
+        $p = $walker.GetParent($top)
+        if (-not $p -or [System.Windows.Automation.Automation]::Compare($p, $root)) { break }
+        $top = $p
+      }
+    } catch {}
+    $out = @{ ok = $true; element = [ordered]@{
+      type = $c.ControlType.ProgrammaticName -replace "ControlType.",""
+      enabled = $c.IsEnabled; focused = $c.HasKeyboardFocus; password = $c.IsPassword
+      readonly = $ro; pid = $c.ProcessId; native_hwnd = [long]$c.NativeWindowHandle
+      top_hwnd = [long]$top.Current.NativeWindowHandle } }
+  }
   default {
     $win = Find-Window
     if (-not $win) { $out = @{ ok = $false; error = "window not found (match='$Match' pid=$PidArg)" }; break }
@@ -596,6 +621,15 @@ def _target(match="", pid=0, hwnd=0):
     if row:
         return row, ""
     return None, "window not found (match=%r pid=%s hwnd=%s)" % (match, pid, hwnd)
+
+
+def focused():
+    """The element that has keyboard focus now, read in one UI Automation call (no tree walk).
+
+    ``element`` has its type, enabled/password/read-only state, owning pid, and ``top_hwnd``, the
+    top-level window it belongs to. Read-only: nothing is focused, clicked or typed.
+    """
+    return _run("focused", timeout=10)
 
 
 def tree(match="", pid=0, hwnd=0, max=60):
