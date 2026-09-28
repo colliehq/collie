@@ -115,6 +115,8 @@ PAYLOAD_ENDPOINTS = {
     "meetings": "/api/meetings/schedule",
     "task_inbox": "/api/task-inbox/pending",
     "communications": "/api/channels",
+    # The person's own list, kept and edited on the brief page (daily_brief_todos).
+    "todos": "/api/brief/todos",
 }
 SOURCE_NAMES = tuple(PAYLOAD_ENDPOINTS)
 
@@ -122,6 +124,8 @@ TOP_LIMIT = 3
 AGENDA_LIMIT = 12
 LIST_LIMIT = 20
 MAX_ROWS = 200
+#: Every to-do is read, so the list store never holds more than this.
+TODO_LIMIT = 2000
 STALE_DAYS = 3
 TITLE_LIMIT = 140
 DETAIL_LIMIT = 200
@@ -170,19 +174,23 @@ _ID_RE = re.compile(r"[a-z_]+:[0-9a-f]{16}")
 #: These are the paths ``webapp.Handler`` actually serves.  Missions, Needs You, Today,
 #: sessions and the Library are *panes* of the single-page app at ``/``, not routes:
 #: a row that linked to ``/missions`` produced a 404, so they are reached the way the
-#: page itself reaches them, through ``/?mission=`` and ``/?session=``.
-_LOCAL_ROUTES = frozenset({"", "meetings", "communications", "studio", "ambient", "live"})
+#: page itself reaches them, through ``/?mission=`` and ``/?session=``.  A to-do lives on
+#: the brief page, which reads ``/brief?todo=``.
+_LOCAL_ROUTES = frozenset({"", "meetings", "communications", "studio", "ambient", "live",
+                           "brief"})
 _LOCAL_PATH_RE = re.compile(r"/[A-Za-z0-9._~/-]*(?:\?[A-Za-z0-9._~%=&+-]*)?")
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
-def _deep_link(param="", value=""):
-    """A link into the single-page app: ``/`` alone, or the pane the page understands."""
+def _deep_link(param="", value="", path="/"):
+    """A link into a page: ``path`` alone, or the pane the page understands."""
     native = _text(value, 80)
     if not param or not native:
-        return "/"
+        return path
     # `quote` leaves "." alone, and `safe_href` drops any link containing "..".  An id
     # with a dot in it would therefore silently lose its link, so encode those too.
-    return "/?%s=%s" % (param, urllib.parse.quote(native, safe="").replace(".", "%2E"))
+    return "%s?%s=%s" % (path, param,
+                         urllib.parse.quote(native, safe="").replace(".", "%2E"))
 
 
 class BriefError(ValueError):
@@ -879,6 +887,45 @@ def _communication_items(payload, window):
     return out, report
 
 
+def _todo_items(payload, window, today):
+    """The person's own list, under the rules every personal item already follows.
+
+    A to-do past its due date needs the person, and so does one due today -- the same
+    way an overdue or imminent reminder does.  One ticked off during this local day is
+    done today.  An undated to-do, or one due later, is not a claim on today: it stays
+    in the list on the brief page and out of the day, as an "upcoming" reminder does.
+
+    "Late" is decided against ``today``, the reader's local date, never UTC's.  The
+    title is the person's own sentence and is never translated; only the detail line
+    is ours.  Severity comes from the due date alone, so a to-do cannot outrank a
+    waiting decision or a failed run however it is worded.
+    """
+    day_start, day_end = window
+    out = []
+    for row in _rows(payload, "todos", TODO_LIMIT):
+        native = _text(row.get("id"), 80)
+        if not native:
+            continue
+        due = _text(row.get("due"), 10)
+        due = due if _DATE_RE.fullmatch(due) else ""
+        href = _deep_link("todo", native, path="/brief")
+        if row.get("done") is True:
+            finished = _stamp(row.get("done_at"))
+            if finished is not None and day_start <= finished < day_end:
+                out.append(_item("todo", native=native, source="todos", tone="done",
+                                 severity=9, title=row.get("title"), status="done",
+                                 when=finished, href=href, evidence={"due": due}))
+            continue
+        if not due or due > today:
+            continue
+        late = due < today
+        out.append(_item("todo", native=native, source="todos", severity=3 if late else 4,
+                         title=row.get("title"), status="overdue" if late else "due_today",
+                         detail="Past its due date." if late else "Due today.",
+                         generated=("detail",), href=href, evidence={"due": due}))
+    return out
+
+
 def _news_items(news):
     kept, dropped = [], 0
     for row in (news or [])[:MAX_ROWS]:
@@ -961,6 +1008,7 @@ def build(payloads, *, now=None, timezone="UTC", language="en", state_dir=None,
         notices.append("Ignored unknown source payloads: %s." % ", ".join(unknown[:5]))
 
     items, personal_block, comms_report = _collect(sources, (day_start, day_end))
+    items += _todo_items(sources["todos"]["payload"], (day_start, day_end), date_key)
     news_items, news_dropped = _news_items(news)
     if news_dropped:
         notices.append("%d news item(s) were dropped for missing a source or a safe link."
@@ -1254,10 +1302,14 @@ _GENERATED = {"zh": {
     "A reply was handed to the provider": "一条回复已交给服务商",
     "The service accepted it. Delivery is not confirmed.":
         "服务商已接收，但这不等于已送达。",
+    # the person's own to-dos (the title is theirs; only these details are ours)
+    "Past its due date.": "已过截止日期。",
+    "Due today.": "今天到期。",
     # the bare kind, used only when a row carried no words at all
     "approval": "待决定", "reminder": "提醒", "mission": "任务", "scheduler": "调度",
     "queued": "排队中", "run": "运行", "meeting": "会议", "event": "事项",
     "procedure": "流程", "message": "消息", "reply": "回复", "news": "新闻",
+    "todo": "待办",
 }}
 
 #: Notices about the communications source.  Each takes one count, and each says what
@@ -1442,6 +1494,7 @@ _SOURCE_LABELS = {
     "approvals": ("Needs you", "需要你"), "procedures": ("Routines", "习惯"),
     "runs": ("Runs", "运行"), "meetings": ("Calendar", "日历"),
     "task_inbox": ("Sessions", "会话"), "communications": ("Email & phone", "邮箱与电话"),
+    "todos": ("To-dos", "待办"),
 }
 
 

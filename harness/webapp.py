@@ -3834,6 +3834,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": str(exc)}, 400)
                 except Exception:
                     return self._send_json({"error": "Brief preferences could not be saved. Existing work was kept."}, 409)
+            if path == "/api/brief/todos":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import daily_brief_web
+                try:
+                    result = daily_brief_web.todo(_state_root(), body)
+                    # ok:False is another window's newer edit: nothing was written.
+                    return self._send_json(result, 409 if result.get("ok") is False else 200)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "The to-do could not be saved. Your list was kept as it was."}, 409)
             if path == "/api/brief/preferences":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

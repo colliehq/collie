@@ -25,6 +25,18 @@ conversation. It tells you how many session inboxes were not checked, and never
 assumes that the unread portion is clear. This does not change task scheduling or
 remove older work.
 
+## Your to-dos
+
+**Your to-dos** is a list you keep yourself, on this computer. Add a line and,
+if you like, a due date. A to-do that is late or due today also appears under
+**Needs you**; one you tick off today is listed as finished today. To-dos with a
+later date, or none, stay in the list without crowding your day. Hiding a to-do from
+the brief does not tick it off.
+
+If you edit the same to-do in two windows, the second save is refused and your
+words stay in the form: the list shows the other window's version, and saving again
+replaces it. Anything you type while a save is still on its way is kept.
+
 ## Receive a morning email
 
 1. Connect an email account in [Email & phone](communication-channels.md).
@@ -61,7 +73,8 @@ approve project work or external actions.
 
 The desktop and email share one brief snapshot, with English and Chinese display.
 The page supports a narrow browser; there is no standalone mobile app. The brief
-reads local calendar, task, approval and communication records. It does not yet
+reads local calendar, task, approval and communication records, and your own to-do
+list. It does not yet
 perform a full semantic review of a Gmail mailbox or fetch general news.
 
 Live email delivery requires a configured service account. The core brief remains
