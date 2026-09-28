@@ -4,7 +4,8 @@ The module had 10% line coverage: its parsers, chunking and the import driver ra
 What must hold: harness noise never becomes a fact, secrets are redacted before they are stored,
 every fact carries provenance that says where it came from, a session is imported once, and a
 session still being written is left alone. Logs are other programs' files: a damaged record is
-skipped and the rest of the session kept.
+skipped and the rest of the session kept, and only text that a distiller returned is ever
+stored as a fact.
 """
 import json
 import os
@@ -12,6 +13,7 @@ import time
 
 import pytest
 
+from harness import distill
 from harness import mem_import as mi
 from harness.memory import SqliteMemory
 
@@ -218,3 +220,32 @@ def test_a_one_chunk_budget_keeps_the_final_state_instead_of_crashing(monkeypatc
     assert mi.chunk_turns(turns, max_chunks=1) == ["U: Correction: use port 8787."]
     full = mi.chunk_turns(turns, max_chunks=0)
     assert mi.chunk_turns(turns, max_chunks=2) == [full[0], full[-1]]
+
+
+# -------------------------------------------------------------------------- distillers --
+@pytest.mark.parametrize("response,expected", [
+    ('["Keep the verified configuration", null, 7, {"speculation": true}, "", "  "]',
+     ["Keep the verified configuration"]),
+    ("Here are some facts without JSON.", []),
+    ('["None of the tests passed"]', ["None of the tests passed"]),
+])
+def test_the_chunk_extractor_returns_only_facts_that_are_text(monkeypatch, response, expected):
+    monkeypatch.setattr(distill, "_chat", lambda *args, **kwargs: response)
+    assert distill.ChunkExtractor("unused", "", "fixture")("conversation") == expected
+
+
+class _Answer:
+    def __init__(self, text):
+        self.model = "fixture"
+        self.text = text
+
+    def complete(self, *_args):
+        return self                      # the reply is itself the completion: .text, no stop_reason
+
+
+@pytest.mark.parametrize("reply,expected", [
+    ('["Relay runs on port 8799", null, 7, {"speculation": true}]', ["Relay runs on port 8799"]),
+    ('[null, 7, {"speculation": true}]', ["Verified fact"]),        # nothing usable: keep the list
+])
+def test_the_rolling_distiller_keeps_only_facts_that_are_text(reply, expected):
+    assert mi.RollingDistiller(_Answer(reply)).update(["Verified fact"], "excerpt") == expected

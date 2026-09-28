@@ -459,7 +459,9 @@ class RollingDistiller:
         out = (getattr(comp, "text", "") or "")
         try:
             arr = json.loads(out[out.find("["): out.rfind("]") + 1])
-            got = [str(x).strip() for x in arr if str(x).strip()][:cap]
+            # only strings are facts: str() turned a null, a number or an object in the
+            # array into the stored facts "None", "7" and "{'…': …}"
+            got = [x.strip() for x in arr if isinstance(x, str) and x.strip()][:cap]
             return got or notes            # an empty/failed round keeps prior state
         except Exception:
             return notes                   # parse failure must never lose accumulated facts
