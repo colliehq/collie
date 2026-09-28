@@ -110,6 +110,9 @@
   .wx{margin-top:1.2vh; font-size:clamp(14px,1.9vh,19px); color:var(--faint); display:flex; align-items:center; gap:10px; min-height:1.2em; font-weight:400;}
   .slot.tr .wx, .slot.br .wx{justify-content:flex-end;}
   .wx .ic{font-size:1.25em; display:inline-flex; align-items:center;} .wx .t{color:var(--mut); font-weight:600;}
+  .wx[data-state="loading"], .wx[data-state="unavailable"]{font-size:clamp(12px,1.5vh,15px);}
+  .wx[data-state="stale"] .ic, .wx[data-state="stale"] .t{opacity:.6;}
+  .wx .wx-age{font-size:.8em; white-space:nowrap;}
 
   /* animated weather icons (inline SVG + CSS) */
   .wxi{width:1.35em; height:1.35em; overflow:visible;}
@@ -384,13 +387,23 @@
     "Starting":"启动中","Restarting":"重启中","Not healthy":"状态异常","Restarts paused":"已暂停重启",
     "Disabled":"已停用","Stopped":"已停止","No heartbeat":"没有心跳","Heartbeat stale":"心跳已过期",
     "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"没有任何心跳记录",
-    "last known state: {s}":"最后已知状态：{s}","unrecognised worker state":"无法识别的工作进程状态"});
+    "last known state: {s}":"最后已知状态：{s}","unrecognised worker state":"无法识别的工作进程状态",
+    "Loading weather…":"正在获取天气…","Weather unavailable":"天气暂不可用","as of {t}":"截至 {t}",
+    "Current conditions":"当前天气","Last available conditions":"上次获取的天气",
+    "Clear":"晴","Mainly clear":"大致晴朗","Partly cloudy":"局部多云","Overcast":"阴","Fog":"雾",
+    "Drizzle":"毛毛雨","Rain":"雨","Heavy rain":"大雨","Freezing rain":"冻雨","Snow":"雪","Heavy snow":"大雪",
+    "Snow grains":"米雪","Showers":"阵雨","Violent showers":"强阵雨","Snow showers":"阵雪","Thunderstorm":"雷雨"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
     "Starting":"啟動中","Restarting":"重新啟動中","Not healthy":"狀態異常","Restarts paused":"已暫停重新啟動",
     "Disabled":"已停用","Stopped":"已停止","No heartbeat":"沒有心跳","Heartbeat stale":"心跳已過期",
     "heartbeat {n}s ago":"{n} 秒前的心跳","no heartbeat recorded":"沒有任何心跳記錄",
-    "last known state: {s}":"最後已知狀態：{s}","unrecognised worker state":"無法辨識的工作程序狀態"});
+    "last known state: {s}":"最後已知狀態：{s}","unrecognised worker state":"無法辨識的工作程序狀態",
+    "Loading weather…":"正在取得天氣…","Weather unavailable":"天氣暫時無法使用","as of {t}":"截至 {t}",
+    "Current conditions":"目前天氣","Last available conditions":"上次取得的天氣",
+    "Clear":"晴","Mainly clear":"大致晴朗","Partly cloudy":"局部多雲","Overcast":"陰","Fog":"霧",
+    "Drizzle":"毛毛雨","Rain":"雨","Heavy rain":"大雨","Freezing rain":"凍雨","Snow":"雪","Heavy snow":"大雪",
+    "Snow grains":"米雪","Showers":"陣雨","Violent showers":"強陣雨","Snow showers":"陣雪","Thunderstorm":"雷雨"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
   function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}
@@ -400,7 +413,7 @@
     document.querySelectorAll("[data-ops-aria]").forEach(function(node){node.setAttribute("aria-label",tOps(node.getAttribute("data-ops-aria")));});
     document.querySelectorAll("[data-ops-title]").forEach(function(node){node.title=tOps(node.getAttribute("data-ops-title"));});
     document.querySelectorAll("[data-ops-open-name]").forEach(function(node){var name=node.getAttribute("data-ops-open-name");node.setAttribute("aria-label",tOps("Open")+" "+(name||tOps("app")));});
-    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();if(opsPanelOpen)refreshAmbientActivity();
+    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();paintWeather();if(opsPanelOpen)refreshAmbientActivity();
   }
   function ambientName(){return String(OPS_IDENTITY.name||"Collie");}
   function paintIdentity(){
@@ -786,13 +799,19 @@
     var dd = $("wDate"); if (dd) { try { dd.textContent = d.toLocaleDateString(opsLocale(),{weekday:"long",month:"long",day:"numeric"}); } catch(e){ dd.textContent = d.getFullYear()+"-"+two(d.getMonth()+1)+"-"+two(d.getDate()); } }
   }
   setInterval(tick, 10000);
+  // A desktop coming back into view (unlock, wake, a window moved off it) shows the right time and
+  // asks for the weather at once, instead of waiting for timers the browser slowed while hidden.
+  document.addEventListener("visibilitychange", function(){ if (!document.hidden) { tick(); loadWeather(); } });
 
   var WX = {0:["☀️","Clear"],1:["🌤️","Mainly clear"],2:["⛅","Partly cloudy"],3:["☁️","Overcast"],45:["🌫️","Fog"],48:["🌫️","Fog"],51:["🌦️","Drizzle"],53:["🌦️","Drizzle"],55:["🌦️","Drizzle"],61:["🌧️","Rain"],63:["🌧️","Rain"],65:["🌧️","Heavy rain"],66:["🌧️","Freezing rain"],67:["🌧️","Freezing rain"],71:["🌨️","Snow"],73:["🌨️","Snow"],75:["🌨️","Heavy snow"],77:["🌨️","Snow grains"],80:["🌦️","Showers"],81:["🌦️","Showers"],82:["⛈️","Violent showers"],85:["🌨️","Snow showers"],86:["🌨️","Snow showers"],95:["⛈️","Thunderstorm"],96:["⛈️","Thunderstorm"],99:["⛈️","Thunderstorm"]};
   // animated weather icon (inline SVG). category from the open-meteo weather_code.
   var CLOUD = '<path class="cloud" d="M7 18h9.2a3.8 3.8 0 0 0 .5-7.57A5.3 5.3 0 0 0 6.2 9.7 3.6 3.6 0 0 0 7 18z" fill="#9aa6c4"/>';
-  function wxIcon(c){
-    var s = '<svg class="wxi" viewBox="0 0 24 24" fill="none">';
-    if (c === 0 || c === 1) {           // clear / mainly clear — spinning glowing sun
+  function wxIcon(c, isDay){
+    var s = '<svg class="wxi" viewBox="0 0 24 24" fill="none" aria-hidden="true">';
+    if (isDay === 0 && (c === 0 || c === 1 || c === 2)) {   // clear or partly cloudy at night — a moon
+      s += c === 2 ? '<path class="moon" d="M11.6 9.6A4.8 4.8 0 0 1 5.6 3.6a4.8 4.8 0 1 0 6 6z" fill="#a7b5de"/>' + CLOUD
+                   : '<path class="moon" d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z" fill="#a7b5de"/>';
+    } else if (c === 0 || c === 1) {    // clear / mainly clear — spinning glowing sun
       s += '<g class="sun" stroke="#f6c344" stroke-width="1.7" stroke-linecap="round">'+
         '<line x1="12" y1="1.5" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22.5"/>'+
         '<line x1="1.5" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22.5" y2="12"/>'+
@@ -827,21 +846,51 @@
   // Collie's server asks ipapi.co and Open-Meteo for every desktop window at once, keeps the answer
   // about 15 minutes and waits longer after each failure (harness/desktop_weather.py). The page
   // never contacts either service, so asking the server every minute costs nothing outside.
-  function loadWeather(){
-    var el = $("wWx"); if (!el) return;
+  var weatherData = null, weatherLoading = null;
+  function weatherOff(){
     // Off in desktop.json ("clock": {"weather": false}): then neither weather service is asked. The
     // server checks the same switch before it asks anyone, so this is not the only guard.
     var clock = curConfig && curConfig.widgets && curConfig.widgets.clock;
-    if (clock && clock.weather === false) { el.textContent = ""; return; }
-    fetch(authUrl("/api/desktop/weather"), {cache:"no-store"}).then(function(r){
+    return !!(clock && clock.weather === false);
+  }
+  function weatherAsOf(d){
+    var at = Number(d.fetched_at); if (!isFinite(at) || at <= 0) return "";
+    try { return tOps("as of {t}").replace("{t}", new Date(at * 1000).toLocaleTimeString(opsLocale(), {hour:"numeric", minute:"2-digit"})); }
+    catch(_) { return ""; }
+  }
+  // Four states, never old conditions dressed as current: loading (nothing yet), ready, stale (the
+  // latest refresh failed; the time says how old it is) and unavailable (nothing recent enough).
+  function paintWeather(){
+    var e = $("wWx"); if (!e) return;
+    var d = weatherData;
+    if (weatherOff() || (d && d.off)) { e.textContent = ""; e.removeAttribute("data-state"); e.removeAttribute("title"); return; }
+    if (!d || !d.ok || typeof d.temp_c !== "number" || !isFinite(d.temp_c)) {
+      e.setAttribute("data-state", d ? "unavailable" : "loading");
+      e.textContent = d ? tOps("Weather unavailable") : tOps("Loading weather…");
+      e.removeAttribute("title"); return;
+    }
+    var place = [tOps((WX[d.code] || ["", ""])[1]), d.city].filter(Boolean).join(" · ");
+    e.setAttribute("data-state", d.stale ? "stale" : "ready");
+    e.innerHTML = '<span class="ic">'+wxIcon(d.code, d.is_day)+'</span><span class="t">'+Math.round(d.temp_c)+'°</span><span class="wx-label">'+esc(place)+'</span>';
+    var asOf = d.stale ? weatherAsOf(d) : "";
+    if (asOf) { var age = document.createElement("span"); age.className = "wx-age"; age.textContent = asOf; e.appendChild(age); }
+    e.title = (d.stale ? tOps("Last available conditions") : tOps("Current conditions")) + " · Open-Meteo";
+  }
+  function loadWeather(){
+    if (!$("wWx")) return;
+    paintWeather();
+    if (weatherOff() || weatherLoading) return;
+    weatherLoading = fetch(authUrl("/api/desktop/weather"), {cache:"no-store"}).then(function(r){
       if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
     }).then(function(d){
-      var e = $("wWx"); if (!e) return;
-      if (!d || !d.ok) { e.textContent = ""; return; }
-      if (d.country_code === "CN") MUSIC_REGION = "CN";   // refine music source region
-      var w = WX[d.code] || ["",""];
-      e.innerHTML = '<span class="ic">'+wxIcon(d.code)+'</span><span class="t">'+Math.round(d.temp_c)+"°</span><span>"+esc(w[1]+(d.city?" · "+d.city:""))+"</span>";
-    }).catch(function(){});
+      weatherData = d && typeof d === "object" ? d : {ok:false};
+      if (weatherData.country_code === "CN") MUSIC_REGION = "CN";   // refine music source region
+    }).catch(function(){
+      // Collie's server did not answer. Keep what it last said while that is under an hour old,
+      // marked stale; after that say it is unavailable.
+      var d = weatherData, recent = d && d.ok && Date.now() / 1000 - Number(d.fetched_at) < 3600;
+      weatherData = recent ? Object.assign({}, d, {stale:true}) : {ok:false};
+    }).then(function(){ weatherLoading = null; paintWeather(); });
   }
   setInterval(loadWeather, 60*1000);
 
