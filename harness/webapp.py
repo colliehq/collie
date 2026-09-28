@@ -5777,7 +5777,9 @@ class Handler(BaseHTTPRequestHandler):
                              speed_caps["speed_tiers"] else "standard")
         try:
             decision = resolve_run_decision(
-                q, provider=prov, model=configured_model, effort=effort_request,
+                # A focused surface's framing (the capsule's target and safety wording) is model
+                # context; its length and words are not the task. Route by the person's words.
+                authority_text or q, provider=prov, model=configured_model, effort=effort_request,
                 speed=speed_request, route_kind=qs.get("route_kind", [""])[0],
                 intent=requested_opts["intent"], quality=requested_opts["quality"],
                 verification=requested_opts["verification"], workspace=workspace,
