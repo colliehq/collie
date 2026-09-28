@@ -251,7 +251,11 @@ class CollieWallpaper : Form
     static WebView2 _capsuleWeb;
     static SpeechRecognitionEngine _capsuleSpeech;
     static bool _capsuleSpeechDelivered;
-    static bool _capsuleStopOnRelease;
+    // While the capsule records a command, the continuous Live recognizer is off: otherwise the same
+    // words arrive first as conversation, and hands-free dialogue answers the command aloud. The id
+    // lets the page end exactly the recording it was asked to make, never a newer one.
+    static bool _capsuleRecording;
+    static int _capsuleRecordingId;
     static bool _capsulePttMode, _capsulePttHeld;
     static CollieWallpaper _mainForm;
     static WebView2 _mainWeb;
@@ -762,12 +766,26 @@ class CollieWallpaper : Form
         try { engine.Dispose(); } catch { }
     }
 
+    // The Live session and cue the native voice is speaking right now. The page reports their end
+    // to the server, which then knows a transcript of that cue is Collie hearing itself.
+    static string _liveVoiceSession = "", _liveVoiceCue = "";
+
+    static void PostLiveVoiceEnded(string session, string cue)
+    {
+        PostMain("{\"type\":\"live-native-voice-state\",\"session\":" + JsonString(session) +
+                 ",\"cue_id\":" + JsonString(cue) + ",\"speaking\":false}");
+    }
+
     static void StopLiveVoice()
     {
         _liveVoiceGeneration++;
         SpeechSynthesizer voice = _liveVoice;
+        bool wasSpeaking = _liveVoiceSpeaking;
+        string session = _liveVoiceSession, cue = _liveVoiceCue;
         _liveVoice = null;
         _liveVoiceSpeaking = false;
+        _liveVoiceSession = _liveVoiceCue = "";
+        if (wasSpeaking) PostLiveVoiceEnded(session, cue);
         if (voice == null) return;
         try { voice.SpeakAsyncCancelAll(); } catch { }
         try { voice.Dispose(); } catch { }
@@ -783,6 +801,8 @@ class CollieWallpaper : Form
         StopLiveSpeechEngine();
         StopLiveVoice();
         _liveVoiceSpeaking = true;
+        _liveVoiceSession = session;
+        _liveVoiceCue = cueId;
         int generation = ++_liveVoiceGeneration;
         SpeechSynthesizer voice = new SpeechSynthesizer();
         _liveVoice = voice;
@@ -801,6 +821,8 @@ class CollieWallpaper : Form
             if (generation != _liveVoiceGeneration) return;
             _liveVoice = null;
             _liveVoiceSpeaking = false;
+            _liveVoiceSession = _liveVoiceCue = "";
+            PostLiveVoiceEnded(session, cueId);
             ResumeLiveSpeech();
         };
         try { voice.SpeakAsync(text); }
@@ -809,15 +831,18 @@ class CollieWallpaper : Form
             try { voice.Dispose(); } catch { }
             if (generation == _liveVoiceGeneration)
             {
-                _liveVoice = null; _liveVoiceSpeaking = false; ResumeLiveSpeech();
+                _liveVoice = null; _liveVoiceSpeaking = false;
+                _liveVoiceSession = _liveVoiceCue = "";
+                PostLiveVoiceEnded(session, cueId);
+                ResumeLiveSpeech();
             }
         }
     }
 
     static void ResumeLiveSpeech()
     {
-        if (!_liveSpeechWanted || _liveVoiceSpeaking || _capsuleSpeech != null || _liveSpeech != null ||
-            string.IsNullOrEmpty(_liveSpeechSession)) return;
+        if (!_liveSpeechWanted || _liveVoiceSpeaking || _capsuleRecording || _capsuleSpeech != null ||
+            _liveSpeech != null || string.IsNullOrEmpty(_liveSpeechSession)) return;
         string desiredKey = _liveSpeechSession + "\0" + _liveSpeechLanguage;
         if (_liveSpeechFailedFor == desiredKey) return;
         try
@@ -831,7 +856,13 @@ class CollieWallpaper : Form
             engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
             {
                 string spoken = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
-                if (spoken.Length == 0 || !_liveSpeechWanted || session != _liveSpeechSession) return;
+                // Windows dictation turns room noise into short, low-confidence English words
+                // ("the", "and it"). Drop the low-confidence ones here; a short word said with
+                // confidence ("stop", "yes", "cancel") is a command, and the server's filler filter
+                // (live_copilot._meaningful_transcript) drops what is only "the" or "uh".
+                float confidence = e.Result == null ? 0f : e.Result.Confidence;
+                if (spoken.Length == 0 || confidence < 0.55f ||
+                    !_liveSpeechWanted || session != _liveSpeechSession) return;
                 long at = (long)(DateTime.UtcNow - new DateTime(
                     1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
                 PostMain("{\"type\":\"live-native-transcript\",\"session\":" +
@@ -872,6 +903,25 @@ class CollieWallpaper : Form
         StopLiveSpeechEngine();
     }
 
+    static void BeginCapsuleRecording(bool pushToTalk)
+    {
+        _capsuleRecording = true;
+        int id = ++_capsuleRecordingId;
+        SuspendLiveSpeech();
+        PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
+                    (pushToTalk ? "true" : "false") + ",\"recording\":" +
+                    JsonString(id.ToString(CultureInfo.InvariantCulture)) + "}");
+    }
+
+    static void EndCapsuleRecording(string recording)
+    {
+        // A late message about an earlier recording must not end the one in progress.
+        if (recording != _capsuleRecordingId.ToString(CultureInfo.InvariantCulture)) return;
+        _capsuleRecording = false;
+        StopCapsuleSpeech();      // a finished Windows capsule recognizer, if one was used
+        ResumeLiveSpeech();
+    }
+
     static void PostCapsule(string json)
     {
         Form form = _capsuleForm;
@@ -901,7 +951,6 @@ class CollieWallpaper : Form
 
     static void FinishCapsuleSpeech()
     {
-        _capsuleStopOnRelease = true;
         SpeechRecognitionEngine engine = _capsuleSpeech;
         if (engine == null) return;
         // Stop (rather than Cancel) lets the recognizer deliver the phrase already spoken while
@@ -924,11 +973,15 @@ class CollieWallpaper : Form
         return language ?? first;
     }
 
-    static void StartCapsuleSpeech(string requestedLanguage)
+    // The page's recording generation, echoed on every message so the page can drop a result that
+    // belongs to an earlier recording. Local SenseVoice is not ready when the page asks for this:
+    // Windows speech recognition then hears the one capsule command.
+    static void StartCapsuleSpeech(string requestedLanguage, string generation)
     {
         StopCapsuleSpeech();
         SuspendLiveSpeech();
         _capsuleSpeechDelivered = false;
+        string tag = ",\"generation\":" + JsonString(generation ?? "");
         try
         {
             RecognizerInfo info = CapsuleRecognizer(requestedLanguage);
@@ -942,35 +995,36 @@ class CollieWallpaper : Form
             engine.EndSilenceTimeoutAmbiguous = TimeSpan.FromMilliseconds(1150);
             engine.SpeechHypothesized += delegate (object sender, SpeechHypothesizedEventArgs e)
             {
+                if (_capsuleSpeech != engine) return;
                 if (e.Result != null && !string.IsNullOrWhiteSpace(e.Result.Text))
                     PostCapsule("{\"type\":\"capsule-speech-partial\",\"text\":" +
-                                JsonString(e.Result.Text) + "}");
+                                JsonString(e.Result.Text) + tag + "}");
             };
             engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
             {
+                if (_capsuleSpeech != engine) return;
                 string text = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
                 if (text.Length == 0) return;
                 _capsuleSpeechDelivered = true;
                 PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":" +
-                            JsonString(text) + "}");
+                            JsonString(text) + tag + "}");
             };
             engine.RecognizeCompleted += delegate
             {
+                if (_capsuleSpeech != engine) return;
                 if (!_capsuleSpeechDelivered)
-                    PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":\"\"}");
+                    PostCapsule("{\"type\":\"capsule-speech-final\",\"text\":\"\"" + tag + "}");
             };
             engine.SetInputToDefaultAudioDevice();
             PostCapsule("{\"type\":\"capsule-speech-start\",\"language\":" +
-                        JsonString(info.Culture.Name) + "}");
+                        JsonString(info.Culture.Name) + tag + "}");
             engine.RecognizeAsync(RecognizeMode.Single);
-            if (_capsuleStopOnRelease) FinishCapsuleSpeech();
         }
         catch (Exception ex)
         {
             StopCapsuleSpeech();
-            ResumeLiveSpeech();
             PostCapsule("{\"type\":\"capsule-speech-error\",\"message\":" +
-                        JsonString("Local speech recognition unavailable: " + ex.Message) + "}");
+                        JsonString("Windows speech recognition unavailable: " + ex.Message) + tag + "}");
         }
     }
 
@@ -985,6 +1039,12 @@ class CollieWallpaper : Form
 
     void OpenLiveCapsule(LiveTarget target, bool pushToTalk = false)
     {
+        // The capsule gesture is also a barge-in: cut Collie's current spoken cue before the
+        // microphone opens, so the capsule never records the tail of Collie's own voice. The
+        // continuous recognizer stops too, until the page says this recording has ended.
+        StopLiveVoice();
+        _capsuleRecording = true;
+        SuspendLiveSpeech();
         try
         {
             if (_capsuleForm != null && !_capsuleForm.IsDisposed)
@@ -995,11 +1055,9 @@ class CollieWallpaper : Form
                 _capsulePttHeld = pushToTalk;
                 PostCapsuleTarget(target);
                 if (!pushToTalk || _capsulePttHeld)
-                    PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
-                                (pushToTalk ? "true" : "false") + "}");
+                    BeginCapsuleRecording(pushToTalk);
                 return;
             }
-            _capsuleStopOnRelease = false;
             _capsulePttMode = pushToTalk;
             _capsulePttHeld = pushToTalk;
             Form form = new Form();
@@ -1035,19 +1093,31 @@ class CollieWallpaper : Form
                 {
                     string raw = "";
                     try { raw = m.WebMessageAsJson ?? ""; } catch { }
-                    if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
+                    if (raw.IndexOf("capsule-recording-ended", StringComparison.Ordinal) >= 0)
+                        EndCapsuleRecording(JsonField(raw, "recording"));
+                    else if (raw.IndexOf("capsule-native-start", StringComparison.Ordinal) >= 0)
+                        StartCapsuleSpeech(JsonField(raw, "language"), JsonField(raw, "generation"));
+                    else if (raw.IndexOf("capsule-native-stop", StringComparison.Ordinal) >= 0)
+                        FinishCapsuleSpeech();
+                    else if (raw.IndexOf("capsule-native-cancel", StringComparison.Ordinal) >= 0)
+                        StopCapsuleSpeech();
+                    else if (raw.IndexOf("capsule-ready", StringComparison.Ordinal) >= 0)
                     {
                         PostCapsuleTarget(target);
                         if (!_capsulePttMode || _capsulePttHeld)
-                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
-                                        (_capsulePttMode ? "true" : "false") + "}");
+                            BeginCapsuleRecording(_capsulePttMode);
+                        else
+                        {
+                            // X2 was released before the page loaded: nothing will be recorded.
+                            _capsuleRecording = false;
+                            ResumeLiveSpeech();
+                        }
                     }
                     else if (raw.IndexOf("capsule-listen", StringComparison.Ordinal) >= 0 ||
                              raw.IndexOf("capsule-language", StringComparison.Ordinal) >= 0)
                     {
                         if (!_capsulePttMode || _capsulePttHeld)
-                            PostCapsule("{\"type\":\"capsule-record-start\",\"push_to_talk\":" +
-                                        (_capsulePttMode ? "true" : "false") + "}");
+                            BeginCapsuleRecording(_capsulePttMode);
                     }
                     else if (raw.IndexOf("capsule-open-main", StringComparison.Ordinal) >= 0)
                     {
@@ -1061,8 +1131,8 @@ class CollieWallpaper : Form
             };
             form.FormClosed += delegate
             {
-                _capsuleStopOnRelease = false;
                 _capsulePttMode = _capsulePttHeld = false;
+                _capsuleRecording = false;
                 StopCapsuleSpeech();
                 ResumeLiveSpeech();
                 try { web.Dispose(); } catch { }

@@ -21,6 +21,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 
 from . import plat
@@ -310,8 +311,10 @@ def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region, window, screen=0):
     MPEG-TS with a per-packet flush, so a hard kill on stop loses nothing.
 
     A single WINDOW is also the smooth path: it's far smaller than a 5120x1440 desktop, so it captures
-    at a real 30fps."""
-    args = [exe, "-hide_banner", "-y"]
+    at a real 30fps.
+
+    -n: ffmpeg refuses to write over an existing file instead of silently truncating it."""
+    args = [exe, "-hide_banner", "-n"]
     crop = "crop=trunc(iw/2)*2:trunc(ih/2)*2"
     if plat.is_macos():
         # avfoundation addresses inputs as "<video>:<audio>", one DEVICE per -i, so the screen, the
@@ -373,7 +376,7 @@ def _build_cmd(exe, out, fps, webcam, mic, sysaudio, region, window, screen=0):
 def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirror):
     """Turn the raw multi-stream .ts into a clean .mp4: composite the circular webcam bubble (if a cam
     was recorded) and mix mic+system audio. Returns the .mp4 path on success, else None."""
-    dst = src[:-3] + ".mp4" if src.lower().endswith(".ts") else src + ".mp4"
+    dst = _export_path(src)
     args = [_ffmpeg(), "-hide_banner", "-y", "-i", src]
     parts = []
     vmap = "0:v:0"
@@ -397,12 +400,55 @@ def _postprocess(src, webcam, has_mic, has_sys, cam_size, margin, position, mirr
         args += ["-c:v", "copy"]      # no bubble to composite — just remux the screen stream, instant
     if amap:
         args += ["-c:a", "aac", "-b:a", "160k"]
-    args += ["-movflags", "+faststart", dst]
+    # A failed ffmpeg run can leave a large but unplayable file. Write the new export beside the
+    # target and move it into place only when ffmpeg succeeded, so neither that partial file nor an
+    # older export is ever mistaken for this recording, and a good older export survives a failure.
     try:
-        subprocess.run(args, capture_output=True, **plat.no_window_kwargs())
+        fd, pending = tempfile.mkstemp(prefix=".collie-export-", suffix=".mp4",
+                                       dir=os.path.dirname(os.path.abspath(dst)))
+        os.close(fd)
+    except OSError:
+        return None
+    args += ["-movflags", "+faststart", pending]
+    try:
+        result = subprocess.run(args, capture_output=True, **plat.no_window_kwargs())
+        if result.returncode != 0 or os.path.getsize(pending) <= 1024:
+            return None
+        return _place_without_overwrite(pending, dst)
     except Exception:
         return None
-    return dst if (os.path.exists(dst) and os.path.getsize(dst) > 1024) else None
+    finally:
+        try:
+            os.remove(pending)
+        except OSError:
+            pass
+
+
+def _export_path(src):
+    return src[:-3] + ".mp4" if src.lower().endswith(".ts") else src + ".mp4"
+
+
+def _place_without_overwrite(pending, dst):
+    """Give the finished export its name without ever replacing an existing file.
+
+    ``dst`` if it is free, else ``name-1.mp4``, ``name-2.mp4``, ... A hard link claims a name
+    atomically (it fails if the name exists); where the file system has no hard links, the name is
+    checked and then moved to. The caller removes ``pending``.
+    """
+    stem, ext = os.path.splitext(dst)
+    for n in range(0, 1000):
+        candidate = dst if n == 0 else "%s-%d%s" % (stem, n, ext)
+        try:
+            os.link(pending, candidate)
+            return candidate
+        except FileExistsError:
+            continue
+        except OSError:
+            if os.path.lexists(candidate):
+                continue
+            os.replace(pending, candidate)
+            return candidate
+    return None
 
 
 def _load():
@@ -490,6 +536,12 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
 
     if out is None:
         out = os.path.join(_default_outdir(), time.strftime("collie-%Y%m%d-%H%M%S.ts"))
+    if os.path.lexists(out):
+        raise FileExistsError("recording output already exists; choose another path: %s" % out)
+    if os.path.lexists(_export_path(out)):
+        # stop() turns the raw capture into this .mp4; an earlier take already has that name.
+        raise FileExistsError("a recording is already saved as %s; choose another path"
+                              % _export_path(out))
 
     # a window source and a region are mutually exclusive; a chosen window wins.
     if window:
@@ -524,10 +576,8 @@ def start(webcam=None, mic=None, sysaudio=None, fps=30, cam_size=240, margin=40,
     if not started_ok:
         _kill(p.pid)
         _clear()
-        try:
-            os.remove(out)
-        except Exception:
-            pass
+        # Keep whatever was captured: it is evidence of what went wrong, and a file that appeared
+        # at this path after the existence check above may not even be ours to delete.
         hint = ""
         if plat.is_macos():
             # The overwhelmingly common cause on macOS, and one no ffmpeg log explains well: without
@@ -576,7 +626,11 @@ def stop(remux_mp4=True):
     # just wasted ~5s before the red dot cleared. Kill it outright; the .ts (per-packet flushed) holds
     # every captured frame regardless.
     _kill(pid)
-    _wait_gone(pid, 3)
+    if not _wait_gone(pid, 3):
+        # Still writing: exporting now would read a file ffmpeg is appending to, and forgetting the
+        # state would leave a recorder nobody can stop. Keep both and say so.
+        return ("could not stop recording (pid %s); recording state and raw output were kept.\n"
+                "  retry: collie record stop" % pid)
     _clear()
     dur = time.time() - st.get("started", time.time())
     sz = os.path.getsize(out) if (out and os.path.exists(out)) else 0

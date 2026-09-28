@@ -3074,6 +3074,11 @@
                                at_ms:Number(data.at_ms)||Date.now()})
         }).catch(function () {});
       }
+      if (data.type === "live-native-voice-state" && data.session) {
+        // The native voice finished or was cut off; hearing it back after this is only an echo.
+        postLiveVoiceState(String(data.session), String(data.cue_id || ""), !!data.speaking)
+          .catch(function () {});
+      }
       if (data.type === "live-native-speech-status" && !data.active && data.session && data.message) {
         fetch("/api/live-copilot/event?token=" + encodeURIComponent(CT), {
           method:"POST", headers:{"content-type":"application/json"},
@@ -10520,6 +10525,12 @@
   $("navLive").onclick = function () { openEmbeddedSurface("Live Copilot", "/live?embedded=1" +
     (NATIVE_SHELL ? "&native_shell=1" : ""), "live"); };
   var LIVE_SPOKEN_SESSION = "", LIVE_SPOKEN_CUES = {};
+  function postLiveVoiceState(session, cueId, speaking) {
+    return fetch("/api/live-copilot/voice-state?token=" + encodeURIComponent(CT), {
+      method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({session_id:session, cue_id:cueId, speaking:!!speaking})
+    }).then(function (response) { if (!response.ok) throw new Error("voice-state rejected"); });
+  }
   function dispatchLiveVoice(value) {
     if (!NATIVE_SHELL || !window.chrome || !window.chrome.webview ||
         !value || !value.active || !value.voice_dialogue) return;
@@ -10540,10 +10551,17 @@
     fresh.forEach(function (row) { LIVE_SPOKEN_CUES[row.id] = true; });
     var cue = fresh[0], spoken = String(cue.text || "").trim().slice(0, 260);
     if (!spoken) return;
-    try { window.chrome.webview.postMessage({
-      type:"live-native-speak", session:session, cue_id:String(cue.id || ""),
+    var cueId = String(cue.id || ""), payload = {
+      type:"live-native-speak", session:session, cue_id:cueId,
       text:spoken, language:document.documentElement.lang || navigator.language || "zh-CN"
-    }); } catch (e) {}
+    };
+    // Record that Collie is about to speak this cue first, so the microphone hearing it is
+    // recognized as Collie. A cue the server no longer has is not spoken.
+    postLiveVoiceState(session, cueId, true).then(function () {
+      try { window.chrome.webview.postMessage(payload); } catch (e) {
+        postLiveVoiceState(session, cueId, false).catch(function () {});
+      }
+    }).catch(function () {});
   }
   function syncLiveNav() {
     var dot = $("liveNavStatus"); if (!dot) return;

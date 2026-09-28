@@ -3,8 +3,8 @@
 Live Copilot is a top-level way to work with Collie, not a meeting or interview plug-in. During an
 explicit session, Collie maintains a small current-context model from the signals you enable:
 
-1. Collie's own first-party UI can capture microphone and meeting/system audio and retain transcript
-   text rather than audio chunks.
+1. Collie's own first-party UI can capture the microphone (microphone only: meeting and system
+   audio is not captured) and retains transcript text rather than audio chunks.
 2. Window awareness records foreground application names and window titles. Interface awareness
    adds a bounded set of accessibility control types and labels; labels may contain visible page or
    document text. Content-free activity pulses say that the user interacted and which control type
@@ -23,7 +23,29 @@ then opens only a small top-of-screen capsule. In the normal Windows app, holdin
 side button (X2) also opens the capsule; releasing it ends that recording. Capsule audio uses the
 configured Live transcription route. Local SenseVoice is preferred when its model, optional
 `speech` dependencies, and ffmpeg are available; otherwise check the speech destination shown in
-Live before enabling capture. Only recognized command text goes to the configured Collie model.
+Live before enabling capture. Collie ships no speech model: it reads `model.int8.onnx` and
+`tokens.txt` from `%LOCALAPPDATA%\Collie\models\sensevoice`, from `COLLIE_SENSEVOICE_MODEL_DIR`, or
+from an existing VocalCode install, and the Live page names whatever is missing. Recognition detects
+the spoken language automatically. Flat silence is never sent to the recognizer. If a Silero
+speech-detection model (MIT) is also present — `silero_vad.onnx` in that model folder, VocalCode's
+`models\speech-gate\silero-v5.onnx`, or the file named by `COLLIE_SPEECH_VAD_MODEL` — each clip must
+contain detected speech before it is transcribed, so background noise does not become stray words.
+Without it Live transcribes as before. Only recognized command text goes to the configured Collie model.
+When SenseVoice is not ready, the Windows app's capsule uses Windows speech recognition instead
+(the recognizer for the current keyboard input language, or the first one installed); anywhere else
+the capsule says which pieces are missing before it records, and typed commands still work. While
+the capsule records, the Windows app's continuous Live recognizer pauses, so a command is not also
+logged, or answered aloud, as conversation.
+A capsule command is exactly the text recognized from that capsule recording; if nothing
+recognizable came back, the capsule says so instead of using other nearby speech. If the connection
+to Collie drops while a command runs, the capsule asks Collie about that same task rather than
+starting it again, and it reconnects on its own after Collie restarts.
+For a spoken capsule command, Collie first makes one short call to the configured model to tell a
+command from dictation. Dictated text is typed into the text field that has focus in the captured
+window and is never submitted; if no text field there has focus, nothing is typed and the text stays
+in the capsule. Speech that is neither clearly a command nor clearly dictation stays in the capsule
+for you to confirm with Enter. If that check fails or takes longer than 8 seconds, the words run as a
+command. Typed capsule text is always a command.
 You can say “write what I just said here” or “finish this
 design module”; the generated task is explicitly targeted back to the prior window rather than the
 capsule. The exact recognized or typed command is the authenticated authority for that turn, so
@@ -48,10 +70,12 @@ before each write so authority cannot silently move to another page.
 
 Confirm that every participant agrees before enabling conversation capture. In the native Windows
 app the local microphone recognizer continues while the Live session is active, even when the Live
-page is closed; meeting/system audio still requires the operating system's visible share picker.
-In a browser, the UI requests microphone and system audio in one start flow. Each short audio chunk
-is deleted after the configured
-speech service returns text; it is never placed in the agent prompt. Transcript and derived state
+page is closed. In a browser, the Live page records the microphone in short chunks; each chunk is
+deleted after the configured speech service returns text, and it is never placed in the agent prompt.
+Neither captures meeting or system audio. If the Live page gets no answer from Collie three times in
+a row, it says the connection is interrupted, stops its own microphone capture, and disables its
+controls until Collie answers again; it then restarts that capture if the session is still
+listening. After Collie restarts, the page picks up the new session token by itself. Transcript and derived state
 stay under Collie's private local state directory, while text sent for speech/understanding follows
 the destinations disclosed in the UI.
 
@@ -71,7 +95,12 @@ and recovery boundaries.
 ## Review and export
 
 After stopping, the Live page keeps the last session's summary, cues, log, and background task
-records visible. Refreshing the page preserves this review. Live-only cue actions and board edits
+records visible. If that session had an attached board, starting again resumes: the new session
+keeps the board, notes, and background task records, while listening consent, board editing, and
+every other permission are granted afresh. Telling Collie the activity changed ("switch Live to the
+ComfyUI review") replaces the active session's context and clears the log, understanding, and cues
+derived from the old topic; speech still being transcribed from before the change is dropped. In a
+browser tab this also stops the page's microphone capture; turn listening off and on to continue. Refreshing the page preserves this review. Live-only cue actions and board edits
 are disabled for an ended session.
 
 Choose **Export Markdown** to save the starting context, AI-generated summary, notes, visible

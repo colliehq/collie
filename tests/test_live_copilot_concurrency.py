@@ -530,8 +530,8 @@ def test_revoking_listening_cancels_queued_capture_but_not_the_capsule(tmp_path,
     _idle(store)
     current = store.snapshot()
     assert queued.seen == ["capsule-00000001.webm"]
-    assert [row["text"] for row in current["events"] if row["kind"] == "speech"] == [
-        "held chunk", "queued transcript"]
+    assert [row["text"] for row in current["events"]
+            if row["kind"] == "capsule_speech"] == ["held chunk", "queued transcript"]
     assert current["audio"]["pending"] == 0
     assert _audio_files(tmp_path) == []
 
@@ -792,8 +792,8 @@ def test_a_capsule_chunk_survives_a_listen_toggle_but_never_a_stop(tmp_path, lim
     second.open.set()
     _idle(store)
     current = store.snapshot()
-    assert [row["text"] for row in current["events"] if row["kind"] == "speech"] == [
-        "push to talk speech"]
+    assert [row["text"] for row in current["events"]
+            if row["kind"] == "capsule_speech"] == ["push to talk speech"]
     assert current["audio"]["pending"] == 0
     assert _audio_files(tmp_path) == []
 
