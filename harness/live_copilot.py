@@ -404,7 +404,8 @@ class _AudioJob:
         if not self.store._begin_decode(self):
             return
         self.store._transcribe_audio(self.session_id, self.source, self.path,
-                                     self.mime, self.transcriber, self.epoch, self.nbytes)
+                                     self.mime, self.transcriber, self.epoch, self.nbytes,
+                                     seq=self.seq)
 
     def discard(self) -> None:
         """Delete audio this job will never decode.  The caller owns the pending count."""
@@ -1509,7 +1510,7 @@ class LiveSessionStore:
         return False
 
     def _transcribe_audio(self, session_id, source, path, mime, transcriber,
-                          epoch=0, nbytes=0) -> None:
+                          epoch=0, nbytes=0, *, seq=None) -> None:
         error, texts, dropped_filler = "", [], False
         try:
             if transcriber is None:
@@ -1563,12 +1564,29 @@ class LiveSessionStore:
             if not authorized:
                 return
             event_source = "you" if source in {"microphone", "capsule"} else "other"
+            # A capsule clip is one command, not conversation: it keeps its own event kind so the
+            # hands-free voice lane does not answer it, and its segments form one utterance.
+            event_kind = "capsule_speech" if source == "capsule" else "speech"
+            if source == "capsule" and texts:
+                texts = [("", " ".join(text for _speaker, text in texts))]
+            accepted = []
             for speaker, text in texts:
                 try:
-                    self.add_event(source=event_source, speaker=speaker, kind="speech", text=text,
-                                   session_id=session_id)
+                    row = self.add_event(source=event_source, speaker=speaker, kind=event_kind,
+                                         text=text, session_id=session_id)
                 except LiveCopilotError:
                     break
+                if not row.get("ignored"):
+                    accepted.append(row["text"])
+            if source == "capsule" and seq is not None:
+                # The receipt belongs to this exact clip, including silence, echo and errors.
+                # The capsule reads it by seq and never guesses from a nearby event's time.
+                current = self._read()
+                audio = dict(current.get("audio") or {})
+                audio["capsule_results"] = (audio.get("capsule_results") or [])[-31:] + [{
+                    "seq": int(seq), "text": " ".join(accepted), "error": error}]
+                current["audio"] = audio
+                self._write(current)
 
     def dismiss_suggestion(self, suggestion_id) -> dict:
         suggestion_id = str(suggestion_id or "")
