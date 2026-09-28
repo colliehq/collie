@@ -14,7 +14,7 @@ Opens Collie in a real desktop window (WebView2) with the full web GUI inside â€
 verification gate, diffs, and the star-map â€” instead of a browser tab. This is what the Start-menu
 and desktop shortcuts launch. It falls back to the browser GUI on non-Windows platforms.
 
-## Live star-map wallpaper
+## Live desktop wallpaper
 
 ```bash
 collie wallpaper --install     # behind your desktop icons, starts at logon

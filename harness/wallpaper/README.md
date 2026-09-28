@@ -1,7 +1,7 @@
 # collie desktop wallpaper engine (Windows)
 
-Renders collie's live code star-map as the desktop wallpaper (behind the icons) with a
-clickable/typable chat, driven by the local `collie web` server.
+Renders collie's live desktop as the wallpaper (behind the icons): a clock with the weather, music
+controls, an app dock and a clickable/typable chat, driven by the local `collie web` server.
 
 ## Use it (the easy way)
 
