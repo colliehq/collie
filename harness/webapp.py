@@ -1482,8 +1482,10 @@ class Handler(BaseHTTPRequestHandler):
         if REMOTE is None:
             return
         try:
-            REMOTE.notify("Collie needs your approval",
-                          ("%s — %s" % (item.tool, item.body))[:180],
+            # Bounded, but never silently: the card carries the whole proposal (every step of
+            # a script), and the notice says how much of it did not fit.
+            from .inbox import notice_text
+            REMOTE.notify("Collie needs your approval", notice_text(item),
                           session=sid, thread=sid)
         except Exception:
             pass                      # never fail a run over a notification
