@@ -203,3 +203,182 @@ def test_audio_preview_http_route(tmp_path, monkeypatch):
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=3)
     assert live.LiveSessionStore(str(tmp_path)).snapshot()["events"][-1]["kind"] == "session"
+
+
+# --- Command or dictation ------------------------------------------------------------------------
+
+@pytest.fixture
+def desktop(monkeypatch):
+    """A fake captured window: what has focus in it, and what gets typed."""
+    from harness import native, native_input
+    state = {"elements": [{"type": "Edit", "name": "Prompt", "focused": True, "enabled": True}],
+             "focused": [], "typed": [], "focus_ok": True}
+    monkeypatch.setattr(native, "tree", lambda **_kwargs: {"ok": True,
+                                                            "elements": state["elements"]})
+    monkeypatch.setattr(native_input, "focus_window", lambda **kwargs: state["focused"].append(
+        kwargs) or {"ok": state["focus_ok"]})
+    monkeypatch.setattr(native_input, "type_text",
+                        lambda text: state["typed"].append(text) or {"ok": True})
+    monkeypatch.setattr(native_input, "press", lambda *a, **k: pytest.fail("pressed a key"))
+    return state
+
+
+def test_dictation_types_only_into_the_captured_edit_and_never_submits(tmp_path, desktop):
+    store = live.LiveSessionStore(tmp_path)
+    store.start(context="Notes", listen=False, consent=False, observe_ui=True)
+    handoff = store.request_handoff(app="chrome", title="Notes", pid=42, hwnd=9001)
+
+    result = store.dictate(text="whole truth and although", handoff_id=handoff["id"])
+
+    assert desktop["focused"] == [{"hwnd": 9001, "pid": 42}]
+    assert desktop["typed"] == ["whole truth and although"]
+    assert result["submitted"] is False and result["control"] == "Edit"
+    after = store.snapshot()
+    assert after["handoff"]["pending"] is False
+    assert after["events"][-1]["kind"] == "dictation"
+    assert after["events"][-1]["text"] == "whole truth and although"
+
+
+@pytest.mark.parametrize("elements", [
+    [{"type": "Pane", "name": "Excalidraw", "focused": True}],
+    [{"type": "Edit", "name": "Search", "focused": False}],
+    [{"type": "Edit", "name": "Locked", "focused": True, "enabled": False}],
+])
+def test_dictation_refuses_a_target_without_a_focused_editable_field(tmp_path, desktop, elements):
+    desktop["elements"] = elements
+    store = live.LiveSessionStore(tmp_path)
+    store.start(context="Board", listen=False, consent=False, observe_ui=True)
+    handoff = store.request_handoff(app="chrome", title="Board", pid=42, hwnd=9001)
+    with pytest.raises(live.LiveCopilotError, match="focused editable"):
+        store.dictate(text="clear the board", handoff_id=handoff["id"])
+    assert desktop["typed"] == []
+    assert store.snapshot()["handoff"]["pending"] is True
+
+
+def test_dictation_needs_the_current_handoff_and_a_window(tmp_path, desktop):
+    store = live.LiveSessionStore(tmp_path)
+    store.start(context="Notes", listen=False, consent=False, observe_ui=True)
+    old = store.request_handoff(app="chrome", title="Notes", pid=42, hwnd=9001)
+    store.request_handoff(app="code", title="main.py", pid=43, hwnd=9002)
+    with pytest.raises(live.LiveCopilotError, match="no longer current"):
+        store.dictate(text="hello", handoff_id=old["id"])
+    windowless = store.request_handoff(app="code", title="", pid=0, hwnd=0)
+    with pytest.raises(live.LiveCopilotError, match="no writable window"):
+        store.dictate(text="hello", handoff_id=windowless["id"])
+    desktop["focus_ok"] = False
+    current = store.request_handoff(app="code", title="main.py", pid=43, hwnd=9002)
+    with pytest.raises(live.LiveCopilotError, match="could not bring back"):
+        store.dictate(text="hello", handoff_id=current["id"])
+    assert desktop["typed"] == []
+
+
+@pytest.mark.parametrize("mode,confidence,expected", [
+    ("dictation", 0.77, "clarify"), ("dictation", 0.91, "dictation"),
+    ("command", 0.77, "clarify"), ("command", 0.95, "command"),
+    ("clarify", 0.99, "clarify"), ("unknown", 0.99, "clarify"),
+])
+def test_model_routing_requires_clear_intent(monkeypatch, mode, confidence, expected):
+    import json
+    from types import SimpleNamespace
+    from harness import cancellation, providers, settings
+
+    monkeypatch.setattr(settings, "apply", lambda: None)
+    monkeypatch.setattr(settings, "get", lambda key, default=None: {
+        "PROVIDER": "fixture", "MODEL": "gpt-6-astra", "INTERACTIVE_SPEED": "fast",
+    }.get(key, default))
+    monkeypatch.setattr(providers, "provider_capabilities",
+                        lambda *_args, **_kwargs: {"speed_tiers": ["fast"]})
+    made = []
+    monkeypatch.setattr(providers, "make_provider",
+                        lambda *args, **kwargs: made.append((args, kwargs)) or object())
+    monkeypatch.setattr(cancellation, "complete", lambda *_args, **_kwargs: SimpleNamespace(
+        stop_reason="end_turn", error_detail="",
+        text=json.dumps({"mode": mode, "confidence": confidence, "reason": "context"})))
+
+    result = live.classify_capsule_payload({"utterance": "literal words"})
+
+    assert result["mode"] == expected and result["model"] == "gpt-6-astra"
+    assert made[0][1]["effort"] == "low"
+
+
+def test_classifier_errors_are_reported_not_guessed(monkeypatch):
+    from types import SimpleNamespace
+    from harness import cancellation, providers, settings
+
+    monkeypatch.setattr(settings, "apply", lambda: None)
+    monkeypatch.setattr(settings, "get",
+                        lambda key, default=None: {"PROVIDER": "fixture"}.get(key, default))
+    monkeypatch.setattr(providers, "provider_capabilities", lambda *a, **k: {})
+    monkeypatch.setattr(providers, "make_provider", lambda *a, **k: object())
+    monkeypatch.setattr(cancellation, "complete", lambda *a, **k: SimpleNamespace(
+        stop_reason="end_turn", error_detail="", text="I think it is a command"))
+    with pytest.raises(live.LiveCopilotError, match="invalid JSON"):
+        live.classify_capsule_payload({"utterance": "open notes"})
+    monkeypatch.setattr(settings, "get", lambda key, default=None: default)
+    with pytest.raises(live.LiveCopilotError, match="real model provider"):
+        live.classify_capsule_payload({"utterance": "open notes"})
+
+
+def test_intent_uses_the_captured_target_and_a_deadline(tmp_path, monkeypatch):
+    store = live.LiveSessionStore(tmp_path)
+    store.start(context="Writing release notes", listen=False, consent=False, observe_apps=False)
+    hand = store.request_handoff(app="notepad", title="notes.txt")
+    seen = {}
+
+    def classify(payload, *, cancelled=None):
+        seen.update(payload=payload, cancelled=cancelled)
+        return {"mode": "dictation", "confidence": .95, "reason": "literal text"}
+    monkeypatch.setattr(live, "classify_capsule_payload", classify)
+    result = store.classify_capsule_intent(text="ship it on Friday", handoff_id=hand["id"])
+    assert result["mode"] == "dictation"
+    assert seen["payload"]["utterance"] == "ship it on Friday"
+    assert seen["payload"]["captured_target"]["app"] == "notepad"
+    assert seen["payload"]["live_context"] == "Writing release notes"
+    assert callable(seen["cancelled"]) and seen["cancelled"]() is False
+
+
+def test_intent_and_dictate_http_routes_reach_the_store(tmp_path, monkeypatch, desktop):
+    import json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from harness import webapp
+
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(live, "classify_capsule_payload",
+                        lambda payload, **_k: {"mode": "dictation", "confidence": .9})
+    store = live.LiveSessionStore(str(tmp_path))
+    store.start(context="Notes", listen=False, consent=False, observe_ui=True)
+    hand = store.request_handoff(app="notepad", title="notes.txt", pid=5, hwnd=77)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(path, body):
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s?token=%s" % (server.server_port, path, webapp.TOKEN),
+            data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    try:
+        body = {"handoff_id": hand["id"], "text": "ship it Friday"}
+        assert post("/api/live-copilot/intent", body) == (200, {"mode": "dictation",
+                                                                "confidence": .9})
+        status, typed = post("/api/live-copilot/dictate", body)
+        assert status == 201 and typed["submitted"] is False
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+    assert desktop["typed"] == ["ship it Friday"]
+
+
+def test_context_change_during_intent_classification_rejects_result(monkeypatch, tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    store.start(context="Backend review", listen=False, consent=False, observe_apps=False)
+    hand = store.request_handoff(app="fixture")
+
+    def delayed(_payload, **_kwargs):
+        store.request_handoff(app="different")
+        return {"mode": "command", "confidence": 1}
+    monkeypatch.setattr(live, "classify_capsule_payload", delayed)
+    with pytest.raises(live.LiveCopilotError, match="changed"):
+        store.classify_capsule_intent(text="Explain this", handoff_id=hand["id"])

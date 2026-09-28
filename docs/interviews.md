@@ -35,6 +35,12 @@ A capsule command is exactly the text recognized from that capsule recording; if
 recognizable came back, the capsule says so instead of using other nearby speech. If the connection
 to Collie drops while a command runs, the capsule asks Collie about that same task rather than
 starting it again, and it reconnects on its own after Collie restarts.
+For a spoken capsule command, Collie first makes one short call to the configured model to tell a
+command from dictation. Dictated text is typed into the text field that has focus in the captured
+window and is never submitted; if no text field there has focus, nothing is typed and the text stays
+in the capsule. Speech that is neither clearly a command nor clearly dictation stays in the capsule
+for you to confirm with Enter. If that check fails or takes longer than 8 seconds, the words run as a
+command. Typed capsule text is always a command.
 You can say “write what I just said here” or “finish this
 design module”; the generated task is explicitly targeted back to the prior window rather than the
 capsule. The exact recognized or typed command is the authenticated authority for that turn, so

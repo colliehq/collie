@@ -3933,6 +3933,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/live-copilot/permissions", "/api/live-copilot/event", "/api/live-copilot/note",
                 "/api/live-copilot/work", "/api/live-copilot/dismiss",
                 "/api/live-copilot/handoff", "/api/live-copilot/handoff/resolve",
+                "/api/live-copilot/intent", "/api/live-copilot/dictate",
                 "/api/live-copilot/board/attach",
                 "/api/live-copilot/avatar/start", "/api/live-copilot/avatar/stop",
                 # Compatibility for the one released preview URL. It now creates a general session.
@@ -4024,6 +4025,14 @@ class Handler(BaseHTTPRequestHandler):
                     if path.endswith("/handoff/resolve"):
                         return self._send_json(store.resolve_handoff(
                             handoff_id=body.get("handoff_id") or ""))
+                    if path.endswith("/intent"):
+                        return self._send_json(store.classify_capsule_intent(
+                            text=body.get("text") or "",
+                            handoff_id=body.get("handoff_id") or ""))
+                    if path.endswith("/dictate"):
+                        return self._send_json(store.dictate(
+                            text=body.get("text") or "",
+                            handoff_id=body.get("handoff_id") or ""), 201)
                     if path.endswith("/handoff"):
                         return self._send_json(store.request_handoff(
                             app=body.get("app") or "", title=body.get("title") or "",

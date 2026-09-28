@@ -83,7 +83,17 @@ def capsule_page():
                 if control["hold_intent"]:
                     control["held_intents"].append(request)
                     return None
+                if control.get("intent_status"):
+                    return reply(request, control["intent_status"],
+                                 {"error": "intent model returned an error"})
                 return reply(request, 200, control["intent"])
+            if path == "/api/live-copilot/dictate":
+                control.setdefault("dictated", []).append(json.loads(request.request.post_data))
+                if control.get("dictate_error"):
+                    return reply(request, 409, {"error": control["dictate_error"]})
+                body = json.loads(request.request.post_data)
+                return reply(request, 201, {"ok": True, "inserted": len(body["text"]),
+                                            "submitted": False, "control": "Edit"})
             if path == "/api/live-copilot/handoff":
                 return reply(request, 201, {"id": "handoff-1", "pending": True})
             if path == "/api/live-copilot/event":
@@ -429,3 +439,87 @@ def test_hands_free_recording_stops_if_nothing_is_heard(capsule_page):
     page.wait_for_function("REC === null", timeout=5000)
     page.wait_for_function("window.RECORDERS[0].state === 'inactive'")
     assert len(finals) == 1 and not errors
+
+
+# --- Command or dictation ------------------------------------------------------------------------
+
+def test_dictated_speech_is_typed_into_the_captured_field_not_run(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    control["receipt_text"] = "Ship the fix on Friday after the review."
+    control["intent"] = {"mode": "dictation", "confidence": 0.95}
+    _record(page, "dictated words")
+    page.wait_for_function("document.getElementById('answer').textContent.includes('without submitting')",
+                           timeout=10000)
+    assert control["intents"] == [{"handoff_id": "handoff-1",
+                                   "text": "Ship the fix on Friday after the review."}]
+    assert control["dictated"] == [{"handoff_id": "handoff-1",
+                                    "text": "Ship the fix on Friday after the review."}]
+    assert not control["streams"] and not commands and not errors
+
+
+def test_dictation_that_cannot_find_a_field_keeps_the_text_and_runs_nothing(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    control["intent"] = {"mode": "dictation", "confidence": 0.95}
+    control["dictate_error"] = "the captured window has no focused editable field"
+    page.evaluate("run('Ship the fix on Friday', 'voice')")
+    page.wait_for_function("document.getElementById('status').textContent.includes('no focused')")
+    assert page.locator("#command").input_value() == "Ship the fix on Friday"
+    assert not control["streams"] and not commands and not errors
+
+
+def test_ambiguous_acknowledgement_asks_instead_of_launching(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    control["intent"] = {"mode": "clarify", "confidence": 0.99}
+    page.evaluate("run('Yeah.', 'voice')")
+    page.wait_for_function("!ROUTING")
+    assert not page.evaluate("RUN")
+    assert page.locator("#command").input_value() == "Yeah."
+    assert "clearer instruction" in page.locator("#status").inner_text()
+    assert not control["streams"] and not commands and not errors
+
+
+def test_action_like_quote_is_classified_before_anything_runs(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    control["intent"] = {"mode": "clarify", "confidence": 0.9}
+    page.evaluate("run('Clear the board is the phrase I am quoting, not a request', 'voice')")
+    page.wait_for_function("!ROUTING")
+    assert len(control["intents"]) == 1
+    assert not commands and not control["streams"] and not errors
+
+
+def test_typed_commands_skip_the_classifier(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    page.locator("#command").fill("Explain the design")
+    page.locator("#command").press("Enter")
+    page.wait_for_function("document.getElementById('answer').textContent.includes('Board command')")
+    assert control["intents"] == [] and len(control["streams"]) == 1 and not errors
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+def test_a_failing_classifier_falls_back_to_running_the_command(capsule_page, failure):
+    page, _, _, commands, errors, control = capsule_page
+    if failure == "error":
+        control["intent_status"] = 409
+    else:
+        control["hold_intent"] = True
+        page.evaluate("INTENT_TIMEOUT_MS=300")
+    page.evaluate("run('Explain the design', 'voice')")
+    page.wait_for_function("document.getElementById('answer').textContent.includes('Board command')",
+                           timeout=10000)
+    assert len(control["intents"]) == 1 and len(control["streams"]) == 1
+    assert [command["text"] for command in commands] == ["Explain the design"]
+    assert not errors
+
+
+def test_late_intent_cannot_dispatch_after_target_changes(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    control["hold_intent"] = True
+    page.evaluate("void run('Explain this design', 'voice')")
+    page.wait_for_function("ROUTING && document.getElementById('command').disabled")
+    page.wait_for_timeout(100)  # let the routing request reach the fake server
+    assert len(control["held_intents"]) == 1
+    page.evaluate("sendHostMessage({type:'capsule-context',target:{title:'New target'}})")
+    control["held_intents"][0].fulfill(status=200, content_type="application/json",
+                                       body='{"mode":"command","confidence":0.99}')
+    page.wait_for_timeout(300)
+    assert not commands and not control["streams"] and not errors

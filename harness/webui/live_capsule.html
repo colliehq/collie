@@ -155,6 +155,39 @@ function runAgent(command,source,op){
     };
   }).catch(function(e){finishRun(run,{error:e.message})});
 }
+function dictate(command,op){
+  if(!operationCurrent(op)||!command||RUN)return Promise.resolve();
+  $("command").value=command;$("answer").textContent="";setWorking(true);status("Typing into the captured field…");
+  return api("/api/live-copilot/dictate","POST",{handoff_id:(HAND||{}).id||"",text:command},op).then(function(d){
+    if(!operationCurrent(op))return;setWorking(false);
+    $("answer").textContent="Typed "+String(d.inserted||command.length)+" characters without submitting.";status("Done");
+    setTimeout(function(){if(operationCurrent(op)&&!RUN&&!REC)closeCapsule()},1400);
+  }).catch(function(e){if(operationCurrent(op)){setWorking(false);status(e.message||"Dictation could not be typed.",true);$("command").focus()}});
+}
+/* A voice command is first classified by the model: a command runs, dictation is typed into the
+   captured field and never submitted, and unclear speech is shown back for the person to confirm.
+   Typed text is always a command. If the check fails or takes too long, the words run as a command,
+   which is what the capsule did before the check existed. */
+var INTENT_TIMEOUT_MS=8000;
+function classifyVoice(command,op){
+  var timer=0;
+  return Promise.race([
+    api("/api/live-copilot/intent","POST",{handoff_id:(HAND||{}).id||"",text:command},op),
+    new Promise(function(_,reject){timer=setTimeout(function(){reject(new Error("intent timeout"))},INTENT_TIMEOUT_MS)})
+  ]).finally(function(){clearTimeout(timer)});
+}
+async function routeVoice(command,op){
+  status("Understanding what you mean…");setWorking(true);
+  var d=null;
+  try{d=await classifyVoice(command,op)}catch(_){d=null}
+  if(!operationCurrent(op))return;
+  if(d&&d.mode==="dictation")return await dictate(command,op);
+  if(d&&d.mode==="clarify"){
+    $("command").value=command;setWorking(false);$("command").focus();
+    status("I heard you, but need a clearer instruction. Press Enter to send it as it is.");return;
+  }
+  runAgent(command,"voice",op);
+}
 async function run(command,source,op){
   command=String(command||"").trim();if(CLOSED||!command||RUN||ROUTING)return;
   if(op&&!operationCurrent(op))return;
@@ -166,7 +199,7 @@ async function run(command,source,op){
     if(!fresh||!operationCurrent(op))return;
     if(!HAND)await beginHandoff();
     if(!operationCurrent(op)||!HAND)return;
-    runAgent(command,source,op);
+    if(source==="voice")await routeVoice(command,op);else runAgent(command,source,op);
   }finally{if(op.generation===REC_GENERATION){ROUTING=false;if(!RUN)setWorking(false)}}
 }
 /* X2 uses the same local SenseVoice upload path as Live itself.  Audio exists only while the
