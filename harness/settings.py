@@ -220,6 +220,13 @@ SCHEMA = [
      "hint": "Let Collie drive native apps through semantic interfaces first (Windows UIA/MSAA/Win32 or macOS Accessibility), then keyboard and mouse fallbacks. Adds the desktop_* tools. Powerful, so off by default. Windows & macOS (macOS needs Accessibility permission)."},
     {"group": "Desktop", "key": "SCREEN_CAPTURE", "label": "Let Collie see the screen", "label_zh": "允许查看屏幕", "type": "bool", "default": "off",
      "hint": "Let Collie capture a window (even one behind others — no focus stealing) or the whole screen and actually LOOK at it, which is how it can judge whether a UI renders correctly. The image is sent to your configured model, along with anything else visible at the time, so this is separate from desktop control and off by default. Adds the screenshot tool. Windows & macOS (macOS needs Screen Recording permission)."},
+    # The ambient desktop used to swap its whole background for the code map (the star-map
+    # galaxy) whenever a run edited a file. That is a lot of motion to push onto someone's desktop
+    # uninvited, so it is now something they ask for. ambient.html reads this from /api/settings.
+    {"group": "Desktop", "key": "DESKTOP_CODE_MAP", "label": "Show the code map while Collie edits code",
+     "label_zh": "Collie 改代码时在桌面显示代码地图", "type": "bool", "default": "off",
+     "hint": "While a run edits files or reproduces a bug, the ambient desktop's background becomes the live code map, and returns about 30 seconds after the run ends. Off keeps the calm desktop; the map still opens from Map in Collie.",
+     "hint_zh": "任务修改文件或复现问题时，把动态桌面的背景换成实时代码地图，任务结束约 30 秒后恢复。关闭则保持安静的桌面；代码地图仍可从 Collie 的「地图」打开。"},
 
     {"group": "Retrieval", "key": "EMBED", "label": "Embedder", "type": "select", "default": "auto",
      "options": [

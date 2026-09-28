@@ -1773,7 +1773,9 @@ class Handler(BaseHTTPRequestHandler):
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: blob:",
             "media-src 'self' data: blob:",
-            "connect-src 'self' https://ipapi.co https://api.open-meteo.com",
+            # No outside origins: the wallpaper's weather is fetched by this server
+            # (/api/desktop/weather), so no page needs to reach ipapi.co or Open-Meteo itself.
+            "connect-src 'self'",
             "frame-src 'self'",
             "frame-ancestors " + frame_ancestors,
             "object-src 'none'",
@@ -2570,6 +2572,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/desktop/sys":
                 from . import desktop as dt
                 return self._send_json(dt.sysinfo())
+            if path == "/api/desktop/weather":
+                # The wallpaper clock's weather, asked by this server for every desktop window
+                # (one shared cache, backoff after failures). desktop.json's clock.weather=false is
+                # checked here, so turning it off stops the outside requests at the source.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import desktop as dt
+                from . import desktop_weather
+                if not dt.weather_enabled():
+                    return self._send_json({"ok": False, "off": True})
+                return self._send_json(desktop_weather.weather())
             if path == "/api/desktop/nowplaying":
                 from . import desktop as dt
                 # Two different questions, and conflating them would be wrong. `track` is whatever
@@ -4214,7 +4227,10 @@ class Handler(BaseHTTPRequestHandler):
                 if body is None:
                     return self._send_json({"error": "expected JSON object"}, 400)
                 if action == "config":
-                    return self._send_json(dt.save_config(body))
+                    try:
+                        return self._send_json(dt.save_config(body))
+                    except ValueError as exc:      # desktop.json is there but unreadable: kept
+                        return self._send_json({"error": str(exc)}, 409)
                 if action == "launch":
                     return self._send_json({"ok": dt.launch(body.get("target") or "")})
                 if action == "media":

@@ -297,7 +297,9 @@ class CollieWallpaper : Form
     // shows 127.0.0.1:8787 in the address bar and gets lost among their other tabs.
     static bool _windowMode;
     static Mutex _instanceMutex;   // held for the life of the process — keeps duplicate launches out
-    string _baseUrl = "http://127.0.0.1:8787";
+    // Collie's own origin (scheme://host:port of the page this process shows). Static because the
+    // new-window routing below also runs for child windows, which have no CollieWallpaper instance.
+    static string _baseUrl = "http://127.0.0.1:8787";
 
     class LiveTarget
     {
@@ -591,20 +593,20 @@ class CollieWallpaper : Form
             // URL is passed by `collie wallpaper` via COLLIE_WALLPAPER_URL (the port is picked at
             // runtime, not hardcoded, so it never collides with a busy 8787). Fallback for a manual run.
             string url = Environment.GetEnvironmentVariable("COLLIE_WALLPAPER_URL");
-            // window mode shows the full GUI; wallpaper mode shows the desktop /wallpaper page
+            // window mode shows the full GUI; wallpaper mode shows the calm /ambient desktop, the page
+            // `collie wallpaper` passes too. The code map (/wallpaper) is opt-in, never the default.
             if (string.IsNullOrEmpty(url))
-                url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/wallpaper";
+                url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/ambient";
             try { _baseUrl = new Uri(url).GetLeftPart(UriPartial.Authority); } catch { }
             if (_windowMode)
                 url += (url.IndexOf('?') >= 0 ? "&" : "?") + "native_shell=1";
-            // Keep target=_blank links (the star map, the meadow) INSIDE the app. Unhandled they
-            // escape to a bare popup / the system browser, which is exactly what makes a native shell
-            // feel like a browser wrapper. Each opens its own titled Collie window instead.
+            // Keep target=_blank links to Collie's own pages (the star map, the meadow) INSIDE the app.
+            // Unhandled they escape to a bare popup, which is exactly what makes a native shell feel
+            // like a browser wrapper. See OpenRequestedWindow for where each kind of link goes.
             _web.CoreWebView2.NewWindowRequested += delegate (object s2, CoreWebView2NewWindowRequestedEventArgs e2)
             {
                 e2.Handled = true;
-                if (_windowMode) OpenChildWindow(e2.Uri);
-                else _web.CoreWebView2.Navigate(e2.Uri);   // wallpaper has no window manager: navigate in place
+                OpenRequestedWindow(e2.Uri);
             };
             // SELF-HEAL the startup race: right after login the engine can load before the local
             // server binds its port, and WebView2 would then sit on a blank error page FOREVER — the
@@ -1151,6 +1153,47 @@ class CollieWallpaper : Form
         }
     }
 
+    // Where a link that a Collie page opens in a new window (target=_blank, window.open) goes.
+    internal enum LinkRoute { CollieWindow, DefaultBrowser, Refuse }
+
+    // Collie's own pages (the scheme, host and port of the page this process shows; any loopback
+    // name counts as the same host) open in a Collie window, in both modes: the wallpaper used to
+    // navigate ITSELF to the link, so "Open Collie" or the map replaced the desktop behind the icons,
+    // with no way back to it. Every other http(s) page opens in the person's default browser, with
+    // its address bar and their logins, not in a chromeless Collie window. Nothing else is opened at
+    // all: handing a file: or custom-scheme URL to the shell would launch whatever it names.
+    internal static LinkRoute RouteNewWindow(string uri, string collieBase)
+    {
+        Uri target, home;
+        if (!Uri.TryCreate(uri ?? "", UriKind.Absolute, out target)) return LinkRoute.Refuse;
+        if (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps) return LinkRoute.Refuse;
+        if (Uri.TryCreate(collieBase ?? "", UriKind.Absolute, out home) && target.Scheme == home.Scheme &&
+            target.Port == home.Port &&
+            (string.Equals(target.Host, home.Host, StringComparison.OrdinalIgnoreCase) ||
+             (target.IsLoopback && home.IsLoopback)))
+            return LinkRoute.CollieWindow;
+        return LinkRoute.DefaultBrowser;
+    }
+
+    static void OpenRequestedWindow(string uri)
+    {
+        switch (RouteNewWindow(uri, _baseUrl))
+        {
+            case LinkRoute.CollieWindow:
+                OpenChildWindow(uri);
+                break;
+            case LinkRoute.DefaultBrowser:
+                try { Process.Start(new ProcessStartInfo(new Uri(uri).AbsoluteUri) { UseShellExecute = true }); }
+                catch (Exception ex) { Log("default browser failed: " + ex.Message); }
+                break;
+            default:
+                string scheme = "";
+                try { scheme = new Uri(uri).Scheme; } catch { }
+                Log("new window refused: scheme=" + scheme);   // the URL itself is not logged
+                break;
+        }
+    }
+
     // A second ordinary Collie window — used for target=_blank links (star map, meadow) so they stay
     // in the app instead of escaping to the browser.
     static CoreWebView2Environment _env;   // set once by InitWeb; child windows share its profile
@@ -1172,7 +1215,18 @@ class CollieWallpaper : Form
             w.DefaultBackgroundColor = Color.Black;
             w.CoreWebView2InitializationCompleted += delegate
             {
-                try { w.CoreWebView2.Navigate(url); } catch (Exception e) { Log("child nav: " + e.Message); }
+                try
+                {
+                    // Links opened from a child window follow the same routing as the main one; a
+                    // child opened from the wallpaper often IS the full Collie window.
+                    w.CoreWebView2.NewWindowRequested += delegate (object s2, CoreWebView2NewWindowRequestedEventArgs e2)
+                    {
+                        e2.Handled = true;
+                        OpenRequestedWindow(e2.Uri);
+                    };
+                    w.CoreWebView2.Navigate(url);
+                }
+                catch (Exception e) { Log("child nav: " + e.Message); }
             };
             f.Controls.Add(w);
             f.Show();

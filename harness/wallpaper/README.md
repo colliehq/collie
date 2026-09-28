@@ -1,7 +1,7 @@
 # collie desktop wallpaper engine (Windows)
 
-Renders collie's live code star-map as the desktop wallpaper (behind the icons) with a
-clickable/typable chat, driven by the local `collie web` server.
+Renders collie's live desktop as the wallpaper (behind the icons): a clock with the weather, music
+controls, an app dock and a clickable/typable chat, driven by the local `collie web` server.
 
 ## Use it (the easy way)
 
@@ -30,6 +30,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1   # -> collie-wallpaper.exe
 - Pins a WS_CHILD WebView2 window under Progman, z-ordered below the icon layer (raised-desktop
   compatible; re-asserted on WM_WINDOWPOSCHANGING so it can never cover the icons).
 - Reads its URL from `COLLIE_WALLPAPER_URL` (the port is chosen at runtime by `collie wallpaper`, so
-  it never collides with a busy 8787); falls back to `http://127.0.0.1:8787/wallpaper` for a manual run.
+  it never collides with a busy 8787); falls back to the calm desktop, `http://127.0.0.1:8787/ambient`,
+  for a manual run. The code map (`/wallpaper`) replaces its background only while Collie edits code,
+  and only when *Show the code map while Collie edits code* is on in Settings → Desktop.
 - Forwards desktop mouse/keyboard into the page (icons still get their own clicks — icon hit areas
   are excluded), so the on-wallpaper chat is fully interactive.

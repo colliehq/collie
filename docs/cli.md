@@ -114,7 +114,7 @@ See [Workers](runners.md) for the per-worker capability and boundary tables.
 
 | Command | What it does |
 |---|---|
-| `collie wallpaper --install` | Live desktop star-map behind your icons; starts at logon. |
+| `collie wallpaper --install` | Live desktop (clock, weather, apps) behind your icons; starts at logon. |
 | `collie wallpaper --stop` / `--uninstall` | Stop it / remove the autostart. |
 | `collie browser-bridge` | Run the bridge the browser extension polls (the `browser_*` tools). |
 | `collie browser-bridge --install` | Start the bridge at logon. |
