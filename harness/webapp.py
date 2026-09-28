@@ -3928,7 +3928,8 @@ class Handler(BaseHTTPRequestHandler):
                 except LiveCopilotError as exc:
                     return self._send_json({"error": str(exc)}, 409)
             live_paths = {
-                "/api/live-copilot/start", "/api/live-copilot/stop",
+                "/api/live-copilot/start", "/api/live-copilot/resume",
+                "/api/live-copilot/stop", "/api/live-copilot/context",
                 "/api/live-copilot/voice-state",
                 "/api/live-copilot/permissions", "/api/live-copilot/event", "/api/live-copilot/note",
                 "/api/live-copilot/work", "/api/live-copilot/dismiss",
@@ -3972,6 +3973,23 @@ class Handler(BaseHTTPRequestHandler):
                             started_from=("interview_ui" if path.startswith("/api/interview/")
                                           else "live_ui"),
                             max_duration_minutes=body.get("max_duration_minutes", 120)), 201)
+                    if path.endswith("/resume"):
+                        return self._send_json(store.resume(
+                            context=body.get("context") or "",
+                            listen=body.get("listen", False),
+                            understand=body.get("understand", True),
+                            observe_apps=body.get("observe_apps", True),
+                            observe_ui=body.get("observe_ui", True),
+                            observe_input=body.get("observe_input", True),
+                            observe_screen=body.get("observe_screen", False),
+                            voice_dialogue=body.get("voice_dialogue", False),
+                            board_edit=body.get("board_edit", False),
+                            consent=body.get("consent", False),
+                            resumed_from="live_ui",
+                            max_duration_minutes=body.get("max_duration_minutes", 120)), 201)
+                    if path.endswith("/context"):
+                        return self._send_json(store.update_context(
+                            body.get("context") or body.get("text") or ""))
                     if path.endswith("/stop"):
                         try:
                             from .avatar_rehearsal import AvatarRehearsalService

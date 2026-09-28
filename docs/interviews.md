@@ -88,7 +88,12 @@ and recovery boundaries.
 ## Review and export
 
 After stopping, the Live page keeps the last session's summary, cues, log, and background task
-records visible. Refreshing the page preserves this review. Live-only cue actions and board edits
+records visible. If that session had an attached board, starting again resumes: the new session
+keeps the board, notes, and background task records, while listening consent, board editing, and
+every other permission are granted afresh. Telling Collie the activity changed ("switch Live to the
+ComfyUI review") replaces the active session's context and clears the log, understanding, and cues
+derived from the old topic; speech still being transcribed from before the change is dropped. In a
+browser tab this also stops the page's microphone capture; turn listening off and on to continue. Refreshing the page preserves this review. Live-only cue actions and board edits
 are disabled for an ended session.
 
 Choose **Export Markdown** to save the starting context, AI-generated summary, notes, visible

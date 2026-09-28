@@ -29,7 +29,8 @@ def test_live_ui_never_uses_screen_sharing_for_audio_capture():
     assert 'id="systemAudio"' not in source
     start = source.index('document.getElementById("start").onclick=async function()')
     start_flow = source[start:source.index('document.getElementById("stop").onclick', start)]
-    assert start_flow.index('var s=await api("/api/live-copilot/start"') < \
+    assert '"/api/live-copilot/resume":"/api/live-copilot/start"' in start_flow
+    assert start_flow.index('var s=await api(endpoint') < \
         start_flow.index('await beginCapture()')
 
 

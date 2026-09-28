@@ -773,6 +773,102 @@ class LiveSessionStore:
             self._purge_stale_audio(value["session_id"])
         return self.snapshot()
 
+    def resume(self, *, context="", listen=False, understand=True, observe_apps=True,
+               observe_ui=True, observe_input=True, observe_screen=False,
+               voice_dialogue=False, board_edit=False, consent=False,
+               resumed_from="unknown", max_duration_minutes=120) -> dict:
+        """Start a new session with fresh authority that keeps the ended one's work surface.
+
+        The attached board, background work records, and notes carry over. Everything that
+        authorizes something (listening consent, board editing, voice, the session id) is new and
+        must be granted again, exactly as for ``start``.
+        """
+        _validate_boolean_fields(locals())
+        if listen and consent is not True:
+            raise LiveCopilotError("everyone's recording and AI-assistance consent is required")
+        try:
+            duration = max(0, min(int(max_duration_minutes), 24 * 60))
+        except (TypeError, ValueError):
+            raise LiveCopilotError("live session duration must be a number of minutes")
+        origin = _text(resumed_from, 80).casefold() or "unknown"
+        now = _now_ms()
+        with self._transaction():
+            previous = self._read()
+            if previous.get("active"):
+                raise LiveCopilotError("the live session is already active")
+            self._ingress().discard(lambda _job: True)
+            board = dict(previous.get("board") or {}) or None
+            value = _default_state()
+            value.update({
+                "active": True,
+                "session_id": "live-%s-%s" % (now, os.urandom(3).hex()),
+                "context": _text(context or previous.get("context"), 4_000),
+                "started_at_ms": now,
+                "started_from": origin,
+                "expires_at_ms": now + duration * 60_000 if duration else 0,
+                "last_meaningful_at_ms": now,
+                "listen": bool(listen), "understand": bool(understand),
+                "observe_apps": bool(observe_apps), "observe_ui": bool(observe_ui),
+                "observe_input": bool(observe_input), "observe_screen": bool(observe_screen),
+                "voice_dialogue": bool(voice_dialogue), "board_edit": bool(board_edit),
+                "consent_version": "live-copilot-v1" if listen else "not-required",
+                "consent_at_ms": now if listen else 0,
+                "board": board,
+                "work": list(previous.get("work") or [])[-MAX_WORK:],
+                "notes": list(previous.get("notes") or [])[-30:],
+                "events": [{"id": "evt-" + os.urandom(8).hex(), "at_ms": now,
+                            "received_at_ms": now, "source": "system", "speaker": "",
+                            "kind": "session", "app": "", "title": "",
+                            "text": "Live monitoring resumed with fresh session authority."}],
+                "audit": list(previous.get("audit") or [])[-78:] + [{
+                    "at_ms": now, "action": "session_resumed",
+                    "detail": "resumed_from=%s max_duration_minutes=%s listen=%s board_retained=%s" %
+                              (origin, duration, bool(listen), bool(board))}],
+            })
+            self._write(value)
+            self._purge_stale_audio(value["session_id"])
+        return self.snapshot()
+
+    def update_context(self, context) -> dict:
+        """Say what the active session is about now, and drop what was derived from the old topic.
+
+        A hard reset: the log, understanding, cues and pending handoff start over under the new
+        context, and speech captured or still decoding under the old one never lands. The session,
+        its permissions, and the attached work surface stay.
+        """
+        context = _text(context, 4_000)
+        if not context:
+            raise LiveCopilotError("live context is required")
+        now = _now_ms()
+        with self._transaction():
+            value = self._read()
+            if not value.get("active"):
+                raise LiveCopilotError("start a live session before changing its context")
+            previous = value.get("context") or ""
+            # Continuous capture accepted under the old topic is invalidated; a capsule clip is its
+            # own explicit gesture and keeps going.
+            _bump_listen_epoch(value)
+            self._cancel_queued_audio(value, lambda job: job.source in {"microphone", "system"})
+            value.update({"context": context, "summary": "", "suggestions": [], "handoff": None,
+                          "last_meaningful_at_ms": now,
+                          "voice_playback": dict(_default_state()["voice_playback"])})
+            value["events"] = [{"id": "evt-" + os.urandom(8).hex(), "at_ms": now,
+                                "received_at_ms": now, "source": "system", "speaker": "",
+                                "kind": "context_reset", "app": "collie", "title": "Live Copilot",
+                                "text": "Live activity changed. Current context: " + context}]
+            analysis = dict(value.get("analysis") or {})
+            analysis["permission_epoch"] = int(analysis.get("permission_epoch") or 0) + 1
+            analysis.update({"inflight": False, "claimed_at_ms": 0, "last_event_id": "",
+                             "last_error": "", "dialogue_inflight": False,
+                             "dialogue_claimed_at_ms": 0, "dialogue_last_event_id": "",
+                             "dialogue_error": ""})
+            value["analysis"] = analysis
+            value["audit"] = (value.get("audit") or [])[-79:] + [{
+                "at_ms": now, "action": "context_changed",
+                "detail": "from=%s to=%s" % (_text(previous, 240), _text(context, 500))}]
+            self._write(value)
+        return self.snapshot()
+
     def stop(self, *, reason="user_requested", stopped_from="unknown") -> dict:
         with self._transaction():
             value = self._read()
@@ -2758,11 +2854,15 @@ class LiveCopilotTool(Tool):
         "Continuous conversation audio requires explicit participant consent. After start, if "
         "desktop_control_ready is false and the user wants actions in apps, use enable_capability "
         "for desktop_control so its ordinary approval UI can grant it. Suggestions never execute "
-        "automatically. Actions: start, stop, permissions, status, note, work, diagram_preview, "
-        "diagram_apply."
+        "automatically. Use resume instead of start to begin a new session that keeps the ended "
+        "session's attached board, notes and background work (permissions are granted afresh). "
+        "Use context when the user says the activity changed: it replaces what the active session "
+        "is about and clears the log and cues derived from the old topic. Actions: start, resume, "
+        "stop, context, permissions, status, note, work, diagram_preview, diagram_apply."
     )
     schema = {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["start", "stop", "permissions", "status",
+        "action": {"type": "string", "enum": ["start", "resume", "stop", "context",
+                                                    "permissions", "status",
                                                     "note", "work", "diagram_preview",
                                                     "diagram_apply"]},
         "kind": {"type": "string"}, "text": {"type": "string"},
@@ -2805,6 +2905,24 @@ class LiveCopilotTool(Tool):
                 value["next"] = ("Press Ctrl+Alt+Space in any app for the local voice capsule. "
                                  "Keep the main Collie window minimized if you want it out of sight.")
                 return json.dumps(value, ensure_ascii=False, indent=2)
+            if action == "resume":
+                return json.dumps(store.resume(
+                    context=args.get("context") or args.get("text") or "",
+                    listen=args.get("listen", False),
+                    understand=args.get("understand", True),
+                    observe_apps=args.get("observe_apps", True),
+                    observe_ui=args.get("observe_ui", True),
+                    observe_input=args.get("observe_input", True),
+                    observe_screen=args.get("observe_screen", False),
+                    voice_dialogue=args.get("voice_dialogue", False),
+                    board_edit=args.get("board_edit", False),
+                    consent=args.get("consent", False),
+                    resumed_from="natural_language",
+                    max_duration_minutes=args.get("max_duration_minutes", 120)),
+                    ensure_ascii=False, indent=2)
+            if action == "context":
+                return json.dumps(store.update_context(args.get("context") or args.get("text")),
+                                  ensure_ascii=False, indent=2)
             if action == "stop":
                 try:
                     from .avatar_rehearsal import AvatarRehearsalService
