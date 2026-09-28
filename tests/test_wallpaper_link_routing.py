@@ -19,6 +19,9 @@ WINDIR = os.environ.get("WINDIR", r"C:\Windows")
 CSC = Path(WINDIR) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
 SPEECH = (Path(WINDIR) / "Microsoft.NET" / "assembly" / "GAC_MSIL" / "System.Speech" /
           "v4.0_4.0.0.0__31bf3856ad364e35" / "System.Speech.dll")
+# csc and the probe are console programs: without this each one flashes a console window, which
+# over a full-screen game can take its focus (harness/wallpaper.py builds the same way, _quiet()).
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 PROBE = """using System;
 static class LinkProbe
@@ -75,12 +78,13 @@ def test_the_compiled_host_routes_each_kind_of_link(tmp_path):
          "/reference:System.Drawing.dll", "/reference:" + str(SPEECH),
          "/reference:Microsoft.Web.WebView2.Core.dll",
          "/reference:Microsoft.Web.WebView2.WinForms.dll", "Program.cs", "LinkProbe.cs"],
-        cwd=tmp_path, capture_output=True, text=True, errors="replace", timeout=180)
+        cwd=tmp_path, capture_output=True, text=True, errors="replace", timeout=180,
+        creationflags=NO_WINDOW)
     assert build.returncode == 0, build.stdout + build.stderr
     run = subprocess.run([str(tmp_path / "linkprobe.exe"), "http://127.0.0.1:8787"] +
                          [uri for uri, _ in CASES],
                          cwd=tmp_path, capture_output=True, text=True, errors="replace",
-                         timeout=60)
+                         timeout=60, creationflags=NO_WINDOW)
     assert run.returncode == 0, run.stdout + run.stderr
     got = run.stdout.split()
     assert list(zip([uri for uri, _ in CASES], got)) == [(uri, want) for uri, want in CASES]
