@@ -104,8 +104,14 @@
   /* clock */
   .clock{text-shadow:0 2px 24px rgba(0,0,0,.22);}
   @media (prefers-color-scheme: light){ .clock{ text-shadow:0 1px 14px rgba(255,255,255,.55); } }
-  .time{font-size:clamp(48px,10vh,110px); font-weight:200; letter-spacing:-.02em; line-height:.95; color:var(--ink);}
-  .time .ampm{font-size:.28em; font-weight:600; color:var(--mut); margin-left:.35em; letter-spacing:.06em;}
+  /* The digits and the day period are two boxes one gap apart, in the locale's order ("11:13 PM",
+     "下午11:13"); a margin on the period plus the locale's own space had doubled the gap in English
+     and left none at all where the period comes first. */
+  .time{display:flex; align-items:baseline; gap:.18em; white-space:nowrap; font-size:clamp(48px,10vh,110px); font-weight:200; letter-spacing:-.02em; line-height:.95; color:var(--ink);}
+  .time .ampm{font-size:.28em; font-weight:600; color:var(--mut); letter-spacing:.06em;}
+  .time .ampm[hidden]{display:none;}
+  .slot.tr .time, .slot.br .time{justify-content:flex-end;}
+  .slot.center .time{justify-content:center;}
   .date{margin-top:1.2vh; font-size:clamp(15px,2.3vh,23px); font-weight:400; color:var(--mut);}
   .wx{margin-top:1.2vh; font-size:clamp(14px,1.9vh,19px); color:var(--faint); display:flex; align-items:center; gap:10px; min-height:1.2em; font-weight:400;}
   .slot.tr .wx, .slot.br .wx{justify-content:flex-end;}
@@ -660,7 +666,7 @@
   }
   function renderClock(w, el){
     var d = document.createElement("div"); d.className = "clock";
-    d.innerHTML = '<div class="time" id="wTime">--:--</div><div class="date" id="wDate"></div><div class="wx" id="wWx"></div>';
+    d.innerHTML = '<div class="time" id="wTime"><span class="time-value">--:--</span><span class="ampm" hidden></span></div><div class="date" id="wDate"></div><div class="wx" id="wWx"></div>';
     el.appendChild(d); tick(); loadWeather();
   }
   function renderLauncher(w, el){
@@ -791,11 +797,15 @@
   function two(n){ return (n < 10 ? "0" : "") + n; }
   function tick(){
     var t = $("wTime"); if (!t) return;
-    var d = new Date();
+    var d = new Date(), value = t.querySelector(".time-value"), ap = t.querySelector(".ampm");
     try {
-      var parts=new Intl.DateTimeFormat(opsLocale(),{hour:"numeric",minute:"2-digit"}).formatToParts(d);t.textContent="";
-      parts.forEach(function(part){if(part.type==="dayPeriod"){var ap=document.createElement("span");ap.className="ampm";ap.textContent=part.value;t.appendChild(ap);}else t.appendChild(document.createTextNode(part.value));});
-    } catch(e){t.textContent=two(d.getHours())+":"+two(d.getMinutes());}
+      var fmt=new Intl.DateTimeFormat(opsLocale(),{hour:"numeric",minute:"2-digit"}),parts=fmt.formatToParts(d),at=-1,hour=-1;
+      parts.forEach(function(part,i){if(part.type==="dayPeriod")at=i;else if(part.type==="hour"&&hour<0)hour=i;});
+      // The locale's space around the period stays out of both boxes; the flex gap is the only gap.
+      value.textContent=parts.filter(function(part){return part.type!=="dayPeriod";}).map(function(part){return part.value;}).join("").trim();
+      ap.textContent=at>=0?parts[at].value.trim():"";ap.hidden=at<0;ap.style.order=at>=0&&at<hour?"-1":"";
+      t.setAttribute("aria-label",fmt.format(d));
+    } catch(e){value.textContent=two(d.getHours())+":"+two(d.getMinutes());ap.hidden=true;t.removeAttribute("aria-label");}
     var dd = $("wDate"); if (dd) { try { dd.textContent = d.toLocaleDateString(opsLocale(),{weekday:"long",month:"long",day:"numeric"}); } catch(e){ dd.textContent = d.getFullYear()+"-"+two(d.getMonth()+1)+"-"+two(d.getDate()); } }
   }
   setInterval(tick, 10000);
