@@ -23,7 +23,14 @@ then opens only a small top-of-screen capsule. In the normal Windows app, holdin
 side button (X2) also opens the capsule; releasing it ends that recording. Capsule audio uses the
 configured Live transcription route. Local SenseVoice is preferred when its model, optional
 `speech` dependencies, and ffmpeg are available; otherwise check the speech destination shown in
-Live before enabling capture. Only recognized command text goes to the configured Collie model.
+Live before enabling capture. Collie ships no speech model: it reads `model.int8.onnx` and
+`tokens.txt` from `%LOCALAPPDATA%\Collie\models\sensevoice`, from `COLLIE_SENSEVOICE_MODEL_DIR`, or
+from an existing VocalCode install, and the Live page names whatever is missing. Recognition detects
+the spoken language automatically. Flat silence is never sent to the recognizer. If a Silero
+speech-detection model (MIT) is also present — `silero_vad.onnx` in that model folder, VocalCode's
+`models\speech-gate\silero-v5.onnx`, or the file named by `COLLIE_SPEECH_VAD_MODEL` — each clip must
+contain detected speech before it is transcribed, so background noise does not become stray words.
+Without it Live transcribes as before. Only recognized command text goes to the configured Collie model.
 You can say “write what I just said here” or “finish this
 design module”; the generated task is explicitly targeted back to the prior window rather than the
 capsule. The exact recognized or typed command is the authenticated authority for that turn, so

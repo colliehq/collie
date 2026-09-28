@@ -57,6 +57,8 @@ def test_live_defaults_to_local_sensevoice_not_a_cloud_transcriber(tmp_path, mon
             for event in store.snapshot()["events"]):
         time.sleep(.02)
     assert seen and seen[0][1]["language"] == ""
+    # Continuous Live audio goes through the optional speech check before recognition.
+    assert seen[0][1]["speech_gate"] is True
     assert any(event.get("text") == "Collie 能看到当前浏览器。"
                for event in store.snapshot()["events"])
 

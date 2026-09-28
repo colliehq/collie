@@ -270,6 +270,10 @@ def capabilities() -> dict:
         "microphone": True,
         "system_audio": os.name == "nt",
         "speech_ready": bool(speech.get("available")),
+        "speech_missing": list(speech.get("missing") or []),
+        # The speech check is optional: Live transcribes without it, it just filters less noise.
+        "speech_gate_ready": bool(speech.get("speech_gate_available")),
+        "speech_optional_missing": list(speech.get("optional_missing") or []),
         "speech_engine": speech.get("engine"),
         "understanding_ready": provider != "mock",
         "understanding_provider": provider,
@@ -292,7 +296,8 @@ def _sensevoice_capabilities() -> dict:
         from .sensevoice import availability
         return availability()
     except Exception:
-        return {"available": False, "engine": "SenseVoice · unavailable", "model_dir": ""}
+        return {"available": False, "engine": "SenseVoice · unavailable", "model_dir": "",
+                "missing": ["local speech runtime"]}
 
 
 def _audio_limit(name: str, default: int, low: int, high: int) -> int:
@@ -1342,7 +1347,7 @@ class LiveSessionStore:
             if transcriber is None:
                 # Live speech is local-first. Never silently send a microphone chunk to a cloud
                 # endpoint when SenseVoice has a setup problem.
-                from .sensevoice import transcribe as sensevoice_transcribe
+                from .sensevoice import transcribe_live as sensevoice_transcribe
                 transcriber = sensevoice_transcribe
             result = transcriber(path, mime_type=mime, language="")
             if not isinstance(result, dict):
