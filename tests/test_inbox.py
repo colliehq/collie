@@ -5,11 +5,13 @@ a desktop dialog and a phone — and whichever answers first has to be the one t
 with the loser told nothing happened rather than handed an error.
 """
 import os
+import subprocess
 import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import pytest
 
@@ -162,6 +164,93 @@ def test_reconcile_on_resume_separates_waiting_from_decided(store):
     out = store.reconcile_on_resume("s1")
     assert [i["tool"] for i in out["pending"]] == ["b"]
     assert [i["tool"] for i in out["recap"]] == ["a"]
+
+
+# -- cancel closes the store while other threads still hold it ---------------
+# Cancelling a web run calls Handler._inbox_close, which closes this store's SQLite
+# connection. The web UI's approval poll (/api/approvals, the session replay) and the
+# run's own parked approver may be holding the same store at that moment, on other
+# threads. sqlite3 releases the GIL while it steps a query, so a close that lands
+# mid-read frees the connection underneath the reader: a native access violation that
+# kills the whole Collie process, not an exception anything could catch.
+_POLL_RACE = r'''
+import sys, threading
+from harness.inbox import InboxStore
+path, iterations = sys.argv[1], int(sys.argv[2])
+for n in range(iterations):
+    store = InboxStore(path)
+    ready, stop, errors = threading.Event(), threading.Event(), []
+    def poll():
+        ready.set()
+        while not stop.is_set():
+            try:
+                store.pending("cancel-test")
+            except Exception as exc:
+                errors.append(repr(exc))
+                return
+    reader = threading.Thread(target=poll)
+    reader.start()
+    ready.wait()
+    store.close()
+    stop.set()
+    reader.join(5)
+    if reader.is_alive():
+        sys.exit("iteration %d: the poll never returned" % n)
+    if errors:
+        sys.exit("iteration %d: the poll raised %s" % (n, errors[0]))
+'''
+
+#: Before the fix a single iteration crashed 30 runs out of 30 on Windows; a hundred leaves
+#: no realistic chance of a lucky pass while still finishing in well under a second.
+POLL_RACE_ITERATIONS = 100
+
+
+def test_closing_the_store_under_a_polling_thread_does_not_kill_the_process(tmp_path):
+    # Out of process on purpose: the failure is a crash of the interpreter itself, which
+    # would take pytest down with it rather than fail one test.
+    result = subprocess.run(
+        [sys.executable, "-X", "faulthandler", "-c", _POLL_RACE,
+         str(tmp_path / "race.db"), str(POLL_RACE_ITERATIONS)],
+        cwd=ROOT, capture_output=True, text=True, errors="replace", timeout=120)
+    assert result.returncode == 0, (
+        "closing the inbox under a live poll ended the process with exit status %d "
+        "(0xC0000005 / -11 is a native access violation)\n%s"
+        % (result.returncode, result.stderr[-2000:]))
+
+
+def test_a_poll_still_holding_a_closed_store_gets_nothing_rather_than_an_error(store):
+    """The web handler looks the store up, lets go of the registry lock, then reads. A
+    cancel in between leaves it holding a closed store; that must read as "nothing is
+    waiting any more", not as a 500."""
+    item = store.add("s1", tool="browser_click")
+    store.close()
+    assert store.pending("s1") == []
+    assert store.list() == []
+    assert store.get(item.id) is None
+    assert store.resolve(item.id, R_ALLOW) is False, "an answer after cancel changes nothing"
+    assert store.resolve_session("s1") == 0
+    store.close()                                  # and closing twice is harmless
+
+
+def test_cancel_releases_a_parked_approval_as_a_refusal(store):
+    """A cancel must wake a run parked on an approval and have it refuse, even if the
+    store is closed before anyone answered or orphaned the question."""
+    approve = inbox_approver(store, "s1")
+    out = []
+    parked = threading.Thread(
+        target=lambda: out.append(approve("browser_click", {"ref": "e1"}, _d(call_id="c1"))),
+        daemon=True)
+    parked.start()
+    for _ in range(200):
+        if store.pending("s1"):
+            break
+        time.sleep(0.01)
+    [item] = store.pending("s1")
+    store.close()
+    parked.join(2)
+    assert not parked.is_alive(), "the run stayed parked on a question nobody can answer"
+    assert out == [Outcome.REJECT_ONCE]
+    assert store.resolve(item.id, R_ALLOW) is False
 
 
 def test_visibility_filters(store):
