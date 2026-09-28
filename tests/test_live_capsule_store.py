@@ -122,6 +122,82 @@ def test_a_capsule_command_leaves_unrelated_conversation_alone(tmp_path):
         "speech", "capsule_speech"]
 
 
+# --- Without SenseVoice: the Windows recognizer's text is the clip -------------------------------
+
+def test_native_capsule_text_becomes_the_clips_receipt(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=False, consent=False, observe_apps=False)
+    sid = session["session_id"]
+    assert store.ingest_capsule_text(session_id=sid, seq=0, text="Open my notes") == {
+        "ok": True, "seq": 0}
+    assert _receipts(store) == [{"seq": 0, "text": "Open my notes", "error": ""}]
+    assert store.snapshot()["events"][-1]["kind"] == "capsule_speech"
+    assert store.snapshot()["audio"]["capsule_seq"] == 0
+    # A resent request is the same recording, not a second command.
+    assert store.ingest_capsule_text(session_id=sid, seq=0, text="Open my notes")["duplicate"]
+    assert len(_receipts(store)) == 1
+    assert [e["kind"] for e in store.snapshot()["events"]].count("capsule_speech") == 1
+
+
+def test_native_capsule_text_follows_the_audio_sequence_rules(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    sid = store.start(listen=False, consent=False, observe_apps=False)["session_id"]
+    store.ingest_audio(session_id=sid, source="capsule", seq=0, mime_type="audio/webm",
+                       data=b"a", transcriber=lambda *_a, **_k: {"text": "first command"})
+    assert _wait(lambda: _receipts(store))
+    with pytest.raises(live.LiveCopilotError, match="already accepted"):
+        store.ingest_capsule_text(session_id=sid, seq=0, text="something else")
+    with pytest.raises(live.LiveCopilotError, match="gap: expected 1"):
+        store.ingest_capsule_text(session_id=sid, seq=2, text="skipped one")
+    store.ingest_capsule_text(session_id=sid, seq=1, text="second command")
+    assert [row["text"] for row in _receipts(store)] == ["first command", "second command"]
+
+
+@pytest.mark.parametrize("heard", ["", "Uh, um."])
+def test_native_silence_or_filler_gets_an_empty_receipt(tmp_path, heard):
+    store = live.LiveSessionStore(tmp_path)
+    sid = store.start(listen=False, consent=False, observe_apps=False)["session_id"]
+    store.ingest_capsule_text(session_id=sid, seq=0, text=heard)
+    assert _receipts(store) == [{"seq": 0, "text": "", "error": ""}]
+    assert "capsule_speech" not in [e["kind"] for e in store.snapshot()["events"]]
+
+
+def test_native_capsule_text_needs_the_current_session(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    sid = store.start(listen=False, consent=False, observe_apps=False)["session_id"]
+    store.stop()
+    with pytest.raises(live.LiveCopilotError, match="no longer active"):
+        store.ingest_capsule_text(session_id=sid, seq=0, text="Open my notes")
+    with pytest.raises(live.LiveCopilotError, match="4,000"):
+        live.LiveSessionStore(tmp_path).ingest_capsule_text(session_id=sid, seq=0, text="x" * 4001)
+
+
+def test_capsule_text_http_route(tmp_path, monkeypatch):
+    import json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from harness import webapp
+
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    store = live.LiveSessionStore(str(tmp_path))
+    sid = store.start(listen=False, consent=False, observe_apps=False)["session_id"]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d/api/live-copilot/capsule-text?token=%s" % (
+                server.server_port, webapp.TOKEN),
+            data=json.dumps({"session_id": sid, "seq": 0, "text": "Open my notes"}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.status == 202
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+    assert _receipts(live.LiveSessionStore(str(tmp_path)))[0]["text"] == "Open my notes"
+
+
 # --- Live text while the person is still talking ------------------------------------------------
 
 def test_capsule_preview_is_ephemeral_and_does_not_touch_the_log(tmp_path):

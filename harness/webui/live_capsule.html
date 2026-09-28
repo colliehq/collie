@@ -61,8 +61,17 @@ function operationCurrent(op){return !!op&&!CLOSED&&op.generation===REC_GENERATI
    report for an older id is ignored by the host, so it never ends a newer recording. */
 var HOST_REC="";
 function hostRecordingEnded(){if(HOST_REC){host({type:"capsule-recording-ended",recording:HOST_REC});HOST_REC=""}}
+/* Local SenseVoice decodes the recording when it is ready. Without it, in the Windows app, the
+   Windows speech recognizer hears the command instead (NATIVE_CLIP); its final text is sent as this
+   recording's text and gets the same kind of receipt. Otherwise the capsule says what is missing
+   before it records anything. */
+var NATIVE_HOST=false,NATIVE_CLIP=null;
+try{NATIVE_HOST=!!(window.chrome&&window.chrome.webview)}catch(_){NATIVE_HOST=false}
+function voiceRoute(cap){cap=cap||{};return cap.speech_ready?"sensevoice":NATIVE_HOST&&cap.capsule_voice_local?"windows":""}
+function missingVoice(cap){var missing=((cap||{}).speech_missing||[]).join(", ");return "Voice commands need local speech"+(missing?" (missing: "+missing+")":"")+". Type the command instead."}
 function discardVoice(ended){
   if(ended)hostRecordingEnded();
+  if(NATIVE_CLIP){host({type:"capsule-native-cancel"});NATIVE_CLIP=null}
   REC_GENERATION++;VOICE_STARTING=false;
   if(REC_CLIP){REC_CLIP.controller.abort();clearTimeout(REC_CLIP.timer)}REC_CLIP=null;
   clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;REC_PREVIEW_BUSY=false;
@@ -97,7 +106,7 @@ function load(quiet){
     $("dot").classList.toggle("on",!!s.active);
     if(!s.active){status("Start a Live Session in Collie first.",true);$("command").disabled=true;$("status").classList.add("inactive")}
     else if(changed){setWorking(!!RUN);status("Live Session changed. Please repeat your command.",true)}
-    else if((!quiet||recovered)&&!RUN&&!REC&&!ROUTING){status("Ready for a command.");$("command").disabled=false;$("status").classList.remove("inactive")}
+    else if((!quiet||recovered)&&!RUN&&!REC&&!NATIVE_CLIP&&!ROUTING){status("Ready for a command.");$("command").disabled=false;$("status").classList.remove("inactive")}
     return STATE;
   }).catch(function(e){if(!CLOSED&&version===LOAD_VERSION){OFFLINE=true;status(e.message,true)}return null});
 }
@@ -230,6 +239,8 @@ function previewVoice(mime,clip){
 }
 function stopVoice(){
   if(REC_CLIP)REC_CLIP.released=true;
+  // Windows recognizer: stopping lets it deliver the phrase already spoken as its final text.
+  if(NATIVE_CLIP)host({type:"capsule-native-stop",generation:String(NATIVE_CLIP.generation)});
   clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;
   if(REC&&REC.state!=="inactive")try{REC.stop()}catch(_){}
   if(REC_FRAME)cancelAnimationFrame(REC_FRAME);REC_FRAME=0;
@@ -281,8 +292,34 @@ function sendFinalVoice(blob,mime,clip,attempt){
   });
 }
 function uploadVoice(blob,mime,clip){if(!operationCurrent(clip))return;clip.seq=++CAPSULE_SEQ;sendFinalVoice(blob,mime,clip,0)}
+function sendNativeText(clip,text,attempt){
+  if(!operationCurrent(clip)||clip.consumed)return;
+  if(clip.seq===undefined)clip.seq=++CAPSULE_SEQ;
+  // The same text under the same sequence number: a resend is a duplicate, never a second command.
+  api("/api/live-copilot/capsule-text","POST",{session_id:clip.session,seq:clip.seq,text:text},clip).then(function(){
+    if(operationCurrent(clip)){status("Finalizing transcript…");waitForVoice(clip)}
+  }).catch(function(e){
+    if(!operationCurrent(clip))return;
+    if(e instanceof TypeError&&attempt<4){clip.timer=setTimeout(function(){sendNativeText(clip,text,attempt+1)},750);return}
+    voiceFailed(clip,e.message||"Voice command could not be recorded.");
+  });
+}
+function nativeVoiceMessage(d){
+  var clip=NATIVE_CLIP;
+  if(!clip||String(d.generation)!==String(clip.generation)||!operationCurrent(clip))return;
+  if(d.type==="capsule-speech-start")return;
+  if(d.type==="capsule-speech-partial"){
+    var heard=String(d.text||"").trim();
+    if(meaningfulVoice(heard)){clip.preview=heard;$("command").value=heard;status("Listening… · live text")}
+    return;
+  }
+  // One final (or error) per recording; anything after it is ignored.
+  NATIVE_CLIP=null;setListening(false);hostRecordingEnded();
+  if(d.type==="capsule-speech-error"){voiceFailed(clip,String(d.message||"Windows speech recognition failed.")+" "+missingVoice(STATE.capabilities));return}
+  sendNativeText(clip,String(d.text||""),0);
+}
 async function startVoice(pushToTalk){
-  if(CLOSED||REC||VOICE_STARTING)return;
+  if(CLOSED||REC||NATIVE_CLIP||VOICE_STARTING)return;
   if(RUN||ROUTING){hostRecordingEnded();return}
   var mime=recordMime();if(!mime){hostRecordingEnded();status("This runtime cannot record supported audio chunks.",true);return}
   discardVoice();var clip=Object.assign(operation(),{controller:new AbortController(),preview:"",consumed:false,timer:0,released:false});REC_CLIP=clip;VOICE_STARTING=true;
@@ -290,11 +327,18 @@ async function startVoice(pushToTalk){
   if(!fresh||!fresh.active||CLOSED||clip.generation!==REC_GENERATION||clip.released){
     if(clip.generation===REC_GENERATION){VOICE_STARTING=false;REC_CLIP=null;setListening(false);hostRecordingEnded()}return;
   }
+  var route=voiceRoute(fresh.capabilities);
+  if(!route){VOICE_STARTING=false;REC_CLIP=null;hostRecordingEnded();status(missingVoice(fresh.capabilities),true);$("command").focus();return}
   clip.session=fresh.session_id;
   // Continue from the last clip this session accepted; the server refuses a gap.
   CAPSULE_SEQ=Number((fresh.audio||{}).capsule_seq ?? -1);
   REC_PTT=!!pushToTalk;REC_STARTED=Date.now();REC_HEARD=false;REC_LAST_SOUND=REC_STARTED;
   $("command").value="";$("answer").textContent="";setListening(true);
+  if(route==="windows"){
+    NATIVE_CLIP=clip;VOICE_STARTING=false;
+    host({type:"capsule-native-start",generation:String(clip.generation),language:String(TARGET.speech_language||"")});
+    return;
+  }
   var stream=null,ctx=null;
   try{
     stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
@@ -326,15 +370,17 @@ $("lang").onclick=function(){if(STATE.active)host({type:"capsule-listen",languag
 $("close").onclick=closeCapsule;$("allow").onclick=function(){answerPermission("allow")};$("deny").onclick=function(){answerPermission("deny")};
 $("status").onclick=function(){if(!STATE.active)host({type:"capsule-open-main"})};
 /* The native shell captured the target window before the capsule took focus and already starts the
-   recording itself; the page never asks it to start a second one. Native recognizer callbacks are
-   not accepted as commands: only the receipt for this capsule's own clip is. */
+   recording itself; the page never asks it to start a second one. A Windows recognizer message
+   counts only when it carries the generation of the recording the page asked it for, and even
+   then it becomes a command only through the server's receipt for that recording. */
 try{window.chrome.webview.addEventListener("message",function(e){
   var d=e.data||{};if(CLOSED)return;
   if(d.type==="capsule-record-start"){HOST_REC=String(d.recording||"");startVoice(d.push_to_talk===true)}
   else if(d.type==="capsule-record-stop")stopVoice();
+  else if(/^capsule-speech-/.test(String(d.type||"")))nativeVoiceMessage(d);
   else if(d.type==="capsule-context"){discardVoice();ROUTING=false;HAND=null;TARGET=d.target||{};load().then(beginHandoff)}
 })}catch(_){}
-setInterval(function(){if(!CLOSED&&!RUN&&!ROUTING&&!REC&&!VOICE_STARTING&&(!REC_CLIP||REC_CLIP.consumed))load(true)},2000);
+setInterval(function(){if(!CLOSED&&!RUN&&!ROUTING&&!REC&&!NATIVE_CLIP&&!VOICE_STARTING&&(!REC_CLIP||REC_CLIP.consumed))load(true)},2000);
 window.addEventListener("beforeunload",closeCapsule);
 api("/api/settings").then(function(s){var lang=String(((s||{}).values||{}).LANG||navigator.language||"en").toLowerCase();ZH=lang.indexOf("zh")===0;$("allow").textContent=t("Allow");$("deny").textContent=t("Don’t allow");$("command").placeholder=t("Say or type what Collie should do…");status("Connecting to the active Live Session…");host({type:"capsule-ready",language:"auto"})}).catch(function(){host({type:"capsule-ready",language:"auto"})});
 </script></body></html>

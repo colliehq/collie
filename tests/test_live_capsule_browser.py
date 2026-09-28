@@ -17,7 +17,9 @@ HTML = (Path(__file__).parents[1] / "harness/webui/live_capsule.html").read_text
 
 @pytest.fixture
 def capsule_page():
-    state = {"session_id": "live-capsule-test", "active": True, "audio": {}, "events": []}
+    state = {"session_id": "live-capsule-test", "active": True, "audio": {}, "events": [],
+             "capabilities": {"speech_ready": True, "capsule_voice_local": True,
+                              "speech_missing": []}}
     previews, finals, commands = [], [], []
     control = {"token": "capsule-boot-one", "refreshes": 0, "rejected": [], "deny_refresh": False,
                "state": state, "final_responses": [], "receipt": True, "receipt_text":
@@ -87,6 +89,19 @@ def capsule_page():
                     return reply(request, control["intent_status"],
                                  {"error": "intent model returned an error"})
                 return reply(request, 200, control["intent"])
+            if path == "/api/live-copilot/capsule-text":
+                body = json.loads(request.request.post_data)
+                control.setdefault("native_texts", []).append(body)
+                audio = state["audio"]
+                previous = int(audio.get("capsule_seq", -1))
+                if body["seq"] <= previous:
+                    return reply(request, 202, {"ok": True, "duplicate": True})
+                if body["seq"] != previous + 1:
+                    return reply(request, 409, {"error": "audio sequence gap"})
+                audio["capsule_seq"] = body["seq"]
+                audio.setdefault("capsule_results", []).append(
+                    {"seq": body["seq"], "text": body["text"], "error": ""})
+                return reply(request, 202, {"ok": True, "seq": body["seq"]})
             if path == "/api/live-copilot/dictate":
                 control.setdefault("dictated", []).append(json.loads(request.request.post_data))
                 if control.get("dictate_error"):
@@ -588,3 +603,97 @@ def test_late_intent_cannot_dispatch_after_target_changes(capsule_page):
                                        body='{"mode":"command","confidence":0.99}')
     page.wait_for_timeout(300)
     assert not commands and not control["streams"] and not errors
+
+
+# --- Without local SenseVoice: the Windows recognizer hears the command ------------------------
+
+def _no_sensevoice(control, native=True):
+    control["state"]["capabilities"] = {"speech_ready": False, "capsule_voice_local": native,
+                                        "speech_missing": ["SenseVoice model", "ffmpeg"]}
+
+
+def _host_types(page):
+    return page.evaluate("HOST_MESSAGES.map(x=>x.type)")
+
+
+def test_without_sensevoice_the_windows_recognizer_hears_one_command(capsule_page):
+    page, previews, finals, commands, errors, control = capsule_page
+    _no_sensevoice(control)
+    control["intent"] = {"mode": "command", "confidence": 0.99}
+    page.evaluate("HOST_MESSAGES.length=0;"
+                  "sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'3'})")
+    page.wait_for_function("HOST_MESSAGES.some(x=>x.type==='capsule-native-start')")
+    start = page.evaluate("HOST_MESSAGES.find(x=>x.type==='capsule-native-start')")
+    generation = start["generation"]
+    assert page.evaluate("RECORDERS.length") == 0            # no second microphone reader
+    # An untagged or stale message is not this recording.
+    page.evaluate("sendHostMessage({type:'capsule-speech-partial',text:'someone else'})")
+    page.evaluate("(g)=>sendHostMessage({type:'capsule-speech-partial',text:'Open my',"
+                  "generation:g})", generation)
+    assert page.locator("#command").input_value() == "Open my"
+    page.evaluate("sendHostMessage({type:'capsule-record-stop'})")    # X2 released
+    assert "capsule-native-stop" in _host_types(page)
+    page.evaluate("(g)=>sendHostMessage({type:'capsule-speech-final',text:'Open my notes',"
+                  "generation:g})", generation)
+    page.evaluate("(g)=>sendHostMessage({type:'capsule-speech-final',text:'Open my notes',"
+                  "generation:g})", generation)                   # delivered twice
+    page.wait_for_function("document.getElementById('answer').textContent.includes('Board command')",
+                           timeout=10000)
+    assert control["native_texts"] == [{"session_id": "live-capsule-test", "seq": 0,
+                                        "text": "Open my notes"}]
+    assert [command["text"] for command in commands] == ["Open my notes"]
+    assert len(control["streams"]) == 1 and not finals and not previews
+    assert page.evaluate("HOST_MESSAGES.filter(x=>x.type==='capsule-recording-ended')"
+                         ".map(x=>x.recording)") == ["3"]
+    assert not errors
+
+
+def test_windows_recognizer_silence_says_so_and_runs_nothing(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    _no_sensevoice(control)
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:false,recording:'4'})")
+    page.wait_for_function("HOST_MESSAGES.some(x=>x.type==='capsule-native-start')")
+    page.evaluate("sendHostMessage({type:'capsule-speech-final',text:'',"
+                  "generation:HOST_MESSAGES.find(x=>x.type==='capsule-native-start').generation})")
+    page.wait_for_function("document.getElementById('status').textContent.includes(\"didn't catch\")")
+    assert not commands and not control["streams"] and not errors
+
+
+def test_a_windows_recognizer_error_names_what_is_missing(capsule_page):
+    page, _, _, commands, errors, control = capsule_page
+    _no_sensevoice(control)
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'5'})")
+    page.wait_for_function("HOST_MESSAGES.some(x=>x.type==='capsule-native-start')")
+    page.evaluate("sendHostMessage({type:'capsule-speech-error',message:'Windows speech "
+                  "recognition unavailable: no recognizer',generation:HOST_MESSAGES.find("
+                  "x=>x.type==='capsule-native-start').generation})")
+    status = page.locator("#status").inner_text()
+    assert "no recognizer" in status and "SenseVoice model" in status
+    assert "capsule-recording-ended" in _host_types(page)
+    assert not commands and not errors
+
+
+def test_without_any_local_speech_the_capsule_says_so_before_recording(capsule_page):
+    page, _, finals, commands, errors, control = capsule_page
+    _no_sensevoice(control, native=False)
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true,recording:'6'})")
+    page.wait_for_function("document.getElementById('status').textContent.includes('missing')")
+    status = page.locator("#status").inner_text()
+    assert "SenseVoice model" in status and "ffmpeg" in status and "Type the command" in status
+    assert page.evaluate("RECORDERS.length") == 0
+    assert "capsule-native-start" not in _host_types(page)
+    assert "capsule-recording-ended" in _host_types(page)
+    assert not finals and not commands and not errors
+
+
+def test_native_shell_runs_the_windows_recognizer_only_when_the_page_asks():
+    native = (Path(__file__).parents[1] / "harness" / "wallpaper" / "Program.cs").read_text(
+        encoding="utf-8")
+    assert 'StartCapsuleSpeech(JsonField(raw, "language"), JsonField(raw, "generation"))' in native
+    assert native.count("StartCapsuleSpeech(") == 2      # its definition and that one request
+    speech = native.split("static void StartCapsuleSpeech(", 1)[1].split("void PostCapsuleTarget", 1)[0]
+    for kind in ("capsule-speech-partial", "capsule-speech-final", "capsule-speech-error",
+                 "capsule-speech-start"):
+        line = next(row for row in speech.splitlines() if kind in row)
+        assert "tag" in line or "tag" in speech.split(kind, 1)[1].split(";", 1)[0]
+    assert "capsule-native-stop" in native and "capsule-native-cancel" in native

@@ -1770,14 +1770,76 @@ class LiveSessionStore:
                 if not row.get("ignored"):
                     accepted.append(row["text"])
             if source == "capsule" and seq is not None:
-                # The receipt belongs to this exact clip, including silence, echo and errors.
-                # The capsule reads it by seq and never guesses from a nearby event's time.
-                current = self._read()
-                audio = dict(current.get("audio") or {})
-                audio["capsule_results"] = (audio.get("capsule_results") or [])[-31:] + [{
-                    "seq": int(seq), "text": " ".join(accepted), "error": error}]
-                current["audio"] = audio
-                self._write(current)
+                self._write_capsule_receipt(seq, " ".join(accepted), error)
+
+    def _write_capsule_receipt(self, seq, text, error="") -> None:
+        """Record what one capsule recording said, under its sequence number.
+
+        The receipt belongs to this exact recording, including silence, echo and errors. The
+        capsule reads it by seq and never guesses from a nearby event's time. Called inside the
+        caller's transaction.
+        """
+        current = self._read()
+        audio = dict(current.get("audio") or {})
+        audio["capsule_results"] = (audio.get("capsule_results") or [])[-31:] + [{
+            "seq": int(seq), "text": text, "error": error}]
+        current["audio"] = audio
+        self._write(current)
+
+    def ingest_capsule_text(self, *, session_id, seq, text) -> dict:
+        """Accept the Windows recognizer's final text for one capsule recording.
+
+        Used when local SenseVoice is not ready: the native capsule recognizer hears the command
+        instead. The text takes the capsule's next sequence number exactly as an audio clip would,
+        so a resent request is a duplicate rather than a second command, and it becomes the same
+        capsule_speech event and receipt a decoded clip does.
+        """
+        if not _SAFE_ID.fullmatch(str(session_id or "")):
+            raise LiveCopilotError("invalid live session id")
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            raise LiveCopilotError("audio sequence must be an integer")
+        if seq < 0:
+            raise LiveCopilotError("audio sequence must be non-negative")
+        if not isinstance(text, str) or len(text) > 4_000:
+            raise LiveCopilotError("capsule text must be a string of at most 4,000 characters")
+        fingerprint = hashlib.sha256(b"text\0" + text.encode("utf-8")).hexdigest()
+        with self._transaction():
+            value = self._read()
+            if not value.get("active") or value.get("session_id") != session_id:
+                raise LiveCopilotError("live listening authority is no longer active")
+            audio = dict(value.get("audio") or {})
+            previous = int(audio.get("capsule_seq", -1))
+            if seq <= previous:
+                matching = next((row for row in audio.get("recent_chunks", [])
+                                 if row.get("source") == "capsule" and row.get("seq") == seq), None)
+                if matching and matching.get("digest") == fingerprint:
+                    return {"ok": True, "duplicate": True, "seq": seq}
+                raise LiveCopilotError(
+                    "audio sequence already accepted with different or unavailable clip identity; "
+                    "refresh this session before recording again")
+            if seq != previous + 1:
+                raise LiveCopilotError("audio sequence gap: expected %d" % (previous + 1))
+            audio["capsule_seq"] = seq
+            audio["recent_chunks"] = (audio.get("recent_chunks") or [])[-127:] + [{
+                "source": "capsule", "seq": seq, "digest": fingerprint}]
+            value["audio"] = audio
+            spoken = _text(text, 4_000)
+            if spoken and not _meaningful_transcript(spoken):
+                value["audit"] = (value.get("audit") or [])[-79:] + [{
+                    "at_ms": _now_ms(), "action": "speech_fragment_suppressed",
+                    "detail": "source=capsule reason=filler_only engine=windows"}]
+                spoken = ""
+            self._write(value)
+            accepted = ""
+            if spoken:
+                row = self.add_event(source="you", kind="capsule_speech", text=spoken,
+                                     session_id=session_id)
+                if not row.get("ignored"):
+                    accepted = row["text"]
+            self._write_capsule_receipt(seq, accepted)
+        return {"ok": True, "seq": seq}
 
     def dismiss_suggestion(self, suggestion_id) -> dict:
         suggestion_id = str(suggestion_id or "")

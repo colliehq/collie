@@ -31,6 +31,11 @@ speech-detection model (MIT) is also present — `silero_vad.onnx` in that model
 `models\speech-gate\silero-v5.onnx`, or the file named by `COLLIE_SPEECH_VAD_MODEL` — each clip must
 contain detected speech before it is transcribed, so background noise does not become stray words.
 Without it Live transcribes as before. Only recognized command text goes to the configured Collie model.
+When SenseVoice is not ready, the Windows app's capsule uses Windows speech recognition instead
+(the recognizer for the current keyboard input language, or the first one installed); anywhere else
+the capsule says which pieces are missing before it records, and typed commands still work. While
+the capsule records, the Windows app's continuous Live recognizer pauses, so a command is not also
+logged, or answered aloud, as conversation.
 A capsule command is exactly the text recognized from that capsule recording; if nothing
 recognizable came back, the capsule says so instead of using other nearby speech. If the connection
 to Collie drops while a command runs, the capsule asks Collie about that same task rather than
