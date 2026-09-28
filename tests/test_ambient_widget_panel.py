@@ -30,6 +30,8 @@ def ambient(tmp_path, monkeypatch):
         raise OSError("no network in tests")
 
     monkeypatch.setattr(desktop_weather, "_get", offline)
+    monkeypatch.setattr(desktop_weather, "_state", {"checked": None, "failures": 0, "data": None,
+                                                    "updated": None})
     server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -75,7 +77,7 @@ def test_edit_mode_lists_every_widget_with_its_state(ambient):
     page.click("#editbtn")
     panel = page.locator("#widgetPanel")
     assert panel.is_visible()
-    names = panel.locator(".wp-row .wp-name").all_inner_texts()
+    names = panel.locator(".wp-row:not(.wp-sub) .wp-name").all_inner_texts()
     assert [n.strip() for n in names] == ["Name and logo", "Clock & weather", "Apps", "Music",
                                           "System", "Projects"]
     assert _row(page, "Music").locator("input[type=checkbox]").is_checked()
@@ -116,6 +118,43 @@ def test_choosing_a_corner_moves_the_widget_and_keeps_everything_else(ambient):
     _row(page, "System").get_by_role("button", name="Top left").click()
     page.wait_for_selector("#slot-tl .sys", timeout=10000)
     assert _saved(config, "system") == {"on": True, "slot": "tl"}
+
+
+def test_the_weather_can_be_switched_off_and_on_from_the_panel(ambient, monkeypatch):
+    from harness import desktop_weather
+    base, config, browser = ambient
+    asked = []
+
+    def get(url):
+        asked.append(url)
+        if url.startswith(desktop_weather.GEO_URL):
+            return {"latitude": 37.3, "longitude": -121.9, "city": "San Jose",
+                    "country_code": "US"}
+        return {"current": {"temperature_2m": 19.0, "weather_code": 0, "is_day": 1,
+                            "time": "2026-09-28T12:00"}}
+
+    monkeypatch.setattr(desktop_weather, "_get", get)
+    page = _open(base, browser)
+    page.wait_for_selector("#wWx .t", timeout=10000)
+    page.click("#editbtn")
+    weather = page.locator('#widgetPanel [data-wp="clock:weather"]')
+    assert weather.is_checked()
+    assert "ipapi.co" in page.inner_text("#widgetPanel .wp-sub")
+    weather.uncheck()
+    deadline = time.time() + 10
+    while time.time() < deadline and _saved(config, "clock").get("weather") is not False:
+        time.sleep(0.1)
+    assert _saved(config, "clock")["weather"] is False and _saved(config, "clock")["on"] is True
+    page.wait_for_selector("#wWx:not([data-state])", timeout=10000)
+    assert page.inner_text("#wWx") == ""
+    before = len(asked)
+    desktop_weather._state["checked"] = None                  # a refresh would be due now
+    page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+    page.wait_for_timeout(800)
+    assert len(asked) == before                                # off: nobody asks
+    page.locator('#widgetPanel [data-wp="clock:weather"]').check()
+    page.wait_for_selector("#wWx .t", timeout=10000)
+    assert _saved(config, "clock")["weather"] is True and len(asked) > before
 
 
 def test_an_unreadable_desktop_json_is_explained_and_not_overwritten(ambient):
