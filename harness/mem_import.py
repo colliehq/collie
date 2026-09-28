@@ -390,7 +390,8 @@ def chunk_turns(turns: list[tuple[str, str]], max_chunks: int = DEFAULT_MAX_CHUN
     The whole session is chunked in ORDER (rolling distillation needs the narrative);
     only when a giant session exceeds `max_chunks` do we sample evenly across it —
     always keeping the first and last chunk, where the task statement and the final
-    state live."""
+    state live. A budget of one chunk cannot keep both, and keeps the last: the final
+    state is what the rolling distiller exists to capture."""
     lines = ["%s: %s" % ("U" if r == "user" else "A",
                          t[:MAX_USER_CHARS if r == "user" else MAX_ASST_CHARS])
              for r, t in turns]
@@ -404,6 +405,8 @@ def chunk_turns(turns: list[tuple[str, str]], max_chunks: int = DEFAULT_MAX_CHUN
     n = len(chunks)
     if max_chunks <= 0 or n <= max_chunks:   # 0 = no sampling: full-coverage rolling pass
         return chunks
+    if max_chunks == 1:                      # the spacing below divides by max_chunks - 1
+        return [chunks[-1]]
     idx = sorted({round(i * (n - 1) / (max_chunks - 1)) for i in range(max_chunks)})
     return [chunks[i] for i in idx]
 

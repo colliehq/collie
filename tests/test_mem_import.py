@@ -207,3 +207,14 @@ def test_an_import_reads_damaged_logs_alongside_clean_ones(roots, tmp_path):
         assert any(k.startswith("import src:codex sid:rollout-") for k in keys), keys
     finally:
         mem.close()
+
+
+# ---------------------------------------------------------------------------- chunking --
+def test_a_one_chunk_budget_keeps_the_final_state_instead_of_crashing(monkeypatch):
+    monkeypatch.setattr(mi, "MAX_CHUNK_CHARS", 60)
+    turns = [("user", "First choose an interim configuration. " * 2),
+             ("assistant", "Explore an alternative configuration. " * 2),
+             ("user", "Correction: use port 8787.")]
+    assert mi.chunk_turns(turns, max_chunks=1) == ["U: Correction: use port 8787."]
+    full = mi.chunk_turns(turns, max_chunks=0)
+    assert mi.chunk_turns(turns, max_chunks=2) == [full[0], full[-1]]
