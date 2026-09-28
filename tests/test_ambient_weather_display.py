@@ -113,6 +113,29 @@ def test_it_says_loading_and_then_unavailable_instead_of_staying_blank(ambient):
     assert not page.query_selector("#wWx .t")
 
 
+def test_a_second_window_is_answered_at_once_and_fills_in_when_the_first_fetch_lands(ambient):
+    from harness import desktop_weather
+    base, ctl, browser = ambient
+    ctl["gate"] = threading.Event()
+    first = _open(base, browser)
+    until = time.time() + 10
+    while not desktop_weather._state.get("refreshing") and time.time() < until:
+        time.sleep(0.05)
+    assert desktop_weather._state.get("refreshing"), "the first window never started a fetch"
+    second = browser.new_context(viewport={"width": 1280, "height": 800}).new_page()
+    second.route(re.compile(r"https://.*"), lambda r: r.abort())
+    began = time.time()
+    with second.expect_response(lambda r: "/api/desktop/weather" in r.url,
+                                timeout=10000) as answered:
+        second.goto(base + "/ambient", wait_until="load")
+    assert answered.value.json() == {"ok": False, "pending": True}
+    assert time.time() - began < 5                  # not held behind the first window's fetch
+    assert _settled(second, "loading") == "Loading weather…"
+    ctl["gate"].set()
+    assert "12°" in _settled(second, "ready")       # arrives by the page's own retry, no reload
+    assert "12°" in _settled(first, "ready")
+
+
 def test_a_failed_refresh_shows_the_last_conditions_as_cached_with_their_time(ambient):
     from harness import desktop_weather
     base, ctl, browser = ambient

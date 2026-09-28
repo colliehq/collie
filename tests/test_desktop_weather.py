@@ -3,9 +3,10 @@
 Nothing here reaches ipapi.co or Open-Meteo: `_get` (or urlopen itself) is replaced, and the
 module's clocks are a stand-in the tests move by hand.
 """
-import concurrent.futures
+import http.server
 import json
 import threading
+import time
 import urllib.error
 
 import pytest
@@ -15,6 +16,42 @@ from harness import desktop_weather as wx
 
 CURRENT = {"temperature_2m": 16.6, "weather_code": 1, "is_day": 0, "time": "2026-09-11T03:00"}
 GEO = {"latitude": 37.3, "longitude": -121.9, "city": "San Jose", "country_code": "US"}
+
+
+@pytest.fixture
+def local_http():
+    """A loopback HTTP server whose GET handler the test supplies; records each User-Agent."""
+    servers, seen = [], []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        behaviour = None
+
+        def log_message(self, *_):
+            pass
+
+        def reply(self, body):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            seen.append(self.headers.get("User-Agent"))
+            type(self).behaviour(self)
+
+    def start(behaviour):
+        Handler.behaviour = staticmethod(behaviour)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return "http://127.0.0.1:%d" % server.server_address[1], seen
+
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
 
 
 class Clock:
@@ -57,24 +94,32 @@ def weather_io(monkeypatch):
     return clock, calls, current, get
 
 
-def test_concurrent_windows_share_one_fetch_and_get_their_own_copy(weather_io):
-    _, calls, _, _ = weather_io
-    barrier = threading.Barrier(6)
+def test_one_window_fetches_while_the_others_are_answered_at_once(weather_io, monkeypatch):
+    _, calls, _, get = weather_io
+    gate, first = threading.Event(), []
 
-    def call(_):
-        barrier.wait()
-        return wx.weather()
+    def slow(url):
+        assert gate.wait(10)
+        return get(url)                             # `get` records the call
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        rows = list(pool.map(call, range(6)))
-    assert len(calls) == 2, calls                       # one location lookup, one forecast
-    assert all(row == rows[0] for row in rows)
-    assert rows[0]["ok"] is True and rows[0]["temp_c"] == 16.6
-    assert rows[0]["code"] == 1 and rows[0]["is_day"] == 0 and rows[0]["stale"] is False
-    assert rows[0]["city"] == "San Jose" and rows[0]["country_code"] == "US"
+    monkeypatch.setattr(wx, "_get", slow)
+    starter = threading.Thread(target=lambda: first.append(wx.weather()))
+    starter.start()
+    deadline = time.monotonic() + 5
+    while not wx._state.get("refreshing") and time.monotonic() < deadline:
+        time.sleep(0.01)
+    began = time.monotonic()
+    others = [wx.weather() for _ in range(5)]      # five more windows while the fetch is out
+    assert time.monotonic() - began < 0.5           # none waited for it
+    assert others == [{"ok": False, "pending": True}] * 5
+    gate.set()
+    starter.join(10)
+    assert first[0]["ok"] is True and first[0]["temp_c"] == 16.6 and first[0]["stale"] is False
+    rows = [wx.weather() for _ in range(3)]
+    assert all(row == first[0] for row in rows)
+    assert len(calls) == 2, calls                   # one location lookup, one forecast
     rows[0]["city"] = "mutated"
     assert wx.weather()["city"] == "San Jose"
-    assert len(calls) == 2
 
 
 def test_the_cache_is_kept_for_fifteen_minutes(weather_io):
@@ -209,31 +254,88 @@ def test_a_location_answer_without_coordinates_asks_no_forecast(weather_io, monk
     assert all(url.startswith("https://ipapi.co/") for url in calls)
 
 
-def test_requests_name_collie_and_refuse_an_oversized_answer(monkeypatch):
-    seen = []
-
-    class Response:
-        def __init__(self, body):
-            self.body = body
-
-        def read(self, limit):
-            return self.body[:limit]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-    def urlopen(request, timeout):
-        seen.append((request.full_url, request.get_header("User-agent"), timeout))
-        return Response(b"x" * (wx.MAX_BYTES + 1))
-
-    monkeypatch.setattr(wx.urllib.request, "urlopen", urlopen)
-    with pytest.raises(ValueError):
-        wx._get(wx.GEO_URL)
-    assert seen == [(wx.GEO_URL, wx.USER_AGENT, wx.TIMEOUT_S)]
+def test_requests_name_collie_and_refuse_an_oversized_answer(local_http):
+    base, seen = local_http(lambda handler: handler.reply(b"x" * (wx.MAX_BYTES + 1)))
+    with pytest.raises(ValueError, match="too large"):
+        wx._get(base + "/json/")
+    assert seen == [wx.USER_AGENT]
     assert "collie" in wx.USER_AGENT.lower() and "urllib" not in wx.USER_AGENT.lower()
+
+
+@pytest.mark.parametrize("trickle", ["body", "headers"])
+def test_a_trickling_reply_is_cut_off_at_the_deadline_and_nobody_waits_on_it(
+        local_http, monkeypatch, trickle):
+    """A server sending a byte at a time kept every read inside TIMEOUT_S, so the old code waited
+    as long as it kept sending (21.7 s at 2 bytes/s), with every other window queued on the lock."""
+    stop = threading.Event()
+
+    def drip(handler):
+        if trickle == "headers":
+            data = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n" + b"X-Pad: " + b"a" * 200
+        else:
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/json")
+            handler.end_headers()
+            data = b'{"latitude": 37.3, "longitude": -121.9, "pad": "' + b"a" * 200
+        for byte in data:
+            if stop.is_set():
+                return
+            try:
+                handler.wfile.write(bytes([byte]))
+                handler.wfile.flush()
+            except OSError:
+                return
+            time.sleep(0.05)
+
+    base, _seen = local_http(drip)
+    monkeypatch.setattr(wx, "_state", {"checked": None, "failures": 0, "data": None,
+                                       "updated": None, "refreshing": False, "started": None,
+                                       "generation": 0})
+    monkeypatch.setattr(wx, "GEO_URL", base + "/json/")
+    monkeypatch.setattr(wx, "DEADLINE_S", 1.0, raising=False)
+    try:
+        began, result = time.monotonic(), []
+        starter = threading.Thread(target=lambda: result.append(wx.weather()))
+        starter.start()
+        time.sleep(0.3)
+        t = time.monotonic()
+        other = wx.weather()
+        assert time.monotonic() - t < 0.5 and other == {"ok": False, "pending": True}
+        starter.join(10)
+        took = time.monotonic() - began
+        assert took < 3.0, took                       # 1 s deadline, not the 10 s of dripping
+        until = time.monotonic() + 3
+        while wx._state["refreshing"] and time.monotonic() < until:
+            time.sleep(0.05)
+        assert wx._state["refreshing"] is False and wx._state["failures"] == 1
+        assert result[0]["ok"] is False
+    finally:
+        stop.set()
+
+
+def test_an_attempt_that_never_returns_is_given_up_and_cannot_write_later(weather_io,
+                                                                          monkeypatch):
+    clock, calls, _, get = weather_io
+    gate = threading.Event()
+
+    def hung(url):                                  # a DNS lookup no socket timeout reaches
+        gate.wait(10)
+        return get(url)
+
+    monkeypatch.setattr(wx, "_get", hung)
+    monkeypatch.setattr(wx, "DEADLINE_S", 0.2, raising=False)
+    began = time.monotonic()
+    assert wx.weather() == {"ok": False, "pending": True}
+    assert time.monotonic() - began < 3
+    clock.advance(wx.STUCK_S)
+    assert wx.weather()["ok"] is False              # given up: one failure, backing off
+    assert wx._state["refreshing"] is False and wx._state["failures"] == 1
+    gate.set()                                      # it finally comes back with an answer...
+    for thread in threading.enumerate():
+        if thread.name == "collie-desktop-weather":
+            thread.join(5)
+    assert len(calls) == 2                          # it did fetch
+    assert wx._state["data"] is None and wx._state["failures"] == 1   # ...and wrote nothing
 
 
 def test_the_forecast_request_carries_only_the_rounded_point(weather_io):

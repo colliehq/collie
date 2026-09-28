@@ -8,7 +8,10 @@ reload. Asking here gives every window one answer from one cache:
 - after a failure the next attempt waits 1, 2, 4, 8, 16 and then 30 minutes, so an offline
   laptop or a rate-limited service is not asked again every minute;
 - a failed refresh keeps the last conditions for up to an hour, marked ``stale``, instead of
-  showing them as current, and after that says the weather is unavailable.
+  showing them as current, and after that says the weather is unavailable;
+- one refresh at a time, run outside the lock and finished within ``DEADLINE_S``: the window that
+  starts it waits for it (never longer), and every other window is answered at once from the
+  cache, or told the answer is ``pending``.
 
 The off switch is desktop.json's ``{"widgets": {"clock": {"weather": false}}}`` (see
 ``desktop.weather_enabled``, which also reads an unreadable desktop.json as off). The web handler
@@ -17,6 +20,8 @@ reads it before calling ``weather`` so that, when it is off, nothing leaves the 
 import http.client
 import json
 import math
+import socket
+import ssl
 import threading
 import time
 import urllib.parse
@@ -31,23 +36,93 @@ REFRESH_S = 15 * 60
 RETRY_FIRST_S = 60
 RETRY_MAX_S = 30 * 60
 STALE_LIMIT_S = 60 * 60
-TIMEOUT_S = 4
+TIMEOUT_S = 4          # per connection attempt and per read
+DEADLINE_S = 8         # the whole refresh, both requests
+STUCK_S = 60           # a refresh not back by then (a DNS lookup can outlast any deadline) is given up
 MAX_BYTES = 256 * 1024
 
 _lock = threading.Lock()
-# checked: monotonic time of the last attempt; failures: attempts failed since the last success;
-# data/updated: the last good answer and the monotonic time it arrived.
-_state = {"checked": None, "failures": 0, "data": None, "updated": None}
+_local = threading.local()
+# checked: monotonic time the last attempt ended; failures: attempts failed since the last success;
+# data/updated: the last good answer and the monotonic time it arrived; refreshing/started/
+# generation: the one attempt in flight, when it began, and which attempt may still write here.
+_state = {"checked": None, "failures": 0, "data": None, "updated": None,
+          "refreshing": False, "started": None, "generation": 0}
+
+
+def _open(request, deadline):
+    """Open ``request`` with a watchdog that shuts its sockets at ``deadline`` (monotonic).
+
+    The socket timeout alone bounds each read, not the whole reply: a server sending two bytes a
+    second held a refresh for 21 s with TIMEOUT_S at 4. Shutting the socket ends a blocked read on
+    every platform (closing it does not on Linux). Returns (response, cancel).
+    """
+    sockets = []
+
+    class HTTPConnection(http.client.HTTPConnection):
+        def connect(self):
+            super().connect()
+            sockets.append(self.sock)
+
+    class HTTPSConnection(http.client.HTTPSConnection):
+        def connect(self):
+            super().connect()
+            sockets.append(self.sock)
+
+    context = ssl.create_default_context()      # what urlopen uses when given none
+
+    class HTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(HTTPConnection, req)
+
+    class HTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(HTTPSConnection, req, context=context)
+
+    def shut():
+        for sock in list(sockets):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("no time left for the weather request")
+    watchdog = threading.Timer(remaining, shut)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        opener = urllib.request.build_opener(HTTPHandler, HTTPSHandler)
+        response = opener.open(request, timeout=min(TIMEOUT_S, remaining))
+    except BaseException:
+        watchdog.cancel()
+        raise
+    return response, watchdog.cancel
 
 
 def _get(url):
+    deadline = getattr(_local, "deadline", None)
+    if deadline is None:
+        deadline = time.monotonic() + DEADLINE_S
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
                                                    "Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-        raw = response.read(MAX_BYTES + 1)
-    if len(raw) > MAX_BYTES:
-        raise ValueError("weather response too large")
-    return json.loads(raw)
+    response, cancel = _open(request, deadline)
+    try:
+        raw = bytearray()
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("the weather reply took too long")
+            chunk = response.read1(65536)          # what has arrived; never waits to fill a buffer
+            if not chunk:
+                break
+            raw += chunk
+            if len(raw) > MAX_BYTES:
+                raise ValueError("weather response too large")
+    finally:
+        cancel()
+        response.close()
+    return json.loads(bytes(raw))
 
 
 def _number(value, low, high):
@@ -122,23 +197,55 @@ def _answer(now, wall):
         # Stale: the latest refresh failed, or the answer is older than a refresh interval (it
         # outlived a sleep), or its age cannot be told because the wall clock went back.
         return dict(data, stale=_state["failures"] > 0 or age < 0 or age >= REFRESH_S)
+    if _state.get("refreshing"):
+        return {"ok": False, "pending": True}   # the first answer is on its way; ask again shortly
     return {"ok": False, "error": "Weather is unavailable right now."}
+
+
+def _refresh(generation, deadline):
+    """One attempt, run on its own thread with the lock released while it waits on the network."""
+    _local.deadline = deadline
+    try:
+        data = _fetch()
+    except Exception:          # noqa: BLE001 - whatever went wrong, the attempt failed and backs off
+        data = None
+    finally:
+        _local.deadline = None
+    with _lock:
+        if _state.get("generation", 0) != generation:
+            return             # given up on as stuck; a newer attempt owns the cache now
+        if data is not None:
+            _state.update(data=data, updated=time.monotonic(), failures=0)
+        else:
+            _state["failures"] += 1
+        _state.update(checked=time.monotonic(), refreshing=False)
 
 
 def weather():
     """The current conditions for the desktop clock, from the shared cache when it is fresh.
 
     Returns the conditions with ``stale`` (True when they are not current: the latest refresh
-    failed, or they are older than a refresh interval), or ``{"ok": False, "error": ...}`` when
-    there is nothing less than an hour old to show.
+    failed, or they are older than a refresh interval); ``{"ok": False, "pending": True}`` while
+    the first answer is being fetched; or ``{"ok": False, "error": ...}`` when there is nothing
+    less than an hour old to show.
     """
     with _lock:
-        if _due(time.monotonic(), time.time()):
-            try:
-                data = _fetch()
-            except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
-                _state["failures"] += 1
-            else:
-                _state.update(data=data, updated=time.monotonic(), failures=0)
-            _state["checked"] = time.monotonic()
+        now = time.monotonic()
+        if _state.get("refreshing") and now - (_state.get("started") or now) >= STUCK_S:
+            # It never came back. Count it as failed; if it finishes later it writes nothing.
+            _state.update(generation=_state.get("generation", 0) + 1, refreshing=False,
+                          checked=now, failures=_state["failures"] + 1)
+        start = not _state.get("refreshing") and _due(now, time.time())
+        if start:
+            generation = _state.get("generation", 0) + 1
+            deadline = now + DEADLINE_S
+            _state.update(refreshing=True, started=now, generation=generation)
+    if start:
+        worker = threading.Thread(target=_refresh, args=(generation, deadline),
+                                  name="collie-desktop-weather", daemon=True)
+        worker.start()
+        # The window that started the refresh waits for it, never past the deadline; every other
+        # window got past the lock above at once and is answered from the cache below.
+        worker.join(DEADLINE_S + 1)
+    with _lock:
         return _answer(time.monotonic(), time.time())

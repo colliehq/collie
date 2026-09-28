@@ -994,6 +994,12 @@
     weatherLoading = fetch(authUrl("/api/desktop/weather"), {cache:"no-store"}).then(function(r){
       if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
     }).then(function(d){
+      if (d && d.pending) {
+        // Another desktop window started the first fetch; the server did not make this one wait.
+        if (!(weatherData && weatherData.ok)) weatherData = null;
+        setTimeout(loadWeather, 3000);
+        return;
+      }
       weatherData = d && typeof d === "object" ? d : {ok:false};
       if (weatherData.country_code === "CN") MUSIC_REGION = "CN";   // refine music source region
     }).catch(function(){
