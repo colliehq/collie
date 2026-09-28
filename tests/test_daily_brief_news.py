@@ -637,6 +637,47 @@ def test_the_worker_starts_only_with_a_feed_and_ends_when_the_feeds_are_gone(roo
         news.stop_refresh(root)
 
 
+def test_saving_or_checking_never_waits_for_a_slow_background_fetch(root):
+    """The worker held one lock across its fetches and the page's save waited on it: with
+    the worker on an 8 s fetch, saving took 8 s -- and removing a feed that hangs, hung."""
+    slow, fast = "https://slow.example.com/rss", "https://fast.example.com/rss"
+    store, _ = subscribe(root, feeds=(slow,))
+    entered, release, slow_calls = threading.Event(), threading.Event(), []
+
+    def slow_fetch(url):
+        slow_calls.append(url)
+        entered.set()
+        release.wait(10)
+        return served([("From the slow feed", "https://example.com/slow", "")])(url)
+
+    quick = served([("From the fast feed", "https://example.com/fast", "")])
+    try:
+        assert news.start_refresh(root, fetch=slow_fetch, tick=3600)
+        assert entered.wait(5)
+        assert web.read(root, now=NOON)["news"]["refreshing"] is True
+        # Check now: the slow feed is already being fetched, so it is left to the worker.
+        started = time.monotonic()
+        assert web.news(root, {"action": "refresh"}, fetch=slow_fetch)["ok"] is True
+        assert time.monotonic() - started < 1.0 and slow_calls == [slow]
+        # Replace the hanging feed: answered at once, with the new feed already read.
+        started = time.monotonic()
+        saved = web.news(root, {"action": "settings", "settings": dict(
+            store.settings(), feeds=[fast])}, fetch=quick)
+        assert time.monotonic() - started < 1.0
+        assert saved["ok"] is True
+        assert [(feed["host"], feed["headlines"]) for feed in saved["news"]["feeds"]] == [
+            ("fast.example.com", 1)]
+    finally:
+        release.set()
+        news.stop_refresh(root)
+    deadline = time.monotonic() + 10
+    while news.refreshing(news.path_for(root)) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    # The slow fetch finished after its feed was removed, and was not written back.
+    assert [row["title"] for row in store.headlines()] == ["From the fast feed"]
+    assert web.read(root, now=NOON)["news"]["refreshing"] is False
+
+
 # --------------------------------------------------------------- what a headline may become
 
 

@@ -207,10 +207,20 @@ What a fetch may do, each rule a guard:
   start.
 * Stay bounded: no proxy from the environment, `Accept-Encoding: identity` (a
   compressed answer is refused), at most 2 MiB (refused, not cut), a 7 s socket
-  timeout and a 20 s deadline for the whole fetch, so a drip-feed cannot hold a worker.
-* Parse plain XML only: a document declaring a DTD or an entity is refused before
-  parsing. Only items whose link passes `safe_href(external=True)` are kept; the rest
-  are counted and the page says how many were left out.
+  timeout per read, and a 20 s deadline for the whole fetch. A socket timeout alone
+  restarts with every byte, so a watchdog timer shuts the connection down at the
+  deadline — during the TLS handshake, the headers, a chunk-size line or the body
+  alike — through a duplicate of the socket taken when it was created. Name
+  resolution is the one step it cannot interrupt; the operating system's resolver
+  bounds that, and nothing is sent until it answers.
+* Parse plain XML only, in one linear streaming pass (expat). A DTD or an entity is
+  refused, by a byte scan and again by the parser. Deeper than 32 levels or more than
+  50,000 elements is refused as it is read; only an item's own children are read,
+  never an item nested in one; each field keeps at most 4,096 characters and is cut
+  again before tags are stripped with a pattern that cannot backtrack; reading stops
+  after 100 items. A 2 MiB hostile feed is read or refused in hundredths of a second.
+  Only items whose link passes `safe_href(external=True)` are kept; the rest are
+  counted and the page says how many were left out.
 * The User-Agent is `Collie-DailyBrief/1.0 (+https://github.com/colliehq/collie)`;
   no cookie, credential or topic is sent. `docs/privacy.md` lists this destination.
 
@@ -220,7 +230,10 @@ still skips a feed read in the last minute), and in a lazy background worker tha
 `GET /api/brief` starts once a feed is saved. The worker reads a feed at most once per
 its interval (15 minutes to a day), and ends by itself when no feed is saved. Opening
 the brief never waits on a fetch: headlines are whatever the last fetch stored, and a
-failed fetch keeps the last good headlines with its reason beside the feed.
+failed fetch keeps the last good headlines with its reason beside the feed. Nor does a
+save or *Check now* wait for the worker: each refresh claims the feeds it fetches and
+leaves feeds another refresh has claimed alone, and no lock is held while fetching,
+so removing a feed that hangs is answered at once.
 
 Settings carry a revision, as to-dos do: a stale window's save is a 409 and saves
 nothing. A fetch that finishes after its feed was removed is not written back, so it

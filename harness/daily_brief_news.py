@@ -29,7 +29,8 @@ through the same guards, and each one is a guard rather than an optimisation:
 * **Rarely.**  In the background a feed is fetched at most once per the chosen
   interval, never more often than every 15 minutes, and only while Collie runs and
   after the brief has been opened.  Saving a feed, or pressing *Check now*, fetches
-  at once, but never the same feed twice within a minute.
+  at once, but never the same feed twice within a minute, never a feed another
+  refresh is already fetching, and never by waiting for one.
 
 Remote text is display-only.  A title and a summary are collapsed to one plain line
 here, bounded again by the brief builder, and drawn as text by the page.  A headline
@@ -501,13 +502,17 @@ def matches_topic(text, topic):
 # ---------------------------------------------------------------- the store
 
 
-_LOCKS = {}
-_LOCKS_GUARD = threading.Lock()
+#: Store path -> the feed addresses some refresh is fetching right now.  A refresh
+#: claims the feeds it will fetch and leaves claimed ones to whoever holds them, so no
+#: feed is fetched twice at once and no refresh ever waits for another.
+_CLAIMS = {}
+_CLAIMS_GUARD = threading.Lock()
 
 
-def _refresh_lock(path):
-    with _LOCKS_GUARD:
-        return _LOCKS.setdefault(path, threading.Lock())
+def refreshing(path):
+    """Whether any feed of this store is being fetched right now."""
+    with _CLAIMS_GUARD:
+        return bool(_CLAIMS.get(path))
 
 
 def _clean_settings(value):
@@ -600,31 +605,39 @@ class NewsStore:
         return clean
 
     def refresh(self, *, fetch=None, force=False, now=None):
-        """Fetch every subscribed feed that is due.  Returns how many were fetched.
+        """Fetch every subscribed feed that is due and not already being fetched.
 
-        One refresh at a time per store.  A failure keeps that feed's last good
-        headlines and records why; a feed removed while its fetch was running is not
-        written back, so it cannot reappear.
+        Returns how many this call fetched.  It never waits for another refresh: a
+        feed the background worker (or another window) is fetching is left to it, so
+        saving settings or pressing *Check now* answers at the pace of its own fetches
+        -- and removing a feed that is hanging answers at once.  Fetching and parsing
+        hold no lock; the write-back is one short SQLite transaction.  A failure keeps
+        that feed's last good headlines and records why; a feed removed while its
+        fetch was running is not written back, so it cannot reappear.
         """
         fetch = fetch or fetch_feed
-        with _refresh_lock(self.path):
-            wall = time.time() if now is None else float(now)
+        wall = time.time() if now is None else float(now)
+        with _CLAIMS_GUARD:
             prefs = self.settings()
             with self._connect() as db:
                 checked = {row["url"]: row["checked_at"]
                            for row in db.execute("SELECT url, checked_at FROM feeds")}
             floor = MANUAL_FLOOR_SECONDS if force else prefs["refresh_minutes"] * 60
-            due = [url for url in prefs["feeds"] if wall - checked.get(url, 0.0) >= floor]
-            if not due:
-                return 0
+            claimed = _CLAIMS.setdefault(self.path, set())
+            due = [url for url in prefs["feeds"]
+                   if url not in claimed and wall - checked.get(url, 0.0) >= floor]
+            claimed.update(due)
+        if not due:
+            return 0
 
-            def one(url):
-                try:
-                    rows, skipped = parse_feed(fetch(url), url)
-                    return url, rows, skipped, ""
-                except Exception as exc:      # noqa: BLE001 - recorded per feed, not raised
-                    return url, None, 0, _reason(exc)
+        def one(url):
+            try:
+                rows, skipped = parse_feed(fetch(url), url)
+                return url, rows, skipped, ""
+            except Exception as exc:          # noqa: BLE001 - recorded per feed, not raised
+                return url, None, 0, _reason(exc)
 
+        try:
             with ThreadPoolExecutor(max_workers=min(4, len(due))) as pool:
                 results = list(pool.map(one, due))
             stamp = time.time() if now is None else float(now)
@@ -643,7 +656,11 @@ class NewsStore:
                     else:
                         db.execute("INSERT OR REPLACE INTO feeds VALUES(?,?,?,?,?,?)",
                                    (url, json.dumps(rows), stamp, stamp, "", skipped))
-            return len(due)
+        finally:
+            # Released only after the write-back, so the next refresh sees the new time.
+            with _CLAIMS_GUARD:
+                claimed.difference_update(due)
+        return len(due)
 
     def panel(self):
         """What the page shows about the feeds: settings, and each feed's last answer."""
@@ -708,12 +725,6 @@ _WORKERS = {}
 _WORKERS_GUARD = threading.Lock()
 
 
-def refreshing(path):
-    with _WORKERS_GUARD:
-        worker = _WORKERS.get(path)
-        return bool(worker and worker["busy"])
-
-
 def start_refresh(root, *, fetch=None, tick=WORKER_TICK_SECONDS):
     """Keep this root's feeds fresh while Collie runs.  Lazy, single, and self-ending.
 
@@ -727,23 +738,18 @@ def start_refresh(root, *, fetch=None, tick=WORKER_TICK_SECONDS):
     with _WORKERS_GUARD:
         if path in _WORKERS:
             return True
-        worker = {"busy": False, "stop": threading.Event()}
+        worker = {"stop": threading.Event()}
         _WORKERS[path] = worker
 
     def loop():
         try:
             while not worker["stop"].is_set():
-                with _WORKERS_GUARD:
-                    worker["busy"] = True
                 try:
                     store = NewsStore(root)
                     store.refresh(fetch=fetch)
                     still = bool(store.settings()["feeds"])
                 except Exception:             # noqa: BLE001 - a bad tick waits for the next
                     still = True
-                finally:
-                    with _WORKERS_GUARD:
-                        worker["busy"] = False
                 if not still:
                     return
                 worker["stop"].wait(tick)

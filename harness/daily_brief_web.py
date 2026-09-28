@@ -569,6 +569,8 @@ def news(root, body, *, fetch=None):
     and ``conflict: True``, and nothing is saved), then fetches the feeds that are due --
     a newly added one always is -- so the answer can say at once whether it worked.
     ``{"action": "refresh"}`` fetches every saved feed not fetched in the last minute.
+    Neither waits for the background worker: a feed it is already fetching is left to
+    it, so removing a feed that hangs is answered at once.
 
     These are the only requests in the brief that reach the internet, and only the
     feed addresses the person saved, under the rules in :mod:`daily_brief_news`.
