@@ -1177,8 +1177,13 @@ class LiveSessionStore:
         if match.get("source") == source and _speech_echo_key(match.get("text")) == \
                 _speech_echo_key(text):
             # The same person's same words twice: keep one event, but move it to the end so a
-            # repeated phrase still marks where the conversation is now.
+            # repeated phrase still marks where the conversation is now. It is a new turn, so it
+            # gets a new id: the lanes answer an id once, and a repeated question deserves an
+            # answer (the person may not have heard the first one).
             repeated = dict(match)
+            repeated["id"] = "evt-" + os.urandom(8).hex()
+            repeated["repeat_of"] = match.get("repeat_of") or match.get("id")
+            repeated["at_ms"], repeated["received_at_ms"] = row["at_ms"], now
             repeated["last_seen_at_ms"] = now
             repeated["repeat_count"] = int(repeated.get("repeat_count") or 1) + 1
             value["events"] = [item for item in events

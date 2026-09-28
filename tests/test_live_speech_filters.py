@@ -166,9 +166,31 @@ def test_same_source_exact_repeat_is_one_event_moved_to_the_end(clock, tmp_path)
     clock[0] += 600
     again = store.add_event(source="you", kind="speech", text="Let me check the retry budget first.")
 
-    assert again["id"] == first["id"] and again["repeat_count"] == 2
-    assert store.snapshot()["events"][-1]["id"] == first["id"]
+    # One event, at the end, and a new turn: it has its own id and remembers the first one.
+    assert again["repeat_count"] == 2 and again["repeat_of"] == first["id"]
+    assert again["id"] != first["id"]
+    assert store.snapshot()["events"][-1]["id"] == again["id"]
     assert len(_speech(store)) == 1
+
+
+def test_a_question_asked_again_is_answered_again(clock, tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    store.start(context="Review", listen=True, consent=True, understand=False,
+                observe_apps=False, voice_dialogue=True)
+    asked = []
+
+    def analyzer(payload):
+        asked.append(payload["newest_speech"])
+        return "Canberra."
+    question = "What is the capital of Australia?"
+    store.add_event(source="you", kind="speech", text=question)
+    assert live.run_voice_dialogue_once(tmp_path, analyzer=analyzer) is True
+    clock[0] += 4_000          # the person did not hear the answer and asks again
+    store.add_event(source="you", kind="speech", text=question)
+    assert live.run_voice_dialogue_once(tmp_path, analyzer=analyzer) is True
+    assert asked == [question, question]
+    # Nothing new was said: no third answer.
+    assert live.run_voice_dialogue_once(tmp_path, analyzer=analyzer) is False
 
 
 def _with_cue(store, text, cue_id="cue-fence", lane="dialogue"):
