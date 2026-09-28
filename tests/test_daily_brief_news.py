@@ -254,6 +254,94 @@ def test_a_slow_drip_cannot_hold_a_fetch_past_its_deadline(feeds):
     assert time.monotonic() - started < 3
 
 
+class Dribbler:
+    """A raw local server that answers with ``prelude`` and then one byte per ``gap``."""
+
+    def __init__(self, prelude, byte, gap=0.2, seconds=15):
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(4)
+        self.port = self.listener.getsockname()[1]
+        self.prelude, self.byte, self.gap, self.seconds = prelude, byte, gap, seconds
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        try:
+            conn, _ = self.listener.accept()
+        except OSError:
+            return
+        with conn:
+            try:
+                conn.settimeout(5)
+                conn.recv(65536)                       # the request, or a TLS hello
+                conn.sendall(self.prelude)
+                end = time.monotonic() + self.seconds
+                while time.monotonic() < end:
+                    conn.sendall(self.byte)
+                    time.sleep(self.gap)
+            except OSError:
+                pass                                   # the client gave up: expected
+
+    def close(self):
+        self.listener.close()
+        self.thread.join(self.seconds + 5)
+
+
+def dribbled(prelude, byte, *, tls=False, deadline=1.0):
+    """Fetch from a dribbling server; ``(outcome, seconds)``.  Ends well before it does."""
+    server = Dribbler(prelude, byte)
+    try:
+        if tls:          # the real pinned TLS connection, aimed at the local server
+            def connect(host, family, sockaddr, timeout):
+                return news._pinned_https(host, socket.AF_INET, ("127.0.0.1", server.port),
+                                          timeout)
+        else:
+            def connect(host, family, sockaddr, timeout):
+                conn = http.client.HTTPConnection(host, 80, timeout=timeout)
+                conn._create_connection = lambda *_a, **_k: socket.create_connection(
+                    ("127.0.0.1", server.port), timeout)
+                return conn
+        started = time.monotonic()
+        try:
+            outcome = news.fetch_feed(FEED, resolve=resolver({"feeds.example.com": PUBLIC}),
+                                      connect=connect, deadline=deadline)
+        except Exception as exc:                       # noqa: BLE001 - the outcome is the point
+            outcome = exc
+        return outcome, time.monotonic() - started
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize("prelude, byte", [
+    (b"HTTP/1.1 200 OK\r\nX-Slow: ", b"a"),
+    (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", b"0"),
+    (b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n<rss>", b" ")],
+    ids=["headers", "chunk-size", "body"])
+def test_a_server_that_drips_bytes_cannot_hold_a_fetch_past_its_deadline(prelude, byte):
+    """Each byte arrives well inside the socket timeout, so only the whole-fetch deadline
+    can end these. Before the watchdog, headers and chunk sizes were never checked."""
+    outcome, elapsed = dribbled(prelude, byte)
+    assert isinstance(outcome, news.NewsError) and "too long" in str(outcome), outcome
+    assert elapsed < 3.0, elapsed
+
+
+def test_a_tls_handshake_that_drips_cannot_hold_a_fetch_past_its_deadline():
+    # A TLS record header promising 16 KB, then one byte at a time: the handshake
+    # would wait for all of it at five bytes a second -- nearly an hour.
+    outcome, elapsed = dribbled(b"\x16\x03\x03\x40\x00", b"\x00", tls=True)
+    assert isinstance(outcome, news.NewsError) and "too long" in str(outcome), outcome
+    assert elapsed < 3.0, elapsed
+
+
+def test_a_fetch_that_finishes_in_time_leaves_nothing_running(feeds):
+    feeds.routes[("feeds.example.com", "/rss")] = (200, {}, RSS)
+    before = threading.active_count()
+    assert fetch(feeds, deadline=5.0) == RSS
+    time.sleep(0.1)
+    assert threading.active_count() <= before       # the watchdog's timer is gone
+
+
 def test_the_real_connection_goes_only_to_the_checked_address_and_verifies_the_named_host():
     """No certificate is needed to see this: the first bytes of TLS say where and to whom."""
     listener = socket.socket()

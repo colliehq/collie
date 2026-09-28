@@ -16,8 +16,11 @@ through the same guards, and each one is a guard rather than an optimisation:
   still names the original host and verifies its certificate.  Each redirect (at most
   four) is checked again, from the start, by the same rules.
 * **Bounded.**  No proxy is read from the environment.  The answer must be
-  uncompressed and at most 2 MiB -- a bigger one is refused, not cut -- and one fetch
-  has a total deadline, so a server that drips a byte at a time cannot hold a worker.
+  uncompressed and at most 2 MiB -- a bigger one is refused, not cut.  One fetch has
+  a 20-second deadline covering every redirect, the TLS handshake, the headers, the
+  chunk sizes and the body; when it passes, the connection is shut down from outside,
+  so a server that drips a byte at a time cannot hold a worker past it.  Only name
+  resolution is left to the operating system's own resolver timeout.
 * **Plain XML, read in linear time.**  A document that declares a DTD or an entity is
   refused, which closes entity expansion and external entities together.  One
   streaming pass reads it: deeper than 32 levels or more than 50,000 elements is
@@ -175,11 +178,14 @@ def _pinned_https(host, family, sockaddr, timeout):
     return conn
 
 
+_TOO_SLOW = "The feed took too long to answer"
+
+
 def _read_bounded(response, stop):
     chunks, size = [], 0
     while True:
         if time.monotonic() > stop:
-            raise NewsError("The feed took too long to answer")
+            raise NewsError(_TOO_SLOW)
         chunk = response.read1(65536)
         if not chunk:
             return b"".join(chunks)
@@ -189,23 +195,108 @@ def _read_bounded(response, stop):
         chunks.append(chunk)
 
 
+class _Watchdog:
+    """Ends a fetch's connections when the fetch's own deadline passes.
+
+    A socket timeout bounds one read, not a fetch: a server that sends one byte just
+    before each read would time out could hold the TLS handshake, the status line, the
+    headers or a chunk-size line for hours, and none of those return to our code
+    between bytes.  At the deadline this timer shuts every connection the fetch opened
+    down from outside -- through a duplicate of the socket taken as it was created, so
+    it still works after TLS has wrapped the original -- and the blocked read fails at
+    once, whatever it was reading.
+    """
+
+    def __init__(self, stop):
+        self.fired = False
+        self._guard = threading.Lock()
+        self._copies = []
+        self._timer = threading.Timer(max(0.0, stop - time.monotonic()), self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def watch(self, sock):
+        copy = sock.dup()
+        with self._guard:
+            self._copies.append(copy)
+            late = self.fired
+        if late:
+            self._end(copy)
+
+    @staticmethod
+    def _end(copy):
+        try:
+            copy.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _fire(self):
+        with self._guard:
+            self.fired = True
+            copies = list(self._copies)
+        for copy in copies:
+            self._end(copy)
+
+    def close(self):
+        self._timer.cancel()
+        with self._guard:
+            copies, self._copies = self._copies, []
+        for copy in copies:
+            copy.close()
+
+
+def _watched(conn, watchdog):
+    """Hand every socket ``conn`` opens to the watchdog as it is created."""
+    create = getattr(conn, "_create_connection", None)
+    if create is None:
+        return conn
+
+    def create_watched(*args, **kwargs):
+        sock = create(*args, **kwargs)
+        watchdog.watch(sock)
+        return sock
+
+    conn._create_connection = create_watched
+    return conn
+
+
 def fetch_feed(url, *, resolve=None, connect=None, deadline=FETCH_DEADLINE):
     """The feed document at ``url``, fetched under every rule in the module docstring.
 
     ``resolve(host)`` and ``connect(host, family, sockaddr, timeout)`` exist so tests
     can stand in for DNS and for the TLS socket; the address check, the redirect
     rules and the size and time limits are the same code either way.
+
+    ``deadline`` covers the whole fetch, every redirect included, from the first
+    connect to the last byte: past it the connection is shut down (see ``_Watchdog``)
+    and the fetch fails.  Name resolution is the one step it cannot interrupt; that is
+    bounded by the operating system's resolver, and nothing is sent until it answers.
     """
     resolve, connect = resolve or _resolve, connect or _pinned_https
     stop = time.monotonic() + deadline
+    watchdog = _Watchdog(stop)
+    try:
+        return _fetch(url, resolve, connect, stop, watchdog)
+    except NewsError:
+        raise
+    except Exception:
+        if watchdog.fired:
+            raise NewsError(_TOO_SLOW) from None
+        raise
+    finally:
+        watchdog.close()
+
+
+def _fetch(url, resolve, connect, stop, watchdog):
     for _hop in range(MAX_REDIRECTS + 1):
         url = feed_url(url)
         parts = urllib.parse.urlsplit(url)
         family, sockaddr = _checked_address(parts.hostname, resolve)
         remaining = stop - time.monotonic()
-        if remaining <= 0:
-            raise NewsError("The feed took too long to answer")
-        conn = connect(parts.hostname, family, sockaddr, min(SOCKET_TIMEOUT, remaining))
+        if remaining <= 0 or watchdog.fired:
+            raise NewsError(_TOO_SLOW)
+        conn = _watched(connect(parts.hostname, family, sockaddr,
+                                min(SOCKET_TIMEOUT, remaining)), watchdog)
         try:
             conn.request("GET", urllib.parse.urlunsplit(("", "", parts.path or "/",
                                                           parts.query, "")),
@@ -227,7 +318,11 @@ def fetch_feed(url, *, resolve=None, connect=None, deadline=FETCH_DEADLINE):
             declared = (response.getheader("Content-Length") or "").strip()
             if declared.isdigit() and int(declared) > MAX_FEED_BYTES:
                 raise NewsError("The feed is larger than 2 MiB")
-            return _read_bounded(response, stop)
+            data = _read_bounded(response, stop)
+            if watchdog.fired:
+                # A connection shut down mid-body can read as a short, "complete" one.
+                raise NewsError(_TOO_SLOW)
+            return data
         finally:
             conn.close()
     raise NewsError("The feed redirected too many times")
