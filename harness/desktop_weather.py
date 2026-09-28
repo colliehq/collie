@@ -93,16 +93,47 @@ def _fetch():
     }
 
 
+# How old an answer is comes from the wall clock (its fetched_at). time.monotonic() does not
+# advance while macOS or Linux sleeps, so judged by it alone a 9-hour-old answer from before an
+# overnight sleep was served as current, moon and all. The monotonic clock still spaces retries,
+# and it bounds an answer's life too, in case the wall clock is set back.
+def _age(data, wall):
+    at = data.get("fetched_at") if data else None
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    return wall - at
+
+
+def _due(now, wall):
+    last = _state["checked"]
+    if last is None or now - last >= retry_delay(_state["failures"]):
+        return True
+    if _state["failures"]:
+        return False                              # after a failure, only the backoff decides
+    age = _age(_state["data"], wall)
+    return age is None or age < 0 or age >= REFRESH_S
+
+
+def _answer(now, wall):
+    data = _state["data"]
+    age = _age(data, wall)
+    held = now - (_state["updated"] if _state["updated"] is not None else now)
+    if age is not None and age < STALE_LIMIT_S and held < STALE_LIMIT_S:
+        # Stale: the latest refresh failed, or the answer is older than a refresh interval (it
+        # outlived a sleep), or its age cannot be told because the wall clock went back.
+        return dict(data, stale=_state["failures"] > 0 or age < 0 or age >= REFRESH_S)
+    return {"ok": False, "error": "Weather is unavailable right now."}
+
+
 def weather():
     """The current conditions for the desktop clock, from the shared cache when it is fresh.
 
-    Returns the conditions with ``stale`` (True when the latest refresh failed), or
-    ``{"ok": False, "error": ...}`` when there is nothing recent enough to show.
+    Returns the conditions with ``stale`` (True when they are not current: the latest refresh
+    failed, or they are older than a refresh interval), or ``{"ok": False, "error": ...}`` when
+    there is nothing less than an hour old to show.
     """
     with _lock:
-        now = time.monotonic()
-        last = _state["checked"]
-        if last is None or now - last >= retry_delay(_state["failures"]):
+        if _due(time.monotonic(), time.time()):
             try:
                 data = _fetch()
             except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
@@ -110,7 +141,4 @@ def weather():
             else:
                 _state.update(data=data, updated=time.monotonic(), failures=0)
             _state["checked"] = time.monotonic()
-        data = _state["data"]
-        if data is not None and time.monotonic() - _state["updated"] < STALE_LIMIT_S:
-            return dict(data, stale=_state["failures"] > 0)
-        return {"ok": False, "error": "Weather is unavailable right now."}
+        return _answer(time.monotonic(), time.time())

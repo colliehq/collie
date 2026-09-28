@@ -1,7 +1,7 @@
 """The wallpaper weather is asked for by Collie's server, once for every desktop window.
 
-Nothing here reaches ipapi.co or Open-Meteo: `_get` (or urlopen itself) is replaced, and the clock
-the cache reads is a list the tests move by hand.
+Nothing here reaches ipapi.co or Open-Meteo: `_get` (or urlopen itself) is replaced, and the
+module's clocks are a stand-in the tests move by hand.
 """
 import concurrent.futures
 import json
@@ -17,12 +17,33 @@ CURRENT = {"temperature_2m": 16.6, "weather_code": 1, "is_day": 0, "time": "2026
 GEO = {"latitude": 37.3, "longitude": -121.9, "city": "San Jose", "country_code": "US"}
 
 
+class Clock:
+    """Stands in for the time module inside desktop_weather. Awake, monotonic() and time() move
+    together; asleep, only the wall clock moves, which is what macOS and Linux do."""
+
+    def __init__(self):
+        self.mono, self.wall = 1000.0, 1_790_000_000.0
+
+    def monotonic(self):
+        return self.mono
+
+    def time(self):
+        return self.wall
+
+    def advance(self, seconds):
+        self.mono += seconds
+        self.wall += seconds
+
+    def sleep(self, seconds):
+        self.wall += seconds
+
+
 @pytest.fixture
 def weather_io(monkeypatch):
-    clock = [1000.0]
+    clock = Clock()
     monkeypatch.setattr(wx, "_state", {"checked": None, "failures": 0, "data": None,
                                        "updated": None})
-    monkeypatch.setattr(wx.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(wx, "time", clock)
     calls = []
     current = dict(CURRENT)
 
@@ -59,10 +80,10 @@ def test_concurrent_windows_share_one_fetch_and_get_their_own_copy(weather_io):
 def test_the_cache_is_kept_for_fifteen_minutes(weather_io):
     clock, calls, _, _ = weather_io
     wx.weather()
-    clock[0] += wx.REFRESH_S - 1
+    clock.advance(wx.REFRESH_S - 1)
     wx.weather()
     assert len(calls) == 2
-    clock[0] += 1
+    clock.advance(1)
     wx.weather()
     assert len(calls) == 4
 
@@ -71,7 +92,7 @@ def test_a_failure_keeps_recent_conditions_marked_stale_then_expires_and_recover
         weather_io, monkeypatch):
     clock, calls, _, get = weather_io
     wx.weather()
-    clock[0] += wx.REFRESH_S
+    clock.advance(wx.REFRESH_S)
 
     def offline(url):
         calls.append(url)
@@ -81,14 +102,70 @@ def test_a_failure_keeps_recent_conditions_marked_stale_then_expires_and_recover
     stale = wx.weather()
     assert stale["stale"] is True and stale["temp_c"] == 16.6
     assert "private network detail" not in json.dumps(stale)
-    clock[0] += wx.STALE_LIMIT_S
+    clock.advance(wx.STALE_LIMIT_S)
     gone = wx.weather()
     assert gone["ok"] is False and "temp_c" not in gone
     assert "private network detail" not in json.dumps(gone)
-    clock[0] += wx.RETRY_MAX_S
+    clock.advance(wx.RETRY_MAX_S)
     monkeypatch.setattr(wx, "_get", get)
     back = wx.weather()
     assert back["ok"] is True and back["stale"] is False
+
+
+def test_after_a_night_asleep_the_old_answer_is_refreshed_not_served_as_current(weather_io):
+    clock, calls, current, _ = weather_io
+    night = wx.weather()
+    assert night["is_day"] == 0 and night["stale"] is False
+    clock.advance(10 * 60)
+    clock.sleep(9 * 3600)                      # the lid closes: monotonic stops, the wall clock goes on
+    current.update(is_day=1, temperature_2m=12.0)
+    morning = wx.weather()
+    assert len(calls) == 4                     # asked again on waking, not 5 minutes later
+    assert morning["is_day"] == 1 and morning["temp_c"] == 12.0 and morning["stale"] is False
+
+
+def test_asleep_then_offline_the_old_answer_is_dropped_after_an_hour_of_wall_time(
+        weather_io, monkeypatch):
+    clock, _, _, _ = weather_io
+    wx.weather()
+    clock.advance(10 * 60)
+    clock.sleep(9 * 3600)
+
+    def offline(url):
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr(wx, "_get", offline)
+    woke = wx.weather()                        # 9 hours old: not shown at all
+    assert woke["ok"] is False and "temp_c" not in woke
+
+
+def test_a_short_sleep_marks_the_answer_stale_until_it_is_refreshed(weather_io, monkeypatch):
+    clock, _, _, _ = weather_io
+    wx.weather()
+    clock.sleep(20 * 60)
+
+    def offline(url):
+        raise OSError("network is not up yet")
+
+    monkeypatch.setattr(wx, "_get", offline)
+    woke = wx.weather()
+    assert woke["ok"] is True and woke["stale"] is True    # 20 minutes old: kept, but not current
+
+
+def test_a_wall_clock_set_back_makes_the_answer_stale(weather_io, monkeypatch):
+    clock, calls, _, _ = weather_io
+    wx.weather()
+    clock.wall -= 3600
+
+    def offline(url):
+        calls.append(url)
+        raise OSError("offline")
+
+    monkeypatch.setattr(wx, "_get", offline)
+    back = wx.weather()
+    assert len(calls) == 3 and back["stale"] is True      # its age cannot be told: refresh, stale
+    clock.advance(wx.STALE_LIMIT_S)                        # awake for an hour by monotonic time
+    assert wx.weather()["ok"] is False
 
 
 def test_failures_back_off_exponentially_up_to_thirty_minutes(weather_io, monkeypatch):
@@ -96,14 +173,14 @@ def test_failures_back_off_exponentially_up_to_thirty_minutes(weather_io, monkey
     attempts = []
 
     def offline(url):
-        attempts.append(clock[0])
+        attempts.append(clock.mono)
         raise OSError("offline")
 
     monkeypatch.setattr(wx, "_get", offline)
-    start = clock[0]
+    start = clock.mono
     for _ in range(4 * 3600):              # four hours, asked every second by some window
         wx.weather()
-        clock[0] += 1
+        clock.advance(1)
     gaps = [b - a for a, b in zip(attempts, attempts[1:])]
     assert gaps[:6] == [60, 120, 240, 480, 960, 1800], gaps
     assert set(gaps[5:]) == {1800}
