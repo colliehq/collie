@@ -31,6 +31,7 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--mut);font-size:14px;p
 input[type=checkbox]{width:20px;height:20px;min-height:0;padding:0;margin:2px 0 0;flex:none;accent-color:var(--brand)}
 .todo{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}.todo .body{flex:1;min-width:0;display:grid;gap:3px}.todo.done .title{text-decoration:line-through;color:var(--mut)}.todo.found{background:var(--soft);border-radius:10px;padding:10px}.todo .late,.todos .bad{color:var(--danger)}
 .check{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:14px;margin-top:12px}.todos{list-style:none;padding:0;margin:12px 0 0}
+#newsFeeds{min-height:110px}.news .title{text-decoration:none}.news .title:hover{text-decoration:underline}.lines .bad{color:var(--danger)}
 @media(max-width:560px){.shell{padding:16px}h1{font-size:21px}.lede{font-size:18px}header{flex-direction:column}.item .row{flex-direction:column}.agenda li{grid-template-columns:54px minmax(0,1fr)}}
 </style>
 </head>
@@ -80,6 +81,32 @@ input[type=checkbox]{width:20px;height:20px;min-height:0;padding:0;margin:2px 0 
     <ul id="todoList" class="todos"></ul>
     <p id="todoEmpty" class="muted" hidden data-en="Nothing on your list. Add a to-do when you need one." data-zh="清单是空的，需要时再添加。"></p>
     <label class="check"><input id="todoShowDone" type="checkbox"><span data-en="Show finished to-dos" data-zh="显示已完成的待办"></span></label>
+  </section>
+
+  <section id="newsPanel" class="panel" aria-labelledby="newsHead">
+    <h2 id="newsHead" data-en="News" data-zh="新闻"></h2>
+    <p class="muted" data-en="Headlines from feeds you add, kept to your topics. They are there to read: a headline is never a task, never ranks above your day, and is never handed to a model as something to do." data-zh="来自你添加的订阅源、并按你的主题筛选的标题。它们只供阅读：标题不会变成任务，不会排在你今天的事项之前，也不会作为指令交给模型。"></p>
+    <ul id="newsList" class="items news"></ul>
+    <p id="newsEmpty" class="muted" hidden></p>
+    <ul id="feedStatus" class="lines"></ul>
+    <details id="newsOptions">
+      <summary data-en="News feeds and topics" data-zh="新闻订阅源与主题"></summary>
+      <form id="newsForm" novalidate>
+        <div class="fields">
+          <p class="field"><label for="newsFeeds" data-en="Feeds · one RSS or Atom address per line, starting with https://" data-zh="订阅源 · 每行一个 RSS 或 Atom 地址，以 https:// 开头"></label><textarea id="newsFeeds" spellcheck="false" autocapitalize="off"></textarea></p>
+          <p class="field"><label for="newsTopics" data-en="Topics · separated by commas; empty shows every headline" data-zh="主题 · 用逗号分隔；留空则显示全部标题"></label><input id="newsTopics" type="text" autocomplete="off"><span class="muted" data-en="Matched against each headline and its summary, whole words only. Nothing is translated or rewritten." data-zh="与每条标题及摘要比对，只匹配完整的词。不会翻译或改写任何内容。"></span></p>
+          <p class="field"><label for="newsEvery" data-en="Check for new headlines every" data-zh="检查新标题的间隔"></label><select id="newsEvery"><option value="15">15 min</option><option value="30">30 min</option><option value="60">1 h</option><option value="180">3 h</option><option value="360">6 h</option><option value="720">12 h</option><option value="1440">24 h</option></select></p>
+          <p class="field"><label for="newsMax" data-en="Headlines in the brief" data-zh="简报中的标题数"></label><input id="newsMax" type="number" inputmode="numeric" min="1" max="20" step="1"></p>
+        </div>
+        <div class="actions" style="margin-top:12px"><button id="newsSave" class="primary" type="submit" data-en="Save feeds" data-zh="保存订阅源"></button><button id="newsCheck" type="button" data-en="Check now" data-zh="立即检查"></button><button id="newsRevert" type="button" class="quiet" hidden data-en="Undo my edits" data-zh="撤销我的修改"></button></div>
+      </form>
+      <ul class="lines">
+        <li data-en="Off until you add a feed. With no feed saved, Collie fetches nothing." data-zh="添加订阅源之前不会开启；没有保存订阅源时，Collie 不会抓取任何内容。"></li>
+        <li data-en="Collie asks only the addresses listed here, only over https, and only when they point to the public internet. It sends no account or cookie, just a request that names Collie." data-zh="Collie 只访问这里列出的地址，只用 https，且只在地址指向公共互联网时访问。请求不带账户或 Cookie，只表明来自 Collie。"></li>
+        <li data-en="While Collie is running, after you open the brief, each feed is checked at most once per interval — never more often than every 15 minutes. Saving or Check now reads them at once." data-zh="Collie 运行期间、打开简报之后，每个订阅源在每个间隔内最多检查一次——最短 15 分钟。保存或“立即检查”会马上读取。"></li>
+      </ul>
+    </details>
+    <div id="newsNotice" class="notice" role="status" aria-live="polite" hidden style="margin-top:12px"></div>
   </section>
 
   <section id="quiet" class="panel empty" hidden>
@@ -346,6 +373,101 @@ function render(){
   });
   $("hiddenPanel").hidden=!hidden.length;
   renderTodos();
+  renderNews();
+}
+
+// ── news ────────────────────────────────────────────────────────────────────
+// Headlines are the feeds' own words: drawn as text, followed only as an https link, and
+// never offered as a task or a prompt. The settings form keeps a half-typed edit through
+// refreshes, and a save from a window that is behind is refused rather than overwriting.
+let newsDirty=false,newsRevision=0;
+const NEWS_FIELDS=["newsFeeds","newsTopics","newsEvery","newsMax"];
+const newsDraft=()=>NEWS_FIELDS.map(id=>$(id).value);
+function fillNews(){
+  const panel=(data&&data.news)||{},s=panel.settings;
+  // A half-typed edit is the person's, and so is the revision it was started from: a
+  // refresh replaces neither, so a save still says which settings it meant to change.
+  if(!s||newsDirty)return;
+  newsRevision=s.revision;
+  $("newsFeeds").value=(s.feeds||[]).join("\n");
+  $("newsTopics").value=(s.topics||[]).join(", ");
+  const every=String(s.refresh_minutes||60);
+  if(![...$("newsEvery").options].some(option=>option.value===every))
+    $("newsEvery").append(Object.assign(node("option",every+" min"),{value:every}));
+  $("newsEvery").value=every;
+  $("newsMax").value=String(s.max_items||8);
+}
+function renderNews(){
+  const panel=(data&&data.news)||{},brief=(data&&data.brief)||{},rows=brief.news||[];
+  const feeds=panel.feeds||[],list=$("newsList"),status=$("feedStatus");
+  list.replaceChildren();
+  rows.forEach(item=>{
+    const li=node("li","","item");
+    const ref=item.source_ref||{},link=node("a",item.title,"title");
+    if(/^https:\/\//.test(ref.href||"")){link.href=ref.href;link.target="_blank";link.rel="noopener noreferrer";}
+    li.append(link);
+    const bits=[ref.label||""];
+    if(item.when)bits.push(tr("published ","发布于 ")+ago(item.when));
+    li.append(node("p",bits.filter(Boolean).join(" · "),"meta"));
+    if(item.detail)li.append(node("p",item.detail,"meta"));
+    list.append(li);
+  });
+  status.replaceChildren();
+  feeds.forEach(feed=>{
+    const bits=[feed.host];
+    bits.push(feed.success_at?tr("read ","读取于 ")+ago(feed.success_at):tr("not read yet","尚未读取"));
+    if(feed.skipped)bits.push(tr(feed.skipped+" without an https link left out","已略过 "+feed.skipped+" 条非 https 链接"));
+    if(feed.error)bits.push(feed.error);
+    status.append(node("li",bits.join(" · "),feed.error?"bad":""));
+  });
+  const on=feeds.length>0,empty=$("newsEmpty");
+  text(empty,panel.state==="unavailable"?tr("News settings could not be read. Nothing was changed.","无法读取新闻设置，没有做任何更改。")
+    :!on?tr("Off. Add a feed under News feeds and topics to see headlines here.","未开启。在“新闻订阅源与主题”中添加订阅源后，标题会显示在这里。")
+    :panel.refreshing?tr("Checking your feeds…","正在检查订阅源…")
+    :tr("No headlines match your topics right now.","目前没有符合你主题的标题。"));
+  empty.classList.toggle("bad",panel.state==="unavailable");
+  empty.hidden=rows.length>0;
+  $("newsCheck").disabled=!on;
+  $("newsSave").disabled=panel.state==="unavailable";
+  $("newsRevert").hidden=!newsDirty;
+  fillNews();
+}
+function newsBody(){
+  const [feeds,topics,every,most]=newsDraft();
+  return {revision:newsRevision,
+    feeds:feeds.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),
+    topics:topics.split(/[,，、\n]/).map(word=>word.trim()).filter(Boolean),
+    refresh_minutes:Number(every),max_items:Number(most)};
+}
+function newsSaid(panel){
+  const failed=(panel.feeds||[]).filter(feed=>feed.error);
+  return failed.length?tr("Saved. Some feeds could not be read — see the reason beside each.","已保存。有订阅源无法读取——原因见各项旁。")
+    :tr("Saved.","已保存。");
+}
+async function saveNews(){
+  const sent=newsDraft();
+  let payload;
+  try{payload=await api("/api/brief/news",{action:"settings",settings:newsBody()});}
+  catch(e){
+    if(!e.conflict)throw e;
+    // Another window saved first. Keep this edit, show that window's settings in the
+    // brief, and let a second, deliberate Save replace them.
+    await load();
+    const current=((data&&data.news)||{}).settings;
+    if(current)newsRevision=current.revision;
+    throw new Error(tr("Feeds were changed in another window, so nothing was saved. Your edits are still here: save again to replace them, or undo them to see what is saved.",
+      "订阅源已在其他窗口中修改，因此没有保存。你的修改仍保留在这里：再次保存即可替换，或撤销修改查看已保存的设置。"));
+  }
+  newsRevision=payload.news.settings.revision;
+  // Only what nobody touched while the save was on its way may be replaced by the saved copy.
+  newsDirty=newsDraft().some((value,index)=>value!==sent[index]);
+  notice(newsSaid(payload.news),false,"newsNotice");
+  await load();
+}
+async function checkNews(){
+  const payload=await api("/api/brief/news",{action:"refresh"});
+  notice((payload.news.feeds||[]).some(feed=>feed.error)?tr("Checked. Some feeds could not be read — see the reason beside each.","已检查。有订阅源无法读取——原因见各项旁。"):tr("Checked.","已检查。"),false,"newsNotice");
+  await load();
 }
 
 // ── your to-dos ─────────────────────────────────────────────────────────────
@@ -681,6 +803,16 @@ $("todoForm").addEventListener("submit",event=>{
 });
 $("todoCancel").addEventListener("click",()=>{resetTodoForm();notice("",false,"todoNotice");});
 $("todoShowDone").addEventListener("change",renderTodos);
+$("newsForm").addEventListener("input",()=>{newsDirty=true;$("newsRevert").hidden=false;});
+$("newsForm").addEventListener("submit",event=>{
+  event.preventDefault();
+  busy($("newsSave"),saveNews,"newsNotice");
+});
+$("newsCheck").addEventListener("click",()=>busy($("newsCheck"),checkNews,"newsNotice"));
+$("newsRevert").addEventListener("click",()=>{
+  newsDirty=false;renderNews();
+  notice(tr("Your edits were dropped. These are the saved feeds.","已放弃修改，以下是已保存的订阅源。"),false,"newsNotice");
+});
 $("schedRevert").addEventListener("click",()=>{
   prefsDirty=false;fillFields();renderSched();
   notice(tr("Your edits were dropped. These are the settings as saved.","已放弃修改，以下是已保存的设置。"),false,"schedNotice");

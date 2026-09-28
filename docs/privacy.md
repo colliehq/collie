@@ -65,6 +65,19 @@ feature inherently requires:
   network address, then `api.open-meteo.com` for the current weather at that point, about every 30
   minutes. Nothing about you or your work is sent. Set `"weather": false` under `"clock"` in
   `~/.collie/desktop.json` to stop both requests; the clock stays.
+- **News in the Daily Brief (opt-in; off until you add a feed).** When you save RSS or Atom feed
+  addresses under *News feeds and topics* in the Daily Brief, Collie requests exactly those
+  addresses: over HTTPS only, and only when the host name resolves to a public internet address
+  (each redirect, at most four, is checked the same way). It fetches a feed when you save it or
+  press *Check now*, and otherwise in the background while Collie is running, after the brief has
+  been opened, at most once per the interval you chose and never more often than every 15
+  minutes. Each request is a plain `GET` with the User-Agent
+  `Collie-DailyBrief/1.0 (+https://github.com/colliehq/collie)`, and carries no cookie, account,
+  topic or information about you or your work; the feed's host sees your network address as with
+  any web request. Nothing is fetched from the headlines themselves — no linked page, image or
+  icon — until you open a link in your browser. Headlines are kept in
+  `~/.collie/daily-brief/news.db`, shown as text, and never given to a model as instructions; if
+  you turn on the morning email, they are part of it. Remove every feed to stop all requests.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
