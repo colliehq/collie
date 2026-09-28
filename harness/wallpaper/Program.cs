@@ -587,9 +587,10 @@ class CollieWallpaper : Form
             // URL is passed by `collie wallpaper` via COLLIE_WALLPAPER_URL (the port is picked at
             // runtime, not hardcoded, so it never collides with a busy 8787). Fallback for a manual run.
             string url = Environment.GetEnvironmentVariable("COLLIE_WALLPAPER_URL");
-            // window mode shows the full GUI; wallpaper mode shows the desktop /wallpaper page
+            // window mode shows the full GUI; wallpaper mode shows the calm /ambient desktop, the page
+            // `collie wallpaper` passes too. The code map (/wallpaper) is opt-in, never the default.
             if (string.IsNullOrEmpty(url))
-                url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/wallpaper";
+                url = _windowMode ? "http://127.0.0.1:8787/" : "http://127.0.0.1:8787/ambient";
             try { _baseUrl = new Uri(url).GetLeftPart(UriPartial.Authority); } catch { }
             if (_windowMode)
                 url += (url.IndexOf('?') >= 0 ? "&" : "?") + "native_shell=1";

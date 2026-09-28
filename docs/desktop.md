@@ -22,9 +22,14 @@ collie wallpaper --stop        # stop the running engine
 collie wallpaper --uninstall   # remove the logon autostart
 ```
 
-A live desktop background that renders Collie's star-map. On Windows it draws *behind* your icons
-via a WebView2 engine (built once on first run from the shipped C# source — no .NET SDK needed);
-elsewhere it degrades to a borderless full-screen window. Per-user, no admin.
+A live desktop background: a clock with the weather, music controls, an app dock and a command bar
+on a calm backdrop. On Windows it draws *behind* your icons via a WebView2 engine (built once on
+first run from the shipped C# source — no .NET SDK needed); elsewhere it degrades to a borderless
+full-screen window. Per-user, no admin.
+
+While Collie edits code, the background can switch to Collie's star-map (the code map) until the
+run ends. That is off by default; turn on *Show the code map while Collie edits code* in Settings →
+Desktop. The map always opens from **Map** in Collie.
 
 ## Native application control
 

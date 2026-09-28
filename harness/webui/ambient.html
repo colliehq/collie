@@ -356,7 +356,9 @@
 
   <div class="lyrics" id="lyrics"><div class="inner" id="lyricsInner"></div></div>
 
-  <!-- coding view: the live code galaxy (reuses /wallpaper), shown only while Collie is working -->
+  <!-- coding view: the live code galaxy (reuses /wallpaper), shown only while Collie is working, and
+       only when Settings → Desktop → "Show the code map while Collie edits code" is on -->
+
   <iframe class="galaxy" id="galaxy" title="collie code map"></iframe>
 
   <!-- in-page music: a plain <audio> fed a same-origin proxied stream (yt-dlp direct audio). No popup,
@@ -938,12 +940,28 @@
   // between edits); only once every run has finished do we start a 30s grace; and while you're
   // watching/browsing the map, your own mouse/keys keep extending that grace. A 3-min total-silence
   // backstop forces a return in case a `done` never arrives.
-  var codeGrace = null, hardIdle = null, activeRuns = 0;
+  // All of this is opt-in: Settings → Desktop → "Show the code map while Collie edits code" (the
+  // DESKTOP_CODE_MAP setting, off by default). Until the setting says on, the map is never loaded.
+  var codeGrace = null, hardIdle = null, activeRuns = 0, codeMapOn = false;
+  function applyCodeMapSetting(values){
+    var v = String((values && values.DESKTOP_CODE_MAP) || "").toLowerCase();
+    codeMapOn = v === "on" || v === "1" || v === "true";
+    if (!codeMapOn && document.body.classList.contains("coding")) exitCoding();
+  }
+  // Re-read, so a change in Settings reaches a wallpaper that has been running for days. A failed
+  // read keeps the last answer.
+  function refreshCodeMapSetting(){
+    fetch(authUrl("/api/settings"), {cache:"no-store"}).then(function(r){ if(!r.ok)throw new Error("HTTP "+r.status); return r.json(); })
+      .then(function(s){ applyCodeMapSetting(s && s.values); }).catch(function(){});
+  }
+  setInterval(refreshCodeMapSetting, 15000);
   function enterCoding(){
+    if (!codeMapOn) return;
     var g = $("galaxy");
     if (!g.getAttribute("src")) g.setAttribute("src", "/wallpaper?bg=1");   // lazy-load the galaxy once
     g.style.display = "block";
-    requestAnimationFrame(function(){ g.classList.add("on"); });
+    // Only if still coding when the frame comes: an exit in between must not bring the map back.
+    requestAnimationFrame(function(){ if (document.body.classList.contains("coding")) g.classList.add("on"); });
     document.body.classList.add("coding");
   }
   function exitCoding(){
@@ -1096,7 +1114,7 @@
   var LOCALE = { en:"en-US", zh:"zh-CN", "zh-tw":"zh-TW", ja:"ja-JP", ko:"ko-KR", es:"es-ES",
                  fr:"fr-FR", de:"de-DE", pt:"pt-BR", ru:"ru-RU" };
   fetch(authUrl("/api/settings")).then(function(r){ if(!r.ok)throw new Error("HTTP "+r.status);return r.json(); }).then(function(s){
-    var l = ((s && s.values && s.values.LANG) || "").toLowerCase(); if (LOCALE[l]) VOICE_LANG = LOCALE[l];OPS_LANG=resolveOpsLang(l);applyOpsStatic();
+    var l = ((s && s.values && s.values.LANG) || "").toLowerCase(); if (LOCALE[l]) VOICE_LANG = LOCALE[l];OPS_LANG=resolveOpsLang(l);applyCodeMapSetting(s && s.values);applyOpsStatic();
   }).catch(function(){OPS_LANG=resolveOpsLang("");applyOpsStatic();});
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition, mic = $("mic"), recog = null, recording = false;
   if (SR) {
