@@ -824,22 +824,26 @@
     }
     return s + '</svg>';
   }
+  // Collie's server asks ipapi.co and Open-Meteo for every desktop window at once, keeps the answer
+  // about 15 minutes and waits longer after each failure (harness/desktop_weather.py). The page
+  // never contacts either service, so asking the server every minute costs nothing outside.
   function loadWeather(){
     var el = $("wWx"); if (!el) return;
-    // Off in desktop.json ("clock": {"weather": false}): then neither weather service is asked.
+    // Off in desktop.json ("clock": {"weather": false}): then neither weather service is asked. The
+    // server checks the same switch before it asks anyone, so this is not the only guard.
     var clock = curConfig && curConfig.widgets && curConfig.widgets.clock;
     if (clock && clock.weather === false) { el.textContent = ""; return; }
-    fetch("https://ipapi.co/json/").then(function(r){return r.json();}).then(function(g){
-      if (g && (g.country_code === "CN" || g.country === "CN")) MUSIC_REGION = "CN";   // refine music source region
-      if (!g || g.latitude == null) return;
-      fetch("https://api.open-meteo.com/v1/forecast?latitude="+g.latitude+"&longitude="+g.longitude+"&current=temperature_2m,weather_code&temperature_unit=celsius")
-        .then(function(r){return r.json();}).then(function(dd){
-          var c = dd && dd.current, e = $("wWx"); if (!c || !e) return; var w = WX[c.weather_code] || ["",""];
-          e.innerHTML = '<span class="ic">'+wxIcon(c.weather_code)+'</span><span class="t">'+Math.round(c.temperature_2m)+"°</span><span>"+esc(w[1]+(g.city?" · "+g.city:""))+"</span>";
-        }).catch(function(){});
+    fetch(authUrl("/api/desktop/weather"), {cache:"no-store"}).then(function(r){
+      if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
+    }).then(function(d){
+      var e = $("wWx"); if (!e) return;
+      if (!d || !d.ok) { e.textContent = ""; return; }
+      if (d.country_code === "CN") MUSIC_REGION = "CN";   // refine music source region
+      var w = WX[d.code] || ["",""];
+      e.innerHTML = '<span class="ic">'+wxIcon(d.code)+'</span><span class="t">'+Math.round(d.temp_c)+"°</span><span>"+esc(w[1]+(d.city?" · "+d.city:""))+"</span>";
     }).catch(function(){});
   }
-  setInterval(loadWeather, 30*60*1000);
+  setInterval(loadWeather, 60*1000);
 
   // equalizer — calm sine-wave motion (decorative). Cheap single rAF; skips when the widget is off.
   var eqT = 0;

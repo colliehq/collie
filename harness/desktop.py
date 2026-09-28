@@ -29,8 +29,9 @@ def _is_mac():
 DEFAULT_CONFIG = {
     "widgets": {
         "brand":    {"on": True,  "slot": "center"},
-        # weather: the clock's weather line asks ipapi.co where this IP address is and then
-        # api.open-meteo.com for the weather there (see docs/privacy.md); false turns both off.
+        # weather: Collie's server asks ipapi.co where this IP address is and then
+        # api.open-meteo.com for the weather there (desktop_weather.py, docs/privacy.md); false
+        # turns both off. weather_enabled() below is the check the server makes before asking.
         "clock":    {"on": True,  "slot": "tr", "weather": True},
         # Off on macOS: the Dock already is the app launcher, always visible and always in the same
         # place, so a second row of the same icons on the wallpaper is clutter. Windows has no
@@ -171,6 +172,26 @@ def load_config():
     if not la.get("apps"):
         la["apps"] = _seed_apps()
     return cfg
+
+
+def weather_enabled():
+    """May the clock's weather line ask the two outside services? Checked on the server, per request.
+
+    Reads only the clock entry, not load_config(), which would seed the launcher from the Start
+    Menu on every weather poll. The answer matches what the page renders from load_config(): the
+    clock must be on, and only an explicit ``"weather": false`` turns the weather off. A missing or
+    unreadable desktop.json means the defaults, as it does everywhere else.
+    """
+    clock = dict(DEFAULT_CONFIG["widgets"]["clock"])
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            saved = json.load(f) or {}
+        mine = (saved.get("widgets") or {}).get("clock")
+        if isinstance(mine, dict):
+            clock.update(mine)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return bool(clock.get("on")) and clock.get("weather") is not False
 
 
 def save_config(cfg):
