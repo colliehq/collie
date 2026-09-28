@@ -5481,8 +5481,8 @@ class Handler(BaseHTTPRequestHandler):
         return web_tasks.serve_managed_stream(self, qs)
 
     def _run_stream(self, qs):
-        from .cli import (configure_run_options, default_gate, make_harness,
-                          normalize_run_options, _worker_model)
+        from .cli import (configure_host_verification, configure_run_options, default_gate,
+                          make_harness, normalize_run_options, _worker_model)
         from . import sessions, settings, task_inbox, web_tasks
         settings.apply()   # a Settings-panel save takes effect on the next query, no restart
 
@@ -7004,6 +7004,8 @@ class Handler(BaseHTTPRequestHandler):
             should_check = (run_opts["intent"] == "test" or
                             run_opts["verification"] == "required")
             h.defer_memory_promotion = bool(should_check and verify_command)
+            if should_check and verify_command:
+                configure_host_verification(h, verify_command)
             try:
                 # One Web turn owns one isolated browser lane.  Releasing it in
                 # the context manager's finally is the safety net for completed,
