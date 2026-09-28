@@ -16,6 +16,7 @@
 <body>
 <main class="shell">
   <header class="top"><div class="identity"><div class="pulse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2-6 5 12 2-6h5"/></svg></div><div><div class="eyebrow">COLLIE · CONTINUOUS CONTEXT</div><h1>Live Copilot</h1></div></div><div class="status" id="status"><span class="dot"></span><span id="statusText">Not active</span></div></header>
+  <p id="connectionNotice" class="notice bad" role="status" aria-live="polite" hidden></p>
 
   <section class="hero">
     <article class="card setup" id="setup">
@@ -27,7 +28,7 @@
         <label class="check"><input type="checkbox" id="observeUi" checked><span>Understand the active interface<small>Reads a bounded set of accessibility control types and labels into model context. Labels may contain visible page or document text; no field values or keystrokes are retained.</small></span></label>
         <label class="check"><input type="checkbox" id="observeInput" checked><span>Notice user activity<small>Records throttled interaction timing and focused-control type, never raw keys, clipboard, passwords, or field contents.</small></span></label>
         <label class="check"><input type="checkbox" id="observeScreen" checked><span>Look at the active app<small>Periodically sends one bounded screenshot to your configured model. In Chrome, this also includes the visible viewport and up to 16,000 page-text characters for that turn only; screenshots and page text are not stored in Collie.</small></span></label>
-        <label class="check"><input type="checkbox" id="listen"><span>Understand the conversation<small>Transcribes microphone audio locally with SenseVoice. Native Windows capture may also provide system audio; the browser fallback never asks to share your screen. Chunks are deleted after processing.</small></span></label>
+        <label class="check"><input type="checkbox" id="listen"><span>Understand the conversation<small>Microphone only: meeting and system audio is not captured. In a browser, the microphone is transcribed locally with SenseVoice and each chunk is deleted after processing; the Windows app uses Windows speech recognition.</small></span></label>
         <label class="check"><input type="checkbox" id="voiceDialogue" disabled><span>Talk with me hands-free<small>Collie answers your speech and urgent cues aloud, pausing recognition while it speaks to prevent feedback.</small></span></label>
         <label class="check" id="consentWrap" hidden><input type="checkbox" id="consent"><span>Everyone has agreed to recording and AI assistance<small>Required before audio capture. This permission ends with the session.</small></span></label>
       </div>
@@ -69,12 +70,65 @@ var ZH={"COLLIE · CONTINUOUS CONTEXT":"COLLIE · 持续理解","Not active":"�
 Object.assign(ZH,{"Follow windows and apps":"跟随窗口与应用","Records the foreground app and window title so the timeline knows where you are.":"记录前台应用和窗口标题，让时间线知道你当前在哪里。","Notice user activity":"感知用户操作","Records throttled interaction timing and focused-control type, never raw keys, clipboard, passwords, or field contents.":"只记录节流后的操作时间和焦点控件类型，绝不记录原始按键、剪贴板、密码或输入框内容。","Live starts one private, session-scoped observation boundary. A command you say or type authorizes that command on the captured target; purchases, security changes, and unclear irreversible actions still ask.":"Live 开启一次私密、仅限本次会话的观察边界。你说出或输入的命令会授权 Collie 在已捕获目标上执行该命令；购买、安全设置和不明确的不可逆操作仍会询问。","LIVE LOG":"实时日志","What Collie has observed":"Collie 已观察到的内容"});
 Object.assign(ZH,{"Look at the active app":"观察当前应用","Periodically sends one bounded screenshot to your configured model. In Chrome, this also includes the visible viewport and up to 16,000 page-text characters for that turn only; screenshots and page text are not stored in Collie.":"定期向已配置的模型发送一张有限截图。在 Chrome 中，本轮还会发送可见视口和最多 16,000 个正文字符；截图和页面正文不会保存在 Collie 中。","Talk with me hands-free":"与我免按键对话","Collie answers your speech and urgent cues aloud, pausing recognition while it speaks to prevent feedback.":"Collie 会口头回答你的话并播报紧急提示；播报时会暂停识别，避免声音回灌。"});
 Object.assign(ZH,{"AI avatar rehearsal":"AI 形象排练","Start rehearsal":"开始排练","Speak again":"再讲一次","Open video room":"打开视频房间","End rehearsal":"结束排练","Optional — what should the avatar explain or rehearse?":"可选：希望形象讲解或排练什么？"});
-Object.assign(ZH,{"Transcribes microphone audio locally with SenseVoice. Native Windows capture may also provide system audio; the browser fallback never asks to share your screen. Chunks are deleted after processing.":"使用本地 SenseVoice 转写麦克风音频。Windows 原生应用也可提供系统音频；浏览器模式不会要求共享屏幕。音频片段处理后删除。"});
+Object.assign(ZH,{"Microphone only: meeting and system audio is not captured. In a browser, the microphone is transcribed locally with SenseVoice and each chunk is deleted after processing; the Windows app uses Windows speech recognition.":"仅采集麦克风，不采集会议或系统音频。浏览器模式下由本地 SenseVoice 转写，每个音频片段处理后即删除；Windows 应用使用 Windows 语音识别。"});
 function tr(s){return LANG.indexOf("zh")===0&&ZH[s]?ZH[s]:s}
 Object.assign(ZH,{"Session review":"会话回顾","Session ended":"会话已结束","Export Markdown":"导出 Markdown","Include context log":"附带上下文日志","Export this review before starting a new session. Only the latest session is retained here.":"开始新会话前可导出此回顾；这里仅保留最近一次会话。","No summary was generated for this session.":"本次会话尚未生成摘要。","Review downloaded.":"会话回顾已下载。"});
 function applyLocale(){if(LANG.indexOf("zh")!==0)return;var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),n;while(n=w.nextNode()){if(/^(SCRIPT|STYLE)$/.test(n.parentElement&&n.parentElement.tagName||""))continue;var k=String(n.nodeValue||"").trim();if(ZH[k])n.nodeValue=ZH[k]}document.documentElement.lang="zh-CN";document.getElementById("context").placeholder="可选，例如：准备产品发布、客户通话、跨多个应用调试……";document.getElementById("task").placeholder="把下一件事交给 Collie，或直接使用当前上下文"}
 function q(path,params){var u=new URL(path,location.origin);u.searchParams.set("token",CT);Object.keys(params||{}).forEach(function(k){u.searchParams.set(k,params[k])});return u.pathname+u.search}
-function api(path,method,body){var o={method:method||"GET",headers:{}};if(body!==undefined){o.headers["content-type"]="application/json";o.body=JSON.stringify(body)}return fetch(q(path),o).then(function(r){return r.json().catch(function(){return{}}).then(function(d){if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d})})}
+/* Collie restarting gives it a new token. A request refused with 403 fetches the current token once
+   (shared by every request that failed with the same old one) and is sent again unchanged. */
+var tokenRefresh=null,loadFlight=null,CONNECTED=false,stateRevision=0;
+function refreshToken(failedToken){
+  if(CT&&CT!==failedToken)return Promise.resolve();
+  if(!tokenRefresh){
+    var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},8000);
+    tokenRefresh=fetch("/api/session-token",{cache:"no-store",signal:controller.signal}).then(async function(r){
+      var d=await r.json();if(!r.ok||!d.token)throw new Error("Connection interrupted");
+      CT=String(d.token);
+    }).finally(function(){clearTimeout(timer);tokenRefresh=null});
+  }
+  return tokenRefresh;
+}
+async function authFetch(path,options,params,current){
+  options=options||{};
+  function check(){if((options.signal&&options.signal.aborted)||(current&&!current()))throw new DOMException("Operation ended","AbortError")}
+  check();var failedToken=CT,response=await fetch(q(path,params),options);
+  if(response.status===403){await refreshToken(failedToken);check();response=await fetch(q(path,params),options)}
+  return response;
+}
+function api(path,method,body){
+  var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},10000);
+  var o={method:method||"GET",headers:{},signal:controller.signal};
+  if(body!==undefined){o.headers["content-type"]="application/json";o.body=JSON.stringify(body)}
+  return authFetch(path,o).then(async function(r){var d=await r.json().catch(function(){return{}});
+    if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d;
+  }).finally(function(){clearTimeout(timer)});
+}
+Object.assign(ZH,{
+  "Connection interrupted":"连接已中断",
+  "Connection interrupted. Displayed context is stale; current capture status is unknown.":"连接已中断。显示的是旧记录，当前采集状态未知。"
+});
+/* When Collie stops answering, the page says so instead of showing stale state as current: capture
+   in this page stops, and every control is disabled until an answer arrives again. */
+function connectionLost(){
+  CONNECTED=false;endCapture();
+  document.getElementById("status").classList.remove("on");
+  document.getElementById("capture").classList.remove("on");
+  document.getElementById("statusText").textContent=tr("Connection interrupted");
+  document.getElementById("captureText").textContent=tr("Connection interrupted");
+  var banner=document.getElementById("connectionNotice");banner.hidden=false;
+  banner.textContent=tr("Connection interrupted. Displayed context is stale; current capture status is unknown.");
+  document.querySelectorAll("button,input[type=checkbox]").forEach(function(b){
+    if(!b.hasAttribute("data-connection-disabled"))b.setAttribute("data-connection-disabled",b.disabled?"1":"0");
+    b.disabled=true;
+  });
+}
+function connectionRestored(){
+  CONNECTED=true;document.getElementById("connectionNotice").hidden=true;
+  document.querySelectorAll("[data-connection-disabled]").forEach(function(b){
+    b.disabled=b.getAttribute("data-connection-disabled")==="1";b.removeAttribute("data-connection-disabled");
+  });
+}
 function esc(s){return String(s||"").replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function notice(id,text,bad){var e=document.getElementById(id);e.textContent=text||"";e.className="notice"+(bad?" bad":"")}
 function time(ms){if(!ms)return"";return new Date(Number(ms)).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
@@ -126,8 +180,11 @@ async function uploadAudioChunk(item,blob,session,seq,epoch){
       lifetime.signal.addEventListener("abort",abort,{once:true});
       var timer=setTimeout(function(){timedOut=true;request.abort()},10000);
       try{
-        var response=await fetch(q("/api/live-copilot/audio",{session:session,source:item.name,seq:seq,listen_epoch:captureListenEpoch}),
-          {method:"POST",headers:{"content-type":blob.type},body:blob,signal:request.signal});
+        // The same clip and sequence number are resent after a token refresh.
+        var response=await authFetch("/api/live-copilot/audio",
+          {method:"POST",headers:{"content-type":blob.type},body:blob,signal:request.signal},
+          {session:session,source:item.name,seq:seq,listen_epoch:captureListenEpoch},
+          function(){return captureCurrent(epoch,session)&&!lifetime.signal.aborted});
         var data=await response.json().catch(function(){return{}});
         if(!captureCurrent(epoch,session)||lifetime.signal.aborted)return false;
         if(response.ok&&data.ok===true){audioNotice("");return true}
@@ -199,7 +256,7 @@ function endCapture(){
 function speakAvatar(text){text=String(text||"").trim();if(!text||!("speechSynthesis" in window))return;window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(text);u.lang=LANG.indexOf("zh")===0?"zh-CN":"en-US";u.rate=1.02;u.volume=1;window.speechSynthesis.speak(u)}
 function clearAvatarSurface(){AVATAR_JOIN="";document.getElementById("openAvatar").disabled=true;document.getElementById("avatarLocal").hidden=false}
 function openAvatarRoom(){if(!AVATAR_JOIN)return false;var w=window.open(AVATAR_JOIN,"collie-avatar-room");if(w)try{w.opener=null}catch(e){}return!!w}
-function render(s){STATE=s||{};var active=!!s.active,events=s.events||[],suggestions=(s.suggestions||[]).filter(function(x){return!x.dismissed}),work=s.work||[],cap=s.capabilities||{},audio=s.audio||{},analysis=s.analysis||{};
+function render(s){connectionRestored();stateRevision++;STATE=s||{};var active=!!s.active,events=s.events||[],suggestions=(s.suggestions||[]).filter(function(x){return!x.dismissed}),work=s.work||[],cap=s.capabilities||{},audio=s.audio||{},analysis=s.analysis||{};
  var notes=s.notes||[];document.getElementById("liveNotes").hidden=!notes.length;
  document.querySelector("#liveNotes summary").textContent=tr("Notes")+" · "+notes.length;
  document.getElementById("liveNotesList").innerHTML=notes.map(function(note){return '<p style="white-space:pre-wrap;font-size:13px">'+esc(note.text||"")+'</p>'}).join("");
@@ -213,7 +270,20 @@ function render(s){STATE=s||{};var active=!!s.active,events=s.events||[],suggest
  var wk=document.getElementById("work");wk.innerHTML=work.length?work.slice().reverse().map(function(x){return'<div class="workrow"><b>'+esc(x.goal)+'</b><span>'+esc(tr(x.state||"queued"))+" · "+esc(x.mission_id||"")+'</span></div>'}).join(""):'<div class="empty">'+esc(tr('No work handed off yet.'))+'</div>';
  document.getElementById("toggleUnderstand").textContent=tr(s.understand?"Pause understanding":"Resume understanding");document.getElementById("capture").classList.toggle("on",active&&s.listen&&(runningCapture||NATIVE_HOST));document.getElementById("captureText").textContent=!active?tr("Session ended"):s.listen?(audio.last_error?"Speech needs attention":NATIVE_HOST?(streams.some(function(x){return x.getAudioTracks().length})?"Local microphone + shared audio active":"Local microphone active"):runningCapture?"Microphone active":"Conversation enabled"):tr("Context active");document.getElementById("captureText").textContent=tr(document.getElementById("captureText").textContent);document.getElementById("boardEdit").checked=!!s.board_edit;document.getElementById("boardState").textContent=s.board?(s.board.service_name+" · "+(s.board.title||"attached")):tr("No surface attached");document.getElementById("attach").disabled=!active;
  var avatar=s.avatar||{},avatarOn=!!avatar.active,hand=s.handoff||{},handoff=document.getElementById("handoff");handoff.hidden=!active||(NATIVE_HOST&&!hand.pending);handoff.classList.toggle("pending",!!hand.pending);if(hand.pending&&hand.suggested&&!document.getElementById("task").value)document.getElementById("task").placeholder=hand.suggested;document.getElementById("useContext").disabled=!active;document.getElementById("doNow").disabled=!active;document.getElementById("background").disabled=!active;document.getElementById("startAvatar").disabled=!active||avatarOn;document.getElementById("speakAvatar").disabled=!avatarOn||avatar.mode!=="simulation";document.getElementById("openAvatar").disabled=!AVATAR_JOIN;document.getElementById("stopAvatar").disabled=!avatarOn;document.getElementById("avatarStage").hidden=!avatarOn;if(avatar.script)document.getElementById("avatarSpeech").textContent=avatar.script;document.getElementById("avatarMeta").textContent=!active?"Start a Live Session first. This mode never represents itself as you.":avatarOn?(avatar.mode==="mcp"?"External avatar service active · maximum 10 minutes · AI disclosure enforced":"Local simulation active · connect an avatar MCP service for live video"):cap.avatar_provider_ready?"Avatar MCP service is ready. The room is private and capped at 10 minutes.":"Local simulation is ready now. No avatar MCP service is connected."}
-function load(){var missions=Date.now()-missionLast>5000?api("/api/missions").then(function(d){MISSIONS={};(d.missions||[]).forEach(function(m){MISSIONS[m.mission_id]=m.state});missionLast=Date.now()}).catch(function(){}):Promise.resolve();return Promise.all([api("/api/live-copilot"),missions]).then(function(values){var live=values[0];(live.work||[]).forEach(function(w){if(MISSIONS[w.mission_id])w.state=MISSIONS[w.mission_id]});render(live)}).catch(function(e){notice("activeNotice",e.message,true)})}
+function load(){
+  if(loadFlight)return loadFlight;
+  var revision=stateRevision;
+  loadFlight=api("/api/live-copilot").then(function(live){
+    if(revision!==stateRevision)return null;
+    (live.work||[]).forEach(function(w){if(MISSIONS[w.mission_id])w.state=MISSIONS[w.mission_id]});
+    render(live);return live;
+  }).catch(function(){if(revision===stateRevision)connectionLost();return null}).finally(function(){loadFlight=null});
+  if(Date.now()-missionLast>5000){
+    missionLast=Date.now();
+    api("/api/missions").then(function(d){MISSIONS={};(d.missions||[]).forEach(function(m){MISSIONS[m.mission_id]=m.state})}).catch(function(){});
+  }
+  return loadFlight;
+}
 document.getElementById("listen").onchange=function(){var on=this.checked;document.getElementById("consentWrap").hidden=!on;document.getElementById("voiceDialogue").disabled=!on;if(!on)document.getElementById("voiceDialogue").checked=false};
 document.getElementById("start").onclick=async function(){var b=this;b.disabled=true;notice("startNotice","");var wantListen=document.getElementById("listen").checked;try{if(wantListen&&!document.getElementById("consent").checked)throw new Error("Confirm everyone's recording and AI-assistance consent first.");/* An ended session with an attached board resumes: the board, notes and background work carry over, every permission is granted afresh. */var endpoint=STATE.session_id&&STATE.board?"/api/live-copilot/resume":"/api/live-copilot/start";var s=await api(endpoint,"POST",{context:document.getElementById("context").value,listen:wantListen,understand:true,observe_apps:document.getElementById("observe").checked,observe_ui:document.getElementById("observeUi").checked,observe_input:document.getElementById("observeInput").checked,observe_screen:document.getElementById("observeScreen").checked,voice_dialogue:document.getElementById("voiceDialogue").checked,board_edit:!!STATE.board&&document.getElementById("boardEdit").checked,consent:document.getElementById("consent").checked});render(s);if(wantListen){try{await beginCapture();render(STATE)}catch(e){endCapture();await api("/api/live-copilot/permissions","POST",{listen:false,voice_dialogue:false});notice("activeNotice","Live context is active, but audio could not start: "+e.message,true);await load()}}}catch(e){endCapture();notice("startNotice",e.message,true)}finally{b.disabled=false}};
 document.getElementById("stop").onclick=function(){endCapture();api("/api/live-copilot/stop","POST",{}).then(function(s){render(s);document.getElementById("activeArea").scrollIntoView({behavior:"smooth",block:"start"})}).catch(function(e){notice("activeNotice",e.message,true)})};
@@ -223,7 +293,7 @@ document.getElementById("exportSession").onclick=async function(){
   button.disabled=true;notice("exportNotice","");
   try{
     var path="/api/live-copilot/export?session="+encodeURIComponent(session)+"&events="+(document.getElementById("exportContext").checked?"1":"0")+"&lang="+encodeURIComponent(LANG);
-    var response=await fetch(q(path));
+    var response=await authFetch(path);
     if(!response.ok){var error=await response.json();throw new Error(error.error||("HTTP "+response.status))}
     var blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
     link.href=url;link.download=session.replace(/[^A-Za-z0-9_-]/g,"_")+".md";
@@ -253,7 +323,28 @@ document.getElementById("addNote").onclick=async function(){
   }catch(error){notice("activeNotice",tr(error.message),true)}finally{button.disabled=false}
 };
 function resolveHand(){var h=STATE.handoff||{};return h.pending?api("/api/live-copilot/handoff/resolve","POST",{handoff_id:h.id}).catch(function(){}):Promise.resolve()}
-function runNow(text){text=String(text||promptText()).trim();if(!text)return;api("/api/live-copilot/event","POST",{source:"typed",text:text}).catch(function(){});resolveHand();document.getElementById("task").value="";if(window.parent!==window)window.parent.postMessage({type:"collie:run",text:text},location.origin);else{navigator.clipboard&&navigator.clipboard.writeText(text);notice("activeNotice","Task copied. Open Collie to run it.")}}
+/* One hand-off at a time, only while connected, and only into the session it was written for: the
+   page re-reads the session before and after recording the event, and a draft typed meanwhile is
+   kept. */
+var dispatching=false;
+async function runNow(text){
+  text=String(text||promptText()).trim();
+  if(!text||dispatching||!CONNECTED||!STATE.active)return;
+  var session=STATE.session_id,input=document.getElementById("task"),draft=input.value;
+  dispatching=true;
+  try{
+    var live=await load();
+    if(!live||!CONNECTED||!live.active||live.session_id!==session)return;
+    await api("/api/live-copilot/event","POST",{source:"typed",text:text,session_id:session});
+    live=await load();
+    if(!live||!CONNECTED||!live.active||live.session_id!==session)return;
+    await resolveHand();
+    if(!CONNECTED||!STATE.active||STATE.session_id!==session)return;
+    if(window.parent!==window)window.parent.postMessage({type:"collie:run",text:text},location.origin);
+    else{if(navigator.clipboard)await navigator.clipboard.writeText(text);notice("activeNotice","Task copied. Open Collie to run it.")}
+    if(input.value===draft)input.value="";
+  }catch(e){notice("activeNotice",e.message,true)}finally{dispatching=false}
+}
 function background(text,id){text=String(text||promptText()).trim();if(!text)return;api("/api/live-copilot/work","POST",{text:text,suggestion_id:id||""}).then(function(){document.getElementById("task").value="";resolveHand();return load()}).catch(function(e){notice("activeNotice",e.message,true)})}
 document.getElementById("doNow").onclick=function(){runNow()};document.getElementById("background").onclick=function(){background()};document.getElementById("useContext").onclick=function(){runNow("Use the current Live Copilot context to identify the concrete thing I just handed you, then complete it. If the intended action is ambiguous or consequential, ask one concise question.")};document.getElementById("task").onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();runNow()}};
 window.addEventListener("beforeunload",function(){if(runningCapture)endCapture();if("speechSynthesis" in window)window.speechSynthesis.cancel()});

@@ -3,8 +3,8 @@
 Live Copilot is a top-level way to work with Collie, not a meeting or interview plug-in. During an
 explicit session, Collie maintains a small current-context model from the signals you enable:
 
-1. Collie's own first-party UI can capture microphone and meeting/system audio and retain transcript
-   text rather than audio chunks.
+1. Collie's own first-party UI can capture the microphone (microphone only: meeting and system
+   audio is not captured) and retains transcript text rather than audio chunks.
 2. Window awareness records foreground application names and window titles. Interface awareness
    adds a bounded set of accessibility control types and labels; labels may contain visible page or
    document text. Content-free activity pulses say that the user interacted and which control type
@@ -65,10 +65,11 @@ before each write so authority cannot silently move to another page.
 
 Confirm that every participant agrees before enabling conversation capture. In the native Windows
 app the local microphone recognizer continues while the Live session is active, even when the Live
-page is closed; meeting/system audio still requires the operating system's visible share picker.
-In a browser, the UI requests microphone and system audio in one start flow. Each short audio chunk
-is deleted after the configured
-speech service returns text; it is never placed in the agent prompt. Transcript and derived state
+page is closed. In a browser, the Live page records the microphone in short chunks; each chunk is
+deleted after the configured speech service returns text, and it is never placed in the agent prompt.
+Neither captures meeting or system audio. If the Live page loses its connection to Collie, it says
+so, stops its own microphone capture, and disables its controls until Collie answers again; after
+Collie restarts, the page picks up the new session token by itself. Transcript and derived state
 stay under Collie's private local state directory, while text sent for speech/understanding follows
 the destinations disclosed in the UI.
 
