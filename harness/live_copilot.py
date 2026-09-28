@@ -136,6 +136,26 @@ def _text(value, limit=1_000) -> str:
     return " ".join(str(value or "").replace("\x00", " ").split())[:limit]
 
 
+# Words a recognizer emits for breath, room noise, or a cough. A transcript made only of these
+# says nothing, so it never becomes a Live event or a capsule command.
+_FILLER_WORDS = frozenset({
+    "a", "an", "and", "but", "eh", "er", "hm", "hmm", "mm", "oh", "or", "the", "uh", "um",
+})
+
+
+def _meaningful_transcript(value) -> bool:
+    """Reject punctuation-only and filler-only recognition without discarding short commands."""
+    text = str(value or "").strip()
+    if not any(char.isalnum() for char in text):
+        return False
+    # One CJK, kana, or Hangul character can be a real answer or command ("好", "はい", "네").
+    if any("㐀" <= char <= "鿿" or "぀" <= char <= "ヿ" or
+           "가" <= char <= "힯" for char in text):
+        return True
+    words = re.findall(r"[^\W_]+(?:'[^\W_]+)?", text.casefold())
+    return not (words and all(word in _FILLER_WORDS for word in words))
+
+
 def _explicit_stop_intent(value) -> bool:
     """Recognize a short, direct request to end Live without guessing from long speech."""
     text = str(value or "").strip().casefold()
@@ -1342,7 +1362,7 @@ class LiveSessionStore:
 
     def _transcribe_audio(self, session_id, source, path, mime, transcriber,
                           epoch=0, nbytes=0) -> None:
-        error, texts = "", []
+        error, texts, dropped_filler = "", [], False
         try:
             if transcriber is None:
                 # Live speech is local-first. Never silently send a microphone chunk to a cloud
@@ -1353,13 +1373,16 @@ class LiveSessionStore:
             if not isinstance(result, dict):
                 raise LiveCopilotError("speech engine returned an invalid response")
             segments = result.get("segments") or []
-            if segments:
-                for segment in segments:
-                    if isinstance(segment, dict) and _text(segment.get("text"), 4_000):
-                        texts.append((_text(segment.get("speaker"), 100),
-                                      _text(segment.get("text"), 4_000)))
-            elif _text(result.get("text"), 4_000):
-                texts.append(("", _text(result.get("text"), 4_000)))
+            if not segments and _text(result.get("text"), 4_000):
+                segments = [{"text": result.get("text")}]
+            for segment in segments:
+                if not isinstance(segment, dict) or not _text(segment.get("text"), 4_000):
+                    continue
+                segment_text = _text(segment.get("text"), 4_000)
+                if _meaningful_transcript(segment_text):
+                    texts.append((_text(segment.get("speaker"), 100), segment_text))
+                else:
+                    dropped_filler = True
         except Exception as exc:
             error = _text("%s: %s" % (type(exc).__name__, exc), 1_000)
         finally:
@@ -1379,6 +1402,10 @@ class LiveSessionStore:
                 audio = self._adjust_claim(value, -1, -int(nbytes or 0))
                 if error:
                     audio["last_error"] = error
+                if dropped_filler:
+                    value["audit"] = (value.get("audit") or [])[-79:] + [{
+                        "at_ms": _now_ms(), "action": "speech_fragment_suppressed",
+                        "detail": "source=%s reason=filler_only" % source}]
                 self._write(value)
                 # A decode that was already running cannot be recalled, but ending the session
                 # or revoking listening must still be a real boundary for its result.

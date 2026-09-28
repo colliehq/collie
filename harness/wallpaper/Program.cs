@@ -831,7 +831,13 @@ class CollieWallpaper : Form
             engine.SpeechRecognized += delegate (object sender, SpeechRecognizedEventArgs e)
             {
                 string spoken = e.Result == null ? "" : (e.Result.Text ?? "").Trim();
-                if (spoken.Length == 0 || !_liveSpeechWanted || session != _liveSpeechSession) return;
+                // Windows dictation turns room noise into short, low-confidence English words
+                // ("the", "and it"). Drop the low-confidence ones here; a short word said with
+                // confidence ("stop", "yes", "cancel") is a command, and the server's filler filter
+                // (live_copilot._meaningful_transcript) drops what is only "the" or "uh".
+                float confidence = e.Result == null ? 0f : e.Result.Confidence;
+                if (spoken.Length == 0 || confidence < 0.55f ||
+                    !_liveSpeechWanted || session != _liveSpeechSession) return;
                 long at = (long)(DateTime.UtcNow - new DateTime(
                     1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
                 PostMain("{\"type\":\"live-native-transcript\",\"session\":" +
