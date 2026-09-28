@@ -59,6 +59,7 @@ function operationCurrent(op){return !!op&&!CLOSED&&op.generation===REC_GENERATI
 function discardVoice(){
   REC_GENERATION++;VOICE_STARTING=false;
   if(REC_CLIP){REC_CLIP.controller.abort();clearTimeout(REC_CLIP.timer)}REC_CLIP=null;
+  clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;REC_PREVIEW_BUSY=false;
   if(REC_FRAME)cancelAnimationFrame(REC_FRAME);REC_FRAME=0;
   if(REC){REC.onstop=null;REC.ondataavailable=null;try{if(REC.state!=="inactive")REC.stop()}catch(_){}}
   if(REC_STREAM)REC_STREAM.getTracks().forEach(function(track){track.stop()});
@@ -173,9 +174,24 @@ async function run(command,source,op){
    server answers with a receipt for this clip's exact sequence number, and only that receipt can
    become the command. */
 var REC=null,REC_STREAM=null,REC_PARTS=[],REC_STARTED=0,REC_PTT=false,REC_AUDIO=null,REC_FRAME=0,REC_HEARD=false,REC_LAST_SOUND=0,REC_GENERATION=0,CAPSULE_SEQ=-1;
+var REC_PREVIEW_TIMER=0,REC_PREVIEW_BUSY=false;
 function recordMime(){var a=["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/mp4"];for(var i=0;i<a.length;i++)if(window.MediaRecorder&&MediaRecorder.isTypeSupported(a[i]))return a[i];return""}
+/* While the key is held, the recording so far is transcribed about once a second and shown in the
+   field. It is display only: it is not kept, and only the final clip's receipt becomes a command. */
+function previewVoice(mime,clip){
+  if(!clip||clip!==REC_CLIP||!operationCurrent(clip)||!REC||REC_PREVIEW_BUSY||REC_PARTS.length<2)return;
+  REC_PREVIEW_BUSY=true;
+  authenticatedFetch("/api/live-copilot/audio-preview?session="+encodeURIComponent(clip.session),{method:"POST",headers:{"content-type":mime},body:new Blob(REC_PARTS.slice(),{type:mime}),signal:clip.controller.signal}).then(async function(r){
+    var d=await r.json();if(!r.ok||d.error)throw new Error(d.error||"Preview unavailable");return d;
+  }).then(function(d){
+    if(!operationCurrent(clip)||!REC||REC_CLIP!==clip)return;
+    var transcript=String(d.text||"").trim();if(!meaningfulVoice(transcript))return;
+    clip.preview=transcript;$("command").value=transcript;status("Listening… · live text");
+  }).catch(function(){}).finally(function(){if(REC_CLIP===clip)REC_PREVIEW_BUSY=false});
+}
 function stopVoice(){
   if(REC_CLIP)REC_CLIP.released=true;
+  clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;
   if(REC&&REC.state!=="inactive")try{REC.stop()}catch(_){}
   if(REC_FRAME)cancelAnimationFrame(REC_FRAME);REC_FRAME=0;
 }
@@ -250,10 +266,12 @@ async function startVoice(pushToTalk){
     recorder.onstop=function(){
       if(!operationCurrent(clip)||REC!==recorder)return;
       var parts=REC_PARTS;REC=null;REC_STREAM=null;REC_AUDIO=null;REC_PARTS=[];REC_CONTEXT=null;
+      clearInterval(REC_PREVIEW_TIMER);REC_PREVIEW_TIMER=0;
       stream.getTracks().forEach(function(t){t.stop()});if(ctx.close)ctx.close().catch(function(){});
       if(parts.length)uploadVoice(new Blob(parts,{type:mime}),mime,clip);else voiceFailed(clip,"No final audio was captured.");
     };
-    REC.start();
+    // Short slices make the recording so far available for the live text preview.
+    REC.start(250);REC_PREVIEW_TIMER=setInterval(function(){previewVoice(mime,clip)},900);
     if(!REC_PTT)REC_FRAME=requestAnimationFrame(observeVoice);
   }catch(e){
     if(stream)stream.getTracks().forEach(function(t){t.stop()});if(ctx&&ctx.close)ctx.close().catch(function(){});

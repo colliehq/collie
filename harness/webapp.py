@@ -3890,6 +3890,22 @@ class Handler(BaseHTTPRequestHandler):
                 ok = bb.start_background()
                 ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
+            if path == "/api/live-copilot/audio-preview":
+                # Display-only text for the capsule recording so far; the final clip still decides.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from .live_copilot import LiveCopilotError, LiveSessionStore, MAX_AUDIO_BYTES
+                query = urllib.parse.parse_qs(parsed.query)
+                raw = self._read_bytes(MAX_AUDIO_BYTES)
+                if raw is None:
+                    return self._send_json({"error": "expected a non-empty bounded audio preview"},
+                                           400)
+                try:
+                    return self._send_json(LiveSessionStore(_state_root()).preview_audio(
+                        session_id=str((query.get("session") or [""])[0]),
+                        mime_type=self.headers.get("content-type") or "audio/webm", data=raw))
+                except LiveCopilotError as exc:
+                    return self._send_json({"error": str(exc)}, 409)
             if path == "/api/live-copilot/audio":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

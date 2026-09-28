@@ -87,3 +87,119 @@ def test_hands_free_voice_does_not_answer_a_capsule_command(tmp_path):
     assert live.run_voice_dialogue_once(tmp_path, analyzer=lambda p: asked.append(p) or "Sure.") \
         is False
     assert asked == []
+
+
+# --- Live text while the person is still talking ------------------------------------------------
+
+def test_capsule_preview_is_ephemeral_and_does_not_touch_the_log(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=False, consent=False, observe_apps=False)
+    before = store.snapshot()
+
+    def transcribe(path, **kwargs):
+        with open(path, "rb") as handle:
+            assert handle.read() == b"cumulative-webm"
+        assert kwargs == {"mime_type": "audio/webm", "language": ""}
+        return {"text": "帮我清空一下画板。", "segments": []}
+
+    result = store.preview_audio(session_id=session["session_id"],
+                                 mime_type="audio/webm;codecs=opus", data=b"cumulative-webm",
+                                 transcriber=transcribe)
+    assert result == {"ok": True, "text": "帮我清空一下画板。", "final": False,
+                      "engine": "SenseVoice", "language": "auto"}
+    after = store.snapshot()
+    assert after["events"] == before["events"]
+    assert after["audio"].get("capsule_seq") is None and after["audio"]["pending"] == 0
+    assert not list((tmp_path / "live-audio").rglob("capsule-preview-*"))
+
+
+def test_capsule_preview_drops_filler(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=False, consent=False, observe_apps=False)
+    result = store.preview_audio(
+        session_id=session["session_id"], mime_type="audio/webm", data=b"quiet-webm",
+        transcriber=lambda *_a, **_k: {"text": "The.", "segments": []})
+    assert result["text"] == ""
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_capsule_preview_cannot_return_after_authority_ends(tmp_path, replacement):
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=False, observe_apps=False)
+
+    def decode(path, **kwargs):
+        store.stop()
+        if replacement:
+            store.start(listen=False, observe_apps=False)
+        return {"text": "old session text"}
+    with pytest.raises(live.LiveCopilotError, match="authority"):
+        store.preview_audio(session_id=session["session_id"], mime_type="audio/wav",
+                            data=b"audio", transcriber=decode)
+    assert not list((tmp_path / "live-audio").rglob("capsule-preview-*"))
+
+
+def test_capsule_preview_refuses_bad_input(tmp_path):
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=False, observe_apps=False)
+    with pytest.raises(live.LiveCopilotError, match="empty"):
+        store.preview_audio(session_id=session["session_id"], mime_type="audio/webm", data=b"")
+    with pytest.raises(live.LiveCopilotError, match="unsupported"):
+        store.preview_audio(session_id=session["session_id"], mime_type="video/mp4", data=b"x")
+    with pytest.raises(live.LiveCopilotError, match="authority"):
+        store.preview_audio(session_id="live-other", mime_type="audio/webm", data=b"x")
+
+
+@pytest.mark.parametrize("entry", ["preview", "microphone", "system", "capsule"])
+def test_every_default_live_audio_entry_uses_the_speech_check(tmp_path, monkeypatch, entry):
+    from harness import sensevoice
+    seen = []
+
+    def decode(path, **kwargs):
+        seen.append(kwargs)
+        return {"text": "", "segments": [],
+                "speech_evidence": {"accepted": False, "reason": "no_speech"}}
+    monkeypatch.setattr(sensevoice, "transcribe", decode)
+    store = live.LiveSessionStore(tmp_path)
+    session = store.start(listen=True, consent=True, understand=False, observe_apps=False)
+    if entry == "preview":
+        assert store.preview_audio(session_id=session["session_id"], mime_type="audio/wav",
+                                   data=b"noise")["text"] == ""
+    else:
+        store.ingest_audio(session_id=session["session_id"], source=entry, seq=0,
+                           mime_type="audio/wav", data=b"noise")
+        assert _wait(lambda: store.snapshot()["audio"]["pending"] == 0)
+    assert seen and seen[0]["speech_gate"] is True
+    assert not [e for e in store.snapshot()["events"] if e["kind"] in {"speech", "capsule_speech"}]
+
+
+def test_audio_preview_http_route(tmp_path, monkeypatch):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from harness import sensevoice, webapp
+
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(sensevoice, "transcribe",
+                        lambda path, **kwargs: {"text": "draw a queue", "segments": []})
+    session = live.LiveSessionStore(str(tmp_path)).start(listen=False, observe_apps=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(session_id):
+        url = "http://127.0.0.1:%d/api/live-copilot/audio-preview?token=%s&session=%s" % (
+            server.server_port, webapp.TOKEN, session_id)
+        request = urllib.request.Request(url, data=b"cumulative",
+                                         headers={"Content-Type": "audio/webm"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+    try:
+        assert post(session["session_id"])["text"] == "draw a queue"
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            post("live-gone")
+        assert refused.value.code == 409
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=3)
+    assert live.LiveSessionStore(str(tmp_path)).snapshot()["events"][-1]["kind"] == "session"

@@ -1435,6 +1435,56 @@ class LiveSessionStore:
                 ingress.release(ticket)
         return {"ok": True, "queued": True, "seq": seq, **ingress.stats()}
 
+    def preview_audio(self, *, session_id, mime_type, data, transcriber=None) -> dict:
+        """Transcribe the capsule recording so far, for display only.
+
+        The cumulative clip is decoded synchronously and deleted; nothing is added to the Live log,
+        no sequence number is consumed, and the text never authorizes anything. The final clip's
+        receipt is still the only command.
+        """
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            raise LiveCopilotError("audio preview is empty")
+        if len(data) > MAX_AUDIO_BYTES:
+            raise LiveCopilotError("audio preview exceeds the 4 MiB live limit")
+        if not _SAFE_ID.fullmatch(str(session_id or "")):
+            raise LiveCopilotError("invalid live session id")
+        mime = str(mime_type or "audio/webm").split(";", 1)[0].strip().lower()
+        extensions = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a",
+                      "audio/wav": "wav"}
+        if mime not in extensions:
+            raise LiveCopilotError("unsupported live audio type")
+
+        def still_current():
+            with self._transaction():
+                value = self._read()
+            return bool(value.get("active") and value.get("session_id") == session_id)
+
+        if not still_current():
+            raise LiveCopilotError("live capsule authority is no longer active")
+        path = os.path.join(self._audio_staging(session_id), "capsule-preview-%s.%s" %
+                            (os.urandom(8).hex(), extensions[mime]))
+        try:
+            self._stage_audio_bytes(path, data)
+            if transcriber is None:
+                from .sensevoice import transcribe_live as sensevoice_transcribe
+                transcriber = sensevoice_transcribe
+            result = transcriber(path, mime_type=mime, language="")
+            if not isinstance(result, dict):
+                raise LiveCopilotError("speech engine returned an invalid preview")
+            if not still_current():
+                raise LiveCopilotError("live capsule authority is no longer active")
+            texts = [_text(segment.get("text"), 4_000) for segment in result.get("segments") or []
+                     if isinstance(segment, dict) and _text(segment.get("text"), 4_000)]
+            text = " ".join(texts) if texts else _text(result.get("text"), 4_000)
+            return {"ok": True, "text": text if _meaningful_transcript(text) else "",
+                    "final": False, "engine": "SenseVoice", "language": "auto"}
+        except LiveCopilotError:
+            raise
+        except Exception as exc:
+            raise LiveCopilotError("audio preview failed: %s" % exc) from exc
+        finally:
+            _remove_quietly(path)
+
     def _stage_audio_bytes(self, path: str, data) -> None:
         """Write one bounded chunk (≤ 4 MiB) to its staging file.
 

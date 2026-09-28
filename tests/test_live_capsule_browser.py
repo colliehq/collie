@@ -172,6 +172,26 @@ def test_first_clip_continues_the_session_sequence_and_runs_its_own_transcript(c
     assert not errors
 
 
+def test_live_text_appears_while_talking_then_the_final_clip_decides(capsule_page):
+    page, previews, finals, commands, errors, _control = capsule_page
+    page.evaluate("sendHostMessage({type:'capsule-record-start',push_to_talk:true})")
+    page.wait_for_function("RECORDERS.length===1 && RECORDERS[0].state==='recording'")
+    # Short slices, so the page has audio to preview while the key is still held.
+    assert page.evaluate("RECORDERS[0].timeslice") == 250
+    page.evaluate("RECORDERS[0].emit('first-');RECORDERS[0].emit('second')")
+    page.wait_for_function("document.getElementById('command').value==='帮我清空一下画板。'",
+                           timeout=5000)
+    assert previews and previews[0] == b"first-second"   # the whole recording so far
+    assert "live text" in page.locator("#status").inner_text()
+    assert not finals and not commands                   # a preview never runs anything
+    page.evaluate("sendHostMessage({type:'capsule-record-stop'})")
+    page.wait_for_function("document.getElementById('answer').textContent.includes('Board command')",
+                           timeout=10000)
+    assert len(finals) == 1 and finals[0]["body"] == b"first-second"
+    assert [command["text"] for command in commands] == ["帮我清空一下画板。"]
+    assert not errors
+
+
 def test_busy_speech_queue_retries_the_same_clip_and_sequence(capsule_page):
     page, _previews, finals, _commands, errors, control = capsule_page
     control["final_responses"][:] = [(429, {"code": "live_audio_busy", "retry_after_ms": 250})]
