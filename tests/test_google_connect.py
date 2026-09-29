@@ -427,6 +427,15 @@ def test_status_check_turns_a_revoked_grant_into_needs_reconnect(env):
     assert gc.status(check=True)["state"] == "needs_reconnect"
 
 
+def test_status_check_asks_google_even_with_a_warm_access_token(env):
+    import time as _time
+    _connected(env)
+    gc._CACHE[gc._conn_path()] = {"token": ACCESS, "expires_at": _time.time() + 3000}
+    env["fake"].on("POST", gc.TOKEN_URI, {"error": "invalid_grant"}, status=400)
+    assert gc.status(check=True)["state"] == "needs_reconnect"
+    assert len(env["fake"].urls(gc.TOKEN_URI)) == 1
+
+
 def test_a_sign_in_that_cannot_be_unsealed_reads_as_needs_reconnect(env, monkeypatch):
     _connected(env)
 

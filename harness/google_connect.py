@@ -683,6 +683,9 @@ def status(*, check=False, state_dir=None) -> dict:
         client, not_configured = None, str(exc)
     dead = ""                  # a check that failed in a way only reconnecting fixes
     if check and client:
+        # A cached access token proves nothing about the sign-in behind it: Google may have
+        # ended it since. Only a refresh asks.
+        _drop_cached(state_dir)
         try:
             _access_token(state_dir=state_dir)
         except NeedsReconnect as exc:
