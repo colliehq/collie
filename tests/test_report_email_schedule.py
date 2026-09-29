@@ -524,8 +524,69 @@ def test_send_me_one_now_refuses_a_second_while_one_is_on_its_way(host, zones, b
 
     builds.hook = click_again
     assert sched.send_now(root, service=service, now=at(2026, 9, 10, 6, 0))["sent"] is True
-    assert refused and "already" in refused[0]
+    assert refused and "being built" in refused[0]            # still building: the slot says no
     assert len(adapter.sent) == 1 and len(builds.calls) == 1
+
+    # Built, but its send never finished: the open request says no.
+    builds.hook = None
+    with power_cut(service):
+        with pytest.raises(KeyboardInterrupt):
+            sched.send_now(root, service=service, now=at(2026, 9, 10, 6, 10))
+    with pytest.raises(sched.ScheduleError, match="already"):
+        sched.send_now(root, service=service, now=at(2026, 9, 10, 6, 11))
+    assert len(builds.calls) == 2 and len(adapter.sent) == 1
+
+
+def test_send_me_one_now_waits_for_the_morning_build_rather_than_racing_it(host, zones, builds):
+    root, service, adapter = host
+    report_on(root, service)
+    refused = []
+
+    def click_during_the_morning_build():
+        try:
+            sched.send_now(root, service=service, now=at(2026, 9, 10, 7, 32))
+        except sched.ScheduleError as exc:
+            refused.append(str(exc))
+
+    builds.hook = click_during_the_morning_build
+    assert sched.tick(root, at(2026, 9, 10), service=service)["state"] == "submitted"
+    # Two builds at once would race on the saved report and on Gmail drafts: one waits.
+    assert refused and "being built" in refused[0]
+    assert len(builds.calls) == 1 and len(adapter.sent) == 1
+    assert not [j for j in ledger(root)["jobs"] if j.get("trigger") == "request"]
+
+
+def test_the_morning_build_waits_for_one_asked_for_and_loses_no_try(host, zones, builds):
+    root, service, adapter = host
+    report_on(root, service)
+    seen = []
+    builds.hook = lambda: seen.append(sched.tick(root, at(2026, 9, 10, 7, 31), service=service))
+    assert sched.send_now(root, service=service, now=at(2026, 9, 10, 7, 30))["sent"] is True
+    assert seen[0]["state"] == "preparing" and "being built" in seen[0]["detail"]
+    daily = [j for j in ledger(root)["jobs"] if j.get("trigger", "schedule") == "schedule"][0]
+    assert int(daily.get("builds") or 0) == 0                  # waiting is not a failed try
+    builds.hook = None
+    assert sched.tick(root, at(2026, 9, 10, 7, 33), service=service)["state"] == "submitted"
+    assert len(builds.calls) == 2 and len(adapter.sent) == 2
+
+
+def test_a_build_held_by_another_process_is_waited_for(host, zones, builds):
+    root, service, adapter = host
+    report_on(root, service)
+    from harness import sessions
+    lock_path = os.path.join(morning_report.report_dir(root), "build.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    other = open(lock_path, "a+b")                              # another process's handle
+    try:
+        assert sessions._try_lock(other)
+        out = sched.tick(root, at(2026, 9, 10), service=service)
+        assert out["state"] == "preparing" and builds.calls == []
+        with pytest.raises(sched.ScheduleError, match="being built"):
+            sched.send_now(root, service=service, now=at(2026, 9, 10, 7, 31))
+    finally:
+        sessions._unlock_file(other)
+    assert sched.tick(root, at(2026, 9, 10, 7, 33), service=service)["state"] == "submitted"
+    assert len(builds.calls) == 1
 
 
 def test_send_me_one_now_never_goes_to_a_changed_owner(host, zones, builds):

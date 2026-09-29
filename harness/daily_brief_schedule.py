@@ -77,6 +77,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 
 from . import communications as comms, daily_brief, mail_messages, sessions
@@ -103,6 +104,9 @@ BUILD_RETRY_S = (10 * 60, 20 * 60)
 NOW_PER_DAY = 3
 #: A requested send still open after this long was abandoned by a process that died.
 NOW_STALE_S = 20 * 60
+#: A scheduled build that finds another build running looks again after this long.
+BUSY_RETRY_S = 60
+_BUSY = ("another morning report is being built right now; this one waits for it")
 DRAFTS_SETTING = "REPORT_GMAIL_DRAFTS"
 
 DEFAULT_AT = "07:30"
@@ -990,6 +994,54 @@ def tick(root, now=None, *, profile="default", service=None):
     return _deliver(path, profile, service, prefs, row, frozen, job_id, date, wall)
 
 
+_BUILD_GUARD = threading.Lock()
+
+
+def _build_slot(root):
+    """The one right to build a morning report under ``root``: a release callable, or ``None``.
+
+    A scheduled build and a report asked for on request must never run at once: both save
+    the same report files and both may write Gmail drafts, so two at once can tear the
+    saved report and draft the same reply twice.  Held across threads by a lock and across
+    processes by an OS lock on ``<report dir>/build.lock``; never waited for -- a busy slot
+    is an answer, because a build takes minutes.
+    """
+    from . import morning_report
+    if not _BUILD_GUARD.acquire(blocking=False):
+        return None
+    handle = None
+    try:
+        folder = morning_report.report_dir(root)
+        os.makedirs(folder, exist_ok=True)
+        handle = open(os.path.join(folder, "build.lock"), "a+b")
+        taken = sessions._try_lock(handle)
+    except BaseException:
+        if handle is not None:
+            handle.close()
+        _BUILD_GUARD.release()
+        raise
+    if not taken:
+        handle.close()
+        _BUILD_GUARD.release()
+        return None
+
+    def release():
+        sessions._unlock_file(handle)
+        _BUILD_GUARD.release()
+    return release
+
+
+def _build_waits(state, job_id, token, wall):
+    """Give back a lease whose build never started because another build held the slot."""
+    job = _find(state, job_id)
+    if job is None or job.get("build_token") != token or _prepared(job):
+        return dict(job) if job else None
+    job.pop("build_token", None)
+    job.update(builds=max(0, int(job.get("builds") or 0) - 1), detail=_BUSY, updated=wall,
+               build_started=wall + BUSY_RETRY_S - BUILD_LEASE_S)
+    return dict(job)
+
+
 def _instead(cause):
     return ("the morning report could not be built (%s), so today's Daily Brief was sent "
             "instead" % cause)[:300]
@@ -1022,7 +1074,8 @@ def _lease(state, job, prefs, row, job_id, result_id, date, wall, *, trigger="sc
     return job, "", ""
 
 
-def _build(root, path, profile, prefs, job_id, token, date, wall, *, window_end=None):
+def _build(root, path, profile, prefs, job_id, token, date, wall, *, window_end=None,
+           have_slot=False):
     """Build the report with no lock held, then freeze it into the job holding ``token``.
 
     ``(frozen job, None)`` when it is ready to send, or ``(None, report)`` when there is
@@ -1031,10 +1084,27 @@ def _build(root, path, profile, prefs, job_id, token, date, wall, *, window_end=
     next try would miss the window -- that morning's plain brief is frozen instead, in the
     same job and outbox id.  Without it (a report asked for on request) a failed build
     ends the request: it was a report that was asked for, not the brief.
+
+    Only one report is built at a time (:func:`_build_slot`); a scheduled pass that finds
+    another build running gives its lease back and looks again in a minute.
+    ``have_slot`` is for the caller that already holds the slot.
     """
+    release = None
+    if not have_slot:
+        release = _build_slot(root)
+        if release is None:
+            job = _edit(path, lambda st: _build_waits(st, job_id, token, wall))
+            return None, _report(profile, "preparing", _BUSY, date=date, job=job)
+    failure = None
     try:
         payload = _report_payload(root, prefs, wall, date)
     except Exception as exc:                          # noqa: BLE001 - reported, not raised
+        failure = exc
+    finally:
+        if release is not None:
+            release()
+    if failure is not None:
+        exc = failure
         cause = str(exc)[:200] if isinstance(exc, ScheduleError) else type(exc).__name__
         job, instead = _edit(path, lambda st: _build_failed(
             st, job_id, token, wall, cause, isinstance(exc, ScheduleError), window_end))
@@ -1358,6 +1428,24 @@ def send_now(root, now=None, *, profile="default", service=None):
     wall = float(now) if now is not None else time.time()
     path = _path(root, profile)
     service = _service(root, service)
+    # Taken before anything is written, and held until the report is built: a request that
+    # would race the morning's own build is refused at once, and leaves no job behind.
+    release = _build_slot(root)
+    if release is None:
+        raise ScheduleError("a morning report is being built right now; ask again in a minute "
+                            "or two")
+    try:
+        frozen, answer, row, snapshot, job_id, date = _requested(
+            root, path, profile, service, wall)
+    finally:
+        release()
+    if answer is not None:
+        return answer
+    return _deliver(path, profile, service, snapshot, row, frozen, job_id, date, wall)
+
+
+def _requested(root, path, profile, service, wall):
+    """:func:`send_now` with the build slot held: the checks, the job, and the build."""
     with sessions._locked(path):
         state, error = _load(path)
         if state is None:
@@ -1397,7 +1485,6 @@ def send_now(root, now=None, *, profile="default", service=None):
         _save(path, state)
         token, snapshot = job["build_token"], dict(prefs)
 
-    frozen, answer = _build(root, path, profile, snapshot, job_id, token, date, wall)
-    if answer is not None:
-        return answer
-    return _deliver(path, profile, service, snapshot, row, frozen, job_id, date, wall)
+    frozen, answer = _build(root, path, profile, snapshot, job_id, token, date, wall,
+                            have_slot=True)
+    return frozen, answer, row, snapshot, job_id, date
