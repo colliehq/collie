@@ -31,14 +31,25 @@ What each source may say, and what it must not:
   on the default branch of a repository they administer is a thing for them when the failing
   commit is recent and a tidy-up when it is not; review requests are other people's words and
   are ``untrusted``.
+* **local** -- git repositories on this computer, found at most two folders below a set of
+  project roots (the ``REPORT_PROJECT_ROOTS`` setting, else the folders holding Collie's recent
+  workspaces plus ~/workspace, ~/code, ~/projects and ~/src).  Linked worktrees, hidden and
+  vendored folders are skipped.  Only what is worth a line is said: changes uncommitted for
+  more than a week, commits unpushed for more than a day, a branch far behind its upstream as
+  of the last fetch.  A repository with a GitHub remote is filed under that ``owner/repo``, so
+  it and its GitHub signals are one project.  Every git call is read-only (optional locks off,
+  so ``git status`` does not even refresh the index), has its own timeout, and a repository
+  that hangs costs only itself.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as _dt
 import email.utils
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -626,6 +637,304 @@ def github(ctx):
             "detail": "2 GitHub calls"}
 
 
+# ---------------------------------------------------------------- projects on this computer
+
+DEFAULT_HOME_ROOTS = ("workspace", "code", "projects", "src")
+SCAN_DEPTH = 2
+MAX_REPOS = 80
+REPO_TIMEOUT_S = 8
+SCAN_BUDGET_S = 45
+SCAN_WORKERS = 6
+STALE_CHANGES_DAYS = 7
+UNPUSHED_AFTER_S = 24 * 3600
+BEHIND_THRESHOLD = 20
+_SKIP_DIRS = frozenset({"node_modules", "venv", "env", "vendor", "third_party", "site-packages",
+                        "dist", "build", "target", "__pycache__", "Pods", "bower_components"})
+_WALK_UP = 4
+
+
+def _git_runner(ctx):
+    """``run(args, timeout) -> (returncode, stdout, stderr)`` for git, read-only."""
+    injected = ctx.options.get("git")
+    if callable(injected):
+        return injected
+    path = shutil.which("git")
+    if not path:
+        raise rs.Unavailable("git isn't installed")
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+
+    def run(args, timeout):
+        proc = subprocess.run([path, "--no-optional-locks"] + list(args), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                              env=env, stdin=subprocess.DEVNULL, **plat.no_window_kwargs())
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+    return run
+
+
+def _repo_of(path):
+    """The main repository a folder belongs to (a worktree answers for its main one), or ``""``."""
+    here = os.path.abspath(path)
+    for _ in range(_WALK_UP):
+        marker = os.path.join(here, ".git")
+        if os.path.isdir(marker):
+            return here
+        if os.path.isfile(marker):
+            try:
+                with open(marker, encoding="utf-8", errors="replace") as handle:
+                    line = handle.read(4096).strip()
+            except OSError:
+                return here
+            target = line[len("gitdir:"):].strip() if line.startswith("gitdir:") else ""
+            target = os.path.normpath(os.path.join(here, target)) if target else ""
+            parts = target.replace("\\", "/").split("/.git/worktrees/")
+            return os.path.normpath(parts[0]) if len(parts) == 2 else here
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return ""
+
+
+def _recent_workspaces(ctx):
+    """Folders Collie worked in lately: recent sessions and the code map's last repository."""
+    if "workspaces" in ctx.options:
+        return list(ctx.options.get("workspaces") or [])
+    found = []
+    try:
+        from . import sessions
+        found += [row.get("cwd") for row in sessions.recent(80) if row.get("cwd")]
+    except Exception:                                 # noqa: BLE001 - a hint, never a blocker
+        pass
+    try:
+        with open(os.path.join(ctx.state_dir or os.path.expanduser("~/.collie"),
+                               "map-last-repo.txt"), encoding="utf-8") as handle:
+            found.append(handle.read(1024).strip())
+    except OSError:
+        pass
+    return found
+
+
+def project_roots(ctx):
+    """The folders the local scan starts from, existing ones only, each named once."""
+    if ctx.options.get("roots"):
+        wanted = list(ctx.options["roots"])
+    else:
+        wanted = []
+        for workspace in _recent_workspaces(ctx):
+            if not workspace or not os.path.isdir(str(workspace)):
+                continue
+            repo = _repo_of(str(workspace))
+            wanted.append(os.path.dirname(repo) if repo else os.path.dirname(
+                os.path.abspath(str(workspace))))
+        home = ctx.options.get("home") or os.path.expanduser("~")
+        wanted += [os.path.join(home, name) for name in DEFAULT_HOME_ROOTS]
+    roots, seen = [], set()
+    for path in wanted:
+        path = os.path.abspath(os.path.expanduser(str(path)))
+        key = os.path.normcase(os.path.realpath(path))
+        if key in seen or not os.path.isdir(path):
+            continue
+        seen.add(key)
+        roots.append(path)
+    return roots
+
+
+def _find_repos(roots):
+    """``(repos, more)``: git repositories at most ``SCAN_DEPTH`` folders below each root."""
+    repos, seen, more = [], set(), 0
+    for root in roots:
+        queue = [(root, 0)]
+        while queue:
+            path, depth = queue.pop(0)
+            marker = os.path.join(path, ".git")
+            if os.path.isdir(marker):
+                key = os.path.normcase(os.path.realpath(path))
+                if key not in seen:
+                    seen.add(key)
+                    if len(repos) < MAX_REPOS:
+                        repos.append(path)
+                    else:
+                        more += 1
+                continue                     # a repository's own folders are its business
+            if os.path.exists(marker) or depth >= SCAN_DEPTH:
+                continue                     # a linked worktree or submodule speaks through its main repo
+            try:
+                entries = sorted(os.scandir(path), key=lambda entry: entry.name.casefold())
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                if is_dir and not entry.name.startswith(".") and entry.name not in _SKIP_DIRS:
+                    queue.append((entry.path, depth + 1))
+    return repos, more
+
+
+def _remotes(repo):
+    """``(has_remote, github slug)`` from the repository's own config file."""
+    try:
+        with open(os.path.join(repo, ".git", "config"), encoding="utf-8",
+                  errors="replace") as handle:
+            text = handle.read(256 * 1024)
+    except OSError:
+        return False, ""
+    urls, current = {}, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        section = re.match(r'^\[remote\s+"([^"]+)"\]$', line)
+        if section:
+            current = section.group(1)
+            continue
+        if line.startswith("["):
+            current = None
+            continue
+        if current and re.match(r"^url\s*=", line):
+            urls.setdefault(current, line.split("=", 1)[1].strip())
+    ordered = ([urls["origin"]] if "origin" in urls else []) + [
+        url for name, url in urls.items() if name != "origin"]
+    for url in ordered:
+        slug = rs.github_slug(url)
+        if slug:
+            return True, slug
+    return bool(urls), ""
+
+
+def _status(text):
+    """What ``git status --porcelain=v2 --branch -z`` says: branch facts and changed paths."""
+    info = {"head": "", "upstream": "", "ahead": 0, "behind": 0, "paths": [], "changes": 0}
+    records = text.split("\0")
+    skip = False
+    for record in records:
+        if skip:
+            skip = False
+            continue
+        if not record:
+            continue
+        if record.startswith("# branch.head "):
+            info["head"] = record[len("# branch.head "):]
+        elif record.startswith("# branch.upstream "):
+            info["upstream"] = record[len("# branch.upstream "):]
+        elif record.startswith("# branch.ab "):
+            match = re.match(r"# branch\.ab \+(\d+) -(\d+)", record)
+            if match:
+                info["ahead"], info["behind"] = int(match.group(1)), int(match.group(2))
+        elif record[:2] in ("1 ", "2 ", "u ", "? "):
+            info["changes"] += 1
+            fields = {"1": 8, "2": 9, "u": 10, "?": 1}[record[0]]
+            parts = record.split(" ", fields)
+            if len(parts) > fields and len(info["paths"]) < 200:
+                info["paths"].append(parts[fields])
+            skip = record[0] == "2"          # a rename's original path follows as its own record
+    return info
+
+
+def _span(seconds, zh):
+    days = max(1, int(seconds // 86400))
+    if days < 14:
+        return ("%d 天" if zh else "%d day%s") % ((days,) if zh else (days, "" if days == 1 else "s"))
+    weeks = days // 7
+    return ("%d 周" if zh else "%d weeks") % weeks
+
+
+def _inspect(run, repo, now, zh):
+    """Signals for one repository.  Raises on a git call that hangs or fails."""
+    code, out, err = run(["-C", repo, "status", "--porcelain=v2", "--branch", "-z",
+                          "--untracked-files=normal"], REPO_TIMEOUT_S)
+    if code != 0:
+        raise RuntimeError("git status failed")
+    info = _status(out)
+    has_remote, slug = _remotes(repo)
+    folder = os.path.basename(os.path.normpath(repo))
+    project = slug or folder
+    link = "https://github.com/%s" % slug if slug else ""
+    branch = info["head"] if info["head"] and info["head"] != "(detached)" else ""
+    out_signals = []
+    if info["changes"]:
+        newest = None
+        for path in info["paths"]:
+            try:
+                stamp = os.stat(os.path.join(repo, path)).st_mtime
+            except OSError:
+                continue
+            newest = stamp if newest is None else max(newest, stamp)
+        if newest is not None and newest < now - STALE_CHANGES_DAYS * 86400:
+            count = info["changes"]
+            out_signals.append(rs.make(
+                "local", "changes:%s" % os.path.normcase(os.path.realpath(repo)), kind="stale",
+                title=("%s 分支上有 %d 处改动还没提交" % (branch or "当前", count)) if zh else
+                "%d uncommitted change%s on %s" % (count, "" if count == 1 else "s",
+                                                    branch or "a detached HEAD"),
+                detail=("已经 %s 没动了 · %s" if zh else "untouched for %s · %s") % (
+                    _span(now - newest, zh), repo),
+                when=newest, link=link, project=project, evidence="git status in %s" % folder))
+    ahead = info["ahead"] if info["upstream"] else 0
+    if branch and not info["upstream"] and has_remote:
+        code, count, _ = run(["-C", repo, "rev-list", "--count", "HEAD", "--not", "--remotes"],
+                             REPO_TIMEOUT_S)
+        ahead = int(count.strip()) if code == 0 and count.strip().isdigit() else 0
+    if branch and ahead:
+        code, stamp, _ = run(["-C", repo, "log", "-1", "--format=%ct"], REPO_TIMEOUT_S)
+        last = int(stamp.strip()) if code == 0 and stamp.strip().isdigit() else None
+        if last is not None and last < now - UNPUSHED_AFTER_S:
+            out_signals.append(rs.make(
+                "local", "unpushed:%s" % os.path.normcase(os.path.realpath(repo)),
+                kind="needs_you",
+                title=("%s 上有 %d 个提交还没推送" % (branch, ahead)) if zh else
+                "%d commit%s not pushed yet on %s" % (ahead, "" if ahead == 1 else "s", branch),
+                detail=("最近一个是 %s 前 · %s" if zh else "the latest is %s old · %s") % (
+                    _span(now - last, zh), repo),
+                when=last, link=link, project=project, evidence="git in %s" % folder))
+    if branch and info["upstream"] and info["behind"] >= BEHIND_THRESHOLD:
+        out_signals.append(rs.make(
+            "local", "behind:%s" % os.path.normcase(os.path.realpath(repo)), kind="fyi",
+            title=("%s 落后 %s %d 个提交" % (branch, info["upstream"], info["behind"])) if zh else
+            "%s is %d commits behind %s" % (branch, info["behind"], info["upstream"]),
+            detail=("以上次 fetch 为准 · %s" if zh else "as of the last fetch · %s") % repo,
+            when=now, link=link, project=project, evidence="git status in %s" % folder))
+    return out_signals
+
+
+def local_projects(ctx):
+    """Noteworthy state of the git repositories on this computer."""
+    run = _git_runner(ctx)
+    roots = project_roots(ctx)
+    if not roots:
+        raise rs.Unavailable("none of the project folders exist on this computer")
+    repos, more = _find_repos(roots)
+    zh = _zh(ctx)
+    signals, failed, unfinished = [], 0, 0
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS,
+                                                 thread_name_prefix="collie-report-git")
+    futures = {pool.submit(_inspect, run, repo, ctx.now, zh): repo for repo in repos}
+    try:
+        for future in concurrent.futures.as_completed(futures, timeout=SCAN_BUDGET_S):
+            try:
+                signals += future.result()
+            except Exception:                         # noqa: BLE001 - counted, not raised
+                failed += 1
+    except concurrent.futures.TimeoutError:
+        unfinished = len([future for future in futures if not future.done()])
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    notes = []
+    if more:
+        notes.append("only the first %d repositories were checked (%d more were found)"
+                     % (MAX_REPOS, more))
+    if failed:
+        notes.append("%d repositor%s could not be read" % (failed, "y" if failed == 1 else "ies"))
+    if unfinished:
+        notes.append("%d repositor%s did not answer in time" % (
+            unfinished, "y" if unfinished == 1 else "ies"))
+    signals.sort(key=lambda signal: (signal["project"].casefold(), signal["id"]))
+    return {"signals": signals, "state": "partial" if notes else "ok", "reason": "; ".join(notes),
+            "stats": {"repos": len(repos), "roots": len(roots)},
+            "detail": "%d repositories in %d folder%s" % (len(repos), len(roots),
+                                                         "" if len(roots) == 1 else "s")}
+
+
 # ---------------------------------------------------------------- the registry
 
 
@@ -635,6 +944,7 @@ ADAPTERS = {
     "gmail": ("Gmail", gmail, 30.0),
     "calendar": ("Google Calendar", calendar, 20.0),
     "github": ("GitHub", github, 60.0),
+    "local": ("Projects on this computer", local_projects, 60.0),
     "news": ("News", news, 10.0),
 }
 
