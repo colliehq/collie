@@ -79,6 +79,39 @@ def test_a_mark_the_resolve_pass_made_can_be_undone_from_the_page(desk, monkeypa
     assert md.today(desk.state, now=at(8, 30))["done"] == 0      # the person's word stands
 
 
+ACTIVE = """() => { const a = document.activeElement, act = a && a.closest('.m-act');
+  return {tag: a ? a.tagName : '', cls: a ? a.className : '', text: a ? a.textContent : '',
+          pill: act ? act.querySelector('a').textContent : ''}; }"""
+
+
+def test_keyboard_focus_survives_the_minute_refresh(desk):
+    save(desk.state, report())
+    page = _open(desk, fake_clock=True, reduced=True)
+    page.focus("#mActs .m-act:nth-child(2) .m-check")
+    before = page.evaluate(ACTIVE)
+    assert before["cls"] == "m-check" and before["pill"] == "Review Ana's pull request"
+    with page.expect_response(lambda r: "/api/report/today" in r.url):
+        page.clock.fast_forward(61000)
+    page.wait_for_timeout(300)
+    assert page.evaluate(ACTIVE) == before
+
+
+def test_marking_done_from_the_keyboard_keeps_the_focus_in_the_scene(desk):
+    from harness import morning_desktop as md
+    save(desk.state, report())
+    page = _open(desk, fake_clock=True, reduced=True)
+    page.focus("#mActs .m-act:nth-child(2) .m-check")
+    page.keyboard.press("Enter")
+    assert _poll(page, SAYS, "One down, four to go.")
+    # The pill it was on is gone; the Undo for it takes the focus, so Enter takes it back.
+    assert page.evaluate(ACTIVE)["text"] == "Undo"
+    page.keyboard.press("Enter")
+    assert _poll(page, SAYS, "Five quick ones and you're clear.")
+    assert md.today(desk.state, now=at(8))["done"] == 0
+    assert page.evaluate(ACTIVE) == {"tag": "BUTTON", "cls": "m-check", "text": "✓",
+                                     "pill": "Review Ana's pull request"}
+
+
 def test_while_it_shows_the_page_asks_for_the_resolve_pass(desk, monkeypatch):
     from harness import morning_desktop as md
     save(desk.state, report())

@@ -1466,46 +1466,12 @@
     if (!d) return;
     $("mSay").textContent = d.sentence || "";
     $("mMore").textContent = d.summary || "";
-    // One dot per thing, the done ones first. A done dot is a button that takes the mark back,
-    // whoever made it: the person, or a check that found the draft sent or the pull request merged.
-    var dots = $("mDots"), items = (d.items || []).filter(function(item){ return item && item.key; });
-    var ordered = items.filter(function(item){ return item.state === "done"; })
-      .concat(items.filter(function(item){ return item.state !== "done"; }));
-    dots.textContent = "";
-    ordered.forEach(function(item){
-      var dot, title = String(item.title || "");
-      if (item.state === "done") {
-        dot = document.createElement("button"); dot.type = "button"; dot.className = "m-dot on";
-        var why = doneWhy(item.done_by);
-        dot.title = title + (why ? " · " + why : "");
-        dot.setAttribute("aria-label", tOps("Mark not done") + ": " + title);
-        dot.onclick = function(){ markOpen([item.key]); };
-      } else {
-        dot = document.createElement("i"); dot.className = "m-dot"; dot.title = title;
-      }
-      dots.appendChild(dot);
-    });
-    if (d.dots_label) { var label = document.createElement("span"); label.textContent = d.dots_label; dots.appendChild(label); }
-    dots.hidden = !ordered.length;
-    var acts = $("mActs");
-    acts.textContent = "";
-    (d.pills || []).forEach(function(p){
-      var href = pillHref(p);
-      if (!href) return;
-      var wrap = document.createElement("span"), a = document.createElement("a");
-      wrap.className = "m-act";
-      a.className = "m-pill " + (p.primary ? "go" : "soft"); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
-      a.textContent = String(p.label || "");
-      wrap.appendChild(a);
-      if ((p.keys || []).length) {           // the small check that says "done", on hover or focus
-        var check = document.createElement("button");
-        check.type = "button"; check.className = "m-check"; check.textContent = "✓";
-        check.title = tOps("Mark done"); check.setAttribute("aria-label", tOps("Mark done") + ": " + a.textContent);
-        check.onclick = function(e){ e.preventDefault(); markDone(p.keys); };
-        wrap.appendChild(check);
-      }
-      acts.appendChild(wrap);
-    });
+    // Dots and buttons are updated in place, keyed by the things they stand for, so the minute's
+    // refresh or a mark never takes keyboard focus away from something still on screen.
+    var active = document.activeElement;
+    renderDots(d);
+    renderPills(d);
+    if (active && active !== document.activeElement && document.contains(active)) active.focus({preventScroll:true});
     document.body.classList.toggle("all-clear", !!d.all_done);
     var by = d.by || {};
     $("mByText").textContent = [by.companion, by.words].filter(Boolean).join(" · ");
@@ -1514,6 +1480,85 @@
     if (img.getAttribute("src") !== avatar) { img.onerror = function(){ this.onerror = null; this.src = "/logo.svg"; }; img.src = avatar; }
     morningWhen();
     scheduleFit();
+  }
+  // Put `wanted` (keyed elements, in order) into `parent` ahead of `tail`, reusing what is there:
+  // an element only moves when it must, and whatever is no longer wanted is removed.
+  function placeKeyed(parent, wanted, tail){
+    var keep = {};
+    wanted.forEach(function(el){ keep[el.dataset.key] = el; });
+    Array.prototype.slice.call(parent.children).forEach(function(el){
+      if (el !== tail && keep[el.dataset.key] !== el) parent.removeChild(el);
+    });
+    wanted.forEach(function(el, i){ if (parent.children[i] !== el) parent.insertBefore(el, parent.children[i] || tail || null); });
+  }
+  function keyedChild(parent, key){
+    for (var i = 0; i < parent.children.length; i++) if (parent.children[i].dataset.key === key) return parent.children[i];
+    return null;
+  }
+  // One dot per thing, the done ones first. A done dot is a button that takes the mark back,
+  // whoever made it: the person, or a check that found the draft sent or the pull request merged.
+  function renderDots(d){
+    var dots = $("mDots"), items = (d.items || []).filter(function(item){ return item && item.key; });
+    var ordered = items.filter(function(item){ return item.state === "done"; })
+      .concat(items.filter(function(item){ return item.state !== "done"; }));
+    var label = dots.querySelector("span.m-dots-label");
+    if (!label) { label = document.createElement("span"); label.className = "m-dots-label"; dots.appendChild(label); }
+    var wanted = ordered.map(function(item){
+      var done = item.state === "done", key = item.key + (done ? ":done" : ":open"), title = String(item.title || "");
+      var dot = keyedChild(dots, key);
+      if (!dot) {
+        dot = document.createElement(done ? "button" : "i"); dot.dataset.key = key;
+        dot.className = done ? "m-dot on" : "m-dot";
+        if (done) { dot.type = "button"; dot.onclick = function(){ markOpen([item.key], this); }; }
+      }
+      var why = done ? doneWhy(item.done_by) : "";
+      dot.title = title + (why ? " · " + why : "");
+      if (done) dot.setAttribute("aria-label", tOps("Mark not done") + ": " + title);
+      return dot;
+    });
+    placeKeyed(dots, wanted, label);
+    label.textContent = d.dots_label || "";
+    dots.hidden = !ordered.length;
+  }
+  function renderPills(d){
+    var acts = $("mActs"), wanted = [];
+    (d.pills || []).forEach(function(p){
+      var href = pillHref(p);
+      if (!href) return;
+      var keys = (p.keys || []).slice(), key = p.kind === "draft" ? "draft" : p.kind + ":" + keys.join(",");
+      var wrap = keyedChild(acts, key), a, check;
+      if (!wrap) {
+        wrap = document.createElement("span"); wrap.className = "m-act"; wrap.dataset.key = key;
+        a = document.createElement("a"); a.target = "_blank"; a.rel = "noopener noreferrer"; wrap.appendChild(a);
+        if (keys.length) {                   // the small check that says "done", on hover or focus
+          check = document.createElement("button"); check.type = "button"; check.className = "m-check"; check.textContent = "✓";
+          check.onclick = function(e){ e.preventDefault(); markDone(JSON.parse(wrap.dataset.keys || "[]"), this); };
+          wrap.appendChild(check);
+        }
+      }
+      a = wrap.querySelector("a"); check = wrap.querySelector(".m-check");
+      wrap.dataset.keys = JSON.stringify(keys);
+      a.className = "m-pill " + (p.primary ? "go" : "soft");
+      if (a.getAttribute("href") !== href) a.href = href;
+      if (a.textContent !== String(p.label || "")) a.textContent = String(p.label || "");
+      if (check) { check.title = tOps("Mark done"); check.setAttribute("aria-label", tOps("Mark done") + ": " + a.textContent); }
+      wanted.push(wrap);
+    });
+    placeKeyed(acts, wanted, null);
+  }
+  // Where the keyboard goes when what it was on is gone: the check of the button for these keys
+  // if it is back, else the note's Undo, else the report link.
+  function refocus(keys){
+    var acts = $("mActs");
+    for (var i = 0; keys && i < acts.children.length; i++) {
+      var mine = JSON.parse(acts.children[i].dataset.keys || "[]");
+      if (keys.some(function(k){ return mine.indexOf(k) >= 0; })) {
+        var check = acts.children[i].querySelector(".m-check");
+        if (check) { check.focus({preventScroll:true}); return; }
+      }
+    }
+    var undo = $("mNote").querySelector("button");
+    (undo || $("mOpen")).focus({preventScroll:true});
   }
   function morningNote(text, undo){
     var note = $("mNote"); clearTimeout(MORNING.noteTimer); note.textContent = text || "";
@@ -1530,24 +1575,27 @@
   }
   // Taking a mark back, from a green dot: open again on the person's word, which a later check
   // never overrides.
-  function markOpen(keys){
+  function markOpen(keys, from){
     if (MORNING.busy) return;
+    var focused = !!from && from === document.activeElement;
     MORNING.busy = true;
-    morningPost({action:"undo", keys:keys}).then(function(r){ morningNote(""); applyToday(r && r.today); })
-      .catch(function(){ morningNote(tOps("That could not be saved. Try again.")); })
+    morningPost({action:"undo", keys:keys}).then(function(r){
+      morningNote(""); applyToday(r && r.today);
+      if (focused && !document.contains(from)) refocus(keys);
+    }).catch(function(){ morningNote(tOps("That could not be saved. Try again.")); })
       .then(function(){ MORNING.busy = false; });
   }
   // Marked from the page; the server keeps it for the day, and a later check never overrides it.
-  function markDone(keys){
+  // Done from the keyboard, the focus moves to the Undo that the mark leaves behind.
+  function markDone(keys, from){
     if (MORNING.busy) return;
+    var focused = !!from && from === document.activeElement;
     MORNING.busy = true;
     morningPost({action:"done", keys:keys}).then(function(r){
       var d = r && r.today;
       applyToday(d);
-      if (d && d.show && !d.all_done) morningNote(tOps("Marked done."), function(){
-        morningPost({action:"undo", keys:keys}).then(function(back){ morningNote(""); applyToday(back && back.today); })
-          .catch(function(){ morningNote(tOps("That could not be saved. Try again.")); });
-      });
+      if (d && d.show && !d.all_done) morningNote(tOps("Marked done."), function(){ markOpen(keys, this); });
+      if (focused && !document.contains(from)) refocus(null);
     }).catch(function(){ morningNote(tOps("That could not be saved. Try again.")); })
       .then(function(){ MORNING.busy = false; });
   }
