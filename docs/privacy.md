@@ -86,6 +86,12 @@ feature inherently requires:
   icon — until you open a link in your browser. Headlines are kept in
   `~/.collie/daily-brief/news.db`, shown as text, and never given to a model as instructions; if
   you turn on the morning email, they are part of it. Remove every feed to stop all requests.
+- **Gmail and Google Calendar (opt-in; off until you connect Google).** When you run
+  `collie google connect` or press *Connect* in Settings → Connections, Collie asks Google for three
+  permissions: read your Gmail, write Gmail drafts, and read your Google Calendar. Your computer then
+  talks to Google directly; no Collie server is involved. See
+  [Google (Gmail and Calendar)](#google-gmail-and-calendar) below for what is read, where the
+  connection is kept, and how to remove it.
 - **Phone remote (opt-in).** If you enable `collie web --remote`, your phone can reach your desktop
   through the collie.run relay. Hosted remote request and response contents are **end-to-end
   encrypted**; the relay handles necessary routing metadata such as room or device identifiers,
@@ -113,6 +119,42 @@ Local features — driving your logged-in browser, arranging your desktop, contr
 processing personal intelligence and meeting reminders, recording your screen, and recording a
 meeting with AI processing disabled — run **entirely on your own computer**. Their output stays local
 unless you send it somewhere yourself.
+
+### Google (Gmail and Calendar)
+
+Collie connects to Google with its own OAuth app, and only after you sign in on Google's page. You
+can untick any of the three permissions there; Collie records which ones Google granted and uses
+only those.
+
+- **What is read.** Recent Gmail messages for your morning report: sender, recipients, subject,
+  date, Gmail's snippet and labels, and the text of the conversations the report covers (plain text,
+  or HTML reduced to text; attachments are not opened). Upcoming Google Calendar events: title,
+  start and end, location, the number of attendees, and the event's link. Reads go straight from
+  your computer to Google (`gmail.googleapis.com`, `www.googleapis.com`).
+- **What is written.** Only Gmail drafts, as replies inside the conversation they answer. **Collie
+  never sends mail.** The connection has no call that sends a message or a draft; a draft waits in
+  Gmail until you open it and press Send yourself.
+- **Where the connection is stored.** Only on this computer. The sign-in (Google's refresh token) is
+  sealed for your Windows account with DPAPI on Windows, kept in your login Keychain on macOS, and
+  kept in a file only your user can read elsewhere. `~/.collie/google-connection.json` holds the
+  account address, the permissions Google granted and the sealed sign-in, never the token in plain
+  text. Short-lived access tokens are held in memory only.
+- **When mail content leaves your computer.** Only when Collie builds your morning report, and
+  only to the model provider you chose, which receives the messages and events the report needs.
+  With a local model (Ollama) nothing leaves the machine. If you turn on the morning email, the
+  report, which can include what Collie wrote about your mail and events, is delivered to you by
+  email.
+- **Disconnecting.** `collie google disconnect`, or *Disconnect* in Settings → Connections,
+  revokes Collie's access at Google and deletes the connection from this computer. You can also
+  remove Collie at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+  While Collie's Google app is in testing, Google ends every sign-in after 7 days, and Collie then
+  asks you to connect again.
+
+Collie's use and transfer to any other app of information received from Google APIs will adhere to
+the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy),
+including the Limited Use requirements. Google user data is used only to provide the morning report
+and reply drafts you asked for. It is not sold, not used for advertising, not read by people, and not
+used to develop, improve or train generalized AI or machine-learning models.
 
 ### Outside-AI learning and Personal intelligence
 
@@ -172,7 +214,8 @@ provider's tools is actually used.
 Collie's local state (settings, memory, sessions, meeting schedules, meeting recordings/notes,
 paired-device list) lives under `~/.collie` on your machine. A meeting recording or manually added
 scheduled meeting can be deleted individually from Meeting Notes; delete the whole folder to remove
-all Collie state. Uninstalling Collie removes the program.
+all Collie state. The Google connection is removed with `collie google disconnect`, which also
+revokes it at Google. Uninstalling Collie removes the program.
 
 ## Changes
 
