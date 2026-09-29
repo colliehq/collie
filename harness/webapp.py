@@ -129,6 +129,11 @@ _AUDIO_OK_HOSTS = ("googlevideo.com", "bilivideo.com", "bilivideo.cn", "akamaize
 _MCP_LOGIN_ERR = {}                  # server name -> last login error
 _MCP_LOGIN_BUSY = set()              # server names with a login in flight
 
+# Collie's own Google connection signs in the same way: a thread waits for the browser while the
+# Settings entry polls. `auth_url` is kept so the panel can offer the link when no browser opened.
+_GOOGLE_CONNECT = {"busy": False, "error": "", "auth_url": ""}
+_GOOGLE_LOCK = threading.Lock()
+
 
 def _reject_json_constant(value):
     """Reject Python's permissive NaN/Infinity extension at HTTP boundaries."""
@@ -2161,6 +2166,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "forbidden"}, 403)
                 from .comfy_integration import snapshot as comfy_snapshot
                 return self._send_json(comfy_snapshot())
+            if path == "/api/google":
+                # The account address is personal, so even the read needs the per-process token.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import google_connect as google_status_source
+                return self._send_json({"status": google_status_source.status(),
+                                        "connect": dict(_GOOGLE_CONNECT)})
             if path in ("/api/activity", "/api/healthz", "/api/recovery", "/api/hooks",
                         "/api/doctor", "/api/control-center", "/api/automations",
                         "/api/recovery-center", "/api/memory/claims", "/api/budgets",
@@ -3612,6 +3624,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
                 return self._serve_checkpoint_restore()
+            if path == "/api/google":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(4096)
+                if body is None:
+                    return self._send_json({"error": "expected object"}, 400)
+                return self._google_action(str(body.get("action") or ""))
             if path == "/api/mcp/recommend":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
@@ -5216,6 +5235,47 @@ class Handler(BaseHTTPRequestHandler):
                                    "text/plain; charset=utf-8")
         html = paircode.page(payload, host=target, port=port, ttl=ttl)
         self._send_html(html.encode("utf-8"))
+
+    def _google_action(self, action):
+        """POST /api/google: connect (in the background), disconnect, or check the sign-in."""
+        from . import google_connect as google
+        if action == "disconnect":
+            try:
+                result = google.disconnect()
+            except Exception as exc:
+                return self._send_json({"error": _public_error(exc)}, 500)
+            return self._send_json({"ok": True, "result": result, "status": google.status()})
+        if action == "check":
+            return self._send_json({"ok": True, "status": google.status(check=True)})
+        if action != "connect":
+            return self._send_json({"error": "unknown action"}, 400)
+        with _GOOGLE_LOCK:
+            if _GOOGLE_CONNECT["busy"]:
+                return self._send_json({"ok": True, "busy": True,
+                                        "auth_url": _GOOGLE_CONNECT["auth_url"]})
+            _GOOGLE_CONNECT.update(busy=True, error="", auth_url="")
+        announced = threading.Event()
+
+        def announce(url):
+            _GOOGLE_CONNECT["auth_url"] = url
+            announced.set()
+
+        def run():
+            import webbrowser
+            try:
+                google.connect(open_browser=webbrowser.open, announce=announce, timeout=300)
+            except google.GoogleError as exc:
+                _GOOGLE_CONNECT["error"] = str(exc)
+            except Exception as exc:
+                _GOOGLE_CONNECT["error"] = _public_error(exc)
+            finally:
+                _GOOGLE_CONNECT["busy"] = False
+                announced.set()
+
+        threading.Thread(target=run, name="collie-google-connect", daemon=True).start()
+        announced.wait(5)                  # the link exists within milliseconds; never hang on it
+        return self._send_json({"ok": True, "started": True,
+                                "auth_url": _GOOGLE_CONNECT["auth_url"]})
 
     def _authed(self, parsed) -> bool:
         """State-changing / code-executing routes require the per-process token (query param).
