@@ -506,7 +506,27 @@ class ChannelService:
             event = comms.reject_event(connection, message["event_id"], actor="channel-intake",
                                reason="Automatic message" if message.get("automatic") else "Input could not be read completely",
                                directory=self.directory)
+        elif event.get("state") == "pending":
+            # Re-checked on a re-delivery too: a command whose handling was interrupted is
+            # still waiting here, and must not be handed to the drafting lane as work.
+            event = self._reply_command(connection, message["event_id"]) or event
         return event
+
+    def _reply_command(self, connection, event_id):
+        """A reply that is a command to the morning report ("mute <project>"), handled.
+
+        ``None`` for everything else, and for any failure: intake must never stop on
+        this, and a message that was not handled simply stays pending for a person.
+        """
+        from . import daily_brief_reply
+        try:
+            private = comms.get_event(connection, event_id, include_private=True,
+                                      directory=self.directory)
+            if not daily_brief_reply.mute_command(self, private, connection):
+                return None
+            return comms.get_event(connection, event_id, directory=self.directory)
+        except Exception:                             # noqa: BLE001 - never blocks intake
+            return None
 
     def _record_unstorable(self, connection, row, message, reason):
         """Record "something arrived here that could not be kept" and settle it.

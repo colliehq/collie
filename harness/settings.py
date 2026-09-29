@@ -351,10 +351,9 @@ SCHEMA = [
      "label_zh": "晨报不再提的项目", "type": "text", "default": "",
      "hint": "Projects the morning report should not mention at all, separated by commas: the "
              "name the report shows (colliehq/collie) or just the repository's name (collie). "
-             "The report's footer invites a reply of \"mute <project>\"; until replies are "
-             "wired up, add the name here.",
+             "Replying \"mute <project>\" to the morning report email adds a name here.",
      "hint_zh": "晨报完全不提的项目，用逗号分隔：写晨报里显示的名字（colliehq/collie）或只写仓库名（collie）。"
-                "晨报末尾会提示回复“mute 项目名”；在回复功能接好之前，请把名字加在这里。"},
+                "回复晨报邮件“mute 项目名”也会把名字加到这里。"},
     {"group": "Morning report", "key": "REPORT_GMAIL_DRAFTS", "label": "Put reply drafts in Gmail",
      "label_zh": "把回复草稿放进 Gmail", "type": "bool", "default": "on",
      "hint": "When Google is connected, the morning report writes suggested replies to recent mail "
