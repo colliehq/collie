@@ -93,6 +93,10 @@ class CollieWallpaper : Form
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, IntPtr size, out IntPtr read);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT val, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
 
     // The title bar is drawn by DWM, not by us and not by the page — so a dark UI inside a window
     // whose caption stays white is not a CSS problem, it is a window that was never told. 20 is
@@ -633,6 +637,7 @@ class CollieWallpaper : Form
             return;
         }
         Pin();
+        StartCoverWatch();
 
         // resolve the Chromium child + install input hooks a moment after the page starts
         var t = new Timer();
@@ -1276,6 +1281,110 @@ class CollieWallpaper : Form
         if (_progman == IntPtr.Zero) return;
         IntPtr defview = FindWindowExW(_progman, IntPtr.Zero, "SHELLDLL_DefView", null);
         if (defview != IntPtr.Zero) SetWindowPos(this.Handle, defview, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
+    // A window behind the desktop icons is never told it is covered: Chromium's occlusion tracking
+    // looks at top-level windows, and ours is a child of Progman. Under a maximized browser the page
+    // went on drawing every frame for nobody (18% of a core measured, the whole screen covered by a
+    // video). So look for ourselves: while the foreground window hides the wallpaper, stop the
+    // WebView rendering, and keep its last frame on the form behind it, so anything that still
+    // shows through -- a translucent taskbar, a minimize animation, a wrong guess here -- sees the
+    // wallpaper standing still rather than black.
+    Timer _coverTimer;
+    int _coverTicks, _coverGen;
+    bool _covered;
+
+    void StartCoverWatch()
+    {
+        _coverTimer = new Timer();
+        _coverTimer.Interval = 250;
+        _coverTimer.Tick += delegate { CheckCovered(); };
+        _coverTimer.Start();
+    }
+
+    void CheckCovered()
+    {
+        bool covered = false;
+        try { covered = ForegroundCoversWallpaper(); } catch { }
+        // Pause after a second of cover (an Alt+Tab passing over a window is no reason); resume on
+        // the first look that finds the wallpaper showing.
+        if (!covered) { _coverTicks = 0; SetCovered(false); }
+        else if (++_coverTicks >= 4) SetCovered(true);
+    }
+
+    bool ForegroundCoversWallpaper()
+    {
+        IntPtr fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero || fg == Handle || !IsWindowVisible(fg) || IsIconic(fg)) return false;
+        StringBuilder cls = new StringBuilder(64); GetClassNameW(fg, cls, 64);
+        string name = cls.ToString();
+        if (name == "Progman" || name == "WorkerW" || name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd")
+            return false;
+        int cloaked;
+        if (DwmGetWindowAttribute(fg, 14 /* DWMWA_CLOAKED */, out cloaked, sizeof(int)) == 0 && cloaked != 0)
+            return false;
+        // The frame the user sees. GetWindowRect adds the invisible resize borders, about 7px a side,
+        // so a window dragged to the size of the screen, not maximized, would count as covering the
+        // strips it leaves.
+        RECT f;
+        if (DwmGetWindowAttribute(fg, 9 /* DWMWA_EXTENDED_FRAME_BOUNDS */, out f, Marshal.SizeOf(typeof(RECT))) != 0 &&
+            !GetWindowRect(fg, out f))
+            return false;
+        RECT w;
+        if (!GetWindowRect(Handle, out w)) return false;
+        return CoversWallpaper(Rectangle.FromLTRB(f.left, f.top, f.right, f.bottom),
+                               Rectangle.FromLTRB(w.left, w.top, w.right, w.bottom),
+                               Screen.FromHandle(Handle).WorkingArea);
+    }
+
+    // Whether a window whose visible frame is `window` hides all of the wallpaper a person can see:
+    // the part of it inside the work area (a maximized window stops at the taskbar; a full-screen
+    // one covers that too). All three in screen pixels. A window on another monitor covers nothing.
+    internal static bool CoversWallpaper(Rectangle window, Rectangle wallpaper, Rectangle workArea)
+    {
+        Rectangle seen = Rectangle.Intersect(wallpaper, workArea);
+        if (seen.Width <= 0 || seen.Height <= 0 || window.Width <= 0 || window.Height <= 0) return false;
+        return window.Contains(seen);
+    }
+
+    async void SetCovered(bool covered)
+    {
+        if (covered == _covered || _web == null || _web.CoreWebView2 == null) return;
+        _covered = covered;
+        int gen = ++_coverGen;
+        if (covered)
+        {
+            try
+            {
+                using (var shot = new MemoryStream())
+                {
+                    await _web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
+                    if (gen != _coverGen) return;           // uncovered while the frame was taken
+                    shot.Position = 0;
+                    using (Image frame = Image.FromStream(shot))
+                        SetStill(new Bitmap(frame));        // a copy: FromStream reads its stream lazily
+                }
+            }
+            catch (Exception ex) { Log("cover still failed: " + ex.Message); }
+            if (gen != _coverGen) return;
+            _web.Visible = false;                           // CoreWebView2Controller.IsVisible: stops rendering
+            Log("covered: rendering paused");
+            return;
+        }
+        _web.Visible = true;
+        Log("uncovered: rendering resumed");
+        // Drop the still once the live page has painted over it.
+        var drop = new Timer(); drop.Interval = 1500;
+        drop.Tick += delegate { drop.Stop(); drop.Dispose(); if (gen == _coverGen) SetStill(null); };
+        drop.Start();
+    }
+
+    void SetStill(Image still)
+    {
+        Image old = BackgroundImage;
+        BackgroundImageLayout = ImageLayout.Stretch;
+        BackgroundImage = still;
+        if (old != null) old.Dispose();
     }
 
     IntPtr FindInput()
