@@ -118,6 +118,40 @@ def test_other_projects_already_muted_are_kept(host, zones, builds, own_settings
     assert morning_report.muted_names() == ["AgentGalaxy", "old-thing", "collie"]
 
 
+def saved_muted(settings_module):
+    raw = settings_module._read_uncached().get("REPORT_MUTED", "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def test_a_mute_adds_to_the_saved_list_not_to_a_stale_copy(host, zones, builds, own_settings):
+    root, service, _adapter = host
+    own_settings.update({"REPORT_MUTED": "a"})
+    own_settings.apply()                                   # this process last read "a"
+    # The settings panel (or another process) has since saved a longer list.
+    import json
+    with open(own_settings._PATH, "w", encoding="utf-8") as fh:
+        json.dump({"REPORT_MUTED": "a, b"}, fh)
+    row = sent_report(host)
+    arrive(service, row, text="mute collie")
+    assert saved_muted(own_settings) == ["a", "b", "collie"]
+
+
+def test_a_long_list_is_never_cut_and_a_full_one_is_refused_out_loud(host, zones, builds,
+                                                                     own_settings):
+    root, service, _adapter = host
+    names = ["proj%03d" % i for i in range(230)]
+    own_settings.update({"REPORT_MUTED": ", ".join(names)})
+    own_settings.apply()
+    row = sent_report(host)
+    arrive(service, row, text="mute collie")
+    # Nothing the person saved is dropped, and a name the report would never read is not
+    # added as if it worked: the reply says why.
+    assert saved_muted(own_settings) == names
+    [reply] = confirmations(service)
+    assert "200" in reply["text"] and "collie" in reply["text"]
+    assert "Done" not in reply["text"]
+
+
 @pytest.mark.parametrize("sender, text, refs, automatic, why", [
     (OTHER, "mute colliehq/collie", None, False, "a stranger who copied the thread headers"),
     (OWNER, "thanks!\nmute colliehq/collie", None, False, "mute on the second line"),

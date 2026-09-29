@@ -278,31 +278,47 @@ def mute_request(text):
 
 
 def _mute(project):
-    """``"muted"``, ``"already"`` or ``"locked"``: what adding ``project`` did."""
+    """``"muted"``, ``"already"``, ``"locked"`` or ``"full"``: what adding ``project`` did.
+
+    Appends to the list as *saved* -- read from settings.json itself under the settings
+    lock, whole -- never to this process's copy of it: ``settings.get`` answers from the
+    environment ``apply()`` last wrote, which is stale the moment the panel or another
+    process saves, and writing that copy back would silently undo their change.
+    """
     from . import morning_report, report_signals, settings
-    current = morning_report.muted_names()
-    if report_signals.project_key(project) in {report_signals.project_key(name)
-                                               for name in current}:
-        return "already"
+    key = report_signals.project_key
     if not settings.owns(MUTED_SETTING):
-        return "locked"
-    settings.update({MUTED_SETTING: ", ".join(current + [project])})
+        # An environment variable holds the list: it is read, never written.
+        held = morning_report.split_muted(settings.get(MUTED_SETTING, ""))
+        return "already" if key(project) in {key(name) for name in held} else "locked"
+    with settings._state_lock:
+        saved = morning_report.split_muted(settings._read_uncached().get(MUTED_SETTING))
+        if key(project) in {key(name) for name in saved}:
+            return "already"
+        if len(saved) >= morning_report.MUTED_LIMIT:
+            return "full"
+        settings.update({MUTED_SETTING: ", ".join(saved + [project])})
     settings.apply()                                  # the next build in this process sees it
     return "muted"
 
 
 _CONFIRM = {
-    "en": {"muted": "Done: I muted “%s”. The morning report leaves it out from the next one on.",
-           "already": "“%s” was already muted, so nothing changed.",
-           "locked": "I couldn't mute “%s”: the projects to leave out are set by the "
+    "en": {"muted": "Done: I muted “{name}”. The morning report leaves it out from the next one "
+                    "on.",
+           "already": "“{name}” was already muted, so nothing changed.",
+           "locked": "I couldn't mute “{name}”: the projects to leave out are set by the "
                      "COLLIE_REPORT_MUTED environment variable on this computer, so change "
                      "it there.",
+           "full": "I couldn't mute “{name}”: Projects to leave out already holds {limit} or "
+                   "more names, the most the report reads. Remove some first.",
            "undo": "To hear about a project again, remove it under Settings → Morning report "
                    "→ Projects to leave out."},
-    "zh": {"muted": "好的，已经把“%s”静音。从下一份晨报开始不再提它。",
-           "already": "“%s”之前就已经静音了，没有任何变化。",
-           "locked": "没能静音“%s”：不再提的项目由这台电脑上的环境变量 COLLIE_REPORT_MUTED "
+    "zh": {"muted": "好的，已经把“{name}”静音。从下一份晨报开始不再提它。",
+           "already": "“{name}”之前就已经静音了，没有任何变化。",
+           "locked": "没能静音“{name}”：不再提的项目由这台电脑上的环境变量 COLLIE_REPORT_MUTED "
                      "设定，请在那里修改。",
+           "full": "没能静音“{name}”：晨报不再提的项目已经有 {limit} 个或更多，这是晨报能读取的上限。"
+                   "请先删掉一些。",
            "undo": "想重新看到某个项目，在 设置 → 晨报 → 晨报不再提的项目 里把它删掉即可。"},
 }
 
@@ -334,7 +350,9 @@ def mute_command(service, event, connection=""):
     outcome = _mute(project)
     words = _CONFIRM["zh" if str((report.get("metadata") or {}).get("language") or "")
                      .startswith("zh") else "en"]
-    text = "%s\n\n%s\n" % (words[outcome] % project, words["undo"])
+    from . import morning_report
+    text = "%s\n\n%s\n" % (words[outcome].format(name=project, limit=morning_report.MUTED_LIMIT),
+                           words["undo"])
     event_id = str(event.get("id") or "")
     result_id = "report-mute-" + hashlib.sha256(
         ("%s\0%s" % (connection, event_id)).encode("utf-8")).hexdigest()[:32]
