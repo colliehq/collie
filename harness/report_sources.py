@@ -34,12 +34,19 @@ What each source may say, and what it must not:
 * **local** -- git repositories on this computer, found at most two folders below a set of
   project roots (the ``REPORT_PROJECT_ROOTS`` setting, else the folders holding Collie's recent
   workspaces plus ~/workspace, ~/code, ~/projects and ~/src).  Linked worktrees, hidden and
-  vendored folders are skipped.  Only what is worth a line is said: changes uncommitted for
-  more than a week, commits unpushed for more than a day, a branch far behind its upstream as
-  of the last fetch.  A repository with a GitHub remote is filed under that ``owner/repo``, so
-  it and its GitHub signals are one project.  Every git call is read-only (optional locks off,
-  so ``git status`` does not even refresh the index), has its own timeout, and a repository
-  that hangs costs only itself.
+  vendored folders are skipped.  A disk full of clones is not a list of projects, so checkouts
+  are grouped by remote: every clone of one remote, and every machine-made copy that reaches it
+  through a local-path remote, is one project, and only its most recently active checkout
+  speaks.  A project is *active* only when the person worked on it lately -- a commit they
+  authored in the last 30 days (matched against the repository's own git identity) or files
+  edited in the last 14; a repository with no remote needs their commit in the last 14.  An
+  inactive project says nothing at all.  What an active one says is status, never a to-do
+  (``fyi``): changes uncommitted for more than a week, commits unpushed for more than a day, a
+  branch far behind its upstream as of the last fetch.  Projects come back with ``activity``
+  (when the person last worked on each) and ``aliases`` (a checkout's other remotes), so a
+  local clone and its GitHub repository are one project with one name.  Every git call is
+  read-only (optional locks off, so ``git status`` does not even refresh the index), has its
+  own timeout, and a repository that hangs costs only itself.
 """
 from __future__ import annotations
 
@@ -648,6 +655,10 @@ SCAN_WORKERS = 6
 STALE_CHANGES_DAYS = 7
 UNPUSHED_AFTER_S = 24 * 3600
 BEHIND_THRESHOLD = 20
+ACTIVE_COMMIT_DAYS = 30
+ACTIVE_FILES_DAYS = 14
+LOCAL_ONLY_COMMIT_DAYS = 14
+_REMOTE_HOPS = 3
 _SKIP_DIRS = frozenset({"node_modules", "venv", "env", "vendor", "third_party", "site-packages",
                         "dist", "build", "target", "__pycache__", "Pods", "bower_components"})
 _WALK_UP = 4
@@ -773,35 +784,6 @@ def _find_repos(roots):
     return repos, more
 
 
-def _remotes(repo):
-    """``(has_remote, github slug)`` from the repository's own config file."""
-    try:
-        with open(os.path.join(repo, ".git", "config"), encoding="utf-8",
-                  errors="replace") as handle:
-            text = handle.read(256 * 1024)
-    except OSError:
-        return False, ""
-    urls, current = {}, None
-    for raw in text.splitlines():
-        line = raw.strip()
-        section = re.match(r'^\[remote\s+"([^"]+)"\]$', line)
-        if section:
-            current = section.group(1)
-            continue
-        if line.startswith("["):
-            current = None
-            continue
-        if current and re.match(r"^url\s*=", line):
-            urls.setdefault(current, line.split("=", 1)[1].strip())
-    ordered = ([urls["origin"]] if "origin" in urls else []) + [
-        url for name, url in urls.items() if name != "origin"]
-    for url in ordered:
-        slug = rs.github_slug(url)
-        if slug:
-            return True, slug
-    return bool(urls), ""
-
-
 def _status(text):
     """What ``git status --porcelain=v2 --branch -z`` says: branch facts and changed paths."""
     info = {"head": "", "upstream": "", "ahead": 0, "behind": 0, "paths": [], "changes": 0}
@@ -831,6 +813,116 @@ def _status(text):
     return info
 
 
+def _read_config(path):
+    """``{remote name: url}`` from one git config file, in file order."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(256 * 1024)
+    except OSError:
+        return {}
+    urls, current = {}, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            section = re.match(r'^\[remote\s+"([^"]+)"\]$', line)
+            current = section.group(1) if section else None
+            continue
+        if current and re.match(r"^url\s*=", line):
+            urls.setdefault(current, line.split("=", 1)[1].strip())
+    return urls
+
+
+def _ordered(urls):
+    return (["origin"] if "origin" in urls else []) + [name for name in urls if name != "origin"]
+
+
+def _config_path(path):
+    """The config file of the repository at ``path`` (a checkout or a bare one), or ``""``."""
+    if os.path.isdir(os.path.join(path, ".git")):
+        return os.path.join(path, ".git", "config")
+    if os.path.isfile(os.path.join(path, "HEAD")) and os.path.isfile(os.path.join(path, "config")):
+        return os.path.join(path, "config")
+    return ""
+
+
+def _remote_project(url, base, hops=0, seen=None):
+    """``(key, label, local_only, hops)`` for the project a remote URL belongs to.
+
+    A GitHub URL is its ``owner/repo``; any other network URL is its ``host/path``.  A local
+    path -- a clone of a clone, a bare repository on disk -- is followed to that repository's
+    own remote, up to ``_REMOTE_HOPS`` times, so a machine-made copy is filed under the project
+    it was copied from.  A chain that ends in a repository with no remote names that repository
+    and is ``local_only``.  ``hops`` counts the local copies on the way.
+    """
+    url = str(url or "").strip()
+    slug = rs.github_slug(url)
+    if slug:
+        return "github.com/" + slug.casefold(), slug, False, hops
+    lowered = url.lower()
+    network = None
+    if not lowered.startswith("file://"):
+        network = (re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?$",
+                            url, re.IGNORECASE)
+                   or re.match(r"^[^@/\s]+@([^:/\s]+):(.+?)(?:\.git)?/?$", url))
+    if network:
+        return ("%s/%s" % (network.group(1), network.group(2))).casefold(), network.group(2), \
+            False, hops
+    path = url[len("file://"):] if lowered.startswith("file://") else url
+    if re.match(r"^/[A-Za-z]:[/\\]", path):
+        path = path[1:]                              # file:///C:/x on Windows
+    if not path:
+        return "", "", True, hops
+    path = os.path.normpath(path if os.path.isabs(path) else os.path.join(base, path))
+    real = os.path.normcase(os.path.realpath(path))
+    seen = set() if seen is None else seen
+    config = _config_path(path)
+    if config and hops < _REMOTE_HOPS and real not in seen:
+        seen.add(real)
+        urls = _read_config(config)
+        for name in _ordered(urls):
+            found = _remote_project(urls[name], path, hops + 1, seen)
+            if found[0]:
+                return found
+    name = os.path.basename(path.rstrip("\\/"))
+    name = name[:-4] if name.endswith(".git") else name
+    return "local:" + real, name or path, True, hops + 1
+
+
+def _ere(text):
+    return re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", text)
+
+
+def _identity(run, repo):
+    """``(names, emails)`` the repository's effective git config says the person commits as."""
+    code, out, _ = run(["-C", repo, "config", "--get-regexp", r"^user\.(name|email)$"],
+                       REPO_TIMEOUT_S)
+    found = {}
+    for line in (out or "").splitlines() if code == 0 else ():
+        key, _, value = line.partition(" ")
+        if value.strip():
+            found[key.strip().lower()] = value.strip()      # the last scope wins, as in git
+    return ([found["user.name"]] if found.get("user.name") else [],
+            [found["user.email"]] if found.get("user.email") else [])
+
+
+def _mine(run, repo, identity, since):
+    """When the person last authored a commit here (any branch), since ``since``, or ``None``."""
+    names, emails = identity
+    parts = []
+    if names:
+        parts.append("(^(%s) <)" % "|".join(_ere(name) for name in names))
+    if emails:
+        parts.append("(<(%s)>$)" % "|".join(_ere(email) for email in emails))
+    if not parts:
+        return None
+    code, out, _ = run(["-C", repo, "log", "--all", "-n", "50", "--format=%at", "-i", "-E",
+                        "--author=" + "|".join(parts), "--since=@%d" % int(since)],
+                       REPO_TIMEOUT_S)
+    stamps = [int(line) for line in (out or "").split() if code == 0 and line.isdigit()]
+    stamps = [stamp for stamp in stamps if stamp >= since]
+    return float(max(stamps)) if stamps else None
+
+
 def _span(seconds, zh):
     days = max(1, int(seconds // 86400))
     if days < 14:
@@ -840,38 +932,47 @@ def _span(seconds, zh):
 
 
 def _inspect(run, repo, now, zh):
-    """Signals for one repository.  Raises on a git call that hangs or fails."""
+    """What one checkout is: its project, the person's activity in it, and its status facts.
+
+    Raises on a git call that hangs or fails.  Facts are made here but only the most recently
+    active checkout of an active project gets to say them (see :func:`local_projects`).
+    """
     code, out, err = run(["-C", repo, "status", "--porcelain=v2", "--branch", "-z",
                           "--untracked-files=normal"], REPO_TIMEOUT_S)
     if code != 0:
         raise RuntimeError("git status failed")
     info = _status(out)
-    has_remote, slug = _remotes(repo)
+    urls = _read_config(os.path.join(repo, ".git", "config"))
+    remotes = [found for found in (_remote_project(urls[name], repo) for name in _ordered(urls))
+               if found[0]]
     folder = os.path.basename(os.path.normpath(repo))
-    project = slug or folder
-    link = "https://github.com/%s" % slug if slug else ""
+    if remotes:
+        key, label, local_only, hops = remotes[0]
+    else:
+        key, label, local_only, hops = ("local:" + os.path.normcase(os.path.realpath(repo)),
+                                        folder, True, 0)
+    touched = None
+    for path in info["paths"]:
+        try:
+            stamp = os.stat(os.path.join(repo, path)).st_mtime
+        except OSError:
+            continue
+        touched = stamp if touched is None else max(touched, stamp)
+    commit = _mine(run, repo, _identity(run, repo), now - ACTIVE_COMMIT_DAYS * 86400)
     branch = info["head"] if info["head"] and info["head"] != "(detached)" else ""
-    out_signals = []
-    if info["changes"]:
-        newest = None
-        for path in info["paths"]:
-            try:
-                stamp = os.stat(os.path.join(repo, path)).st_mtime
-            except OSError:
-                continue
-            newest = stamp if newest is None else max(newest, stamp)
-        if newest is not None and newest < now - STALE_CHANGES_DAYS * 86400:
-            count = info["changes"]
-            out_signals.append(rs.make(
-                "local", "changes:%s" % os.path.normcase(os.path.realpath(repo)), kind="stale",
-                title=("%s 分支上有 %d 处改动还没提交" % (branch or "当前", count)) if zh else
-                "%d uncommitted change%s on %s" % (count, "" if count == 1 else "s",
-                                                    branch or "a detached HEAD"),
-                detail=("已经 %s 没动了 · %s" if zh else "untouched for %s · %s") % (
-                    _span(now - newest, zh), repo),
-                when=newest, link=link, project=project, evidence="git status in %s" % folder))
+    facts = []
+    if info["changes"] and touched is not None and touched < now - STALE_CHANGES_DAYS * 86400:
+        count = info["changes"]
+        facts.append(rs.make(
+            "local", "changes:%s" % os.path.normcase(os.path.realpath(repo)), kind="fyi",
+            title=("%s 分支上有 %d 处改动还没提交" % (branch or "当前", count)) if zh else
+            "%d uncommitted change%s on %s" % (count, "" if count == 1 else "s",
+                                                branch or "a detached HEAD"),
+            detail=("已经 %s 没动了 · %s" if zh else "untouched for %s · %s") % (
+                _span(now - touched, zh), repo),
+            when=touched, project=label, evidence="git status in %s" % folder))
     ahead = info["ahead"] if info["upstream"] else 0
-    if branch and not info["upstream"] and has_remote:
+    if branch and not info["upstream"] and urls:
         code, count, _ = run(["-C", repo, "rev-list", "--count", "HEAD", "--not", "--remotes"],
                              REPO_TIMEOUT_S)
         ahead = int(count.strip()) if code == 0 and count.strip().isdigit() else 0
@@ -879,46 +980,105 @@ def _inspect(run, repo, now, zh):
         code, stamp, _ = run(["-C", repo, "log", "-1", "--format=%ct"], REPO_TIMEOUT_S)
         last = int(stamp.strip()) if code == 0 and stamp.strip().isdigit() else None
         if last is not None and last < now - UNPUSHED_AFTER_S:
-            out_signals.append(rs.make(
-                "local", "unpushed:%s" % os.path.normcase(os.path.realpath(repo)),
-                kind="needs_you",
+            facts.append(rs.make(
+                "local", "unpushed:%s" % os.path.normcase(os.path.realpath(repo)), kind="fyi",
                 title=("%s 上有 %d 个提交还没推送" % (branch, ahead)) if zh else
                 "%d commit%s not pushed yet on %s" % (ahead, "" if ahead == 1 else "s", branch),
                 detail=("最近一个是 %s 前 · %s" if zh else "the latest is %s old · %s") % (
                     _span(now - last, zh), repo),
-                when=last, link=link, project=project, evidence="git in %s" % folder))
+                when=last, project=label, evidence="git in %s" % folder))
     if branch and info["upstream"] and info["behind"] >= BEHIND_THRESHOLD:
-        out_signals.append(rs.make(
+        facts.append(rs.make(
             "local", "behind:%s" % os.path.normcase(os.path.realpath(repo)), kind="fyi",
             title=("%s 落后 %s %d 个提交" % (branch, info["upstream"], info["behind"])) if zh else
             "%s is %d commits behind %s" % (branch, info["behind"], info["upstream"]),
             detail=("以上次 fetch 为准 · %s" if zh else "as of the last fetch · %s") % repo,
-            when=now, link=link, project=project, evidence="git status in %s" % folder))
-    return out_signals
+            when=now, project=label, evidence="git status in %s" % folder))
+    return {"repo": repo, "keys": [found[0] for found in remotes] or [key],
+            "labels": [found[1] for found in remotes if not found[2]], "label": label,
+            "network": not local_only, "hops": hops,
+            "github": key.startswith("github.com/"), "commit": commit, "touched": touched,
+            "facts": facts}
+
+
+def _projects(records, now):
+    """``[(label, activity, chosen record, aliases)]`` for the active projects only.
+
+    Checkouts that share any remote are one project (a machine-made copy reaches its project
+    through its local-path remote).  A project with a network remote is active when the person
+    authored a commit in it in the last ``ACTIVE_COMMIT_DAYS`` or edited its files in the last
+    ``ACTIVE_FILES_DAYS``; a local-only one only when they authored a commit in the last
+    ``LOCAL_ONLY_COMMIT_DAYS``.  The most recently active checkout speaks for the project: the
+    person's own latest commit first, then the fewest local copies away from the real remote,
+    then the freshest edits.
+    """
+    parent = {}
+
+    def find(key):
+        while parent.setdefault(key, key) != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for record in records:
+        for key in record["keys"][1:]:
+            parent[find(key)] = find(record["keys"][0])
+    groups = {}
+    for record in records:
+        groups.setdefault(find(record["keys"][0]), []).append(record)
+    out = []
+    for members in groups.values():
+        network = any(record["network"] for record in members)
+        for record in members:
+            commit, touched = record["commit"], record["touched"]
+            if network:
+                edited = touched if touched is not None and \
+                    touched >= now - ACTIVE_FILES_DAYS * 86400 else None
+                record["activity"] = max([when for when in (commit, edited) if when] or [0.0])
+            else:
+                record["activity"] = commit if commit and \
+                    commit >= now - LOCAL_ONLY_COMMIT_DAYS * 86400 else 0.0
+        active = [record for record in members if record["activity"]]
+        if not active:
+            continue                     # nobody worked on it lately: it says nothing at all
+        chosen = max(active, key=lambda r: (r["commit"] or 0.0, -r["hops"], r["touched"] or 0.0,
+                                            r["repo"]))
+        aliases = sorted({label for record in members for label in record["labels"]})
+        out.append((chosen["label"], max(r["activity"] for r in active), chosen, aliases))
+    return sorted(out, key=lambda row: -row[1])
 
 
 def local_projects(ctx):
-    """Noteworthy state of the git repositories on this computer."""
+    """The person's active projects on this computer, and what is worth saying about each."""
     run = _git_runner(ctx)
     roots = project_roots(ctx)
     if not roots:
         raise rs.Unavailable("none of the project folders exist on this computer")
     repos, more = _find_repos(roots)
     zh = _zh(ctx)
-    signals, failed, unfinished = [], 0, 0
+    records, failed, unfinished = [], 0, 0
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS,
                                                  thread_name_prefix="collie-report-git")
     futures = {pool.submit(_inspect, run, repo, ctx.now, zh): repo for repo in repos}
     try:
         for future in concurrent.futures.as_completed(futures, timeout=SCAN_BUDGET_S):
             try:
-                signals += future.result()
+                records.append(future.result())
             except Exception:                         # noqa: BLE001 - counted, not raised
                 failed += 1
     except concurrent.futures.TimeoutError:
         unfinished = len([future for future in futures if not future.done()])
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+    signals, activity, aliases = [], {}, []
+    for label, when, chosen, names in _projects(records, ctx.now):
+        activity[label] = when
+        if len(names) > 1:
+            aliases.append(names)
+        link = "https://github.com/%s" % label if chosen["github"] else ""
+        for fact in chosen["facts"]:
+            fact.update(project=label, link=link)
+            signals.append(fact)
     notes = []
     if more:
         notes.append("only the first %d repositories were checked (%d more were found)"
@@ -928,11 +1088,13 @@ def local_projects(ctx):
     if unfinished:
         notes.append("%d repositor%s did not answer in time" % (
             unfinished, "y" if unfinished == 1 else "ies"))
-    signals.sort(key=lambda signal: (signal["project"].casefold(), signal["id"]))
-    return {"signals": signals, "state": "partial" if notes else "ok", "reason": "; ".join(notes),
-            "stats": {"repos": len(repos), "roots": len(roots)},
-            "detail": "%d repositories in %d folder%s" % (len(repos), len(roots),
-                                                         "" if len(roots) == 1 else "s")}
+    signals.sort(key=lambda signal: (-activity.get(signal["project"], 0.0), signal["id"]))
+    return {"signals": signals, "activity": activity, "aliases": aliases,
+            "state": "partial" if notes else "ok", "reason": "; ".join(notes),
+            "stats": {"repos": len(repos), "projects": len(activity), "roots": len(roots)},
+            "detail": "%d repositories, %d active project%s, in %d folder%s" % (
+                len(repos), len(activity), "" if len(activity) == 1 else "s", len(roots),
+                "" if len(roots) == 1 else "s")}
 
 
 # ---------------------------------------------------------------- the registry
