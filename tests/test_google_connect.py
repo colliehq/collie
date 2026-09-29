@@ -278,6 +278,40 @@ def test_connect_times_out_cleanly(env):
     assert info.value.code == "timeout"
 
 
+def _reconnect(env, old_account, old_client="123-fake.apps.googleusercontent.com"):
+    gc._save_connection("1//old-sign-in", ALL.split(), account=old_account, client_id=old_client)
+    _exchange(env)                                   # the new sign-in is owner@example.com
+    env["fake"].on("POST", gc.REVOKE_URI, {})
+    browser, seen = _browser(env, lambda q: q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+        {"state": q["state"], "code": "4/auth-code"}))
+    st = gc.connect(open_browser=browser, timeout=20)
+    seen["thread"].join(10)
+    revoked = [dict(urllib.parse.parse_qsl(c["data"].decode()))["token"]
+               for c in env["fake"].calls if c["url"] == gc.REVOKE_URI]
+    return st, revoked
+
+
+def test_reconnecting_as_another_account_revokes_the_grant_it_replaces(env):
+    st, revoked = _reconnect(env, "old@example.com")
+    assert st["state"] == "connected" and st["account"] == "owner@example.com"
+    assert revoked == ["1//old-sign-in"]
+    assert list(env["backend"].secrets.values()) == [REFRESH]
+
+
+def test_reconnecting_to_another_project_revokes_the_grant_it_replaces(env):
+    _st, revoked = _reconnect(env, "owner@example.com", "999-old.apps.googleusercontent.com")
+    assert revoked == ["1//old-sign-in"]
+
+
+@pytest.mark.parametrize("old_account", ["owner@example.com", "OWNER@example.com", ""])
+def test_reconnecting_the_same_grant_does_not_revoke_the_new_sign_in(env, old_account):
+    # Google revokes a whole grant (every token of that account for the project), so revoking
+    # the old token of the same account would end the sign-in that just replaced it.
+    st, revoked = _reconnect(env, old_account)
+    assert revoked == [] and st["state"] == "connected"
+    assert list(env["backend"].secrets.values()) == [REFRESH]
+
+
 def test_a_code_that_arrives_before_the_deadline_is_waited_for(env):
     # The exchange outlives the timeout. connect() must not report "Nothing was saved" while it
     # is still saving.

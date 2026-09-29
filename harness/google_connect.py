@@ -811,8 +811,11 @@ class _Flow:
         token = payload["access_token"]
         account = (_email_from_id_token(payload.get("id_token") or "")
                    or _fetch_account(token, granted))
+        replaced = _separate_grant_token(self.state_dir, account, self.client["client_id"])
         _save_connection(refresh, granted, account=account, client_id=self.client["client_id"],
                          state_dir=self.state_dir)
+        if replaced and replaced != refresh:
+            _revoke(replaced)                            # best effort: the new sign-in is saved
         try:
             expires_in = max(0, int(payload.get("expires_in") or 3600))
         except (TypeError, ValueError):
@@ -960,6 +963,43 @@ def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_h
     return status(state_dir=state_dir)
 
 
+def _revoke(token):
+    """Ask Google to revoke the grant behind ``token`` (the token travels in the POST body).
+    True when Google confirmed it; never raises."""
+    try:
+        status_code, _body = _send("POST", REVOKE_URI, headers=_FORM, data=_form({"token": token}))
+    except Exception:
+        return False
+    return status_code == 200
+
+
+def _separate_grant_token(state_dir, account, client_id):
+    """The stored refresh token when a new sign-in replaces a *different* grant, else "".
+
+    Google revokes grants, not single tokens: revoking one token ends every token that account
+    holds for the project. So the old token is only worth revoking when it belongs to another
+    account or another Google Cloud project (the number before the first "-" of a client id).
+    Replacing the same account's own grant just forgets the old token; revoking it would end the
+    sign-in that has just replaced it. An old record with no known account is left alone too.
+    """
+    path = _conn_path(state_dir)
+    old = _read_record(path)
+    if not old:
+        return ""
+    old_account, new_account = (old.get("account") or "").lower(), (account or "").lower()
+    old_project = (old.get("client_id") or "").split("-", 1)[0]
+    new_project = (client_id or "").split("-", 1)[0]
+    other_account = bool(old_account and new_account and old_account != new_account)
+    other_project = bool(old_project.isdigit() and new_project.isdigit()
+                         and old_project != new_project)
+    if not (other_account or other_project):
+        return ""
+    try:
+        return _backend_for(old).open(old["sealed"], path)
+    except Exception:
+        return ""
+
+
 def disconnect(*, state_dir=None) -> dict:
     """Revoke the grant at Google, then delete it here whatever Google answered.
 
@@ -970,18 +1010,11 @@ def disconnect(*, state_dir=None) -> dict:
     rec = _read_record(path)
     if not rec:
         return {"removed": False, "revoked": False, "message": "Google wasn't connected."}
-    revoked = False
     try:
         refresh = _backend_for(rec).open(rec["sealed"], path)
     except Exception:
         refresh = ""
-    if refresh:
-        try:
-            status_code, _body = _send("POST", REVOKE_URI, headers=_FORM,
-                                       data=_form({"token": refresh}))
-            revoked = status_code == 200
-        except GoogleError:
-            revoked = False
+    revoked = _revoke(refresh) if refresh else False
     _remove_connection(path)
     if revoked:
         message = ("Disconnected. Google has revoked Collie's access, and the connection is "

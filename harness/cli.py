@@ -1369,6 +1369,9 @@ def cmd_uninstall(args):
 
     procs = _collie_procs()
     total = sum(sz for _, sz in targets)
+    # Deleting ~/.collie does not end a Google connection: the grant stays live at Google, and on
+    # macOS the sealed sign-in is a Keychain item outside the folder. `disconnect` ends both.
+    google_connected = os.path.isfile(os.path.join(cdir, "google-connection.json"))
 
     print("collie uninstall%s" % ("" if args.yes else "  (dry run — nothing will be deleted)"))
     if procs:
@@ -1381,6 +1384,9 @@ def cmd_uninstall(args):
             print("    %8s  %s" % (_human(sz), path.replace(home, "~")))
     if kept:
         print("\n  kept (--keep-config): %s" % ", ".join(kept))
+    if google_connected:
+        print("\n  Google connection: revoke Collie's access at Google, then delete the sign-in"
+              " (including a macOS Keychain item)")
     if plat.is_macos():
         print("\n  macOS permission grants to reset (they outlive the app):")
         print("    ScreenCapture, Camera, Microphone, AppleEvents  for run.collie.desktop")
@@ -1396,9 +1402,19 @@ def cmd_uninstall(args):
         ok, why = _stop_collie_proc(pid)
         if not ok:
             failures.append("could not stop pid %s: %s" % (pid, why))
+    if google_connected:
+        # Best effort: an offline machine still gets its local copy removed, and says so.
+        try:
+            from . import google_connect
+            print("\n  Google: " + google_connect.disconnect(state_dir=cdir)["message"])
+        except Exception as exc:
+            print("\n  Google: could not disconnect (%s); remove Collie at "
+                  "https://myaccount.google.com/permissions" % exc.__class__.__name__)
     for path, _sz in targets:
         try:
             _sh.rmtree(path) if os.path.isdir(path) else os.remove(path)
+        except FileNotFoundError:
+            pass                        # already gone: the Google disconnect removes its files
         except Exception as e:
             failures.append("could not remove %s: %s" % (path, e))
     if plat.is_macos():
