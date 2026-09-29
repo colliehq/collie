@@ -1464,9 +1464,15 @@
   }
 
   // Only an https address or Collie's own report page, whatever the answer says.
+  // The report page opens from the short-lived link signed for today's report (never with the
+  // page's session token, which a default browser would keep in its history).
+  function reportHref(){
+    var url = String((MORNING.data && MORNING.data.report_url) || "");
+    return /^\/report\?date=\d{4}-\d{2}-\d{2}&exp=\d+&sig=[0-9a-f]+$/.test(url) ? url : "";
+  }
   function pillHref(p){
     var href = String((p && p.href) || "");
-    if (p && p.kind === "report") return href === "/report" ? authUrl("/report") : "";
+    if (p && p.kind === "report") return href === "/report" ? reportHref() : "";
     return /^https:\/\/[^\s"'<>\\]+$/.test(href) ? href : "";
   }
   function renderMorning(){
@@ -1483,7 +1489,9 @@
     document.body.classList.toggle("all-clear", !!d.all_done);
     var by = d.by || {};
     $("mByText").textContent = [by.companion, by.words].filter(Boolean).join(" · ");
-    $("mOpen").href = authUrl("/report"); $("mOpen").textContent = tOps("Open report");
+    var open = $("mOpen"), openHref = reportHref();
+    open.hidden = !openHref; if (openHref && open.getAttribute("href") !== openHref) open.href = openHref;
+    open.textContent = tOps("Open report");
     var img = $("mAvatar"), avatar = OPS_IDENTITY.avatar || "/api/avatar.png";
     if (img.getAttribute("src") !== avatar) { img.onerror = function(){ this.onerror = null; this.src = "/logo.svg"; }; img.src = avatar; }
     morningWhen();

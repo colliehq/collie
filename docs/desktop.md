@@ -40,7 +40,9 @@ type, its summary, one dot for each thing to do, and up to three buttons. The fi
 reply drafts together (*Review 2 drafts* opens the first draft in Gmail); the others are the next
 things in the report's order. A button opens an `https` address in your default browser, or the
 full report in a Collie window when the thing has no address of its own; *Open report* under the
-buttons always does the latter. The words are dark on bright skies and light on rain, storm and
+buttons always does the latter. That page runs no script, and the desktop opens it with a link
+made for that day's report that works for 15 minutes, so Collie's session token never appears in
+an address. The words are dark on bright skies and light on rain, storm and
 night.
 
 The sky comes from the weather the clock already shows (the Open-Meteo weather code and whether

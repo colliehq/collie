@@ -6,7 +6,9 @@ fixed clock; the route tests go through the real server. Nothing here reaches Gm
 the checks the progress pass would make are replaced by ones that fail the test if they run.
 """
 import json
+import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -250,9 +252,35 @@ def test_the_routes_need_the_token(web, root):
     assert code == 200 and today["show"] is True and len(today["pills"]) == 3
     code, headers, body = call(base + "/report?token=" + token)
     assert code == 200 and headers["Content-Type"].startswith("text/html")
-    assert "script-src 'self'" in headers["Content-Security-Policy"]
     assert b"Five quick ones" in body
     assert call(base + "/api/report/today?token=" + token, "POST", {"action": "fly"})[0] == 400
+
+
+def test_the_report_page_runs_no_script_and_opens_from_a_short_lived_link(web, root, monkeypatch):
+    """/report shows the person's mail subjects and needs no script: its policy forbids every
+    script, including any that escaping ever let through. The desktop opens it from a link
+    signed for that day that lasts minutes, so the page's own session token never travels in
+    a URL that a default browser keeps in its history."""
+    from harness import webapp
+    base, token = web
+    save(root, report())
+    today = json.loads(call(base + "/api/report/today?token=" + token)[2])
+    link = today["report_url"]
+    assert link.startswith("/report?") and "token" not in link and token not in link
+    code, headers, body = call(base + link)
+    assert code == 200 and b"Five quick ones" in body
+    policy = headers["Content-Security-Policy"]
+    assert "script-src 'none'" in policy and "sha256-" not in policy
+    for status_path in ("/report?token=" + token, "/report", "/report?date=2026-01-01&token=" + token):
+        policy = call(base + status_path)[1]["Content-Security-Policy"]
+        assert "script-src 'none'" in policy, status_path
+    forged = re.sub(r"sig=[0-9a-f]+", "sig=" + "0" * 32, link)
+    assert call(base + forged)[0] == 403
+    other_day = link.replace("date=" + DAY, "date=2026-09-28")
+    assert call(base + other_day)[0] == 403
+    real = time.time
+    monkeypatch.setattr(webapp.time, "time", lambda: real() + webapp.REPORT_LINK_TTL_S + 120)
+    assert call(base + link)[0] == 403                      # minutes, not forever
     code, _headers, body = call(base + "/api/report/today?token=" + token, "POST",
                                 {"action": "dismiss"})
     assert code == 200 and json.loads(body)["today"]["why"] == "dismissed"

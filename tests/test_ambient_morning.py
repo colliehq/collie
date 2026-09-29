@@ -178,9 +178,9 @@ def test_the_pills_link_only_to_https_or_the_report_page(desk):
                                            "Answer Collie's question"]
     assert pills[0]["href"] == DRAFT_ANA and pills[0]["go"] is True
     assert pills[1]["href"] == PR_LINK and pills[1]["go"] is False
-    assert pills[2]["href"].startswith("/report?token=")
+    assert pills[2]["href"].startswith("/report?date=") and "token" not in pills[2]["href"]
     assert all(p["target"] == "_blank" and "noopener" in p["rel"] for p in pills)
-    assert page.get_attribute("#mOpen", "href").startswith("/report?token=")
+    assert page.get_attribute("#mOpen", "href").startswith("/report?date=")
     page.close()
 
     rep = report()
@@ -189,8 +189,8 @@ def test_the_pills_link_only_to_https_or_the_report_page(desk):
     rewrite(desk.state, rep)
     page = _open(desk)
     hrefs = page.evaluate("() => [...document.querySelectorAll('#mActs a')].map(a => a.getAttribute('href'))")
-    assert hrefs[0].startswith("/report?token=") and hrefs[2] == AZURE_LINK
-    assert all(h.startswith("https://") or h.startswith("/report?token=") for h in hrefs)
+    assert hrefs[0].startswith("/report?date=") and hrefs[2] == AZURE_LINK
+    assert all(h.startswith("https://") or h.startswith("/report?date=") for h in hrefs)
 
 
 def test_the_close_button_hides_it_for_today(desk):
