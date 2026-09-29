@@ -725,3 +725,48 @@ def test_no_draft_without_permission_to_write_drafts(world):
     assert draft["state"] == "not_created"
     assert draft["reason"] == "Google didn't allow Collie to write Gmail drafts"
     assert not [call for call in world["google"].calls if call[0] == "gmail_thread"]
+
+
+# ---------------------------------------------------------------- the greeting's time of day
+
+
+def _at(hour, minute=0):
+    return dt.datetime(2026, 9, 29, hour, minute, tzinfo=PDT).timestamp()
+
+
+@pytest.mark.parametrize("hour, minute, words", [
+    (3, 0, "Good morning, Daming!"), (11, 59, "Good morning, Daming!"),
+    (12, 0, "Good afternoon, Daming!"), (17, 59, "Good afternoon, Daming!"),
+    (18, 0, "Good evening, Daming!"), (23, 30, "Good evening, Daming!")])
+def test_the_part_of_the_day_comes_from_the_local_build_time(hour, minute, words):
+    out, _ = mr.compose([RELEASE], SOURCES, PROFILE, _at(hour, minute), None,
+                        caller=lambda system, prompt: "not json")
+    assert out["greeting"] == words
+
+
+def _greet(model_greeting, when, profile=PROFILE):
+    answer = model_answer(greeting=model_greeting)
+    out, composer = mr.compose(ALL, SOURCES, profile, when, None,
+                               caller=lambda system, prompt: answer)
+    return out["greeting"], [d for d in composer["dropped"] if d["section"] == "greeting"]
+
+
+def test_a_greeting_naming_another_part_of_the_day_is_replaced():
+    greeting, dropped = _greet("Good morning, Daming! Rowan here.", _at(12, 36))
+    assert greeting == "Good afternoon, Daming!"
+    assert dropped and "morning" in dropped[0]["reason"] and "afternoon" in dropped[0]["reason"]
+
+
+def test_the_model_may_only_add_words_after_the_greeting():
+    assert _greet("Good afternoon, Daming! Rowan here.", _at(12, 36)) == (
+        "Good afternoon, Daming! Rowan here.", [])
+    assert _greet("Hi Daming, happy Tuesday!", _at(7, 2))[0] == "Good morning, Daming! Happy Tuesday!"
+    assert _greet("Happy Tuesday, Daming!", _at(7, 2))[0] == "Good morning, Daming!"
+    assert _greet("Good morning!", _at(7, 2))[0] == "Good morning, Daming!"
+
+
+def test_chinese_greetings_follow_the_same_clock():
+    zh = dict(PROFILE, language="zh")
+    assert _greet("早上好，Daming！", _at(19, 0), zh)[0] == "晚上好，Daming！"
+    assert _greet("晚上好，Daming！今天辛苦了。", _at(19, 0), zh)[0] == "晚上好，Daming！今天辛苦了。"
+    assert _greet("下午好！", _at(9, 0), zh)[0] == "早上好，Daming！"

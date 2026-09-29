@@ -13,7 +13,8 @@ four steps, and saves it:
    an item that cites the wrong kind of signal for its section (a "win" that is really a bill)
    is dropped; an item containing a number the cited signals do not contain is dropped; the
    greeting, headline and summary fall back to plain counted wording if they state a number
-   nothing supports.  Wins, things for you, things ready and reads keep at most 3 items,
+   nothing supports.  The greeting's salutation and its part of the day come from the local
+   build time, never from the model, which may only add words after it.  Wins, things for you, things ready and reads keep at most 3 items,
    projects at most 5, and each section says how many signals it left out.  If the model
    fails, answers something that is not JSON, or has nothing groundable to say, the whole
    report is written from the signals by :func:`fallback`, in the same positive voice.
@@ -262,8 +263,10 @@ def prompt(signals, sources, profile, now, weather, active=None):
         "to the user's own projects, or \"\" when there is no real connection.\n"
         "4. At most 3 items each in wins, yours, ready and reads, and at most 5 projects. Choose "
         "what matters most; an empty section is fine.\n"
-        "5. \"greeting\" greets the user by name for the time of day, at most 6 words, like "
-        "\"Good morning, Daming!\" \"headline\" is one upbeat sentence about the day, at most "
+        "5. \"greeting\" greets the user by name for the part of the day in Now (morning before "
+        "12:00, afternoon until 18:00, evening after), at most 6 words, like \"Good morning, "
+        "Daming!\"; Collie writes the salutation itself, so only words you add after it are "
+        "kept. \"headline\" is one upbeat sentence about the day, at most "
         "10 words, like \"Three quick ones to start with.\" If it counts things, the count is "
         "the number of items you put in yours and ready together, and it says the day is clear "
         "only when no needs_you, waiting_on_others or ready signal was left out. \"summary\" is "
@@ -578,16 +581,56 @@ def _headline_problem(text, things, total, zh):
 _NUMBER_WORDS = ("", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine")
 
 
+def _part_of_day(profile, now):
+    """morning before 12:00, afternoon until 18:00, evening after, in the report's local time."""
+    hour = _dt.datetime.fromtimestamp(now, profile.get("zone") or _dt.timezone.utc).hour
+    return "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
+
+
+_SALUTE_ZH = {"morning": "早上好", "afternoon": "下午好", "evening": "晚上好"}
+#: Words that name a part of the day, and which part.
+_PARTS_EN = re.compile(r"(?i)\b(morning|afternoon|evening|night)\b")
+_PARTS_ZH = {"早上": "morning", "早安": "morning", "上午": "morning", "中午": "afternoon",
+             "下午": "afternoon", "晚上": "evening", "晚安": "evening"}
+_OPENING_EN = re.compile(r"(?i)^\s*(?:good\s+(?:morning|afternoon|evening|night)|morning|hi|hello|"
+                         r"hey)\b")
+_OPENING_ZH = re.compile(r"^\s*(?:早上好|早安|上午好|中午好|下午好|晚上好|晚安|你好|嗨)")
+
+
 def _greeting(profile, now):
-    zone = profile.get("zone") or _dt.timezone.utc
-    hour = _dt.datetime.fromtimestamp(now, zone).hour
-    name = profile.get("name") or ""
+    """The salutation, set by code from the local build time, with the reader's name."""
+    part, name = _part_of_day(profile, now), profile.get("name") or ""
     if str(profile.get("language") or "").startswith("zh"):
-        word = "早上好" if 5 <= hour < 12 else "下午好" if 12 <= hour < 18 else "晚上好"
-        return "%s，%s！" % (word, name) if name else word + "！"
-    word = "Good morning" if 5 <= hour < 12 else "Good afternoon" if 12 <= hour < 18 \
-        else "Good evening"
-    return "%s, %s!" % (word, name) if name else word + "!"
+        return "%s，%s！" % (_SALUTE_ZH[part], name) if name else _SALUTE_ZH[part] + "！"
+    return "Good %s, %s!" % (part, name) if name else "Good %s!" % part
+
+
+def _greeting_from_model(text, profile, now):
+    """``(greeting, why)``.  The part of the day is never the model's to say.
+
+    A greeting that names another part of the day is replaced (``why`` says so).  One that
+    opens with a salutation keeps only the words the model added after it, behind Collie's own
+    salutation; anything else is Collie's salutation alone.
+    """
+    ours, part = _greeting(profile, now), _part_of_day(profile, now)
+    zh = str(profile.get("language") or "").startswith("zh")
+    named = {_PARTS_ZH[key] for key in _PARTS_ZH if key in text} if zh else \
+        {("evening" if word.lower() == "night" else word.lower()) for word in _PARTS_EN.findall(text)}
+    wrong = sorted(named - {part})
+    if wrong:
+        return ours, "it says %s, but the report was built in the %s" % (wrong[0], part)
+    opening = (_OPENING_ZH if zh else _OPENING_EN).match(text)
+    if not opening:
+        return ours, ""
+    rest = text[opening.end():]
+    name = profile.get("name") or ""
+    rest = re.sub(r"^[\s,，!！.。]*", "", rest)
+    if name and rest.casefold().startswith(name.casefold()):
+        rest = rest[len(name):]
+    rest = re.sub(r"^[\s,，!！.。]*", "", rest).strip()
+    if not rest:
+        return ours, ""
+    return (ours + rest if zh else "%s %s%s" % (ours, rest[0].upper(), rest[1:])), ""
 
 
 def _headline(profile, things, total=None):
@@ -769,7 +812,13 @@ def compose(signals, sources, profile, now, weather, *, caller=None, activity=No
         text = daily_brief._text(raw.get(key), 1000)
         if not text:
             continue
-        if len(text) > limit:
+        reason = ""
+        if key == "greeting":
+            # The salutation and its part of the day are Collie's; the model adds the rest.
+            text, reason = _greeting_from_model(text, profile, now)
+        if reason:
+            pass
+        elif len(text) > limit:
             # A line cut mid-word in 32-pixel type reads as a mistake; our own words fit.
             reason = "too long for the header (%d characters)" % len(text)
         elif key == "headline":
