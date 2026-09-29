@@ -23,6 +23,7 @@ tests/test_google_api.py fails if an endpoint that does ever appears in this fil
 from __future__ import annotations
 
 import base64
+import codecs
 import datetime as _dt
 import email.errors
 import email.message
@@ -1115,6 +1116,9 @@ def _leaves(part, depth=0, out=None):
     return out
 
 
+_NOT_MAIL_CHARSETS = {"idna", "punycode", "undefined", "unicode-escape", "raw-unicode-escape"}
+
+
 def _decode_part(part):
     data = ((part.get("body") or {}).get("data")) or ""
     if not isinstance(data, str) or not data:
@@ -1125,10 +1129,17 @@ def _decode_part(part):
         return ""
     ctype = _headers(part).get("content-type", "")
     match = re.search(r"""charset\s*=\s*["']?([A-Za-z0-9._:-]+)""", ctype, re.I)
-    charset = match.group(1) if match else "utf-8"
+    # The sender names the charset. Python also knows codecs that are not mail charsets at all:
+    # some raise UnicodeError (idna, undefined), others "decode" to nonsense (punycode, escapes).
+    try:
+        charset = codecs.lookup(match.group(1)).name if match else "utf-8"
+    except LookupError:
+        charset = "utf-8"
+    if charset in _NOT_MAIL_CHARSETS:
+        charset = "utf-8"
     try:
         return raw.decode(charset, errors="replace")
-    except LookupError:
+    except (LookupError, ValueError):                    # ValueError includes UnicodeError
         return raw.decode("utf-8", errors="replace")
 
 

@@ -242,6 +242,17 @@ def test_html_fallback_is_linear_on_malformed_markup(attack):
     assert "HTMLParser" not in source
 
 
+@pytest.mark.parametrize("charset", ["idna", "undefined", "punycode", "rot13", "hex", "base64",
+                                     "no-such-charset"])
+def test_a_sender_chosen_charset_never_breaks_the_thread_read(charset):
+    raw = "hello ÿ world".encode("latin-1")
+    part = {"mimeType": "text/plain", "headers": [
+        {"name": "Content-Type", "value": "text/plain; charset=%s" % charset}],
+        "body": {"data": base64.urlsafe_b64encode(raw).decode()}}
+    text, _cut = gc._message_body({"mimeType": "multipart/alternative", "parts": [part]}, 1000)
+    assert "hello" in text and "world" in text
+
+
 def test_body_decoding_tolerates_missing_padding_and_other_charsets():
     raw = "café".encode("latin-1")
     data = base64.urlsafe_b64encode(raw).decode().rstrip("=")
