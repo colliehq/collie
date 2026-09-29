@@ -852,8 +852,11 @@ class ChannelService:
             return settle(connection, result_id, token=claim["token"],
                           error="Delivery status is unknown; check before retrying" if unknown else "Provider refused the request; check connection settings",
                           directory=self.directory)
+        # A transport that sent something other than what was stored -- the Collie Mail
+        # relay sending an HTML result as its plain text -- says so, and the record keeps it.
         return comms.mark_submitted(connection, result_id, token=claim["token"],
                                      provider_message_id=str(receipt.get("provider_message_id") or ""),
+                                     detail=str(receipt.get("detail") or "")[:300],
                                      directory=self.directory)
 
     def retry(self, connection, result_id):

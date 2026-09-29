@@ -397,6 +397,90 @@ async function main() {
           "From is always the authenticated dog, To is the owner, and the body is plain text");
   }
 
+  console.log("── outbound: a designed email, still only to the owner ──");
+  const PNG = b64(enc.encode("\x89PNG\r\n\x1a\n-not-really-a-dog-"));
+  const PAGE = '<p>Good morning — 早上好</p><img alt="" src="cid:collie-avatar">';
+  const AVATAR = { cid: "collie-avatar", filename: "collie.png", content_type: "image/png",
+                   data: PNG, bytes: ub64(PNG).length };
+  {
+    const ctx = await fixture();
+    const r = await postSend(ctx, note({ id: "req-html-1", html: PAGE, inline: [AVATAR] }));
+    const sent = ctx.mailer.calls[0];
+    check(r.status === 200 && sent.text === note().text && sent.html === PAGE,
+          "the structured builder gets the plain text AND the HTML page");
+    const [image] = sent.attachments || [];
+    check(sent.attachments.length === 1 && image.disposition === "inline" &&
+          image.contentId === "collie-avatar" && image.type === "image/png" &&
+          image.filename === "collie.png" && image.content === PNG,
+          "the dog travels as one inline attachment whose contentId the page's cid: names");
+    check(sent.to === "owner@example.com" && !("cc" in sent) && !("bcc" in sent) &&
+          !("replyTo" in sent) && sent.from === ctx.address,
+          "and the page widens nothing: the only recipient is still the owner");
+  }
+
+  {
+    const ctx = await fixture({ mailer: fakeMailer(() => undefined), mode: "legacy" });
+    const r = await postSend(ctx, note({ id: "req-html-2", html: PAGE, inline: [AVATAR] }));
+    const raw = ctx.mailer.calls[0].raw;
+    const alt = raw.indexOf("Content-Type: multipart/alternative");
+    const plain = raw.indexOf("Content-Type: text/plain; charset=utf-8");
+    const related = raw.indexOf('Content-Type: multipart/related; type="text/html"');
+    const page = raw.indexOf("Content-Type: text/html; charset=utf-8");
+    const image = raw.indexOf("Content-ID: <collie-avatar>");
+    check(r.status === 200 && alt >= 0 && alt < plain && plain < related && related < page &&
+          page < image,
+          "legacy mode writes alternative(text, related(html, image)), in that order");
+    check(raw.includes("Auto-Submitted: auto-replied") && raw.includes("MIME-Version: 1.0") &&
+          raw.includes("Content-Disposition: inline; filename=\"collie.png\""),
+          "with the same loop-safety headers, and the image marked inline");
+  }
+
+  {
+    const ctx = await fixture({ mailer: fakeMailer(() => undefined), mode: "legacy" });
+    await postSend(ctx, note({ id: "req-text-legacy" }));
+    const raw = ctx.mailer.calls[0].raw;
+    check(raw.includes("Content-Type: text/plain; charset=utf-8\r\n\r\nAll 412 tests are green.") &&
+          !raw.includes("multipart"),
+          "and a plain-text send in legacy mode is still the plain message it always was");
+  }
+
+  {
+    const ctx = await fixture();
+    const big = "<p>" + "x".repeat(_limits.MAX_HTML + 1) + "</p>";
+    for (const [body, what] of [
+      [note({ html: "<p>no picture here</p>", inline: [AVATAR] }), "an image the page never shows"],
+      [note({ html: '<img src="cid:someone-else">' }), "a cid: with no image behind it"],
+      [note({ inline: [AVATAR] }), "images with no page"],
+      [note({ html: PAGE, inline: [AVATAR, AVATAR] }), "the same image twice"],
+      [note({ html: PAGE, inline: [{ ...AVATAR, content_type: "image/svg+xml" }] }),
+       "an image type that can carry script"],
+      [note({ html: PAGE, inline: [{ ...AVATAR, cid: "collie avatar\r\nBcc: x" }] }),
+       "a content id carrying a header break"],
+      [note({ html: PAGE, inline: [{ ...AVATAR, filename: "../evil.png" }] }), "a path as a file name"],
+      [note({ html: PAGE, inline: [{ ...AVATAR, data: "not base64!" }] }), "image data that is not base64"],
+      [note({ html: PAGE, inline: [{ ...AVATAR, bytes: 1 }] }), "an image whose size does not match"],
+      [note({ html: PAGE, inline: [{ ...AVATAR, headers: "x" }] }), "an image with extra fields"],
+      [note({ html: big }), "a page over the HTML limit"],
+      [note({ html: "<p>\u0000</p>" }), "a page with control characters"],
+      [note({ html: 42 }), "a page that is not text"],
+      [note({ html: PAGE, inline: [AVATAR], attachments: [{}] }), "a caller-chosen attachment list"],
+    ]) {
+      const r = await postSend(ctx, body);
+      check(r.status === 400, `/send refuses ${what}`);
+    }
+    check(ctx.mailer.calls.length === 0, "and none of those reached the mail binding");
+  }
+
+  {
+    const ctx = await fixture();
+    const caps = await (await worker.fetch(
+      new Request("https://mail.collie.run/capabilities"), ctx.env)).json();
+    check(caps.send.formats.includes("html") && caps.send.inline_images.max === _limits.MAX_INLINE &&
+          caps.send.max_html_bytes === _limits.MAX_HTML &&
+          caps.send.max_body_bytes === _limits.MAX_SEND_BODY,
+          "/capabilities says this relay carries HTML and inline images, and how much");
+  }
+
   {
     // The send succeeds and the ledger then cannot be told. A 500 here would hide an id whose row
     // is stuck at `sending` — the caller needs to know a message went out under that id.

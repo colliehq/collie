@@ -10,7 +10,7 @@
  *   node tests/mail_crossimpl_test.js <fixture.json> <out.json>
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { _crypto } from "../relay/mail_worker.js";
+import { _crypto, _send } from "../relay/mail_worker.js";
 
 const [, , fixturePath, outPath] = process.argv;
 const fx = JSON.parse(readFileSync(fixturePath, "utf8"));
@@ -34,5 +34,23 @@ const cert = await hmac(certKey, cat(lp(fx.address), lp(dogPub)));
 // 3. an envelope sealed the way delivery seals it, for Python to open
 const sealed = await sealToDog(dogPub, enc.encode(fx.plaintext));
 
-writeFileSync(outPath, JSON.stringify({ mac: b64(mac), cert: b64(cert), sealed }, null, 2));
+// 4. a send body the Python client built: validated by the Worker, then built into the raw legacy
+//    message and the structured builder call, for Python's own mail parser to read back
+const out = { mac: b64(mac), cert: b64(cert), sealed };
+if (fx.send_body) {
+  const { msg, error } = _send.validateSend(fx.send_body, fx.owner);
+  out.send_error = error || null;
+  if (msg) {
+    const calls = [];
+    const mailer = { send: async (message) => { calls.push(message); return undefined; } };
+    class RawMessage { constructor(from, to, raw) { Object.assign(this, { from, to, raw }); } }
+    await _send.deliver({ MAIL_SEND_MODE: "legacy", MAIL_DOMAIN: "collie.run", MAILER: mailer,
+                          EMAIL_MESSAGE: RawMessage }, fx.address, msg.to, msg, "send.0123abcd");
+    await _send.deliver({ MAILER: mailer }, fx.address, msg.to, msg, "send.0123abcd");
+    out.legacy_raw = calls[0].raw;
+    out.structured = calls[1];
+  }
+}
+
+writeFileSync(outPath, JSON.stringify(out, null, 2));
 console.log("wrote", outPath);

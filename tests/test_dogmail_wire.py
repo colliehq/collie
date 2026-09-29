@@ -47,12 +47,26 @@ def main():
     ts, nonce, method, path = "1770000000", dm.b64(b"0123456789ab"), "GET", "/mail?since=0"
     plaintext = '{"subject":"Verify your email","from":"noreply@stripe.com"}'
 
+    # A designed email exactly as the client puts it on the wire: the stored outbox form of
+    # the page and the dog, through the client's own request builder.
+    from harness import mail_messages
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
+    page = '<p>Good morning — 早上好!</p><img alt="" src="cid:collie-avatar">'
+    stored = mail_messages.encode_inline([{"cid": "collie-avatar", "filename": "collie.png",
+                                           "content_type": "image/png", "data": png}], page)
+    send_body = dm._send_payload({"id": "report-2026-09-29-abc", "destination": "owner@example.test",
+                                  "subject": "Two quick ones · Tue 29 Sep",
+                                  "text": "Good morning — 早上好!\n", "html": page,
+                                  "inline": stored}, design=True)
+
     tmp = tempfile.mkdtemp(prefix="collie_wire_")
     fx, out = os.path.join(tmp, "fx.json"), os.path.join(tmp, "out.json")
     with open(fx, "w", encoding="utf-8") as f:
         json.dump({"relay_priv": dm.b64(relay_priv), "dog_pub": dm.b64(dog_pub),
                    "handle_pub": dm.b64(handle_pub), "address": address, "ts": ts,
-                   "nonce": nonce, "method": method, "path": path, "plaintext": plaintext}, f)
+                   "nonce": nonce, "method": method, "path": path, "plaintext": plaintext,
+                   "send_body": send_body, "owner": "owner@example.test"}, f,
+                  ensure_ascii=False)
 
     r = subprocess.run([node, os.path.join(ROOT, "tests", "mail_crossimpl_test.js"), fx, out],
                        capture_output=True, text=True, cwd=ROOT)
@@ -83,6 +97,42 @@ def main():
     except Exception:
         leaked = False
     check(not leaked, "and stays shut for any other key")
+
+    # 4. a designed email: the client's body, the Worker's validation and raw message,
+    #    read back by Python's own mail parser
+    import email as email_pkg
+    import email.policy
+    check(got.get("send_error") is None,
+          "the Worker accepts the HTML body the client builds (%s)" % got.get("send_error"))
+    raw = got.get("legacy_raw") or ""
+    message = email_pkg.message_from_string(raw, policy=email.policy.default)
+    check(message.get_content_type() == "multipart/alternative" and not message.defects,
+          "the legacy raw message parses as one clean multipart/alternative")
+    parts = message.get_payload() if message.is_multipart() else []
+    plain = parts[0] if parts else None
+    related = parts[1] if len(parts) > 1 else None
+    check(plain is not None and plain.get_content_type() == "text/plain"
+          and plain.get_content() == send_body["text"],
+          "its first alternative is the plain text, byte for byte")
+    inner = related.get_payload() if related is not None and related.is_multipart() else []
+    check(related is not None and related.get_content_type() == "multipart/related"
+          and len(inner) == 2 and inner[0].get_content_type() == "text/html"
+          and inner[0].get_content() == page,
+          "its second is multipart/related holding the page, unchanged")
+    check(len(inner) == 2 and inner[1]["Content-ID"] == "<collie-avatar>"
+          and inner[1].get_payload(decode=True) == png
+          and inner[1].get_content_disposition() == "inline",
+          "and the dog, inline under the content id the page names, bit for bit")
+    check(message["To"] == "owner@example.test" and message["Cc"] is None
+          and message["Bcc"] is None and message["Auto-Submitted"] == "auto-replied",
+          "to the owner and nobody else, marked as an automatic message")
+    built = got.get("structured") or {}
+    attachment = (built.get("attachments") or [{}])[0]
+    check(built.get("html") == page and built.get("text") == send_body["text"]
+          and attachment.get("contentId") == "collie-avatar"
+          and attachment.get("disposition") == "inline"
+          and dm.ub64(attachment.get("content") or "") == png,
+          "and the structured builder gets the same page and the same image")
 
     print("\n  " + ("%d FAILED" % len(fails) if fails else "dog mail wire: all green"))
     return 1 if fails else 0

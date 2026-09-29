@@ -47,8 +47,15 @@ const TTL = 60 * 60 * 24 * 7;         // a week: long enough to be away, short e
 const MAX_MAIL_BYTES = 4 * 1024 * 1024;
 
 const MAX_JSON = 16 * 1024;           // claim/verify bodies are tiny; a stream is not an invitation
-const MAX_SEND_BODY = 96 * 1024;      // the outbound request envelope, digest-checked
+// The outbound request envelope, digest-checked. Room for the plain text, an HTML page and its
+// inline images (base64) after JSON escaping — the largest thing a morning report can be.
+const MAX_SEND_BODY = 640 * 1024;
 const MAX_TEXT = 64 * 1024;           // the reply body itself, plain text
+const MAX_HTML = 128 * 1024;          // an optional designed page beside the text, never instead
+const MAX_INLINE = 4;                 // inline images a page may show (cid:), and nothing else
+const MAX_INLINE_BYTES = 64 * 1024;   // one image, decoded
+const MAX_INLINE_TOTAL = 128 * 1024;  // all of them, decoded
+const INLINE_TYPES = ["image/png", "image/jpeg", "image/gif"];
 const MAX_SUBJECT = 512;              // bytes, after UTF-8 encoding
 const MAX_HEADER = 2048;              // Cloudflare's per-custom-header limit, in UTF-8 bytes
 const PAGE_ITEMS = 50;                // messages per /mail-page
@@ -473,21 +480,121 @@ async function deliver(env, from, to, msg, stableId) {
   if (sendMode(env) === "legacy") {
     const domain = env.MAIL_DOMAIN || "collie.run";
     const messageId = `<${stableId}@${domain}>`;
+    const body = msg.html
+      ? designedBody(msg, stableId)
+      : `Content-Type: text/plain; charset=utf-8\r\n\r\n` + msg.text.replace(/\r?\n/g, "\r\n");
     const raw =
       `From: ${from}\r\nTo: ${to}\r\n` +
       `Subject: ${encodeHeaderWord(msg.subject)}\r\n` +
       `Message-ID: ${messageId}\r\nDate: ${new Date().toUTCString()}\r\n` +
       Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join("") +
-      `MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n` +
-      msg.text.replace(/\r?\n/g, "\r\n");
+      `MIME-Version: 1.0\r\n` + body;
     const EmailMessage = await emailMessageClass(env);
     const out = await env.MAILER.send(new EmailMessage(from, to, raw));
     // Our own Message-ID is a submission receipt only NOW, on the far side of the await. Recorded
     // before the promise resolves it would be a receipt for something that may not have happened.
     return (out && out.messageId) || messageId;
   }
-  const out = await env.MAILER.send({ from, to, subject: msg.subject, text: msg.text, headers });
+  const message = { from, to, subject: msg.subject, text: msg.text, headers };
+  if (msg.html) message.html = msg.html;
+  if (msg.inline && msg.inline.length)
+    message.attachments = msg.inline.map((part) => ({
+      content: part.data, filename: part.filename, type: part.content_type,
+      disposition: "inline", contentId: part.cid }));
+  const out = await env.MAILER.send(message);
   return (out && out.messageId) || "";
+}
+
+/** base64 in 76-character lines, each ending CRLF, as RFC 2045 asks of a body part. */
+const lines76 = (value) => value.replace(/.{1,76}/g, "$&\r\n");
+
+/**
+ * The legacy raw message's body when a page rides along: `multipart/alternative` with the plain
+ * text first and the HTML second, the HTML wrapped with its images in `multipart/related` when there
+ * are any. Every part is base64, so no line of the page or the text can ever look like a boundary
+ * (a base64 line never starts with "-") or run past the SMTP line limit.
+ */
+function designedBody(msg, stableId) {
+  const tag = stableId.replace(/[^A-Za-z0-9]/g, "");
+  const alt = `collie-alt-${tag}`;
+  const rel = `collie-rel-${tag}`;
+  const text = `Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n` +
+               lines76(b64(enc.encode(msg.text)));
+  const page = `Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n` +
+               lines76(b64(enc.encode(msg.html)));
+  let second = page;
+  if (msg.inline && msg.inline.length) {
+    second = `Content-Type: multipart/related; type="text/html"; boundary="${rel}"\r\n\r\n` +
+             `--${rel}\r\n` + page +
+             msg.inline.map((part) =>
+               `--${rel}\r\nContent-Type: ${part.content_type}; name="${part.filename}"\r\n` +
+               `Content-Transfer-Encoding: base64\r\nContent-ID: <${part.cid}>\r\n` +
+               `Content-Disposition: inline; filename="${part.filename}"\r\n\r\n` +
+               lines76(part.data)).join("") +
+             `--${rel}--\r\n`;
+  }
+  return `Content-Type: multipart/alternative; boundary="${alt}"\r\n\r\n` +
+         `--${alt}\r\n` + text + `--${alt}\r\n` + second + `--${alt}--\r\n`;
+}
+
+const CID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const HTML_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+
+/**
+ * An optional HTML page and its inline images, or the reason they are refused.
+ *
+ * The page is carried, not trusted: it cannot add a recipient, a header or an attachment, and every
+ * image must be one the page shows by `cid:` — an image nothing names would arrive as a stray
+ * attachment, and a name with no image is a broken picture. Only PNG, JPEG and GIF, because an SVG
+ * is a document that can carry script.
+ */
+function validateDesign(body) {
+  const out = {};
+  const hasHtml = body.html !== undefined && body.html !== null;
+  if (hasHtml) {
+    if (typeof body.html !== "string" || !body.html.trim() || utf8len(body.html) > MAX_HTML ||
+        HTML_CONTROL_RE.test(body.html))
+      return { error: `html must be 1-${MAX_HTML} bytes of text without control characters` };
+    out.html = body.html;
+  }
+  const hasInline = body.inline !== undefined && body.inline !== null;
+  if (hasInline && !hasHtml) return { error: "inline images need an html page that shows them" };
+  const parts = hasInline ? body.inline : [];
+  if (!Array.isArray(parts) || parts.length > MAX_INLINE)
+    return { error: `inline must be a list of at most ${MAX_INLINE} images` };
+  const seen = new Set();
+  let total = 0;
+  for (const part of parts) {
+    if (!part || typeof part !== "object" || Array.isArray(part) ||
+        Object.keys(part).some((k) => !["cid", "filename", "content_type", "data", "bytes"].includes(k)))
+      return { error: "an inline image is {cid, filename, content_type, data} and nothing else" };
+    const { cid, filename, content_type: type, data } = part;
+    if (typeof cid !== "string" || !CID_RE.test(cid) || seen.has(cid))
+      return { error: "every inline image needs its own plain content id" };
+    if (typeof filename !== "string" || !CID_RE.test(filename))
+      return { error: "an inline image needs a plain file name" };
+    if (!INLINE_TYPES.includes(type)) return { error: "inline images must be PNG, JPEG or GIF" };
+    let size = -1;
+    if (typeof data === "string" && B64_RE.test(data)) {
+      try { size = ub64(data).length; } catch { size = -1; }
+    }
+    if (size <= 0 || size > MAX_INLINE_BYTES || (part.bytes !== undefined && part.bytes !== size))
+      return { error: `an inline image must be 1-${MAX_INLINE_BYTES} bytes of base64` };
+    total += size;
+    if (total > MAX_INLINE_TOTAL)
+      return { error: `inline images may be at most ${MAX_INLINE_TOTAL} bytes together` };
+    seen.add(cid);
+  }
+  if (hasHtml) {
+    const named = new Set([...out.html.matchAll(/cid:([^"'\s>)]*)/gi)].map((m) => m[1]));
+    for (const cid of named)
+      if (!seen.has(cid)) return { error: "the page shows a cid: that no inline image carries" };
+    for (const cid of seen)
+      if (!named.has(cid)) return { error: "every inline image must be shown by the page" };
+  }
+  if (parts.length)
+    out.inline = parts.map(({ cid, filename, content_type, data }) => ({ cid, filename, content_type, data }));
+  return { design: out };
 }
 
 /** Everything the body has to be before a single byte of it reaches the provider. */
@@ -495,7 +602,7 @@ function validateSend(body, owner) {
   const id = String(body.id || "");
   if (!REQUEST_ID_RE.test(id))
     return { error: "id must be 8-128 chars of A-Z a-z 0-9 . _ : -" };
-  for (const banned of ["cc", "bcc", "from", "reply_to", "headers", "html"])
+  for (const banned of ["cc", "bcc", "from", "reply_to", "headers", "attachments"])
     if (body[banned] !== undefined)
       return { error: `"${banned}" is not accepted: this endpoint notifies the owner, `
                       + "it is not a mail relay" };
@@ -518,6 +625,9 @@ function validateSend(body, owner) {
       return { error: `${field} must be one or more <message-id> tokens` };
     msg[field] = value.trim();
   }
+  const { design, error } = validateDesign(body);
+  if (error) return { error };
+  Object.assign(msg, design);
   return { msg };
 }
 
@@ -909,9 +1019,13 @@ export class DirectoryClaims {
 export const _crypto = { lp, cat, x25519, hkdf, hmac, sameBytes, sealToDog, b64, ub64 };
 export const _names = { foldName, blockedName };
 export const _limits = { VERSION, MAX_MAIL_BYTES, MAX_SEND_BODY, MAX_TEXT, MAX_SUBJECT,
+                         MAX_HTML, MAX_INLINE, MAX_INLINE_BYTES, MAX_INLINE_TOTAL,
                          PAGE_ITEMS, PAGE_BYTES, PER_MINUTE, PER_HOUR, SKEW, TTL,
                          CLAIM_TTL, CODE_COOLDOWN, CODE_MAX_SENDS, CODE_MAX_ATTEMPTS,
                          EMAIL_PER_HOUR };
+// The send path's validation and message building, for the cross-implementation test that feeds
+// it a body the Python client built and parses what comes out with Python's own mail parser.
+export const _send = { validateSend, deliver };
 
 export default {
   /** Incoming mail. Cloudflare Email Routing sends every address here via a catch-all rule. */
@@ -1141,6 +1255,12 @@ export default {
           mode: sendMode(env),
           max_body_bytes: MAX_SEND_BODY,
           max_text_bytes: MAX_TEXT,
+          // What a client may send beside the plain text. A client that reads no `formats` here is
+          // talking to a relay that refuses an `html` field, and must send text alone.
+          formats: ["text", "html"],
+          max_html_bytes: MAX_HTML,
+          inline_images: { max: MAX_INLINE, max_bytes: MAX_INLINE_BYTES,
+                           max_total_bytes: MAX_INLINE_TOTAL, types: INLINE_TYPES },
           destination: "the verified owner of the handle, and no one else",
           note: "configured is about bindings, not about permission — the account may still refuse",
         },
