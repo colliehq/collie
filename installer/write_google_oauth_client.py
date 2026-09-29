@@ -7,10 +7,10 @@ Google client secret, and a committed copy would outlive any rotation. So the re
 before they build, and the wheel, the Windows installer and the macOS app pick the file up as
 package data.
 
-With no secret (a fork, or a dry run without it) this prints one line and exits 0; that build has
-no Google client and `collie google status` says Google is not set up. A secret that is set but is
-not a Desktop client fails the build rather than shipping a connection that cannot work. The value
-is never printed.
+With no secret, a branch or pull-request build (a fork, or a dry run) prints one line and exits 0;
+that build has no Google client and `collie google status` says Google is not set up. A tagged
+release (refs/tags/…) without the secret fails instead, and so does a secret that is set but is not
+a Desktop client, rather than shipping a connection that cannot work. The value is never printed.
 
     python installer/write_google_oauth_client.py [target-path]
 """
@@ -29,7 +29,15 @@ def main(argv):
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "harness",
         "google_oauth_client.json")
     raw = os.environ.get("GOOGLE_OAUTH_CLIENT_JSON", "")
+    tagged = (os.environ.get("GITHUB_REF_TYPE") == "tag"
+              or os.environ.get("GITHUB_REF", "").startswith("refs/tags/"))
     if not raw.strip():
+        if tagged:
+            # A version tag is a release people install. Skipping here would ship a Google
+            # connection that can only ever say "not set up".
+            print("::error::GOOGLE_OAUTH_CLIENT_JSON is not set; a tagged release must carry "
+                  "Collie's Google OAuth client")
+            return 1
         print("GOOGLE_OAUTH_CLIENT_JSON is not set: this build has no Google OAuth client")
         return 0
     try:

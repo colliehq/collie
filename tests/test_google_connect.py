@@ -184,17 +184,79 @@ def test_connect_verifies_pkce_stores_sealed_token_and_serves_success(env, capsy
     assert "FAKE-client-secret" not in out.out + out.err
 
 
-def test_connect_rejects_a_state_mismatch_and_stores_nothing(env):
+def _get(url):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=15) as r:
+            return r.status, r.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
+def test_a_mismatched_state_is_refused_without_ending_the_sign_in(env):
+    # Any local process can reach the loopback port. A wrong state is answered 400 and ignored;
+    # the real redirect that follows still completes the sign-in.
+    forms = []
+    _exchange(env, check=forms.append)
+    seen = {}
+
+    def browser(url):
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+
+        def go():
+            seen["forged"] = _get(q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+                {"state": "forged", "code": "4/forged-code"}))
+            seen["real"] = _get(q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+                {"state": q["state"], "code": "4/auth-code"}))
+        seen["thread"] = threading.Thread(target=go, daemon=True)
+        seen["thread"].start()
+    st = gc.connect(open_browser=browser, timeout=20)
+    seen["thread"].join(10)
+    assert seen["forged"][0] == 400 and "didn't match" in seen["forged"][1]
+    assert seen["real"][0] == 200 and st["state"] == "connected"
+    assert [f["code"] for f in forms] == ["4/auth-code"]      # the forged code was never exchanged
+
+
+def test_a_forged_callback_alone_ends_in_a_timeout_and_stores_nothing(env):
     _exchange(env)
     browser, seen = _browser(env, lambda q: q["redirect_uri"] + "/?" + urllib.parse.urlencode(
         {"state": "forged", "code": "4/auth-code"}))
     with pytest.raises(gc.GoogleError) as info:
-        gc.connect(open_browser=browser, timeout=20)
+        gc.connect(open_browser=browser, timeout=2)
     seen["thread"].join(10)
-    assert info.value.code == "state_mismatch"
-    assert "didn't match" in seen["page"]
-    assert not env["fake"].urls(gc.TOKEN_URI)            # the forged code was never exchanged
+    assert info.value.code == "timeout"
+    assert seen["status"] == 400 and "didn't match" in seen["page"]
+    assert not env["fake"].urls(gc.TOKEN_URI)
     assert gc.status()["state"] == "not_connected" and not env["backend"].secrets
+
+
+def test_the_callback_port_cannot_be_shared(env):
+    import socket
+    assert gc._CallbackServer.allow_reuse_address is False
+    _exchange(env)
+    seen = {}
+
+    def browser(url):
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        port = urllib.parse.urlsplit(q["redirect_uri"]).port
+        rival = socket.socket()
+        rival.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            rival.bind(("127.0.0.1", port))
+            seen["bound"] = True
+        except OSError:
+            seen["bound"] = False
+        finally:
+            rival.close()
+
+        def go():
+            seen["real"] = _get(q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+                {"state": q["state"], "code": "4/auth-code"}))
+        seen["thread"] = threading.Thread(target=go, daemon=True)
+        seen["thread"].start()
+    gc.connect(open_browser=browser, timeout=20)
+    seen["thread"].join(10)
+    assert seen["bound"] is False
 
 
 def test_connect_reports_a_denied_consent(env):
@@ -214,6 +276,68 @@ def test_connect_times_out_cleanly(env):
     with pytest.raises(gc.GoogleError) as info:
         gc.connect(open_browser=lambda url: True, timeout=1)
     assert info.value.code == "timeout"
+
+
+def _reconnect(env, old_account, old_client="123-fake.apps.googleusercontent.com"):
+    gc._save_connection("1//old-sign-in", ALL.split(), account=old_account, client_id=old_client)
+    _exchange(env)                                   # the new sign-in is owner@example.com
+    env["fake"].on("POST", gc.REVOKE_URI, {})
+    browser, seen = _browser(env, lambda q: q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+        {"state": q["state"], "code": "4/auth-code"}))
+    st = gc.connect(open_browser=browser, timeout=20)
+    seen["thread"].join(10)
+    revoked = [dict(urllib.parse.parse_qsl(c["data"].decode()))["token"]
+               for c in env["fake"].calls if c["url"] == gc.REVOKE_URI]
+    return st, revoked
+
+
+def test_reconnecting_as_another_account_revokes_the_grant_it_replaces(env):
+    st, revoked = _reconnect(env, "old@example.com")
+    assert st["state"] == "connected" and st["account"] == "owner@example.com"
+    assert revoked == ["1//old-sign-in"]
+    assert list(env["backend"].secrets.values()) == [REFRESH]
+
+
+def test_reconnecting_to_another_project_revokes_the_grant_it_replaces(env):
+    _st, revoked = _reconnect(env, "owner@example.com", "999-old.apps.googleusercontent.com")
+    assert revoked == ["1//old-sign-in"]
+
+
+@pytest.mark.parametrize("old_account", ["owner@example.com", "OWNER@example.com", ""])
+def test_reconnecting_the_same_grant_does_not_revoke_the_new_sign_in(env, old_account):
+    # Google revokes a whole grant (every token of that account for the project), so revoking
+    # the old token of the same account would end the sign-in that just replaced it.
+    st, revoked = _reconnect(env, old_account)
+    assert revoked == [] and st["state"] == "connected"
+    assert list(env["backend"].secrets.values()) == [REFRESH]
+
+
+def test_a_code_that_arrives_before_the_deadline_is_waited_for(env):
+    # The exchange outlives the timeout. connect() must not report "Nothing was saved" while it
+    # is still saving.
+    import time as _time
+    _exchange(env)
+    fast = env["fake"].routes[("POST", gc.TOKEN_URI)][2]
+
+    def slow(method, url, headers, data):
+        _time.sleep(2)
+        return fast(method, url, headers, data)
+    env["fake"].on("POST", gc.TOKEN_URI, fn=slow)
+    browser, seen = _browser(env, lambda q: q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+        {"state": q["state"], "code": "4/auth-code"}))
+    st = gc.connect(open_browser=browser, timeout=1)
+    seen["thread"].join(10)
+    assert st["state"] == "connected" and seen["status"] == 200
+
+
+def test_a_redirect_after_the_deadline_is_not_exchanged():
+    flow = gc._Flow(client={}, state="s", verifier="v", redirect_uri="http://127.0.0.1:1",
+                    port=1, state_dir=None)
+    assert flow.close() is False          # nothing in flight when the deadline passed
+    assert flow.claim() is False          # so a late redirect cannot start an exchange
+    late = gc._Flow(client={}, state="s", verifier="v", redirect_uri="http://127.0.0.1:1",
+                    port=1, state_dir=None)
+    assert late.claim() is True and late.close() is True
 
 
 def test_connect_announces_the_url_when_the_browser_cannot_open(env):
@@ -335,6 +459,15 @@ def test_status_check_turns_a_revoked_grant_into_needs_reconnect(env):
     env["fake"].on("POST", gc.TOKEN_URI, {"error": "invalid_grant"}, status=400)
     assert gc.status()["state"] == "connected"               # no network without check
     assert gc.status(check=True)["state"] == "needs_reconnect"
+
+
+def test_status_check_asks_google_even_with_a_warm_access_token(env):
+    import time as _time
+    _connected(env)
+    gc._CACHE[gc._conn_path()] = {"token": ACCESS, "expires_at": _time.time() + 3000}
+    env["fake"].on("POST", gc.TOKEN_URI, {"error": "invalid_grant"}, status=400)
+    assert gc.status(check=True)["state"] == "needs_reconnect"
+    assert len(env["fake"].urls(gc.TOKEN_URI)) == 1
 
 
 def test_a_sign_in_that_cannot_be_unsealed_reads_as_needs_reconnect(env, monkeypatch):

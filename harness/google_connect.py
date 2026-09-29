@@ -23,22 +23,25 @@ tests/test_google_api.py fails if an endpoint that does ever appears in this fil
 from __future__ import annotations
 
 import base64
+import codecs
 import datetime as _dt
 import email.errors
+import email.headerregistry
 import email.message
 import email.policy
 import hashlib
 import hmac
 import html
-import html.parser
 import http.server
 import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -69,6 +72,7 @@ CONNECTION_FILE = "google-connection.json"
 PLAINTEXT_FILE = "google-token.json"          # what the first prototype left behind
 
 HTTP_TIMEOUT = 20
+EXCHANGE_GRACE = 3 * HTTP_TIMEOUT + 5           # a code exchange + account lookup, after the deadline
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024         # a long thread in format=full can be several MB
 MAX_SEARCH_RESULTS = 50
 MAX_QUERY_CHARS = 1000
@@ -681,6 +685,9 @@ def status(*, check=False, state_dir=None) -> dict:
         client, not_configured = None, str(exc)
     dead = ""                  # a check that failed in a way only reconnecting fixes
     if check and client:
+        # A cached access token proves nothing about the sign-in behind it: Google may have
+        # ended it since. Only a refresh asks.
+        _drop_cached(state_dir)
         try:
             _access_token(state_dir=state_dir)
         except NeedsReconnect as exc:
@@ -766,14 +773,22 @@ class _Flow:
         self.client, self.state, self.verifier = client, state, verifier
         self.redirect_uri, self.port, self.state_dir = redirect_uri, port, state_dir
         self.lock, self.event = threading.Lock(), threading.Event()
-        self.claimed, self.error = False, None
+        self.claimed, self.closed, self.error = False, False, None
 
     def claim(self):
+        """Take the one redirect this sign-in accepts; refused once the deadline has closed it."""
         with self.lock:
-            if self.claimed:
+            if self.claimed or self.closed:
                 return False
             self.claimed = True
             return True
+
+    def close(self):
+        """The deadline passed: accept no redirect from now on. True when one is already being
+        exchanged, which the caller then waits for instead of reporting that nothing was saved."""
+        with self.lock:
+            self.closed = True
+            return self.claimed
 
     def finish(self, code):
         """Exchange the code, record the grant and return the success page."""
@@ -798,8 +813,11 @@ class _Flow:
         token = payload["access_token"]
         account = (_email_from_id_token(payload.get("id_token") or "")
                    or _fetch_account(token, granted))
+        replaced = _separate_grant_token(self.state_dir, account, self.client["client_id"])
         _save_connection(refresh, granted, account=account, client_id=self.client["client_id"],
                          state_dir=self.state_dir)
+        if replaced and replaced != refresh:
+            _revoke(replaced)                            # best effort: the new sign-in is saved
         try:
             expires_in = max(0, int(payload.get("expires_in") or 3600))
         except (TypeError, ValueError):
@@ -812,8 +830,6 @@ class _Flow:
 
 _CALLBACK_ERRORS = {
     "denied": "You chose not to give Collie access to Google. Nothing was saved. " + RECONNECT_HINT,
-    "state_mismatch": ("The answer from Google didn't match the sign-in Collie started, so Collie "
-                       "ignored it. Nothing was saved. " + RECONNECT_HINT),
 }
 
 _PAGE_HEADERS = (
@@ -853,8 +869,13 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             return self._reply(403, "forbidden")
         if verdict == "ignore":
             return self._reply(404, "not found")
+        if verdict == "state_mismatch":
+            # Any local process can reach this port, so a wrong state must not decide the
+            # sign-in. It is refused on its own and the wait continues for Google's redirect.
+            return self._reply(400, failure_page("state_mismatch"), "text/html; charset=utf-8")
         if not flow.claim():
-            return self._reply(409, "This sign-in was already handled. You can close this tab.")
+            return self._reply(409, "This sign-in has already finished or expired. You can close "
+                                    "this tab; to connect again, run `collie google connect`.")
         status_code = 200
         try:
             if verdict == "code":
@@ -877,6 +898,23 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             flow.event.set()
 
 
+class _CallbackServer(ThreadingHTTPServer):
+    """The loopback listener, which no other socket may share.
+
+    http.server sets SO_REUSEADDR, and on Windows that lets a second socket bind the same
+    127.0.0.1:port and take the redirect (with its authorization code) instead. Reuse is off, and
+    on Windows SO_EXCLUSIVEADDRUSE refuses even a later socket that asks for SO_REUSEADDR itself.
+    """
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self):
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
+
+
 def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_hint="",
             state_dir=None) -> dict:
     """Connect Google: open the consent page, wait for the loopback redirect, store the grant.
@@ -884,13 +922,13 @@ def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_h
     ``open_browser(url)`` shows Google's page; ``announce(url)`` (optional) is handed the same
     address first, for a caller that must show it itself when no browser opens. Blocks until the
     redirect arrives or ``timeout`` seconds pass. Returns ``status()``; raises GoogleError with
-    ``code`` in denied / state_mismatch / no_scopes / timeout / error / storage, or NotConfigured.
+    ``code`` in denied / no_scopes / timeout / error / storage, or NotConfigured. A redirect whose
+    ``state`` does not match is refused on its own and does not end the wait.
     """
     client = client_config(state_dir=state_dir)
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(24)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _CallbackHandler)
-    server.daemon_threads = True
+    server = _CallbackServer(("127.0.0.1", 0), _CallbackHandler)
     port = server.server_address[1]
     redirect_uri = "http://127.0.0.1:%d" % port
     flow = server.flow = _Flow(client=client, state=state, verifier=verifier,
@@ -910,6 +948,10 @@ def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_h
         except Exception:
             pass
         finished = flow.event.wait(max(1, int(timeout or 300)))
+        if not finished and flow.close():
+            # The code arrived in time and its exchange is still running: its outcome, not the
+            # clock, decides what to report. The exchange makes at most two bounded requests.
+            finished = flow.event.wait(EXCHANGE_GRACE)
     finally:
         server.shutdown()
         server.server_close()
@@ -923,6 +965,43 @@ def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_h
     return status(state_dir=state_dir)
 
 
+def _revoke(token):
+    """Ask Google to revoke the grant behind ``token`` (the token travels in the POST body).
+    True when Google confirmed it; never raises."""
+    try:
+        status_code, _body = _send("POST", REVOKE_URI, headers=_FORM, data=_form({"token": token}))
+    except Exception:
+        return False
+    return status_code == 200
+
+
+def _separate_grant_token(state_dir, account, client_id):
+    """The stored refresh token when a new sign-in replaces a *different* grant, else "".
+
+    Google revokes grants, not single tokens: revoking one token ends every token that account
+    holds for the project. So the old token is only worth revoking when it belongs to another
+    account or another Google Cloud project (the number before the first "-" of a client id).
+    Replacing the same account's own grant just forgets the old token; revoking it would end the
+    sign-in that has just replaced it. An old record with no known account is left alone too.
+    """
+    path = _conn_path(state_dir)
+    old = _read_record(path)
+    if not old:
+        return ""
+    old_account, new_account = (old.get("account") or "").lower(), (account or "").lower()
+    old_project = (old.get("client_id") or "").split("-", 1)[0]
+    new_project = (client_id or "").split("-", 1)[0]
+    other_account = bool(old_account and new_account and old_account != new_account)
+    other_project = bool(old_project.isdigit() and new_project.isdigit()
+                         and old_project != new_project)
+    if not (other_account or other_project):
+        return ""
+    try:
+        return _backend_for(old).open(old["sealed"], path)
+    except Exception:
+        return ""
+
+
 def disconnect(*, state_dir=None) -> dict:
     """Revoke the grant at Google, then delete it here whatever Google answered.
 
@@ -933,18 +1012,11 @@ def disconnect(*, state_dir=None) -> dict:
     rec = _read_record(path)
     if not rec:
         return {"removed": False, "revoked": False, "message": "Google wasn't connected."}
-    revoked = False
     try:
         refresh = _backend_for(rec).open(rec["sealed"], path)
     except Exception:
         refresh = ""
-    if refresh:
-        try:
-            status_code, _body = _send("POST", REVOKE_URI, headers=_FORM,
-                                       data=_form({"token": refresh}))
-            revoked = status_code == 200
-        except GoogleError:
-            revoked = False
+    revoked = _revoke(refresh) if refresh else False
     _remove_connection(path)
     if revoked:
         message = ("Disconnected. Google has revoked Collie's access, and the connection is "
@@ -1036,44 +1108,65 @@ def gmail_search(query: str, max_results: int = 20, *, state_dir=None) -> list:
     return rows
 
 
-class _TextOf(html.parser.HTMLParser):
-    _SKIP = {"script", "style", "title", "noscript", "template"}
-    _BLOCK = {"p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "section", "article",
-              "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "hr"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts, self.skip = [], 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in self._SKIP:
-            self.skip += 1
-        elif tag == "br" or tag in self._BLOCK:
-            self.parts.append("\n")
-
-    def handle_startendtag(self, tag, attrs):
-        if tag == "br" or tag in self._BLOCK:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in self._SKIP:
-            self.skip = max(0, self.skip - 1)
-        elif tag in self._BLOCK:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if not self.skip:
-            self.parts.append(data)
+# A sender's HTML is hostile input, and the stdlib html.parser is not safe on it everywhere Collie
+# runs: the Windows installer embeds CPython 3.12.10, whose parser is quadratic on malformed markup
+# (CVE-2025-6069; 24 KB of "<a " takes ~10 s there). So the fallback never uses it. Comments and
+# script/style blocks go first with str.find (so a large stylesheet does not use up the budget), at
+# most MAX_HTML_CHARS of what is left is read, and the reading is one pass of a regex whose
+# alternatives cannot overlap, checked against HTML_TIME_BUDGET as it goes.
+MAX_HTML_CHARS = 64 * 1024
+HTML_TIME_BUDGET = 0.25                                  # seconds
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_DROPPED_BLOCK = re.compile(r"<(script|style|head|title|noscript|template)(?=[\s/>]|$)")
+_HTML_TOKEN = re.compile(r"<[^<>]*>|[^<]+|<")
+_TAG_NAME = re.compile(r"<\s*/?\s*([A-Za-z][A-Za-z0-9]*)")
+_BREAKS = {"br", "p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "section", "article",
+           "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "hr"}
 
 
-def _html_text(markup):
-    parser = _TextOf()
-    try:
-        parser.feed(markup)
-        parser.close()
-    except Exception:
-        pass
-    return "".join(parser.parts)
+def _drop_invisible(markup):
+    """Markup without comments and script/style/head/title blocks, in linear time."""
+    low = markup.translate(_ASCII_LOWER)                 # same length as markup, unlike .lower()
+    out, i, end = [], 0, len(markup)
+    while i < end:
+        j = markup.find("<", i)
+        if j < 0:
+            out.append(markup[i:])
+            break
+        out.append(markup[i:j])
+        if low.startswith("<!--", j):
+            k = low.find("-->", j + 4)
+            i = end if k < 0 else k + 3
+            continue
+        block = _DROPPED_BLOCK.match(low, j)
+        if block:
+            k = low.find("</" + block.group(1), block.end())
+            k = -1 if k < 0 else low.find(">", k)
+            i = end if k < 0 else k + 1                  # unclosed: the rest is inside it
+            continue
+        out.append("<")
+        i = j + 1
+    return "".join(out)
+
+
+def _html_text(markup, budget=None):
+    """(text, complete) from an HTML body. ``complete`` is False when the size cap or the time
+    budget stopped the reading early."""
+    deadline = time.monotonic() + (HTML_TIME_BUDGET if budget is None else budget)
+    visible = _drop_invisible(markup)
+    complete = len(visible) <= MAX_HTML_CHARS
+    parts = []
+    for count, match in enumerate(_HTML_TOKEN.finditer(visible, 0, MAX_HTML_CHARS)):
+        if count % 64 == 0 and time.monotonic() >= deadline:
+            return "".join(parts), False
+        token = match.group(0)
+        if len(token) > 1 and token[0] == "<":
+            name = _TAG_NAME.match(token)
+            if name and name.group(1).lower() in _BREAKS:
+                parts.append("\n")
+            continue                                     # any other tag, doctype or CDATA marker
+        parts.append(html.unescape(token))
+    return "".join(parts), complete
 
 
 def _tidy(text):
@@ -1095,6 +1188,9 @@ def _leaves(part, depth=0, out=None):
     return out
 
 
+_NOT_MAIL_CHARSETS = {"idna", "punycode", "undefined", "unicode-escape", "raw-unicode-escape"}
+
+
 def _decode_part(part):
     data = ((part.get("body") or {}).get("data")) or ""
     if not isinstance(data, str) or not data:
@@ -1105,10 +1201,17 @@ def _decode_part(part):
         return ""
     ctype = _headers(part).get("content-type", "")
     match = re.search(r"""charset\s*=\s*["']?([A-Za-z0-9._:-]+)""", ctype, re.I)
-    charset = match.group(1) if match else "utf-8"
+    # The sender names the charset. Python also knows codecs that are not mail charsets at all:
+    # some raise UnicodeError (idna, undefined), others "decode" to nonsense (punycode, escapes).
+    try:
+        charset = codecs.lookup(match.group(1)).name if match else "utf-8"
+    except LookupError:
+        charset = "utf-8"
+    if charset in _NOT_MAIL_CHARSETS:
+        charset = "utf-8"
     try:
         return raw.decode(charset, errors="replace")
-    except LookupError:
+    except (LookupError, ValueError):                    # ValueError includes UnicodeError
         return raw.decode("utf-8", errors="replace")
 
 
@@ -1118,14 +1221,16 @@ def _message_body(payload, cap):
               and "attachment" not in _headers(p).get("content-disposition", "").lower()]
     plain = [_decode_part(p) for p in leaves if str(p.get("mimeType", "")).lower() == "text/plain"]
     plain = [t for t in plain if t.strip()]
+    complete = True
     if plain:
         text = _tidy("\n\n".join(plain))
     else:
         markup = [_decode_part(p) for p in leaves if str(p.get("mimeType", "")).lower() == "text/html"]
-        text = _tidy(_html_text("\n".join(markup)))
+        text, complete = _html_text("\n".join(markup))
+        text = _tidy(text)
     if len(text) > cap:
         return text[:cap].rstrip(), True
-    return text, False
+    return text, not complete
 
 
 def gmail_thread(thread_id: str, *, max_body_chars: int = 20000, state_dir=None) -> dict:
@@ -1161,9 +1266,40 @@ def _header_value(value, field, limit):
         value = ""
     if not isinstance(value, str) or len(value) > limit:
         raise ValueError("%s must be text of at most %d characters" % (field, limit))
-    if "\r" in value or "\n" in value or "\x00" in value:
-        raise ValueError("%s must be a single line" % field)
+    # CR and LF are not the only line breaks: NEL, VT, FF and U+2028/2029 are too, to some
+    # reader somewhere. No control character or line separator belongs in a header value.
+    if any(c != "\t" and unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in value):
+        raise ValueError("%s must be a single line without control characters" % field)
     return value.strip()
+
+
+_ADDRESS = re.compile(
+    r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_NAME_FORBIDDEN = set('@＠﹫<>,;:"\\()[]')
+
+
+def _one_recipient(value):
+    """``value`` as exactly one address, optionally with a display name, or ValueError.
+
+    A reply goes to one person. Lists, groups and names that carry an address of their own
+    ('"boss@corp.com" <attacker@evil.com>') are refused, so what the person sees is who gets it.
+    """
+    name, addr = "", value.strip()
+    if addr.endswith(">") and "<" in addr:
+        cut = addr.rindex("<")
+        name, addr = addr[:cut].strip(), addr[cut + 1:-1].strip()
+        if len(name) >= 2 and name[0] == name[-1] == '"':
+            name = name[1:-1].strip()
+    local = addr.split("@", 1)[0]
+    if not _ADDRESS.fullmatch(addr) or len(addr) > 254 or len(local) > 64:
+        raise ValueError("to must be one email address, like ana@example.com or "
+                         "Ana <ana@example.com>")
+    if len(name) > 200 or "=?" in name or any(c in _NAME_FORBIDDEN for c in name) or \
+            not all(c.isprintable() for c in name):
+        raise ValueError("to has a display name Collie will not write: it may not contain an "
+                         "address, quotes, brackets or separators")
+    return email.headerregistry.Address(display_name=name, addr_spec=addr)
 
 
 def _angle(message_id):
@@ -1177,8 +1313,17 @@ def _angle(message_id):
     return message_id
 
 
+_MESSAGE_ID = re.compile(r"<[^<>\s]{1,994}>")
+
+
 def _reply_context(tid, state_dir):
-    """(Message-ID, References, Subject) of the last message in the thread that is not a draft."""
+    """(Message-ID, References, Subject) of the last message in the thread that is not a draft.
+
+    These headers were written by whoever sent the mail, so they are cleaned rather than
+    trusted or refused: a Message-ID that is not one is left out (Gmail still threads by
+    threadId), only well-formed ids are kept from References (the last MAX_REFERENCES), and the
+    subject is made one line of at most 998 characters.
+    """
     data = _api("GET", GMAIL_API + "/users/me/threads/" + tid, need=GMAIL_READ,
                 state_dir=state_dir, params=[("format", "metadata")] + [
                     ("metadataHeaders", h) for h in ("Message-ID", "References", "Subject")])
@@ -1188,8 +1333,12 @@ def _reply_context(tid, state_dir):
             last = msg
     head = _headers(last.get("payload"))
     first = _headers(((data.get("messages") or [{}])[0] or {}).get("payload"))
-    return (head.get("message-id", ""), head.get("references", ""),
-            head.get("subject", "") or first.get("subject", ""))
+    found_id = head.get("message-id", "").strip()
+    found_id = found_id if _MESSAGE_ID.fullmatch(found_id) else ""
+    refs = _MESSAGE_ID.findall(head.get("references", ""))[-MAX_REFERENCES:]
+    subject = head.get("subject", "") or first.get("subject", "")
+    subject = re.sub(r"\s+", " ", "".join(c if c.isprintable() else " " for c in subject))
+    return found_id, " ".join(refs), subject.strip()[:998]
 
 
 def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_reply_to: str = "",
@@ -1206,6 +1355,7 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
     to = _header_value(to, "to", 2000)
     if not to:
         raise ValueError("to is required")
+    recipient = _one_recipient(to)
     subject = _header_value(subject, "subject", 998)
     in_reply_to = _angle(_header_value(in_reply_to, "in_reply_to", 998))
     references = _header_value(references, "references", 8000)
@@ -1215,10 +1365,9 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
     if not in_reply_to or not subject:
         found_id, found_refs, found_subject = _reply_context(tid, state_dir)
         if not in_reply_to:
-            in_reply_to = _angle(_header_value(found_id, "in_reply_to", 998))
-            references = references or _header_value(found_refs.replace("\r", " ").replace(
-                "\n", " "), "references", 8000)
-        subject = subject or _header_value(found_subject, "subject", 998)
+            in_reply_to = found_id
+            references = references or found_refs
+        subject = subject or found_subject
     refs = []
     for item in references.split() + ([in_reply_to] if in_reply_to else []):
         item = _angle(item)
@@ -1229,7 +1378,7 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
         subject = "Re: " + subject if subject else "Re:"
     msg = email.message.EmailMessage(policy=email.policy.SMTP)
     try:
-        msg["To"] = to
+        msg["To"] = recipient
         msg["Subject"] = subject
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
