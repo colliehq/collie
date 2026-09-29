@@ -815,20 +815,112 @@ _SKIP_DIRS = frozenset({"node_modules", "venv", "env", "vendor", "third_party", 
 _WALK_UP = 4
 
 
+# The scan runs git inside repositories the person did not create -- a downloaded archive, a
+# clone from anyone, a take-home exercise dropped under a project root.  git config in such a
+# repository can name a program to run during ordinary read commands: core.fsmonitor runs during
+# status, a filter driver runs while status hashes a changed tracked file, gpg.program runs when
+# log shows a signature, a hook runs when the index is written.  So every git call the scan makes
+# is neutralized.  ``-c`` on the command line overrides the repository's own config, and reading
+# config never runs anything, so the filter drivers (which have arbitrary names) are found with
+# ``git config --get-regexp`` and blanked per call.
+_GIT_HARDEN = ("core.fsmonitor=false", "core.untrackedCache=false", "core.hooksPath=" +
+               (os.devnull.replace("\\", "/") or "/dev/null"), "core.pager=cat", "core.editor=true",
+               "diff.external=", "diff.textconv=", "protocol.allow=never", "log.showSignature=false",
+               "gpg.program=", "safe.directory=")
+_FILTER_RE = re.compile(r"^(filter\.[^\n]*\.(?:clean|smudge|process))\b")
+#: A config value safe to echo back on the command line: a token, never a path or a program.
+_SAFE_CONFIG_VAL = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
+#: git env we drop, so the process's own GIT_DIR / GIT_CONFIG / an fsmonitor override cannot
+#: redirect the scan or slip a program back in.  The user's HOME stays, for their git identity.
+_GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+                 "GIT_CONFIG_SYSTEM", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                 "GIT_FSMONITOR", "GIT_PROXY_COMMAND", "GIT_SSH", "GIT_SSH_COMMAND",
+                 "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_ATTR_SYSTEM",
+                 "GIT_ALLOW_PROTOCOL", "GIT_HOOKS_PATH")
+
+
+def _git_env():
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_COUNT="0", GIT_FLUSH="1", LC_ALL="C")
+    return env
+
+
+def _user_text_config(path):
+    """The user's own ``core.autocrlf`` / ``core.eol``, echoed back as ``-c``.
+
+    ``GIT_CONFIG_NOSYSTEM=1`` (below) disables the system config, where Git for Windows sets
+    ``core.autocrlf=true``; without it every CRLF-normalized file reads as modified and the scan
+    would report changes that are not there.  These values are data (a token, matched against
+    ``_SAFE_CONFIG_VAL``), never a program, so re-passing them is safe.  Read outside any
+    repository so a scanned repo cannot change what is carried.
+    """
+    out, env = [], {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    env.update(GIT_TERMINAL_PROMPT="0", LC_ALL="C")            # deliberately no NOSYSTEM here
+    for key in ("core.autocrlf", "core.eol"):
+        try:
+            proc = subprocess.run([path, "config", "--get", key], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=REPO_TIMEOUT_S,
+                                  env=env, stdin=subprocess.DEVNULL,
+                                  cwd=os.path.expanduser("~"), **plat.no_window_kwargs())
+        except (OSError, subprocess.SubprocessError):
+            continue
+        val = (proc.stdout or "").strip()
+        if proc.returncode == 0 and _SAFE_CONFIG_VAL.match(val):
+            out.append("%s=%s" % (key, val))
+    return out
+
+
+def _repo_filters(path, repo):
+    """The ``filter.<name>.{clean,smudge,process}`` keys a repository's config defines, blanked.
+
+    Only ``git config`` is run, which reads and never executes.  Its own ``-c`` neutralizers are
+    passed so this first call is safe too.
+    """
+    try:
+        proc = subprocess.run([path, "--no-optional-locks"]
+                              + [arg for key in _GIT_HARDEN for arg in ("-c", key)]
+                              + ["-C", repo, "config", "--get-regexp",
+                                 r"^filter\..*\.(clean|smudge|process)$"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=REPO_TIMEOUT_S, env=_git_env(), stdin=subprocess.DEVNULL,
+                              **plat.no_window_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        return []
+    keys = []
+    for line in (proc.stdout or "").splitlines():
+        match = _FILTER_RE.match(line)
+        if match:
+            keys.append(match.group(1) + "=")
+    return keys
+
+
 def _git_runner(ctx):
-    """``run(args, timeout) -> (returncode, stdout, stderr)`` for git, read-only."""
+    """``run(args, timeout) -> (returncode, stdout, stderr)`` for git, read-only and hardened.
+
+    ``args`` starts with ``-C <repo>``; the repository is read from it so this repository's own
+    filter drivers can be blanked for the call.  A test may inject its own runner through
+    ``ctx.options["git"]``.
+    """
     injected = ctx.options.get("git")
     if callable(injected):
         return injected
     path = shutil.which("git")
     if not path:
         raise rs.Unavailable("git isn't installed")
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+    env = _git_env()
+    carry = [arg for key in _user_text_config(path) for arg in ("-c", key)]
 
     def run(args, timeout):
-        proc = subprocess.run([path, "--no-optional-locks"] + list(args), capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                              env=env, stdin=subprocess.DEVNULL, **plat.no_window_kwargs())
+        args = list(args)
+        repo = args[args.index("-C") + 1] if "-C" in args else None
+        extra = [arg for key in _GIT_HARDEN for arg in ("-c", key)] + carry
+        if repo:
+            extra += [arg for key in _repo_filters(path, repo) for arg in ("-c", key)]
+        proc = subprocess.run([path, "--no-optional-locks", "--no-pager"] + extra + args,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, env=env, stdin=subprocess.DEVNULL,
+                              **plat.no_window_kwargs())
         return proc.returncode, proc.stdout or "", proc.stderr or ""
 
     return run
@@ -1082,15 +1174,35 @@ def _span(seconds, zh):
     return ("%d 周" if zh else "%d weeks") % weeks
 
 
+class _NotOwned(RuntimeError):
+    """git refused a repository the current user does not own (dubious ownership).  Skipped,
+    never opened, and never counted as a read failure."""
+
+
+def _owned(path):
+    """Best-effort: does the current user own this repository?  Unknown answers ``True`` and
+    let git's own dubious-ownership check (which we do not defeat) be the backstop."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return True                      # Windows: git compares owner SIDs itself
+    try:
+        return os.stat(path).st_uid == getuid()
+    except OSError:
+        return True
+
+
 def _inspect(run, repo, now, zh):
     """What one checkout is: its project, the person's activity in it, and its status facts.
 
-    Raises on a git call that hangs or fails.  Facts are made here but only the most recently
-    active checkout of an active project gets to say them (see :func:`local_projects`).
+    Raises on a git call that hangs or fails, or :class:`_NotOwned` for a repository the person
+    does not own.  Facts are made here but only the most recently active checkout of an active
+    project gets to say them (see :func:`local_projects`).
     """
     code, out, err = run(["-C", repo, "status", "--porcelain=v2", "--branch", "-z",
-                          "--untracked-files=normal"], REPO_TIMEOUT_S)
+                          "--untracked-files=normal", "--ignore-submodules=all"], REPO_TIMEOUT_S)
     if code != 0:
+        if "dubious ownership" in (err or "").lower():
+            raise _NotOwned(repo)
         raise RuntimeError("git status failed")
     info = _status(out)
     urls = _read_config(os.path.join(repo, ".git", "config"))
@@ -1205,7 +1317,11 @@ def local_projects(ctx):
     roots = project_roots(ctx)
     if not roots:
         raise rs.Unavailable("none of the project folders exist on this computer")
-    repos, more = _find_repos(roots)
+    found, more = _find_repos(roots)
+    # A repository owned by another user is somebody else's; do not open it (git config there
+    # could name a program to run), and do not count it as a read failure either.
+    repos = [repo for repo in found if _owned(repo)]
+    not_owned = len(found) - len(repos)
     zh = _zh(ctx)
     records, failed, unfinished = [], 0, 0
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS,
@@ -1215,6 +1331,8 @@ def local_projects(ctx):
         for future in concurrent.futures.as_completed(futures, timeout=SCAN_BUDGET_S):
             try:
                 records.append(future.result())
+            except _NotOwned:
+                not_owned += 1
             except Exception:                         # noqa: BLE001 - counted, not raised
                 failed += 1
     except concurrent.futures.TimeoutError:
@@ -1242,7 +1360,8 @@ def local_projects(ctx):
     signals.sort(key=lambda signal: (-activity.get(signal["project"], 0.0), signal["id"]))
     return {"signals": signals, "activity": activity, "aliases": aliases,
             "state": "partial" if notes else "ok", "reason": "; ".join(notes),
-            "stats": {"repos": len(repos), "projects": len(activity), "roots": len(roots)},
+            "stats": {"repos": len(repos), "projects": len(activity), "roots": len(roots),
+                      "not_owned": not_owned},
             "detail": "%d repositories, %d active project%s, in %d folder%s" % (
                 len(repos), len(activity), "" if len(activity) == 1 else "s", len(roots),
                 "" if len(roots) == 1 else "s")}
