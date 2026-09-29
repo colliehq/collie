@@ -1337,17 +1337,30 @@ def start_pump(state_dir=None, interval=60):
         if existing and existing[0].is_alive():
             return existing[1]
         stop = threading.Event()
+        morning_pass = {"thread": None}
+
+        def morning():
+            try:
+                from . import daily_brief_schedule
+                daily_brief_schedule.tick(root)
+            except Exception:
+                pass  # Daily Brief settings expose their own failure; other lanes continue.
+
         def run():
             while not stop.is_set():
                 try:
                     ChannelService(root).tick()
                 except Exception:
                     pass  # The connections API exposes a malformed settings file.
-                try:
-                    from . import daily_brief_schedule
-                    daily_brief_schedule.tick(root)
-                except Exception:
-                    pass  # Daily Brief settings expose their own failure; other lanes continue.
+                # The morning email may build the morning report -- a model call, Gmail,
+                # GitHub -- which takes minutes.  It runs beside the channel lanes, one pass
+                # at a time, so a slow build never holds up mail arriving or a reply leaving.
+                current = morning_pass["thread"]
+                if current is None or not current.is_alive():
+                    current = threading.Thread(target=morning, name="collie-morning-email",
+                                               daemon=True)
+                    morning_pass["thread"] = current
+                    current.start()
                 stop.wait(max(10, interval))
         thread = threading.Thread(target=run, name="collie-channels", daemon=True)
         _PUMPS[root] = (thread, stop)
