@@ -831,6 +831,44 @@ def describe(report, saved=""):
 # ---------------------------------------------------------------- build
 
 
+#: However long it has been, "while you slept" reaches back at most this far: a Monday
+#: report covers the weekend, not the whole of a holiday.
+WINDOW_MAX_S = 72 * 3600
+
+
+def earlier_report(root, date):
+    """The latest report saved for a local date before ``date``, or ``None``."""
+    folder = report_dir(root)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    days = sorted(name[:-5] for name in names
+                  if name.endswith(".json") and _DATE_RE.fullmatch(name[:-5]) and name[:-5] < date)
+    for day in reversed(days):
+        found = _read(os.path.join(folder, "%s.json" % day))
+        if found:
+            return found
+    return None
+
+
+def window_start(earlier, now, zone):
+    """Where "while you slept" begins: when the last day's report was made.
+
+    Not the last report: building again at noon must still reach back to yesterday, not to
+    this morning.  With no earlier report the window opens at the start of yesterday, local
+    time -- a fixed 24 hours before a noon run would miss everything that happened yesterday
+    morning.  Either way it reaches back at most ``WINDOW_MAX_S``.
+    """
+    local = _dt.datetime.fromtimestamp(now, zone or _dt.timezone.utc)
+    start = (local.replace(hour=0, minute=0, second=0, microsecond=0)
+             - _dt.timedelta(days=1)).timestamp()
+    made = daily_brief._stamp((earlier or {}).get("generated_at"))
+    if made is not None and made < now:
+        start = made
+    return max(start, now - WINDOW_MAX_S)
+
+
 def _options():
     from . import settings
     raw = str(settings.get("REPORT_PROJECT_ROOTS", "") or "")
@@ -850,17 +888,20 @@ def build(*, state_dir=None, now=None, drafts=True, dry_run=False, adapters=None
     wall = float(now) if now is not None else time.time()
     prof = profile or load_profile(root)
     zone = prof.get("zone") or _dt.timezone.utc
-    previous = load_latest(root) or {}
-    kept = previous.get("counters") if isinstance(previous.get("counters"), dict) else {}
+    local = _dt.datetime.fromtimestamp(wall, zone)
+    earlier = earlier_report(root, local.strftime("%Y-%m-%d")) or {}
+    kept = earlier.get("counters") if isinstance(earlier.get("counters"), dict) else {}
+    since = window_start(earlier, wall, zone)
     context = rs.Context(now=wall, state_dir=root, zone=zone, zone_name=prof.get("timezone"),
-                         language=prof.get("language") or "en", previous=dict(kept),
+                         language=prof.get("language") or "en", since=since,
+                         previous=dict(kept),
                          options=options if options is not None else _options())
     signals, sources, counters = rs.collect(
         context, adapters if adapters is not None else report_sources.default_adapters())
     sky_now = weather if weather is not None else current_weather()
     composed, composer = compose(signals, sources, prof, wall, sky_now, caller=caller)
-    local = _dt.datetime.fromtimestamp(wall, zone)
     report = {"schema": SCHEMA, "date": local.strftime("%Y-%m-%d"), "generated_at": wall,
+              "since": since,
               "language": prof.get("language") or "en", "timezone": prof.get("timezone"),
               "utc_offset_minutes": int((local.utcoffset() or _dt.timedelta()).total_seconds()
                                         // 60),

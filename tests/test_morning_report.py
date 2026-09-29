@@ -382,14 +382,14 @@ def world(tmp_path, monkeypatch):
     def adapter(ctx):
         return {"signals": [dict(s) for s in signals], "counters": {"github.stars:colliehq/collie": 11}}
 
-    def build(**kw):
+    def build(now=NOW, **kw):
         kw.setdefault("adapters", [rs.Adapter(name="fake", label="Fake", read=adapter)])
         kw.setdefault("caller", lambda system, prompt: model_answer(
             wins=[{"title": "Collie 0.31.0 is out.", "detail": "", "signal_ids": [RELEASE["id"]]}],
             yours=[], projects=[], reads=[]))
         kw.setdefault("weather", {"state": "off"})
         kw.setdefault("profile", PROFILE)
-        return mr.build(state_dir=str(root), now=NOW, **kw)
+        return mr.build(state_dir=str(root), now=now, **kw)
 
     return {"root": root, "google": google, "build": build}
 
@@ -440,7 +440,7 @@ def test_the_snapshot_keeps_the_report_and_where_every_word_came_from(world):
 
 
 def test_counters_survive_a_day_a_source_could_not_be_read(world):
-    world["build"]()
+    world["build"](now=NOW - 86400)
 
     def down(ctx):
         raise rs.Unavailable("GitHub took too long to answer")
@@ -457,7 +457,7 @@ def test_a_dry_run_writes_nothing_and_drafts_nothing(world):
 
 
 def test_the_previous_reports_counters_reach_the_sources(world):
-    world["build"]()
+    world["build"](now=NOW - 86400)
     seen = {}
 
     def adapter(ctx):
@@ -483,3 +483,36 @@ def test_a_greeting_too_long_for_the_header_is_replaced_with_ours():
         greeting="Good morning, Daming! Rowan here, tail wagging and ready to help."))
     assert out["greeting"] == "Good morning, Daming!"
     assert any(d["section"] == "greeting" and "long" in d["reason"] for d in composer["dropped"])
+
+
+# ---------------------------------------------------------------- the "while you slept" window
+
+
+def _window(world, now):
+    seen = {}
+
+    def adapter(ctx):
+        seen["since"] = ctx.since
+        return {"signals": []}
+
+    report = world["build"](now=now, adapters=[rs.Adapter(name="github", label="GitHub",
+                                                          read=adapter)])
+    assert report["since"] == seen["since"]
+    return seen["since"]
+
+
+def test_the_window_opens_where_the_last_days_report_left_off(world):
+    world["build"](now=NOW - 20 * 3600)                   # yesterday, 11:02
+    assert _window(world, NOW) == NOW - 20 * 3600
+    # Building again later today still reaches back to yesterday's report, not to this morning's.
+    assert _window(world, NOW + 3 * 3600) == NOW - 20 * 3600
+
+
+def test_with_no_earlier_report_the_window_starts_at_the_beginning_of_yesterday(world):
+    yesterday = dt.datetime(2026, 9, 28, 0, 0, tzinfo=PDT).timestamp()
+    assert _window(world, NOW) == yesterday
+
+
+def test_the_window_reaches_back_at_most_three_days(world):
+    world["build"](now=NOW - 6 * 86400)
+    assert _window(world, NOW) == NOW - 72 * 3600          # a Monday still covers the weekend
