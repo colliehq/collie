@@ -1,3 +1,5 @@
+import pytest
+
 from test_channel_service import service  # noqa: F401
 from test_channel_web import request, web  # noqa: F401
 
@@ -42,3 +44,36 @@ def test_schedule_settings_are_authenticated_opt_in_and_do_not_send(web):
     status, prefs, _ = request(web, endpoint, body={"enabled": False})
     assert status == 200 and prefs["enabled"] is False
     assert not adapter.sent
+
+
+def test_send_me_one_now_is_authenticated_explicit_and_refused_without_an_account(web,
+                                                                                 monkeypatch):
+    _, _, (host, adapter) = web
+    from harness import daily_brief_schedule, morning_report
+    built = []
+    monkeypatch.setattr(morning_report, "build",
+                        lambda **kw: built.append(kw) or pytest.fail("must not build"))
+    endpoint = "/api/brief/send-now"
+    assert request(web, endpoint, body={"confirm": True}, authenticated=False)[0] == 403
+    assert request(web, endpoint, authenticated=True)[0] in (400, 404, 405)   # a GET sends nothing
+    # A POST without the explicit confirmation is refused before anything is read.
+    status, answer, _ = request(web, endpoint, body={})
+    assert status == 400 and "confirm" in answer["error"]
+    # Confirmed, but no account was ever saved: refused with the reason, nothing built.
+    status, answer, _ = request(web, endpoint, body={"confirm": True})
+    assert status == 400 and "save" in answer["error"]
+    assert built == [] and not adapter.sent
+
+
+def test_send_me_one_now_sends_through_the_saved_account(web, monkeypatch):
+    _, _, (host, adapter) = web
+    from harness import daily_brief_schedule
+    calls = []
+
+    def fake_send_now(root, **kwargs):
+        calls.append(root)
+        return {"state": "submitted", "sent": True, "detail": "accepted", "delivery_known": False}
+
+    monkeypatch.setattr(daily_brief_schedule, "send_now", fake_send_now)
+    status, answer, _ = request(web, "/api/brief/send-now", body={"confirm": True})
+    assert status == 200 and answer["state"] == "submitted" and len(calls) == 1

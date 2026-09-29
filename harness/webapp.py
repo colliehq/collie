@@ -3923,6 +3923,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": str(exc)}, 400)
                 except Exception:
                     return self._send_json({"error": "Daily email settings could not be saved. Review them before enabling delivery."}, 409)
+            if path == "/api/brief/send-now":
+                # "Send me one now": a real email, built and sent while the request waits
+                # (a minute or two), to the account saved in the daily email settings.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(1024)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                if body.get("confirm") is not True:
+                    return self._send_json({"error": "sending a report needs an explicit confirm"}, 400)
+                from . import daily_brief_schedule
+                try:
+                    return self._send_json(daily_brief_schedule.send_now(_state_root()))
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                except Exception:
+                    return self._send_json({"error": "The report could not be sent. Nothing was sent twice."}, 409)
             if path == "/api/channels":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

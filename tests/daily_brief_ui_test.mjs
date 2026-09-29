@@ -91,7 +91,8 @@ check(fetched.every((target) => target.startsWith("/")),
 check(fetched.every((t) => t.startsWith("/api/brief") || t === "/api/session-token"),
   "the page talks only to its own route and the token refresh");
 const called = all(/\bapi\("([^"]+)"/g);
-const routes = ["/api/brief", "/api/brief/preferences", "/api/brief/todos", "/api/brief/news"];
+const routes = ["/api/brief", "/api/brief/preferences", "/api/brief/todos", "/api/brief/news",
+  "/api/brief/send-now"];
 check(called.length >= 3 && called.every((t) => routes.includes(t)),
   `every api() call is the brief, its preferences, the to-do list or the feeds (${[...new Set(called)].join(" ")})`);
 for (const noisy of ["setInterval", "EventSource", 'addEventListener("focus"', 'addEventListener("blur"',
@@ -137,9 +138,9 @@ check(!/password|token=|credential|secret/i.test(markup),
 // one POST it makes, the absence of anywhere to type an address, and the copy that says
 // what the schedule can and cannot promise.
 const posted = all(/([a-z_]+):/g, (script.match(/return \{enabled:true,[\s\S]*?\};/) || [""])[0]);
-check(posted.length === 6 && ["enabled", "connection", "timezone", "at", "language", "grace_minutes"]
-  .every((key) => posted.includes(key)),
-  `the saved settings are exactly the six the server accepts (${posted.join(" ")})`);
+check(posted.length === 8 && ["enabled", "connection", "timezone", "at", "language", "grace_minutes",
+  "report", "gmail_drafts"].every((key) => posted.includes(key)),
+  `the saved settings are exactly the eight the server accepts (${posted.join(" ")})`);
 check(!/recipient|收件人/i.test(markup) && !/(destination|to|address|email):/.test(
   (script.match(/return \{enabled:true,[\s\S]*?\};/) || [""])[0]),
   "there is nowhere to type a destination, and none is ever posted");
@@ -147,8 +148,10 @@ check(!/recipient|收件人/i.test(markup) && !/(destination|to|address|email):/
 // a date and a number. Feed addresses go in a plain textarea, never an address field.
 const inputs = [...markup.matchAll(/<input[^>]*>/g)].map((m) => m[0]);
 check(inputs.length > 0 && inputs.every((tag) =>
-  /\sid="(schedAt|schedZone|schedGrace|todoTitle|todoDue|todoShowDone|newsTopics|newsMax)"/.test(tag)),
+  /\sid="(schedAt|schedZone|schedGrace|schedDrafts|todoTitle|todoDue|todoShowDone|newsTopics|newsMax)"/.test(tag)),
   `the only inputs are the schedule's, the to-do list's and the news topics' (${inputs.length})`);
+check(/<input id="schedDrafts" type="checkbox"/.test(markup),
+  "the reply-drafts switch is a checkbox, not somewhere to type");
 check(/<input id="todoTitle" type="text"/.test(markup) && /<input id="todoDue" type="date"/.test(markup),
   "a to-do is a line of text and an optional date");
 check(!/type="(email|password|tel|url)"/.test(markup),
@@ -188,6 +191,30 @@ check(/paused_reason/.test(script) && /Choose an account and save again/.test(sc
 check(/p\.available===false/.test(script) && /This page could not read the settings/.test(script) &&
   !/Nothing was sent and nothing was changed/.test(script),
   "settings that cannot be read are visible, and claim no state of their own");
+
+// ── the morning report by email, and "Send me one now" ───────────────────────────
+// Choosing the report is one more field of the same save; sending one now is a real email,
+// so it is one explicit, confirmed click that posts nothing but its own confirmation.
+check(/<select id="schedContent">/.test(markup) && /value="morning_report"/.test(markup) &&
+  /value="brief"/.test(markup), "the morning email is the brief or the report, chosen from a list");
+check(/report:\$\("schedContent"\)\.value==="morning_report"/.test(script) &&
+  /gmail_drafts:\$\("schedDrafts"\)\.checked/.test(script),
+  "the choice and the drafts switch are sent as the two booleans the server accepts");
+check(/One email a morning: the report replaces the brief, never both/.test(markup),
+  "the page says the report replaces the brief rather than adding a second email");
+check(/gmail_drafts_locked/.test(script) && /environment variable/.test(script),
+  "a drafts switch held by the environment is shown as held, not as a switch that works");
+const nowBodies = [...script.matchAll(/api\("\/api\/brief\/send-now",(\{[^}]*\})\)/g)].map((m) => m[1]);
+check(nowBodies.length === 1 && nowBodies[0] === "{confirm:true}",
+  `sending one now posts only its confirmation, never an address (${nowBodies.join(" ")})`);
+check(/if\(!confirm\(tr\("Build a morning report now and email it to /.test(script),
+  "sending one now asks first, naming the masked destination");
+check(/\$\("schedNow"\)\.addEventListener\("click",\(\)=>busy\(\$\("schedNow"\),sendNow,"schedNotice"\)\)/.test(script),
+  "the send-now click is guarded, so its failure is shown and a second click waits");
+check(/requests\.available|req\.available/.test(script) && /Save an email account above first/.test(script),
+  "with no saved account there is nothing to send to, and the button says so");
+check(/does not replace the morning's email/.test(markup),
+  "a report sent on request is said not to replace the morning's own email");
 
 // ── the panel cannot break the brief, and cannot lose what you typed ─────────────
 check(/let prefs=null/.test(script) && !/\bprefs\b/.test(script.slice(script.indexOf("function render()"),
