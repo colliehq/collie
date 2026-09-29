@@ -3934,9 +3934,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "expected JSON object"}, 400)
                 from . import morning_desktop as morning_act
                 try:
-                    return self._send_json(morning_act.act(_state_root(), body))
+                    result = morning_act.act(_state_root(), body)
                 except ValueError as exc:
                     return self._send_json({"error": str(exc)}, 400)
+                shown = result.get("today") or {}
+                if shown.get("show"):                  # the same answer as GET gives, link and all
+                    shown["report_url"] = report_link(shown["date"])
+                return self._send_json(result)
             if path == "/api/brief":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

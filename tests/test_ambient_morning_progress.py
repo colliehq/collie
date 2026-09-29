@@ -31,6 +31,7 @@ def test_progress_follows_the_server_and_the_check_marks_an_item_done(desk):
     act.locator("button.m-check").click()
     assert _poll(page, SAYS, "Two down, three to go.")
     assert md.today(desk.state, now=at(8))["done"] == 2
+    assert page.locator("#mOpen").is_visible()                  # the report is still one click away
     assert "Undo" in page.inner_text("#mNote")
     page.click("#mNote button")
     assert _poll(page, SAYS, "One down, four to go.")

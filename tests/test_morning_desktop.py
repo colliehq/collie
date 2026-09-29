@@ -274,6 +274,11 @@ def test_the_report_page_runs_no_script_and_opens_from_a_short_lived_link(web, r
     for status_path in ("/report?token=" + token, "/report", "/report?date=2026-01-01&token=" + token):
         policy = call(base + status_path)[1]["Content-Security-Policy"]
         assert "script-src 'none'" in policy, status_path
+    # A mark's answer is today's too, so it carries the link as well.
+    key = today["items"][0]["key"]
+    marked = json.loads(call(base + "/api/report/today?token=" + token, "POST",
+                             {"action": "done", "keys": [key]})[2])["today"]
+    assert marked["report_url"].startswith("/report?date=" + DAY)
     forged = re.sub(r"sig=[0-9a-f]+", "sig=" + "0" * 32, link)
     assert call(base + forged)[0] == 403
     other_day = link.replace("date=" + DAY, "date=2026-09-28")
