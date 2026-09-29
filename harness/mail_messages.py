@@ -16,7 +16,19 @@ MAX_TEXT_CHARS = 128_000
 MAX_TEXT_BYTES = 64 * 1024
 MAX_ATTACHMENTS = 16
 MAX_PARTS = 64
+#: An HTML result is a designed page, not a document: Gmail clips a body past ~102 KB, so
+#: anything near this ceiling is already a page nobody reads whole.
+MAX_HTML_BYTES = 128 * 1024
+#: Inline images are decoration (a dog's face), referenced from the HTML as ``cid:``.
+MAX_INLINE_IMAGES = 4
+MAX_INLINE_BYTES = 64 * 1024
+MAX_INLINE_TOTAL = 128 * 1024
+INLINE_TYPES = ("image/png", "image/jpeg", "image/gif")
 _MESSAGE_ID = re.compile(r"<[^<>\s\x00-\x1f]{1,250}>")
+_CID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_INLINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_CID_REF = re.compile(r"cid:([^\"'\s>)]*)", re.IGNORECASE)
+_HTML_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class MailFormatError(ValueError):
@@ -168,8 +180,112 @@ def from_relay(row):
             "attachments": [], "automatic": False}
 
 
-def compose(*, sender, recipient, subject, text, message_id, in_reply_to="", references=()):
-    """Build one result email with a stable id; no recipient expansion or HTML."""
+def check_html(html):
+    """An HTML body as a result may carry it: text, bounded, no control characters.
+
+    The HTML is not sanitised here -- the caller renders it from its own templates and
+    escapes what it puts in.  What this refuses is what no template should produce: a
+    body past the size a mail client will show, and bytes that are not text.
+    """
+    if not isinstance(html, str) or not html.strip():
+        raise MailFormatError("the HTML body is empty")
+    if len(html.encode("utf-8")) > MAX_HTML_BYTES:
+        raise MailFormatError("the HTML body exceeds %d bytes" % MAX_HTML_BYTES)
+    if _HTML_CONTROL.search(html):
+        raise MailFormatError("the HTML body contains control characters")
+    return html
+
+
+def check_inline(parts, html):
+    """The inline images of an HTML result, validated against the HTML that shows them.
+
+    Each part is ``{"cid", "filename", "content_type", "data": bytes}``.  Every image must
+    be named by a ``cid:`` in the HTML and every ``cid:`` in the HTML must be one of these
+    parts: an unnamed image turns into an attachment in some clients, and a name with no
+    image is a broken picture in all of them.
+    """
+    parts = list(parts or ())
+    if parts and not html:
+        raise MailFormatError("inline images are allowed only with an HTML body")
+    if len(parts) > MAX_INLINE_IMAGES:
+        raise MailFormatError("a result carries at most %d inline images" % MAX_INLINE_IMAGES)
+    clean, seen, total = [], set(), 0
+    for part in parts:
+        if not isinstance(part, dict):
+            raise MailFormatError("an inline image must be an object")
+        cid, name = part.get("cid"), part.get("filename")
+        kind, data = part.get("content_type"), part.get("data")
+        if not isinstance(cid, str) or not _CID.fullmatch(cid):
+            raise MailFormatError("an inline image needs a plain content id")
+        if cid in seen:
+            raise MailFormatError("the inline image %s is given twice" % cid)
+        if not isinstance(name, str) or not _INLINE_NAME.fullmatch(name):
+            raise MailFormatError("an inline image needs a plain file name")
+        if kind not in INLINE_TYPES:
+            raise MailFormatError("an inline image must be PNG, JPEG or GIF")
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            raise MailFormatError("an inline image must carry its bytes")
+        if len(data) > MAX_INLINE_BYTES:
+            raise MailFormatError("an inline image exceeds %d bytes" % MAX_INLINE_BYTES)
+        total += len(data)
+        if total > MAX_INLINE_TOTAL:
+            raise MailFormatError("the inline images exceed %d bytes together" % MAX_INLINE_TOTAL)
+        seen.add(cid)
+        clean.append({"cid": cid, "filename": name, "content_type": kind, "data": bytes(data)})
+    named = set(_CID_REF.findall(html or ""))
+    dangling = sorted(named - seen)
+    if dangling:
+        raise MailFormatError("the HTML shows cid:%s, and there is no inline part by that name"
+                              % dangling[0][:64])
+    unnamed = sorted(seen - named)
+    if unnamed:
+        raise MailFormatError("the inline image %s is not referenced by the HTML" % unnamed[0])
+    return clean
+
+
+def encode_inline(parts, html=None):
+    """Inline images as a JSON store keeps them: base64 text plus the decoded size."""
+    checked = check_inline(parts, html if html is not None else " ".join(
+        "cid:%s" % part.get("cid") for part in parts or () if isinstance(part, dict)))
+    return [{"cid": part["cid"], "filename": part["filename"],
+             "content_type": part["content_type"],
+             "data": base64.b64encode(part["data"]).decode("ascii"), "bytes": len(part["data"])}
+            for part in checked]
+
+
+def decode_inline(stored, html=None):
+    """The stored form back to bytes, refusing anything that does not decode to what it says."""
+    parts = []
+    for row in stored or ():
+        if not isinstance(row, dict) or not isinstance(row.get("data"), str):
+            raise MailFormatError("a stored inline image is malformed")
+        try:
+            data = base64.b64decode(row["data"].encode("ascii"), validate=True)
+        except (ValueError, binascii.Error, UnicodeEncodeError):
+            raise MailFormatError("a stored inline image is not valid base64") from None
+        if row.get("bytes") != len(data):
+            raise MailFormatError("a stored inline image does not match its recorded size")
+        parts.append({"cid": row.get("cid"), "filename": row.get("filename"),
+                      "content_type": row.get("content_type"), "data": data})
+    return check_inline(parts, html if html is not None else " ".join(
+        "cid:%s" % part["cid"] for part in parts))
+
+
+def compose(*, sender, recipient, subject, text, message_id, in_reply_to="", references=(),
+            html="", inline=()):
+    """Build one result email with a stable id and exactly one recipient.
+
+    With no ``html`` this is the plain-text message it has always been, byte for byte.
+    With ``html`` it is ``multipart/alternative``: the plain text first, then the HTML --
+    wrapped with its ``inline`` images (``cid:`` parts) in a ``multipart/related`` when
+    there are any.  The plain text is never optional: it is what a client that shows no
+    HTML reads, and what a reply to the message is answered against.
+    """
+    html = html or ""
+    inline = list(inline or ())
+    if html:
+        html = check_html(html)
+    parts = check_inline(inline, html) if (inline or html) else []
     sender, recipient = address(sender), address(recipient)
     if not isinstance(subject, str) or len(subject.encode("utf-8")) > 2048 or "\r" in subject or "\n" in subject:
         raise MailFormatError("invalid result email subject")
@@ -192,4 +308,15 @@ def compose(*, sender, recipient, subject, text, message_id, in_reply_to="", ref
     if refs:
         message["References"] = " ".join(refs)
     message.set_content(text)
+    if html:
+        message.add_alternative(html, subtype="html")
+        if parts:
+            page = message.get_payload()[1]
+            for part in parts:
+                maintype, subtype = part["content_type"].split("/", 1)
+                page.add_related(part["data"], maintype=maintype, subtype=subtype,
+                                 cid="<%s>" % part["cid"], filename=part["filename"],
+                                 disposition="inline")
+            # RFC 2387: a related body names the type of its root part.
+            page.set_param("type", "text/html")
     return message

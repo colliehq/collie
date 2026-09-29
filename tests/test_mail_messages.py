@@ -1,4 +1,6 @@
 import base64
+import email.policy
+import re
 from email.message import EmailMessage
 
 import pytest
@@ -104,3 +106,117 @@ def test_oversize_mail_is_rejected_before_parsing(monkeypatch):
     monkeypatch.setattr(mail, "MAX_MAIL_BYTES", 100)
     with pytest.raises(mail.MailFormatError, match="nothing was truncated"):
         mail.parse(_message().as_bytes())
+
+
+# ------------------------------------------------------------ HTML results
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+                       "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+HTML = ('<!doctype html><html><body><p>早上好 — two quick ones.</p>'
+        '<img alt="" src="cid:collie-avatar"></body></html>')
+AVATAR = {"cid": "collie-avatar", "filename": "collie.png", "content_type": "image/png",
+          "data": PNG}
+
+
+def _compose(**extra):
+    return mail.compose(sender="collie@example.test", recipient="owner@example.test",
+                        subject="Two quick ones · Tue 29 Sep", text="早上好 — two quick ones.\n",
+                        message_id="<report-1@example.test>", **extra)
+
+
+def _plain_only_reference():
+    """The text-only message exactly as compose() built it before HTML existed."""
+    message = EmailMessage(policy=email.policy.SMTP)
+    message["From"], message["To"] = "collie@example.test", "owner@example.test"
+    message["Subject"], message["Message-ID"] = "Two quick ones · Tue 29 Sep", "<report-1@example.test>"
+    message["Auto-Submitted"] = "auto-replied"
+    message["X-Auto-Response-Suppress"] = "All"
+    message.set_content("早上好 — two quick ones.\n")
+    return message
+
+
+def test_a_text_only_result_is_byte_identical_to_before():
+    reference = _plain_only_reference().as_bytes()
+    assert _compose().as_bytes() == reference
+    # Asking for "no HTML" in every way a caller can say it changes nothing either.
+    assert _compose(html="", inline=()).as_bytes() == reference
+    assert _compose(html=None, inline=[]).as_bytes() == reference
+    assert _compose().get_content_type() == "text/plain"
+
+
+def test_html_with_an_inline_image_is_alternative_then_related():
+    message = _compose(html=HTML, inline=[AVATAR])
+    assert message.get_content_type() == "multipart/alternative"
+    plain, related = message.get_payload()
+    # The plain text comes first: a client that shows the last alternative it can
+    # render shows the HTML, and one that cannot still has the whole report.
+    assert plain.get_content_type() == "text/plain"
+    assert plain.get_content_charset() == "utf-8"
+    assert plain.get_content() == "早上好 — two quick ones.\n"
+    assert related.get_content_type() == "multipart/related"
+    assert related.get_param("type") == "text/html"
+    page, image = related.get_payload()
+    assert page.get_content_type() == "text/html" and page.get_content_charset() == "utf-8"
+    assert page.get_content() == HTML + "\n"         # a text part always ends its last line
+    assert image.get_content_type() == "image/png"
+    assert image["Content-ID"] == "<collie-avatar>"
+    assert image.get_content_disposition() == "inline"
+    assert image.get_filename() == "collie.png"
+    assert image.get_payload(decode=True) == PNG
+    # Every cid: the HTML names is a part of this message, and every part is named.
+    named = set(re.findall(r'src="cid:([^"]+)"', page.get_content()))
+    assert named == {part["Content-ID"].strip("<>") for part in related.get_payload()[1:]}
+    # Threading and loop-safety headers are the same as a plain result's.
+    assert message["Auto-Submitted"] == "auto-replied"
+    assert message["Message-ID"] == "<report-1@example.test>"
+    # Our own parser reads the plain alternative back, whole.
+    parsed = mail.parse(message.as_bytes())
+    assert parsed["text"] == "早上好 — two quick ones."
+
+
+def test_html_without_images_is_a_plain_alternative():
+    message = _compose(html="<p>No dog today.</p>")
+    assert message.get_content_type() == "multipart/alternative"
+    assert [part.get_content_type() for part in message.get_payload()] == ["text/plain", "text/html"]
+
+
+@pytest.mark.parametrize("html, inline, why", [
+    ("<p>no image here</p>", [AVATAR], "not referenced"),
+    ('<img src="cid:someone-else">', [AVATAR], "no inline part"),
+    ('<img src="cid:collie-avatar">', [], "no inline part"),
+    ("", [AVATAR], "only with an HTML body"),
+    (HTML, [AVATAR, AVATAR], "twice"),
+    (HTML, [dict(AVATAR, content_type="image/svg+xml")], "PNG, JPEG or GIF"),
+    (HTML, [dict(AVATAR, cid="bad id")], "content id"),
+    (HTML, [dict(AVATAR, filename="../../evil.png")], "file name"),
+    (HTML, [dict(AVATAR, data="not bytes")], "bytes"),
+    (HTML, [dict(AVATAR, data=b"")], "bytes"),
+    ("<p>\x00</p>", [], "control"),
+])
+def test_an_html_result_that_does_not_add_up_is_refused(html, inline, why):
+    with pytest.raises(mail.MailFormatError, match=why):
+        _compose(html=html, inline=inline)
+
+
+def test_html_and_images_are_bounded():
+    with pytest.raises(mail.MailFormatError, match="HTML"):
+        _compose(html="<p>" + "x" * mail.MAX_HTML_BYTES + "</p>")
+    big = dict(AVATAR, data=b"\x89PNG" + b"\0" * mail.MAX_INLINE_BYTES)
+    with pytest.raises(mail.MailFormatError, match="image"):
+        _compose(html=HTML, inline=[big])
+    many = [dict(AVATAR, cid="dog-%d" % n) for n in range(mail.MAX_INLINE_IMAGES + 1)]
+    page = "".join('<img src="cid:dog-%d">' % n for n in range(mail.MAX_INLINE_IMAGES + 1))
+    with pytest.raises(mail.MailFormatError, match="images"):
+        _compose(html=page, inline=many)
+
+
+def test_inline_parts_survive_a_round_trip_through_storage():
+    stored = mail.encode_inline([AVATAR])
+    assert stored == [{"cid": "collie-avatar", "filename": "collie.png",
+                       "content_type": "image/png", "data": base64.b64encode(PNG).decode("ascii"),
+                       "bytes": len(PNG)}]
+    assert mail.decode_inline(stored) == [AVATAR]
+    with pytest.raises(mail.MailFormatError):
+        mail.decode_inline([dict(stored[0], data="%%%not-base64")])
+    with pytest.raises(mail.MailFormatError):
+        mail.decode_inline([dict(stored[0], bytes=len(PNG) + 1)])
