@@ -843,3 +843,48 @@ def test_chinese_greetings_follow_the_same_clock():
     assert _greet("早上好，Daming！", _at(19, 0), zh)[0] == "晚上好，Daming！"
     assert _greet("晚上好，Daming！今天辛苦了。", _at(19, 0), zh)[0] == "晚上好，Daming！今天辛苦了。"
     assert _greet("下午好！", _at(9, 0), zh)[0] == "早上好，Daming！"
+
+
+# ---------------------------------------------------------------- security: no links or codes in model text
+
+
+def test_a_url_or_domain_in_model_item_text_drops_the_item():
+    for text in ("Confirm at https://evil.example/confirm", "Verify at evil.example/login",
+                 "See www.evil.example now", "Visit hxxps://evil[.]example today"):
+        answer = model_answer(wins=[{"title": text, "detail": "", "signal_ids": [RELEASE["id"]]}])
+        out, composer, _ = compose(answer)
+        assert [i["title"] for i in items(out, "wins")] == [], text
+        assert any(d["section"] == "wins" and "link" in d["reason"] for d in composer["dropped"]), text
+
+
+def test_an_email_address_in_model_item_text_drops_the_item():
+    for text in ("Email eve@evil.example to confirm", "Write eve＠evil.example",
+                 "Reach eve at evil dot example"):
+        answer = model_answer(yours=[{"title": "Do it", "detail": text, "signal_ids": [BILL["id"]]}])
+        out, _, _ = compose(answer)
+        assert [i["title"] for i in items(out, "yours")] == [], text
+
+
+@pytest.mark.parametrize("text", [
+    "Your code is 482913", "Your code is 4 8 2 9 1 3", "Your code is four eight two nine one three",
+    "Your code is ⁴⁸²⁹¹³", "Your code is ④⑧②⑨①③",
+    "Your code is ４８２９１３", "Your code is 四八二九一三"])
+def test_an_unsupported_number_however_spelled_drops_the_item(text):
+    answer = model_answer(yours=[{"title": "Pay now", "detail": text, "signal_ids": [BILL["id"]]}])
+    out, _, _ = compose(answer)
+    assert [i["title"] for i in items(out, "yours")] == []
+
+
+def test_a_link_or_domain_in_the_summary_is_replaced():
+    out, composer, _ = compose(model_answer(
+        summary="Re-verify at accounts-google.evil.example/verify or https://evil.example/login."))
+    assert "evil.example" not in out["summary"] and "evil.example" not in json.dumps(out)
+    assert any(d["section"] == "summary" for d in composer["dropped"])
+
+
+def test_a_report_links_only_to_its_signals_https_links():
+    answer = model_answer(reads=[{"title": "A good read", "why_you_care": "See more at evil.example.",
+                                  "signal_ids": [NEWS["id"]]}])
+    out, _, _ = compose(answer)
+    # The model's why_you_care carried a domain, so the item is dropped, not linked to it.
+    assert [i["title"] for i in items(out, "reads")] == []
