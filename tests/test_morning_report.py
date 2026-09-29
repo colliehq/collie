@@ -189,7 +189,8 @@ def test_sections_only_hold_what_they_are_for():
                           reads=[{"title": "8 PRs", "why_you_care": "", "signal_ids": [MERGED["id"]]}],
                           projects=[{"project": "source:gmail", "line": "mail", "signal_ids": [BILL["id"]]}])
     out, composer, _ = compose(answer)
-    assert items(out, "wins") == [] and items(out, "reads") == [] and items(out, "projects") == []
+    assert items(out, "wins") == [] and items(out, "reads") == []
+    assert "source:gmail" not in [p["project"] for p in items(out, "projects")]
     assert len(composer["dropped"]) == 3
 
 
@@ -516,3 +517,78 @@ def test_with_no_earlier_report_the_window_starts_at_the_beginning_of_yesterday(
 def test_the_window_reaches_back_at_most_three_days(world):
     world["build"](now=NOW - 6 * 86400)
     assert _window(world, NOW) == NOW - 72 * 3600          # a Monday still covers the weekend
+
+
+# ---------------------------------------------------------------- projects: active, ranked, facts
+
+
+def _project_world():
+    signals, activity = [], {}
+    for i in range(7):
+        label = "o/p%d" % i
+        signals.append(sig("local", "p%d" % i, "fyi", "%d commits not pushed yet on main" % (i + 1),
+                           project=label, detail="the latest is 2 weeks old"))
+        activity[label] = NOW - (i + 1) * 3600
+    signals.append(sig("local", "old", "fyi", "4 uncommitted changes on main", project="old/thing"))
+    return signals, activity
+
+
+def test_projects_are_the_five_most_recently_active_ones_in_that_order():
+    signals, activity = _project_world()
+    answer = model_answer(wins=[], yours=[], ready=[], reads=[],
+                          projects=[{"project": "o/p3", "line": "4 commits are waiting to go up",
+                                     "signal_ids": [signals[3]["id"]]}])
+    out, composer = mr.compose(signals, SOURCES, PROFILE, NOW, None, activity=activity,
+                               caller=lambda system, prompt: answer)
+    shown = items(out, "projects")
+    assert [p["project"] for p in shown] == ["o/p0", "o/p1", "o/p2", "o/p3", "o/p4"]
+    assert shown[3]["line"] == "4 commits are waiting to go up"            # the model's words
+    assert shown[0]["line"] == "1 commits not pushed yet on main"           # else the fact itself
+    assert out["sections"]["projects"]["more"] == 2          # p5 and p6; old/thing is not active
+    assert shown[0]["active_at"] == NOW - 3600
+
+
+def test_a_line_about_a_project_that_is_not_shown_is_dropped():
+    signals, activity = _project_world()
+    answer = model_answer(wins=[], yours=[], ready=[], reads=[], projects=[
+        {"project": "old/thing", "line": "4 changes", "signal_ids": [signals[-1]["id"]]},
+        {"project": "o/p6", "line": "7 commits", "signal_ids": [signals[6]["id"]]}])
+    out, composer = mr.compose(signals, SOURCES, PROFILE, NOW, None, activity=activity,
+                               caller=lambda system, prompt: answer)
+    assert "old/thing" not in [p["project"] for p in items(out, "projects")]
+    assert sum(1 for d in composer["dropped"] if "most recently active" in d["reason"]) == 2
+
+
+def test_a_status_fact_never_becomes_a_thing_to_do():
+    signals, activity = _project_world()
+    answer = model_answer(wins=[], ready=[], reads=[], projects=[], yours=[
+        {"title": "Push those commits", "detail": "", "signal_ids": [signals[0]["id"]]}])
+    out, composer = mr.compose(signals, SOURCES, PROFILE, NOW, None, activity=activity,
+                               caller=lambda system, prompt: answer)
+    assert items(out, "yours") == [] and out["things_today"] == 0
+    assert any(d["reason"] == "does not belong in yours" for d in composer["dropped"])
+
+
+def test_the_prompt_lists_the_active_projects_and_asks_for_facts_not_advice():
+    signals, activity = _project_world()
+    seen = {}
+
+    def caller(system, prompt):
+        seen.update(system=system, prompt=prompt)
+        return model_answer()
+
+    mr.compose(signals, SOURCES, PROFILE, NOW, None, activity=activity, caller=caller)
+    listed = seen["prompt"].split("Active projects, most recent first")[1].split("\n\n")[0]
+    assert listed.index("o/p0") < listed.index("o/p1") < listed.index("o/p4")
+    assert "old/thing" not in listed
+    assert "no advice or next steps" in seen["system"]
+    assert "never becomes a thing to do" in seen["system"]
+
+
+def test_the_fallback_ranks_projects_the_same_way():
+    signals, activity = _project_world()
+    out, composer = mr.compose(signals, SOURCES, PROFILE, NOW, None, activity=activity,
+                               caller=lambda system, prompt: "not json")
+    assert composer["mode"] == "fallback"
+    assert [p["project"] for p in items(out, "projects")] == ["o/p0", "o/p1", "o/p2", "o/p3", "o/p4"]
+    assert out["sections"]["projects"]["more"] == 2 and items(out, "yours") == []
