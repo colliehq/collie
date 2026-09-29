@@ -191,3 +191,147 @@ def test_a_feed_that_failed_to_refresh_marks_news_partial(root):
     store.refresh(fetch=offline, force=True)
     out = src.news(context(root))
     assert out["state"] == "partial" and "1 of 1" in out["reason"]
+
+
+# ---------------------------------------------------------------- Google (Gmail, Calendar)
+
+
+class FakeGoogle:
+    """Stands in for harness.google_connect.  Records every call; sends nothing."""
+
+    def __init__(self, state="connected", account="me@example.com", mail=(), events=(),
+                 scopes=None, fail=None):
+        self.state, self.account, self.mail, self.events = state, account, list(mail), list(events)
+        self.scopes = scopes if scopes is not None else [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/calendar.readonly"]
+        self.fail, self.calls = fail or set(), []
+
+    def status(self):
+        self.calls.append(("status",))
+        if "status" in self.fail:
+            raise RuntimeError("token file C:\\Users\\me\\google-token.json unreadable")
+        return {"state": self.state, "account": self.account, "scopes": self.scopes}
+
+    def gmail_search(self, query, max_results):
+        self.calls.append(("gmail_search", query, max_results))
+        if "gmail" in self.fail:
+            raise RuntimeError("HTTP 500 for me@example.com")
+        return list(self.mail)
+
+    def calendar_events(self, time_min, time_max, max_results):
+        self.calls.append(("calendar_events", time_min, time_max, max_results))
+        if "calendar" in self.fail:
+            raise TimeoutError("slow")
+        return list(self.events)
+
+
+@pytest.fixture
+def google(monkeypatch):
+    import sys
+    fake = FakeGoogle()
+    monkeypatch.setitem(sys.modules, "harness.google_connect", fake)
+    return fake
+
+
+def _mail(mid, thread, subject, *, sender="Ada Lovelace <ada@example.org>", hours=2.0,
+          unread=True, labels=("INBOX", "CATEGORY_PERSONAL")):
+    return {"id": mid, "thread_id": thread, "from": sender, "to": "me@example.com",
+            "subject": subject, "date": NOW - hours * 3600, "snippet": "snippet of " + subject,
+            "labels": list(labels), "unread": unread}
+
+
+def test_without_the_google_module_mail_and_calendar_are_unavailable(root, monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "harness.google_connect", None)
+    _, sources, _ = rs.collect(context(root), [src.adapter("gmail"), src.adapter("calendar")])
+    assert [row["state"] for row in sources] == ["unavailable", "unavailable"]
+    assert all("Google" in row["reason"] for row in sources)
+
+
+@pytest.mark.parametrize("state, words", [("not_connected", "isn't connected"),
+                                          ("needs_reconnect", "reconnect"),
+                                          ("not_configured", "set up")])
+def test_google_that_is_not_connected_says_why(root, google, state, words):
+    google.state = state
+    _, sources, _ = rs.collect(context(root), [src.adapter("gmail"), src.adapter("calendar")])
+    assert all(row["state"] == "unavailable" and words in row["reason"] for row in sources)
+    assert all(call[0] == "status" for call in google.calls)      # nothing else was asked
+
+
+def test_a_status_check_that_fails_leaks_no_path(root, google):
+    google.fail = {"status"}
+    _, sources, _ = rs.collect(context(root), [src.adapter("gmail")])
+    assert sources[0]["state"] == "unavailable" and "google-token" not in sources[0]["reason"]
+
+
+def test_gmail_reads_recent_inbox_threads_as_untrusted_signals(root, google):
+    google.mail = [
+        _mail("m1", "t1", "Your Azure invoice is ready", sender="Microsoft <billing@microsoft.com>"),
+        _mail("m0", "t1", "older message in the same thread", hours=20),
+        _mail("m2", "t2", "Lunch next week?", unread=False),
+        _mail("m3", "t3", "50% off everything", labels=("INBOX", "CATEGORY_PROMOTIONS")),
+        _mail("m4", "t4", "From two days ago", hours=40),
+        _mail("m5", "t5", "Something I sent", sender="Me <me@example.com>"),
+    ]
+    out = src.gmail(context(root))
+    titles = {s["title"]: s for s in out["signals"]}
+    assert sorted(titles) == ["Lunch next week?", "Your Azure invoice is ready"]
+    invoice = titles["Your Azure invoice is ready"]
+    assert invoice["kind"] == "needs_you" and titles["Lunch next week?"]["kind"] == "fyi"
+    assert all(s["untrusted"] and s["project"] == "source:gmail" for s in out["signals"])
+    assert invoice["link"].startswith("https://mail.google.com/")
+    assert invoice["meta"]["thread_id"] == "t1" and invoice["meta"]["sender"] == "billing@microsoft.com"
+    assert "Microsoft" in invoice["evidence"] and "billing@" not in invoice["evidence"]
+    query = [call for call in google.calls if call[0] == "gmail_search"][0][1]
+    assert "-category:promotions" in query and "-category:social" in query and "in:inbox" in query
+
+
+def test_gmail_dates_in_any_common_shape_are_understood(root, google):
+    iso = dt.datetime.fromtimestamp(NOW - 3600, dt.timezone.utc).isoformat()
+    rfc = "Tue, 29 Sep 2026 13:00:00 +0000"
+    google.mail = [dict(_mail("a", "ta", "iso"), date=iso),
+                   dict(_mail("b", "tb", "rfc"), date=rfc),
+                   dict(_mail("c", "tc", "ms"), date=int((NOW - 60) * 1000)),
+                   dict(_mail("d", "td", "junk"), date="yesterday-ish")]
+    out = src.gmail(context(root))
+    assert sorted(s["title"] for s in out["signals"]) == ["iso", "ms", "rfc"]
+
+
+def test_a_gmail_search_that_fails_is_unavailable(root, google):
+    google.fail = {"gmail"}
+    _, sources, _ = rs.collect(context(root), [src.adapter("gmail")])
+    assert sources[0]["state"] == "unavailable" and "example.com" not in sources[0]["reason"]
+
+
+def test_calendar_reads_today_and_the_next_week(root, google):
+    google.events = [
+        {"id": "e1", "summary": "Design review", "start": "2026-09-29T16:00:00Z",
+         "end": "2026-09-29T17:00:00Z", "all_day": False, "location": "Zoom",
+         "attendees_count": 4, "html_link": "https://calendar.google.com/event?eid=e1"},
+        {"id": "e2", "summary": "Standup that already ended", "start": "2026-09-29T08:00:00Z",
+         "end": "2026-09-29T08:15:00Z", "all_day": False, "location": "", "attendees_count": 0,
+         "html_link": "javascript:alert(1)"},
+        {"id": "e3", "summary": "Mom's birthday", "start": "2026-10-02", "end": "2026-10-03",
+         "all_day": True, "location": "", "attendees_count": 0, "html_link": ""},
+    ]
+    out = src.calendar(context(root))
+    titles = {s["title"]: s for s in out["signals"]}
+    assert sorted(titles) == ["Design review", "Mom's birthday"]
+    review = titles["Design review"]
+    assert review["kind"] == "event" and review["untrusted"] is True
+    assert review["link"] == "https://calendar.google.com/event?eid=e1"
+    assert "Zoom" in review["detail"] and "4" in review["detail"]
+    assert titles["Mom's birthday"]["when"] == dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc).timestamp()
+    call = [c for c in google.calls if c[0] == "calendar_events"][0]
+    start = dt.datetime.fromisoformat(call[1].replace("Z", "+00:00")).timestamp()
+    end = dt.datetime.fromisoformat(call[2].replace("Z", "+00:00")).timestamp()
+    assert start <= NOW and end >= NOW + 7 * DAY
+    assert out["stats"] == {"events_today": 1, "events_week": 2}
+
+
+def test_calendar_without_calendar_access_is_unavailable(root, google):
+    google.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+    _, sources, _ = rs.collect(context(root), [src.adapter("calendar")])
+    assert sources[0]["state"] == "unavailable" and "Calendar" in sources[0]["reason"]
