@@ -217,3 +217,10 @@ def test_the_dots_and_the_label_count_what_is_listed_out_of_the_total():
 def test_when_everything_is_listed_the_label_is_just_the_count():
     html = mail.render(report(things_today=4, things_total=4))["html"]
     assert "4 things today" in html and " of 4 " not in html
+
+
+def test_the_footer_says_how_to_stop_hearing_about_a_project():
+    out = mail.render(report())
+    assert "Reply “mute &lt;project&gt;” to stop hearing about a project." in out["html"]
+    assert "Reply “mute <project>” to stop hearing about a project." in out["text"]
+    assert "回复“mute 项目名”" in mail.render(report(language="zh"))["html"]

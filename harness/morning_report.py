@@ -944,6 +944,10 @@ def describe(report, saved=""):
     lines.append("Sections: %s; %s things today; grounding dropped %d" % (
         ", ".join(parts), ("%d of %d" % (listed, total)) if total > listed else str(listed),
         len(composer.get("dropped") or [])))
+    muted = (report.get("provenance") or {}).get("muted") or {}
+    if muted.get("projects"):
+        lines.append("Muted: %s (%d signals left out)" % (", ".join(muted["projects"]),
+                                                         int(muted.get("signals") or 0)))
     drafts = (report.get("provenance") or {}).get("drafts") or {}
     if drafts.get("requested"):
         lines.append("Drafts: %d created, %d reused, %d failed%s" % (
@@ -996,6 +1000,33 @@ def window_start(earlier, now, zone):
     return max(start, now - WINDOW_MAX_S)
 
 
+def muted_names():
+    """The projects the person asked not to hear about (the ``REPORT_MUTED`` setting)."""
+    from . import settings
+    raw = str(settings.get("REPORT_MUTED", "") or "")
+    return [part.strip() for part in re.split(r"[,;\n]", raw) if part.strip()][:200]
+
+
+def mute(signals, activity, names):
+    """``(signals, activity, muted)`` without the muted projects.
+
+    A name matches a project by its full name (``colliehq/collie``) or by the repository's own
+    name alone (``collie``), ignoring case.  ``muted`` says which projects matched and how many
+    signals left with them, for provenance.
+    """
+    keys = {rs.project_key(name) for name in names}
+
+    def hit(project):
+        key = rs.project_key(project)
+        return rs.is_project(project) and (key in keys or key.rsplit("/", 1)[-1] in keys)
+
+    kept = [signal for signal in signals if not hit(signal["project"])]
+    matched = sorted({signal["project"] for signal in signals if hit(signal["project"])}
+                     | {name for name in activity if hit(name)})
+    return kept, {name: when for name, when in activity.items() if not hit(name)}, \
+        {"projects": matched, "signals": len(signals) - len(kept)}
+
+
 def _options():
     from . import settings
     raw = str(settings.get("REPORT_PROJECT_ROOTS", "") or "")
@@ -1026,9 +1057,10 @@ def build(*, state_dir=None, now=None, drafts=True, dry_run=False, adapters=None
     collected = rs.collect(
         context, adapters if adapters is not None else report_sources.default_adapters())
     signals, sources, counters = collected
+    signals, activity, muted = mute(signals, collected.activity, muted_names())
     sky_now = weather if weather is not None else current_weather()
     composed, composer = compose(signals, sources, prof, wall, sky_now, caller=caller,
-                                 activity=collected.activity)
+                                 activity=activity)
     report = {"schema": SCHEMA, "date": local.strftime("%Y-%m-%d"), "generated_at": wall,
               "since": since,
               "language": prof.get("language") or "en", "timezone": prof.get("timezone"),
@@ -1041,7 +1073,7 @@ def build(*, state_dir=None, now=None, drafts=True, dry_run=False, adapters=None
     report["signals"] = [rs.public(signal) for signal in signals]
     report["counters"] = dict(kept, **counters)
     report["provenance"] = {"read_at": wall, "sources": sources, "composer": composer,
-                            "activity": dict(collected.activity)}
+                            "activity": dict(activity), "muted": muted}
     earlier = None if dry_run else load_day(root, report["date"])
     report["provenance"]["drafts"] = create_drafts(report, enabled=bool(drafts) and not dry_run,
                                                    earlier=earlier)

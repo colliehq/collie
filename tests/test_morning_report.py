@@ -641,3 +641,26 @@ def test_chinese_counts_are_checked_too():
     assert out["headline"] == "先从这 3 件小事开始。"
     kept, _, _ = compose(_answer("先看看这 3 件事。"), signals=_busy(), profile=zh)
     assert kept["headline"] == "先看看这 3 件事。"
+
+
+# ---------------------------------------------------------------- muting a project
+
+
+def test_a_muted_project_is_left_out_of_everything(world, monkeypatch):
+    monkeypatch.setenv("COLLIE_REPORT_MUTED", "Comfy-Candidate-Org/trial, collie")
+    trial = sig("github", "trial", "waiting_on_others", "Take-home exercise",
+                project="Comfy-Candidate-Org/trial")
+    keep = sig("local", "keep", "fyi", "2 commits not pushed yet on main", project="o/keep")
+
+    def adapter(ctx):
+        return {"signals": [dict(trial), dict(RELEASE), dict(keep)],
+                "activity": {"Comfy-Candidate-Org/trial": NOW - 60, "colliehq/collie": NOW - 60,
+                             "o/keep": NOW - 120}}
+
+    report = world["build"](adapters=[rs.Adapter(name="fake", label="Fake", read=adapter)],
+                            caller=lambda system, prompt: "not json")
+    assert [s["id"] for s in report["signals"]] == [keep["id"]]
+    assert [p["project"] for p in report["sections"]["projects"]["items"]] == ["o/keep"]
+    assert report["provenance"]["muted"] == {
+        "projects": ["Comfy-Candidate-Org/trial", "colliehq/collie"], "signals": 2}
+    assert report["provenance"]["activity"] == {"o/keep": NOW - 120}

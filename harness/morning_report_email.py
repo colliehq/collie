@@ -62,6 +62,7 @@ _WORDS = {
            "open": "Open", "in_drafts": "It's in your Gmail drafts.",
            "not_drafted": "I wrote a reply; it isn't in your Gmail drafts yet.",
            "bye": "Have a great %s! Reply anytime.", "signed": "%s, your Collie",
+           "mute": "Reply “mute <project>” to stop hearing about a project.",
            "read": "Read %s at %s.", "not_read": "Not read: %s.", "and": " and "},
     "zh": {"wins": "你睡着的时候", "yours": "几件小事等你", "ready": "都准备好了",
            "ready_note": "这些我已经准备好了，你点头之前什么都不会发出去。",
@@ -71,6 +72,7 @@ _WORDS = {
            "in_drafts": "已经放进你的 Gmail 草稿箱。",
            "not_drafted": "回复我写好了，还没放进 Gmail 草稿箱。",
            "bye": "祝你%s愉快！有事随时回我。", "signed": "你的 Collie · %s",
+           "mute": "回复“mute 项目名”，我就不再提这个项目。",
            "read": "%s 读取：%s。", "not_read": "没读到：%s。", "and": "、"},
 }
 _SOURCES = {"en": {"gmail": "Gmail", "calendar": "Calendar", "github": "GitHub",
@@ -402,10 +404,11 @@ def _footer(report, avatar_src):
         'cellspacing="0" border="0"><tr>%s<td style="font:600 15.5px/1.45 %s;color:%s">%s<br>'
         '<span style="color:%s;font-weight:500">%s</span></td></tr></table>'
         '<div style="font-size:12px;line-height:1.6;color:%s;padding-top:16px">%s</div>'
+        '<div style="font-size:12px;line-height:1.6;color:%s;padding-top:6px">%s</div>'
         '</td></tr>'
         % (image, ROUND, INK, _esc(words["bye"] % _weekday(report, moment)), MUTED,
            _esc(words["signed"] % companion), FAINT,
-           _esc(" ".join(bit for bit in (first, second) if bit))))
+           _esc(" ".join(bit for bit in (first, second) if bit)), FAINT, _esc(words["mute"])))
 
 
 def _avatar(report):
@@ -465,7 +468,7 @@ def _text(report, parts):
     companion = (report.get("profile") or {}).get("companion") or "Collie"
     first, second = _provenance(report)
     lines += ["", words["bye"] % _weekday(report, moment), words["signed"] % companion, ""]
-    lines += [bit for bit in (first, second) if bit]
+    lines += [bit for bit in (first, second) if bit] + [words["mute"]]
     return "\n".join(str(line) for line in lines).strip() + "\n"
 
 

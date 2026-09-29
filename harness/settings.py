@@ -347,6 +347,14 @@ SCHEMA = [
      "hint_zh": "晨报会检查这些文件夹里（最多往下两层）的 git 仓库，看有没有放了很久没提交的改动、没推送的提交。"
                 "Windows 上用 ; 分隔，macOS 和 Linux 上用 : 分隔。留空则用 Collie 最近工作过的目录所在的文件夹，"
                 "加上 ~/workspace、~/code、~/projects 和 ~/src。只读取，不会改动任何仓库。"},
+    {"group": "Morning report", "key": "REPORT_MUTED", "label": "Projects to leave out",
+     "label_zh": "晨报不再提的项目", "type": "text", "default": "",
+     "hint": "Projects the morning report should not mention at all, separated by commas: the "
+             "name the report shows (colliehq/collie) or just the repository's name (collie). "
+             "The report's footer invites a reply of \"mute <project>\"; until replies are "
+             "wired up, add the name here.",
+     "hint_zh": "晨报完全不提的项目，用逗号分隔：写晨报里显示的名字（colliehq/collie）或只写仓库名（collie）。"
+                "晨报末尾会提示回复“mute 项目名”；在回复功能接好之前，请把名字加在这里。"},
     {"group": "Morning report", "key": "REPORT_GMAIL_DRAFTS", "label": "Put reply drafts in Gmail",
      "label_zh": "把回复草稿放进 Gmail", "type": "bool", "default": "on",
      "hint": "When Google is connected, the morning report writes suggested replies to recent mail "

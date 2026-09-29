@@ -121,7 +121,9 @@ def test_preview_without_a_report_says_how_to_make_one(state, capsys):
 
 def test_the_report_settings_exist_with_safe_defaults():
     rows = {row["key"]: row for row in settings.SCHEMA if row["key"].startswith("REPORT_")}
-    assert set(rows) == {"REPORT_NAME", "REPORT_PROJECT_ROOTS", "REPORT_GMAIL_DRAFTS"}
+    assert set(rows) == {"REPORT_NAME", "REPORT_PROJECT_ROOTS", "REPORT_GMAIL_DRAFTS",
+                         "REPORT_MUTED"}
+    assert rows["REPORT_MUTED"]["default"] == "" and "mute" in rows["REPORT_MUTED"]["hint"]
     assert rows["REPORT_GMAIL_DRAFTS"]["type"] == "bool" and rows["REPORT_GMAIL_DRAFTS"]["default"] == "on"
     assert rows["REPORT_NAME"]["default"] == "" and rows["REPORT_PROJECT_ROOTS"]["default"] == ""
     assert all(row.get("label_zh") and row.get("hint_zh") for row in rows.values())
