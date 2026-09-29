@@ -352,6 +352,70 @@ def test_the_code_map_keeps_its_dark_look_over_a_bright_morning(desk, monkeypatc
     assert page.evaluate("() => window.collieMorning.running()") is False
 
 
+def _wcag(a, b):
+    def lum(rgb):
+        out = []
+        for c in rgb:
+            c = c / 255
+            out.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+        return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+    la, lb = lum(a), lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+READABLE = [("#mWhen", "date line"), ("#mMore", "summary"), ("#mDots span", "dots label"),
+            ("#mByText", "by-line"), ("#mOpen", "Open report"), (".m-pill.go", "first button"),
+            (".m-pill.soft", "glass button")]
+
+
+def test_every_small_word_reads_at_4_5_to_1_on_every_sky(desk):
+    """The sky actually painted behind each word (a still frame with the words made clear),
+    blended with the word's own colour: the worst tenth of the box must reach WCAG AA."""
+    image = pytest.importorskip("PIL.Image")
+    import io
+    save(desk.state, report())
+    low = []
+    for code, is_day, sky, _dark in [s for s in SCENES if s[:2] in ((0, 1), (3, 1), (61, 1), (95, 1),
+                                                                     (73, 1), (45, 1), (0, 0))]:
+        desk.weather["now"] = dict(CLEAR_DAY, code=code, is_day=is_day, fetched_at=int(time.time()))
+        page = _open(desk, reduced=True)
+        assert _poll(page, "(sky) => document.body.dataset.sky === sky && window.collieMorning.frames() > 0", sky)
+        where, settled = None, False                # the words have found their place
+        for _ in range(30):
+            page.wait_for_timeout(250)
+            now = page.evaluate("() => JSON.stringify(document.getElementById('morning').getBoundingClientRect())")
+            settled, where = now == where, now
+            if settled:
+                break
+        assert settled
+        # The box of the words themselves (a range over the text), so a button's round ends,
+        # which show the sky and carry no text, are not measured as if they did.
+        boxes = page.evaluate("""(sels) => sels.map(sel => { const el = document.querySelector(sel);
+            if (!el || el.closest('[hidden]')) return null;
+            const range = document.createRange(); range.selectNodeContents(el);
+            const r = range.getBoundingClientRect(), c = getComputedStyle(el).color.match(/[\\d.]+/g).map(Number);
+            return {x: r.left, y: r.top, w: r.width, h: r.height, rgb: c.slice(0, 3), a: c.length > 3 ? c[3] : 1}; })""",
+                              [sel for sel, _ in READABLE])
+        page.add_style_tag(content="#morning, #morning * {color: transparent !important; text-shadow: none !important}")
+        page.wait_for_timeout(100)
+        shot = image.open(io.BytesIO(page.screenshot())).convert("RGB")
+        for (sel, name), box in zip(READABLE, boxes):
+            if not box:
+                continue
+            ratios = []
+            for y in range(int(box["y"]), int(box["y"] + box["h"]), 2):
+                for x in range(int(box["x"]), int(box["x"] + box["w"]), 3):
+                    under = shot.getpixel((x, y))
+                    ink = tuple(box["a"] * c + (1 - box["a"]) * u for c, u in zip(box["rgb"], under))
+                    ratios.append(_wcag(ink, under))
+            ratios.sort()
+            worst = ratios[len(ratios) // 10]
+            if worst < 4.5:
+                low.append("%s: %s %.2f" % (sky, name, worst))
+        page.context.close()
+    assert not low, "below 4.5:1 -- " + "; ".join(low)
+
+
 def test_the_widget_panel_turns_the_morning_scene_off_and_on(desk):
     save(desk.state, report())
     page = _open(desk)

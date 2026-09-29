@@ -357,9 +357,12 @@
   body.morning.sky-dark:not(.coding){color-scheme:dark; --ink:#f4f7ff; --mut:#d3dbee; --faint:#b3bdd6;
     --panel:rgba(16,22,38,.74); --panel-line:rgba(255,255,255,.16); --panel-ink:#f2f4ff; --hover:rgba(255,255,255,.10);
     --accent:115,200,160; --send-ink:#0b120e;}
-  /* The block's own words and glass follow the sky always; only the block uses these. */
-  body.morning.sky-light{--t:#14213d; --t2:rgba(20,33,61,.78); --t3:rgba(20,33,61,.62); --chip:rgba(255,255,255,.74); --chipline:rgba(255,255,255,.95);}
-  body.morning.sky-dark{--t:#f4f7ff; --t2:rgba(244,247,255,.86); --t3:rgba(244,247,255,.68); --chip:rgba(255,255,255,.14); --chipline:rgba(255,255,255,.28);}
+  /* The block's own words and glass follow the sky always; only the block uses these. Every
+     small word stays at 4.5:1 or better over the sky actually painted behind it (a test measures
+     the pixels), so the quieter tones are only a little quieter; on dark skies the glass is a
+     darker one, which the light words need on rain. */
+  body.morning.sky-light{--t:#14213d; --t2:rgba(20,33,61,.86); --t3:rgba(20,33,61,.8); --chip:rgba(255,255,255,.74); --chipline:rgba(255,255,255,.95);}
+  body.morning.sky-dark{--t:#f4f7ff; --t2:rgba(244,247,255,.94); --t3:rgba(244,247,255,.9); --chip:rgba(10,16,32,.32); --chipline:rgba(255,255,255,.3);}
   /* The block is .m-block, never .morning: that class is the body's while the scene shows, and a
      rule for the block written as .morning styled the whole page with it. */
   .m-block{--round:ui-rounded,"SF Pro Rounded","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif; --m-scale:1;
@@ -388,7 +391,7 @@
   .m-acts:empty{display:none;}
   .m-act{position:relative; display:inline-flex;}
   .m-pill{display:inline-flex; align-items:center; padding:11px 18px; border-radius:999px; font:700 14px/1 var(--round); text-decoration:none; white-space:nowrap;}
-  .m-pill.go{background:linear-gradient(100deg,#ffb547,#ff8a3d); color:#fff; box-shadow:0 10px 26px rgba(255,138,61,.4);}
+  .m-pill.go{background:linear-gradient(100deg,#ffb547,#ff8a3d); color:#3a1c05; box-shadow:0 10px 26px rgba(255,138,61,.4);}
   .m-pill.soft{background:var(--chip); color:var(--t); border:1px solid var(--chipline);}
   .m-pill:hover{filter:brightness(1.04);}
   .m-check{position:absolute; top:-8px; right:-8px; width:24px; height:24px; padding:0; border-radius:50%; border:1px solid rgba(20,33,61,.12);
