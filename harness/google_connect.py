@@ -679,10 +679,13 @@ def status(*, check=False, state_dir=None) -> dict:
         out["client_source"] = client["source"]
     except NotConfigured as exc:
         client, not_configured = None, str(exc)
+    dead = ""                  # a check that failed in a way only reconnecting fixes
     if check and client:
         try:
             _access_token(state_dir=state_dir)
-        except (NeedsReconnect, NotConnected):
+        except NeedsReconnect as exc:
+            dead = str(exc)
+        except NotConnected:
             pass
         except GoogleError as exc:
             out["error"] = str(exc)
@@ -696,8 +699,9 @@ def status(*, check=False, state_dir=None) -> dict:
         out.update(state="not_configured", message=not_configured)
     elif not rec:
         out["message"] = problem or ("Google isn't connected. " + RECONNECT_HINT)
-    elif rec.get("needs_reconnect") or (rec.get("client_id") and rec["client_id"] != client["client_id"]):
-        out.update(state="needs_reconnect", message=_reconnect_message(rec, client))
+    elif dead or rec.get("needs_reconnect") or (rec.get("client_id")
+                                                and rec["client_id"] != client["client_id"]):
+        out.update(state="needs_reconnect", message=dead or _reconnect_message(rec, client))
     elif out["missing_scopes"]:
         who = out["account"] or "your Google account"
         out.update(state="missing_scope", message=(

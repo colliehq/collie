@@ -337,6 +337,18 @@ def test_status_check_turns_a_revoked_grant_into_needs_reconnect(env):
     assert gc.status(check=True)["state"] == "needs_reconnect"
 
 
+def test_a_sign_in_that_cannot_be_unsealed_reads_as_needs_reconnect(env, monkeypatch):
+    _connected(env)
+
+    def refused(sealed, path):
+        raise OSError("the store refused")
+    monkeypatch.setattr(env["backend"], "open", refused)
+    st = gc.status(check=True)
+    assert st["state"] == "needs_reconnect"
+    assert "unseal" in st["message"] and "collie google connect" in st["message"]
+    assert not env["fake"].calls
+
+
 def test_a_different_client_needs_reconnect(env):
     gc._save_connection(REFRESH, ALL.split(), account="a@example.com",
                         client_id="999-other.apps.googleusercontent.com")
