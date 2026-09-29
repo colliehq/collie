@@ -888,3 +888,42 @@ def test_a_report_links_only_to_its_signals_https_links():
     out, _, _ = compose(answer)
     # The model's why_you_care carried a domain, so the item is dropped, not linked to it.
     assert [i["title"] for i in items(out, "reads")] == []
+
+
+# ---------------------------------------------------------------- security: the snapshot at rest
+
+
+def test_the_snapshot_does_not_keep_untrusted_free_text(world):
+    LEAK = sig("gmail", "t-secret", "fyi", "Your verification code is 482913",
+               detail="code 482913, keep it secret", project="", untrusted=True,
+               evidence="Gmail · from Bank",
+               meta={"thread_id": "t-secret", "sender": "bank@x.example", "subject": "code"})
+
+    def adapter(ctx):
+        return {"signals": [dict(LISTING), dict(RELEASE), dict(LEAK)], "counters": {}}
+
+    report = world["build"](adapters=[rs.Adapter(name="fake", label="Fake", read=adapter)],
+                            caller=lambda system, prompt: model_answer(
+                                wins=[{"title": "Collie 0.31.0 is out.", "detail": "",
+                                       "signal_ids": [RELEASE["id"]]}],
+                                yours=[], ready=[], projects=[], reads=[]))
+    snap = (world["root"] / "morning-report" / "2026-09-29.json").read_text(encoding="utf-8")
+    assert "482913" not in snap and "keep it secret" not in snap
+    stored = {s["id"]: s for s in json.loads(snap)["signals"]}
+    leak = stored[LEAK["id"]]
+    assert leak["title"] == "" and leak["detail"] == "" and leak["evidence"] == ""
+    assert leak["kind"] == "fyi" and leak["source"] == "gmail"       # provenance is kept
+    trusted = stored[RELEASE["id"]]
+    assert trusted["title"]                                          # the person's own text stays
+    assert report["signals"] == json.loads(snap)["signals"]
+
+
+def test_snapshot_files_are_owner_only(world, monkeypatch):
+    seen = []
+    from harness import plat
+    monkeypatch.setattr(plat, "chmod_private", lambda p: seen.append(os.path.abspath(p)))
+    world["build"]()
+    folder = os.path.abspath(str(world["root"] / "morning-report"))
+    assert folder in seen
+    for name in ("2026-09-29.json", "latest.json"):
+        assert os.path.join(folder, name) in seen

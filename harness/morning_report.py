@@ -30,10 +30,12 @@ four steps, and saves it:
    ``REPORT_GMAIL_DRAFTS`` setting is on (the default) and Google is connected with permission
    to read Gmail and write drafts; a second build the same day reuses the draft.  There is no
    send path: nothing in this module or its sources can send mail.
-4. **Save.**  ``<state>/morning-report/<date>.json`` and ``latest.json``: the report, the public
-   signals it was written from, the counters sources keep between days (download counts), and
-   provenance -- every source, when it was read, which were unavailable and why, whether the
-   words came from the model or the fallback, and what was dropped.
+4. **Save.**  ``<state>/morning-report/<date>.json`` and ``latest.json``, written owner-only
+   (F4): the report, the signals it was written from (an untrusted signal's own words -- a mail
+   subject or snippet -- are not kept on disk, only its id/source/kind/project/time/link), the
+   counters sources keep between days, and provenance -- every source, when it was read, which
+   were unavailable and why, whether the words came from the model or the fallback, and what was
+   dropped.
 """
 from __future__ import annotations
 
@@ -1141,18 +1143,36 @@ def load_day(root, date):
 
 
 def _write(path, value):
+    from . import plat
     tmp = "%s.tmp-%d" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=False, indent=1)
         handle.flush()
         os.fsync(handle.fileno())
+    plat.chmod_private(tmp)                 # owner-only before it is named, so it is never world-readable
     os.replace(tmp, path)
+    plat.chmod_private(path)
+
+
+def snapshot_signal(signal):
+    """A signal as the snapshot keeps it.  An untrusted signal's own words (a mail subject, a
+    snippet, a code) are not written to disk (F4): nothing renders from them, and the report's
+    grounded item text already says, safely, what each cited signal was.  Its id, source, kind,
+    project, time and link stay, so provenance -- which thread an item answered -- is intact."""
+    public = rs.public(signal)
+    if public.get("untrusted"):
+        for field in ("title", "detail", "evidence"):
+            public[field] = ""
+    return public
 
 
 def write_snapshot(report, root):
-    """Save the report as ``<date>.json`` and ``latest.json``.  Returns the dated path."""
+    """Save the report as ``<date>.json`` and ``latest.json``, owner-only.  Returns the dated
+    path."""
+    from . import plat
     folder = report_dir(root)
     os.makedirs(folder, exist_ok=True)
+    plat.chmod_private(folder)
     path = os.path.join(folder, "%s.json" % report["date"])
     _write(path, report)
     _write(os.path.join(folder, "latest.json"), report)
@@ -1317,7 +1337,7 @@ def build(*, state_dir=None, now=None, drafts=True, dry_run=False, adapters=None
                           "companion": prof.get("companion") or "Collie"},
               "weather": sky_now}
     report.update(composed)
-    report["signals"] = [rs.public(signal) for signal in signals]
+    report["signals"] = [snapshot_signal(signal) for signal in signals]
     report["counters"] = dict(kept, **counters)
     report["provenance"] = {"read_at": wall, "sources": sources, "composer": composer,
                             "activity": dict(activity), "muted": muted}
