@@ -53,10 +53,17 @@ Unchanged. Every authenticated request carries four headers:
   "identity": { "ledger": true, "serialized": true, "code_max_sends": 5, "code_max_attempts": 5,
                 "code_cooldown_seconds": 60, "claim_ttl_seconds": 1800 },
   "send":    { "endpoint": "/send", "binding": true, "ledger": true, "configured": true,
-               "mode": "structured", "max_body_bytes": 98304, "max_text_bytes": 65536,
+               "mode": "structured", "max_body_bytes": 655360, "max_text_bytes": 65536,
+               "formats": ["text", "html"], "max_html_bytes": 131072,
+               "inline_images": { "max": 4, "max_bytes": 65536, "max_total_bytes": 131072,
+                                  "types": ["image/png", "image/jpeg", "image/gif"] },
                "destination": "the verified owner of the handle, and no one else",
                "note": "configured is about bindings, not about permission — the account may still refuse" } }
 ```
+
+`formats` is how a client learns it may send an HTML page (below). A relay whose `/capabilities` has
+no `formats` is one that refuses an `html` field with 400, and the desktop client then sends the plain
+text alone and says so — it never finds out by having a message refused.
 
 `configured` means the `MAILER` and `MAIL_DELIVERY` bindings exist. **It is not proof the account is
 allowed to send.** Cloudflare can still refuse every message because the sender domain is not
@@ -85,7 +92,7 @@ budget, whichever hits first.
 
 ### `POST /send?sha256=<hex of the exact request body>` — authenticated
 
-Body, `application/json`, ≤96 KiB:
+Body, `application/json`, ≤640 KiB:
 
 | field | required | bound |
 | --- | --- | --- |
@@ -93,11 +100,29 @@ Body, `application/json`, ≤96 KiB:
 | `to` | yes | must equal the handle's verified owner address |
 | `subject` | yes | 1–512 UTF-8 bytes, single line |
 | `text` | yes | 1–65536 UTF-8 bytes, plain text |
+| `html` | no | 1–131072 UTF-8 bytes, no control characters; sent *beside* `text`, never instead |
+| `inline` | no | only with `html`: at most 4 `{cid, filename, content_type, data, bytes?}` images, PNG/JPEG/GIF, base64, ≤64 KiB each and 128 KiB together |
 | `in_reply_to` | no | one or more `<message-id>` tokens, ≤2048 UTF-8 bytes, printable ASCII |
 | `references` | no | same |
 
-`cc`, `bcc`, `from`, `reply_to`, `headers` and `html` are rejected outright (400) rather than
+`cc`, `bcc`, `from`, `reply_to`, `headers` and `attachments` are rejected outright (400) rather than
 ignored — an ignored field looks like a supported one.
+
+**The page widens nothing.** Every inline image must be one the page shows by `cid:<cid>` and every
+`cid:` a quoted `src` or `background` attribute names must be one of the images (the same letters in
+the page's text, such as "Lucid:" in a headline, are words): an image nothing names would arrive as a stray
+attachment and a name with no image is a broken picture, so either is a 400. `cid` and `filename`
+are plain tokens (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), so neither can carry a header break into the
+legacy raw message. In `structured` mode the page is the builder's `html` and each image an
+`attachments` entry with `disposition: "inline"` and `contentId: <cid>`; in `legacy` mode the raw
+message is `multipart/alternative` — the text first, then `multipart/related` holding the page and
+its images, every part base64. A send without `html` is byte-for-byte the plain message it always
+was, in both modes.
+
+> **Not yet deployed.** `html`/`inline` exist in this repository's Worker; the relay running at
+> `mail.collie.run` refuses `html` until this version is deployed, which is a separate step (see
+> [Deployment prerequisites](#deployment-prerequisites)). The desktop client reads `/capabilities`
+> first, so it keeps working against either.
 
 Every message goes out with `Auto-Submitted: auto-replied` and `X-Auto-Response-Suppress: All`, so
 an owner's own vacation responder cannot start a loop.
@@ -323,7 +348,11 @@ above that cannot be reviewed into existence:
 - **Sending.** Two concurrent sends of one id produce exactly one binding call; an ambiguous failure
   is never reissued; a send whose outcome cannot be recorded is reported rather than 500'd; an id
   reused after the owner changed neither sends nor leaks the old destination; owner-only
-  destinations; a body swapped under a valid stamp; non-numeric timestamps.
+  destinations; a body swapped under a valid stamp; non-numeric timestamps. An HTML page with an
+  inline image reaches the structured builder as `html` plus one inline attachment and the legacy
+  raw message as alternative(text, related(html, image)); every page or image that does not add up
+  is a 400 that never reaches the binding. `tests/test_dogmail_wire.py` feeds the Worker a body the
+  Python client built and parses the raw message it writes with Python's own mail parser.
 - **Intake and reads.** base64 past 64 KiB, the MIME bounds in both directions, paging 205 messages,
   and a byte-capped page split without losing one.
 

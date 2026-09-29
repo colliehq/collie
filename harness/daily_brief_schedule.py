@@ -47,6 +47,24 @@ Mounting (the parent owns the routes)::
     # from the existing channel pump / periodic tick:
     #     daily_brief_schedule.tick(root)      # a no-op until someone opted in
 
+**The morning report can be the morning email instead.**  With ``report: true``
+the same slot -- same consent, destination, window, job key, outbox and failure
+rules -- carries the morning report (:mod:`morning_report`) as a designed HTML
+email with its plain text beside it.  Because the job key is the day, a morning
+gets the report *or* the brief, never both: switching after that morning's email
+went changes tomorrow, not today.  The report takes minutes to build (a model call,
+Gmail, GitHub), so it is built outside every lock, under a lease written to the
+ledger first: a second pass that arrives while it is being built waits, a build
+that fails is tried again later, spaced (``BUILD_RETRY_S``, at most ``MAX_BUILDS``
+builds a day), and when none succeeds -- or the next try would miss the window --
+that morning's plain brief goes instead, in the same job and outbox id.  Once built
+the rendered email is frozen in the ledger exactly as the brief's text is.  A
+restart sends the frozen report; it never builds a second one.
+
+**Send me one now** (:func:`send_now`) is a real send of a freshly built report to
+the same frozen destination, on an explicit request: its own job (never the
+morning's slot), at most one on its way and ``NOW_PER_DAY`` a local day.
+
 ``ScheduleError`` is a ``ValueError``, so an existing ``except ValueError -> 400``
 arm already turns a bad request into a visible message.  Nothing here reads a
 mailbox, a credential or a message body: it renders sources that are already
@@ -59,9 +77,10 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 
-from . import communications as comms, daily_brief, sessions
+from . import communications as comms, daily_brief, mail_messages, sessions
 
 SCHEMA = "collie.daily_brief.schedule/1"
 STATE_SCHEMA = "collie.daily_brief.schedule.state/1"
@@ -69,7 +88,26 @@ STATE_SCHEMA = "collie.daily_brief.schedule.state/1"
 #: Mail only.  A brief read aloud down a phone line is not a thing we will do.
 KINDS = ("imap", "collie_mail")
 LANGUAGES = ("en", "zh")
-FIELDS = ("enabled", "connection", "timezone", "at", "language", "grace_minutes")
+FIELDS = ("enabled", "connection", "timezone", "at", "language", "grace_minutes", "report",
+          "gmail_drafts")
+#: What a morning's email carries.  One of these per local day, never both.
+CONTENTS = ("brief", "morning_report")
+
+#: A report being built holds the day this long; a pass that finds it held waits.
+BUILD_LEASE_S = 10 * 60
+#: Builds of one morning's report, ever.  After that the morning gets the plain brief.
+MAX_BUILDS = 3
+#: How long to wait after the first and after the second failed build: spaced, so a bug
+#: that fails every time costs at most MAX_BUILDS builds a day, never one a tick.
+BUILD_RETRY_S = (10 * 60, 20 * 60)
+#: "Send me one now": at most this many a local day, and one on its way at a time.
+NOW_PER_DAY = 3
+#: A requested send still open after this long was abandoned by a process that died.
+NOW_STALE_S = 20 * 60
+#: A scheduled build that finds another build running looks again after this long.
+BUSY_RETRY_S = 60
+_BUSY = ("another morning report is being built right now; this one waits for it")
+DRAFTS_SETTING = "REPORT_GMAIL_DRAFTS"
 
 DEFAULT_AT = "07:30"
 DEFAULT_GRACE_MINUTES = 240               # "this morning", not "some time today"
@@ -98,7 +136,7 @@ _REPAIR = ("the daily email settings could not be read; they were left untouched
 _DEFAULTS = {"enabled": False, "connection": "", "kind": "", "owner_digest": "",
              "destination_masked": "", "timezone": "", "at": DEFAULT_AT,
              "language": "en", "grace_minutes": DEFAULT_GRACE_MINUTES,
-             "updated": 0.0, "opted_in_at": 0.0}
+             "updated": 0.0, "opted_in_at": 0.0, "report": False}
 
 
 class ScheduleError(ValueError):
@@ -231,7 +269,8 @@ def _save(path, state):
     jobs = []
     for job in state["jobs"][-JOB_RETENTION:]:
         if job.get("state") not in OPEN_STATES:
-            job = {k: v for k, v in job.items() if k not in ("text", "subject")}
+            job = {k: v for k, v in job.items()
+                   if k not in ("text", "subject", "html", "inline", "build_token")}
         jobs.append(job)
     state["jobs"] = jobs
     sessions._atomic_dump(state, path)
@@ -275,11 +314,36 @@ def _thread_key(job_id):
         ("collie.brief.thread/1|" + str(job_id)).encode("utf-8")).hexdigest()[:32]
 
 
+def _request_ids(profile, connection, date, number):
+    """``(job id, outbox id)`` for the ``number``-th report sent on request that day.
+
+    Never the morning's own ids: a report asked for at six is a different send from the
+    one the schedule makes at half past seven, and neither may stand in for the other.
+    """
+    job_id = "morning-report-request:%s:%s:%s:%d" % (profile, connection, date, number)
+    return job_id, "report-request-%s-%d-%s" % (date, number, _digest(job_id)[:12])
+
+
 def _find(state, job_id):
     for job in state["jobs"]:
         if job.get("id") == job_id:
             return job
     return None
+
+
+def _prepared(job):
+    """Has this job's email been rendered and frozen?  A report being built has not."""
+    return isinstance(job, dict) and "text" in job
+
+
+def _new_job(job_id, result_id, date, prefs, row, wall, *, trigger="schedule"):
+    return {"id": job_id, "date": date, "connection": prefs["connection"],
+            "result_id": result_id,
+            # The consent this payload is frozen under, so the pass that finally calls a
+            # provider can prove it still holds.
+            "kind": prefs["kind"], "owner_digest": prefs["owner_digest"],
+            "state": "preparing", "detail": "", "attempts": 0, "trigger": trigger,
+            "message_id": _message_id(row, job_id), "created": wall, "updated": wall}
 
 
 # ---------------------------------------------------------------- connection
@@ -349,6 +413,70 @@ def _render(root, prefs, profile, wall):
     return brief, _clip(email["subject"], SUBJECT_BYTES, "…"), _clip(email["text"], TEXT_BYTES)
 
 
+def _brief_payload(root, prefs, profile, wall, date):
+    brief, subject, text = _render(root, prefs, profile, wall)
+    if brief["date"] != date:
+        raise ScheduleError("the brief was built for a different day than the schedule; "
+                            "nothing was sent")
+    return {"content": "brief", "brief_id": brief["id"], "brief_date": brief["date"],
+            "subject": subject, "text": text, "text_bytes": len(text.encode("utf-8"))}
+
+
+def _designed(report, rendered):
+    """``(html, stored inline images, why not)`` -- the designed email, or none and why.
+
+    The page and the dog are checked by the rules the composer and the outbox apply, so
+    a report that is frozen is a report that can be sent.  A page too large for email is
+    tried once more without the dog; failing that the plain text goes alone, which a
+    reader can still use, and the reason is kept with the day.
+    """
+    from . import morning_report_email
+    problem = ""
+    for avatar in ("cid", "none"):
+        if avatar == "none":
+            try:
+                rendered = morning_report_email.render(report, avatar="none")
+            except Exception:                         # noqa: BLE001 - a fallback of a fallback
+                break
+        html = rendered.get("html") or ""
+        try:
+            mail_messages.check_html(html)
+            return html, mail_messages.encode_inline(rendered.get("inline") or [], html), ""
+        except mail_messages.MailFormatError as exc:
+            # The first refusal is the one that describes the designed email as written.
+            problem = problem or str(exc)
+    return "", [], ("the designed report could not be sent as an email (%s), so its plain "
+                    "text was sent" % (problem or "it could not be rendered"))[:300]
+
+
+def _report_payload(root, prefs, wall, date):
+    """Build this morning's report and render the email it becomes.  Minutes, not seconds.
+
+    Built in the schedule's own zone and language, so the report is dated the day it is
+    sent and written in the language the person chose for the email.  Reply drafts are
+    made per the ``REPORT_GMAIL_DRAFTS`` setting; nothing here can send one.
+    """
+    from . import morning_report, morning_report_email
+    profile = morning_report.load_profile(root)
+    profile.update(zone=_zone(prefs["timezone"]), timezone=prefs["timezone"],
+                   language=prefs["language"])
+    report = morning_report.build(state_dir=root, now=wall, drafts=True, profile=profile)
+    if not isinstance(report, dict) or report.get("date") != date:
+        raise ScheduleError("it was built for a different day than the schedule")
+    rendered = morning_report_email.render(report)
+    subject = _clip(rendered.get("subject") or "", SUBJECT_BYTES, "…")
+    text = _clip(rendered.get("text") or "", TEXT_BYTES)
+    if not subject.strip() or not text.strip():
+        raise ScheduleError("it rendered an empty email")
+    html, inline, why = _designed(report, rendered)
+    content = hashlib.sha256("\n".join((subject, text, html)).encode("utf-8")).hexdigest()[:16]
+    return {"content": "morning_report", "brief_id": "report-%s-%s" % (date, content),
+            "brief_date": date, "subject": subject, "text": text,
+            "text_bytes": len(text.encode("utf-8")), "html": html, "inline": inline,
+            "html_bytes": len(html.encode("utf-8")), "format": "html" if html else "text",
+            "format_detail": why}
+
+
 # ---------------------------------------------------------------- public views
 
 
@@ -362,9 +490,47 @@ def _public_job(job):
             "detail": str(job.get("detail") or "")[:300],
             "text_bytes": int(job.get("text_bytes") or 0),
             "created": job.get("created"), "updated": job.get("updated"),
+            # What the day carries and how it went out: the morning report or the brief,
+            # scheduled or asked for, as a designed email or as its plain text -- and why.
+            "content": job.get("content") or "brief",
+            "trigger": job.get("trigger") or "schedule",
+            "format": str(job.get("format")
+                          or ("text" if (job.get("content") or "brief") == "brief" else "")),
+            "format_detail": str(job.get("format_detail") or "")[:300],
+            "html_bytes": int(job.get("html_bytes") or 0),
             # Provider acceptance is not receipt, and this never claims otherwise.
             "submission_known": job.get("state") == "submitted",
             "delivery_known": False}
+
+
+def _drafts():
+    """``(on, locked)`` for the reply-drafts switch the morning report obeys.
+
+    ``locked`` means an environment variable the person set holds it, so saving a new
+    value here would change nothing -- which is refused rather than pretended.
+    """
+    from . import settings
+    value = str(settings.get(DRAFTS_SETTING, "on") or "on").strip().lower()
+    return value in ("on", "1", "true", "yes"), not settings.owns(DRAFTS_SETTING)
+
+
+def _write_drafts(value):
+    from . import settings
+    on, locked = _drafts()
+    if value == on:
+        return
+    if locked:
+        raise ScheduleError("writing reply drafts is set by the COLLIE_%s environment variable, "
+                            "so it cannot be changed here" % DRAFTS_SETTING)
+    settings.update({DRAFTS_SETTING: "on" if value else "off"})
+    settings.apply()                                  # this process reads the new value too
+
+
+def _bool_field(body, key, what):
+    value = body.get(key)
+    if not isinstance(value, bool):
+        raise ScheduleError("%s must be true or false" % what)
+    return value
 
 
 def _choices(service):
@@ -384,20 +550,31 @@ def _choices(service):
 
 def _public(state, profile, *, service=None, notices=()):
     prefs = state["prefs"]
+    drafts, locked = _drafts()
     out = {"schema": SCHEMA, "profile": profile, "available": True, "error": "",
            "enabled": bool(prefs["enabled"]), "connection": prefs["connection"],
            "kind": prefs["kind"], "destination_masked": prefs["destination_masked"],
            "timezone": prefs["timezone"], "at": prefs["at"], "language": prefs["language"],
            "grace_minutes": int(prefs["grace_minutes"]),
            "opted_in_at": prefs["opted_in_at"], "updated": prefs["updated"],
+           "report": bool(prefs["report"]),
+           "content": "morning_report" if prefs["report"] else "brief",
+           "gmail_drafts": drafts, "gmail_drafts_locked": locked,
            "needs_reconfigure": bool(state["paused"]),
            "paused_reason": str((state["paused"] or {}).get("reason") or "")[:300],
            "defaults": {"at": DEFAULT_AT, "grace_minutes": DEFAULT_GRACE_MINUTES,
                         "grace_range": [MIN_GRACE_MINUTES, MAX_GRACE_MINUTES]},
-           "languages": list(LANGUAGES), "kinds": list(KINDS),
+           "languages": list(LANGUAGES), "kinds": list(KINDS), "contents": list(CONTENTS),
            "jobs": [_public_job(job) for job in state["jobs"][-7:]],
            "notices": list(notices)}
-    out["last"] = out["jobs"][-1] if out["jobs"] else None
+    scheduled = [job for job in state["jobs"] if (job.get("trigger") or "schedule") == "schedule"]
+    asked = [job for job in state["jobs"] if job.get("trigger") == "request"]
+    # "Last email" is the morning's own; a report sent on request is shown on its own line.
+    out["last"] = _public_job(scheduled[-1]) if scheduled else None
+    out["requests"] = {"per_day": NOW_PER_DAY, "last": _public_job(asked[-1]) if asked else None,
+                       # Only a saved account can be sent one: there is nowhere else to send it.
+                       "available": bool(prefs["connection"] and prefs["owner_digest"]
+                                         and not state["paused"])}
     if service is not None:
         out["connections"] = _choices(service)
     return out
@@ -451,6 +628,8 @@ def _validate(body, prefs):
             raise ScheduleError("the missed-window cutoff must be between %d minutes and "
                                 "%d hours" % (MIN_GRACE_MINUTES, MAX_GRACE_MINUTES // 60))
         out["grace_minutes"] = grace
+    if "report" in body:
+        out["report"] = _bool_field(body, "report", "sending the morning report")
     return out
 
 
@@ -483,6 +662,10 @@ def configure(root, body, *, profile="default", now=None, service=None):
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         raise ScheduleError("enabled must be true or false")
+    drafts = _bool_field(body, "gmail_drafts", "writing reply drafts in Gmail") \
+        if "gmail_drafts" in body else None
+    report = _bool_field(body, "report", "sending the morning report") \
+        if "report" in body else None
     service = _service(root, service)
     path = _path(root, profile)
     with sessions._locked(path):
@@ -494,7 +677,11 @@ def configure(root, body, *, profile="default", now=None, service=None):
             state, notices = _blank(), ["the previous daily email settings could not be "
                                         "read; they were set aside and replaced"]
         if not enabled:
+            if drafts is not None:
+                _write_drafts(drafts)
             state["prefs"]["enabled"] = False
+            if report is not None:
+                state["prefs"]["report"] = report
             state["prefs"]["updated"] = wall
             state["paused"] = {}
             _save(path, state)
@@ -505,6 +692,10 @@ def configure(root, body, *, profile="default", now=None, service=None):
             raise ScheduleError("choose the email account the brief should be sent from")
         prefs = _validate(body, state["prefs"])
         row = _connection(service, connection.strip())
+        if drafts is not None:
+            # A global setting (the report's own builds read it too), so it is written only
+            # once everything else in this request has been accepted.
+            _write_drafts(drafts)
         prefs.update(enabled=True, connection=row["id"], kind=row["kind"],
                      owner_digest=_digest(row["owner"]),
                      destination_masked=comms.mask_address(row["owner"], "email"),
@@ -742,6 +933,7 @@ def tick(root, now=None, *, profile="default", service=None):
             if job is None:
                 job = {"id": job_id, "date": date, "connection": prefs["connection"],
                        "result_id": "", "state": "skipped", "attempts": 0,
+                       "content": "morning_report" if prefs["report"] else "brief",
                        "detail": ("Collie was not running during this morning's send "
                                   "window, so today's brief was not emailed"),
                        "created": wall, "updated": wall}
@@ -763,32 +955,224 @@ def tick(root, now=None, *, profile="default", service=None):
             # Transient: nothing is settled and nothing claims to have been sent.
             return _report(profile, "blocked", blocked, date=date, job=job)
 
-        if job is None:
-            try:
-                brief, subject, text = _render(root, prefs, profile, wall)
-            except (ScheduleError, daily_brief.BriefError, OSError) as exc:
-                return _report(profile, "error", str(exc)[:300], date=date)
-            if brief["date"] != date:
-                return _report(profile, "error", "the brief was built for a different "
-                               "day than the schedule; nothing was sent", date=date)
-            job = {"id": job_id, "date": date, "connection": prefs["connection"],
-                   "result_id": _result_id(profile, prefs["connection"], date),
-                   # The consent this payload was frozen under, so the pass that
-                   # finally calls a provider can prove it still holds.
-                   "kind": prefs["kind"], "owner_digest": prefs["owner_digest"],
-                   "state": "preparing", "detail": "", "attempts": 0,
-                   "brief_id": brief["id"], "brief_date": brief["date"],
-                   "message_id": _message_id(row, job_id), "subject": subject, "text": text,
-                   "text_bytes": len(text.encode("utf-8")), "created": wall, "updated": wall}
-            state["jobs"].append(job)
-            _save(path, state)                        # ledger first, always
+        token = fallback = ""
+        if not _prepared(job):
+            if prefs["report"]:
+                # The report is built outside this lock, under a lease written first:
+                # a pass that finds the day already being built leaves it alone.
+                job, waiting, fallback = _lease(
+                    state, job, prefs, row, job_id,
+                    _result_id(profile, prefs["connection"], date), date, wall)
+                _save(path, state)
+                if waiting:
+                    return _report(profile, job["state"], waiting, date=date, job=job)
+                token = "" if fallback else job["build_token"]
+            if not token:
+                try:
+                    payload = _brief_payload(root, prefs, profile, wall, date)
+                except (ScheduleError, daily_brief.BriefError, OSError) as exc:
+                    return _report(profile, "error", str(exc)[:300], date=date)
+                if job is None:
+                    job = _new_job(job_id, _result_id(profile, prefs["connection"], date),
+                                   date, prefs, row, wall)
+                    state["jobs"].append(job)
+                # A report that was still being built becomes the brief the person
+                # switched to -- or the brief a morning whose report could not be built
+                # gets instead: nothing of the report was frozen, so none of it can go.
+                job.pop("build_token", None)
+                job.update(payload, detail=fallback, updated=wall)
+                if fallback:
+                    job.update(format="text", format_detail=fallback)
+                _save(path, state)                    # ledger first, always
         frozen = dict(job)
 
-    # Outside the ledger lock: the outbox and the provider own their own locking,
-    # and a slow provider must not block a settings read.
+    if token:
+        frozen, answer = _build(root, path, profile, prefs, job_id, token, date, wall,
+                                window_end=window_end)
+        if answer is not None:
+            return answer
+    return _deliver(path, profile, service, prefs, row, frozen, job_id, date, wall)
+
+
+_BUILD_GUARD = threading.Lock()
+
+
+def _build_slot(root):
+    """The one right to build a morning report under ``root``: a release callable, or ``None``.
+
+    A scheduled build and a report asked for on request must never run at once: both save
+    the same report files and both may write Gmail drafts, so two at once can tear the
+    saved report and draft the same reply twice.  Held across threads by a lock and across
+    processes by an OS lock on ``<report dir>/build.lock``; never waited for -- a busy slot
+    is an answer, because a build takes minutes.
+    """
+    from . import morning_report
+    if not _BUILD_GUARD.acquire(blocking=False):
+        return None
+    handle = None
+    try:
+        folder = morning_report.report_dir(root)
+        os.makedirs(folder, exist_ok=True)
+        handle = open(os.path.join(folder, "build.lock"), "a+b")
+        taken = sessions._try_lock(handle)
+    except BaseException:
+        if handle is not None:
+            handle.close()
+        _BUILD_GUARD.release()
+        raise
+    if not taken:
+        handle.close()
+        _BUILD_GUARD.release()
+        return None
+
+    def release():
+        sessions._unlock_file(handle)
+        _BUILD_GUARD.release()
+    return release
+
+
+def _build_waits(state, job_id, token, wall):
+    """Give back a lease whose build never started because another build held the slot."""
+    job = _find(state, job_id)
+    if job is None or job.get("build_token") != token or _prepared(job):
+        return dict(job) if job else None
+    job.pop("build_token", None)
+    job.update(builds=max(0, int(job.get("builds") or 0) - 1), detail=_BUSY, updated=wall,
+               build_started=wall + BUSY_RETRY_S - BUILD_LEASE_S)
+    return dict(job)
+
+
+def _instead(cause):
+    return ("the morning report could not be built (%s), so today's Daily Brief was sent "
+            "instead" % cause)[:300]
+
+
+def _lease(state, job, prefs, row, job_id, result_id, date, wall, *, trigger="schedule"):
+    """``(job, "", "")`` holding a fresh build lease, ``(job, why not now, "")``, or
+    ``(job, "", why the brief goes instead)``.
+
+    The lease is the only thing that stops two passes -- a pump and a restarted app, or
+    two ticks a minute apart around a slow model -- from building the same morning twice.
+    A lease that runs out belonged to a pass that died or failed; the next pass takes it,
+    up to ``MAX_BUILDS`` builds for the day.  After that the morning is not lost: a
+    scheduled day gets the plain brief instead.
+    """
+    if job is None:
+        job = _new_job(job_id, result_id, date, prefs, row, wall, trigger=trigger)
+        job.update(content="morning_report", builds=0, build_started=0.0)
+        state["jobs"].append(job)
+    if wall < float(job.get("build_started") or 0.0) + BUILD_LEASE_S:
+        return job, str(job.get("detail") or "today's morning report is being built"), ""
+    builds = int(job.get("builds") or 0)
+    if builds >= MAX_BUILDS:
+        # The last build died without saying why (a crash holds no exception).
+        job.pop("build_token", None)
+        return job, "", _instead(job.get("build_error") or "its last build did not finish")
+    job.update(content="morning_report", builds=builds + 1, build_started=wall,
+               build_token=os.urandom(8).hex(), detail="today's morning report is being built",
+               updated=wall)
+    return job, "", ""
+
+
+def _build(root, path, profile, prefs, job_id, token, date, wall, *, window_end=None,
+           have_slot=False):
+    """Build the report with no lock held, then freeze it into the job holding ``token``.
+
+    ``(frozen job, None)`` when it is ready to send, or ``(None, report)`` when there is
+    nothing to send this pass.  ``window_end`` is the scheduled morning's: a failed build
+    is tried again later, spaced (``BUILD_RETRY_S``), and when builds run out -- or the
+    next try would miss the window -- that morning's plain brief is frozen instead, in the
+    same job and outbox id.  Without it (a report asked for on request) a failed build
+    ends the request: it was a report that was asked for, not the brief.
+
+    Only one report is built at a time (:func:`_build_slot`); a scheduled pass that finds
+    another build running gives its lease back and looks again in a minute.
+    ``have_slot`` is for the caller that already holds the slot.
+    """
+    release = None
+    if not have_slot:
+        release = _build_slot(root)
+        if release is None:
+            job = _edit(path, lambda st: _build_waits(st, job_id, token, wall))
+            return None, _report(profile, "preparing", _BUSY, date=date, job=job)
+    failure = None
+    try:
+        payload = _report_payload(root, prefs, wall, date)
+    except Exception as exc:                          # noqa: BLE001 - reported, not raised
+        failure = exc
+    finally:
+        if release is not None:
+            release()
+    if failure is not None:
+        exc = failure
+        cause = str(exc)[:200] if isinstance(exc, ScheduleError) else type(exc).__name__
+        job, instead = _edit(path, lambda st: _build_failed(
+            st, job_id, token, wall, cause, isinstance(exc, ScheduleError), window_end))
+        if not instead:
+            return None, _report(profile, "error", str((job or {}).get("detail") or cause),
+                                 date=date, job=job)
+        try:
+            payload = _brief_payload(root, prefs, profile, wall, date)
+        except (ScheduleError, daily_brief.BriefError, OSError) as brief_exc:
+            return None, _report(profile, "error", "%s; the Daily Brief could not be rendered "
+                                 "either (%s)" % (_instead(cause), str(brief_exc)[:120]),
+                                 date=date, job=job)
+        payload.update(format="text", format_detail=_instead(cause))
+
+    def freeze(state):
+        job = _find(state, job_id)
+        if (job is None or job.get("build_token") != token or _prepared(job)
+                or job.get("state") != "preparing"):
+            return None
+        job.pop("build_token", None)
+        job.update(payload, detail=payload.get("format_detail") if payload.get(
+            "content") == "brief" else "", updated=wall)
+        return dict(job)
+
+    frozen = _edit(path, freeze)
+    if frozen is None:
+        # Another pass settled or re-prepared the day while this one was building.
+        current = _peek(path, job_id)
+        return None, _report(profile, (current or {}).get("state") or "error",
+                             "today's email was prepared by another pass", date=date,
+                             job=current)
+    return frozen, None
+
+
+def _build_failed(state, job_id, token, wall, cause, final, window_end):
+    """Record a failed build.  ``(job, True)`` when the brief should go instead now."""
+    job = _find(state, job_id)
+    if job is None or job.get("build_token") != token or _prepared(job):
+        return (dict(job) if job else None), False
+    job.update(build_error=cause, updated=wall)
+    if window_end is None:
+        job.pop("build_token", None)
+        job.update(state="error", detail="the morning report could not be built (%s), so "
+                                         "nothing was sent" % cause)
+        return dict(job), False
+    builds = int(job.get("builds") or 0)
+    retry_at = wall + BUILD_RETRY_S[min(max(builds, 1), len(BUILD_RETRY_S)) - 1]
+    if final or builds >= MAX_BUILDS or retry_at >= window_end:
+        # The token stays so the brief can be frozen into this very job.
+        job.update(detail=_instead(cause))
+        return dict(job), True
+    # The next build waits: the lease is moved to end when the retry is due, so a failure
+    # that repeats costs one build per spacing, not one per tick of the pump.
+    job.update(build_started=retry_at - BUILD_LEASE_S,
+               detail="the morning report could not be built (%s); it will be tried again in "
+                      "%d minutes" % (cause, (retry_at - wall) // 60))
+    return dict(job), False
+
+
+def _deliver(path, profile, service, prefs, row, frozen, job_id, date, wall):
+    """Ledger -> outbox -> provider for one frozen email.  The same for every kind of day.
+
+    Outside the ledger lock: the outbox and the provider own their own locking, and a
+    slow provider must not block a settings read.
+    """
     try:
         result = _outbox(service, prefs, row, frozen)
-    except (comms.CommsError, ScheduleError) as exc:
+    except (comms.CommsError, ScheduleError, mail_messages.MailFormatError) as exc:
         detail = str(exc)[:300]
         _edit(path, lambda st: (_find(st, job_id) or {}).update(
             state="error", detail=detail, updated=wall))
@@ -832,8 +1216,10 @@ def tick(root, now=None, *, profile="default", service=None):
         return _report(profile, "blocked", detail, date=date)
 
     # The outbox, not the return value, is what this reports: it is the record that
-    # survived the call, and a settled state there is the only evidence there is.
-    current = _stored(service, frozen["connection"], frozen["result_id"]) or sent
+    # survived the call, and a settled state there is the only evidence there is.  The
+    # private read is for one fact only: whether the transport sent the page or, like a
+    # Collie Mail relay that carries no HTML yet, only the plain text.
+    current = _stored(service, frozen["connection"], frozen["result_id"], private=True) or sent
     name, detail = _settle(path, job_id, current, wall)
     return _report(profile, name, detail, date=date, sent=name == "submitted",
                    job=_peek(path, job_id))
@@ -888,6 +1274,21 @@ def _outbox(service, prefs, row, job):
         if adopted:
             out["reused_payload"] = adopted
         return out
+    metadata = {"message_id": job["message_id"], "speak": False,
+                # Never the channel pump's to send: this is the scheduler's draft.
+                "auto_eligible": False, "source": "daily_brief",
+                "job_id": job["id"], "brief_id": job.get("brief_id", ""),
+                "brief_date": job.get("brief_date", ""), "language": prefs["language"]}
+    design = {}
+    if job.get("content") == "morning_report":
+        # What a reply to this email is about, for daily_brief_reply: the report (which
+        # a "mute <project>" line may answer), not the plain brief.
+        metadata["content"] = "morning_report"
+        if job.get("trigger") == "request":
+            metadata["trigger"] = "request"
+        if job.get("html"):
+            design = {"html": job["html"],
+                      "inline": mail_messages.decode_inline(job.get("inline") or [], job["html"])}
     comms.create_result(
         job["connection"], job["result_id"], destination=row["owner"],
         text=job["text"], subject=job["subject"],
@@ -897,12 +1298,7 @@ def _outbox(service, prefs, row, job):
         # the outbound row actually has a key.  Without it a "show me the first
         # item" starts a conversation about nothing.
         thread_key=_thread_key(job["id"]),
-        metadata={"message_id": job["message_id"], "speak": False,
-                  # Never the channel pump's to send: this is the scheduler's draft.
-                  "auto_eligible": False, "source": "daily_brief",
-                  "job_id": job["id"], "brief_id": job.get("brief_id", ""),
-                  "brief_date": job.get("brief_date", ""), "language": prefs["language"]},
-        directory=service.directory)
+        metadata=metadata, directory=service.directory, **design)
     return {"state": (comms.get_result(job["connection"], job["result_id"],
                                        directory=service.directory)
                       or {}).get("state") or "pending"}
@@ -946,6 +1342,23 @@ def _fence(state, frozen, wall):
     return ""
 
 
+def _fence_request(state, frozen):
+    """:func:`_fence` for a report sent on request: the same destination, and no window.
+
+    Asked for with a click, so the morning's window has no say -- but the account it was
+    asked for must still be the account on disk, unpaused, when the attempt is spent.
+    """
+    prefs = state["prefs"]
+    if state["paused"]:
+        return ("the daily email settings were paused while the report was being prepared, "
+                "so nothing was sent")
+    if prefs["connection"] != frozen.get("connection") or any(
+            frozen.get(key) and prefs[key] != frozen[key] for key in ("kind", "owner_digest")):
+        return ("the email account changed while the report was being prepared, so nothing "
+                "was sent to the account it was prepared for")
+    return ""
+
+
 def _claim(state, job_id, wall, frozen):
     """Spend one attempt, durably, before the provider is called.
 
@@ -956,7 +1369,8 @@ def _claim(state, job_id, wall, frozen):
     job = _find(state, job_id)
     if job is None or job["state"] not in OPEN_STATES:
         return None, ""
-    refusal = _fence(state, frozen, wall)
+    refusal = (_fence_request(state, frozen) if frozen.get("trigger") == "request"
+               else _fence(state, frozen, wall))
     if refusal:
         job.update(state="queued", detail=refusal, updated=wall)
         return None, refusal
@@ -982,6 +1396,95 @@ def _settle(path, job_id, result, wall):
     # A draft still pending is not a settled day: it stays open for the rest of
     # the window rather than being recorded as anything that happened.
     stored = "queued" if name == "pending" else name
+    shape = {}
+    if isinstance(result, dict) and result.get("format") and name == "submitted":
+        # What reached the provider: the designed email, or -- when the transport said
+        # so -- its plain text alone, with the transport's reason.
+        note = str((result.get("outcome_detail") or {}).get("detail") or "")
+        shape = ({"format": "text", "format_detail": note[:300]}
+                 if note.startswith("sent as plain text") else {"format": result["format"]})
     _edit(path, lambda st: (_find(st, job_id) or {}).update(
-        state=stored, detail=detail, updated=wall))
+        state=stored, detail=detail, updated=wall, **shape))
     return stored, detail
+
+
+# ---------------------------------------------------------------- send me one now
+
+
+def send_now(root, now=None, *, profile="default", service=None):
+    """Build a morning report now and send it to the saved account.  A real email.
+
+    Called from an explicit click ("Send me one now"), never from a timer.  It goes where
+    the scheduled email goes -- the owner address of the connection saved in these
+    settings, checked against the digest frozen at opt-in -- and nowhere else; with no
+    saved account there is nowhere to send it, and it is refused.  Whether the daily
+    email is switched on does not matter: the click is its own consent for one message.
+
+    It is its own job, never the morning's: a report asked for at six does not stand in
+    for the one the schedule sends at half past seven.  At most one is on its way at a
+    time and ``NOW_PER_DAY`` go in a local day.  Refusals raise :class:`ScheduleError`
+    (nothing was built or sent); otherwise the answer is the same report a tick gives.
+    """
+    wall = float(now) if now is not None else time.time()
+    path = _path(root, profile)
+    service = _service(root, service)
+    # Taken before anything is written, and held until the report is built: a request that
+    # would race the morning's own build is refused at once, and leaves no job behind.
+    release = _build_slot(root)
+    if release is None:
+        raise ScheduleError("a morning report is being built right now; ask again in a minute "
+                            "or two")
+    try:
+        frozen, answer, row, snapshot, job_id, date = _requested(
+            root, path, profile, service, wall)
+    finally:
+        release()
+    if answer is not None:
+        return answer
+    return _deliver(path, profile, service, snapshot, row, frozen, job_id, date, wall)
+
+
+def _requested(root, path, profile, service, wall):
+    """:func:`send_now` with the build slot held: the checks, the job, and the build."""
+    with sessions._locked(path):
+        state, error = _load(path)
+        if state is None:
+            raise ScheduleError(error)
+        prefs = state["prefs"]
+        if not prefs["connection"] or not prefs["owner_digest"]:
+            raise ScheduleError("choose an email account and save these settings first; "
+                                "there is nowhere to send a report yet")
+        if state["paused"]:
+            raise ScheduleError("%s Choose an account and save again." % str(
+                state["paused"].get("reason") or "the daily email needs setting up again")[:300])
+        date = _slot(wall, _zone(prefs["timezone"]), prefs["at"])[0]
+        for job in state["jobs"]:
+            if job.get("trigger") != "request" or job.get("state") not in OPEN_STATES:
+                continue
+            if _reconcile(job, service, wall):
+                continue
+            if wall - float(job.get("updated") or job.get("created") or 0.0) < NOW_STALE_S:
+                raise ScheduleError("a report you asked for is already on its way; wait for it "
+                                    "before asking for another")
+            # Left open by a process that died; it will never finish now.
+            _abandon(job, service, wall, "the report asked for was not finished")
+        today = [job for job in state["jobs"]
+                 if job.get("trigger") == "request" and job.get("date") == date]
+        if len(today) >= NOW_PER_DAY:
+            _save(path, state)
+            raise ScheduleError("at most %d reports on request a day; the next one can be sent "
+                                "tomorrow" % NOW_PER_DAY)
+        row, refusal = _owner(service, prefs)
+        blocked = refusal or _ready(row)
+        if blocked:
+            _save(path, state)
+            raise ScheduleError(blocked)
+        job_id, result_id = _request_ids(profile, prefs["connection"], date, len(today) + 1)
+        job, _waiting, _instead_of = _lease(state, None, prefs, row, job_id, result_id, date,
+                                            wall, trigger="request")
+        _save(path, state)
+        token, snapshot = job["build_token"], dict(prefs)
+
+    frozen, answer = _build(root, path, profile, snapshot, job_id, token, date, wall,
+                            have_slot=True)
+    return frozen, answer, row, snapshot, job_id, date

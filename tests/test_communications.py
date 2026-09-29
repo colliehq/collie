@@ -784,6 +784,114 @@ def test_an_oversize_reply_is_refused_not_trimmed(store):
     assert comms.list_results("mailwork", directory=store) == []
 
 
+# ------------------------------------------------------------ HTML results
+
+PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                    "0000000d4944415478da63f8cfc0f01f0005000201a5f4f5a50000000049454e44ae426082")
+PAGE = '<p>Good morning!</p><img alt="" src="cid:collie-avatar">'
+AVATAR = {"cid": "collie-avatar", "filename": "collie.png", "content_type": "image/png",
+          "data": PNG}
+
+
+def test_an_html_result_is_stored_whole_and_handed_to_the_sender_whole(store):
+    connect(store)
+    made = comms.create_result("mailwork", "r1", destination="owner@example.com",
+                               text="Good morning!", subject="Morning", html=PAGE,
+                               inline=[AVATAR], directory=store)
+    assert made["format"] == "html" and made["inline_images"] == 1
+    assert made["html_bytes"] == len(PAGE.encode())
+    # The public view says what shape it is, never what it says or shows.
+    public = comms.get_result("mailwork", "r1", directory=store)
+    assert "html" not in public and "inline" not in public and PAGE not in json.dumps(public)
+    private = comms.get_result("mailwork", "r1", include_private=True, directory=store)
+    assert private["html"] == PAGE
+    assert private["inline"] == [{"cid": "collie-avatar", "filename": "collie.png",
+                                  "content_type": "image/png", "bytes": len(PNG)}]
+    # Read back from disk by the sender: the same page and the same image bytes.
+    raw = _read_store(store)
+    assert raw["outbox"][0]["html"] == PAGE
+    claim = comms.claim_send("mailwork", "r1", transport="smtp", directory=store)
+    assert claim["html"] == PAGE
+    from harness import mail_messages
+    assert mail_messages.decode_inline(claim["inline"], claim["html"]) == [AVATAR]
+
+
+def test_a_text_result_is_stored_exactly_as_before(store):
+    connect(store)
+    made = comms.create_result("mailwork", "r1", destination="owner@example.com",
+                               text="here is the summary", directory=store)
+    row = _read_store(store)["outbox"][0]
+    assert "html" not in row and "inline" not in row
+    assert made["format"] == "text" and made["html_bytes"] == 0
+    # The digest of a text result is the one every store written before HTML holds.
+    legacy = {k: row.get(k) for k in ("id", "destination", "subject", "text", "thread_key",
+                                      "in_reply_to", "session", "metadata")}
+    assert row["digest"] == comms._digest(legacy)
+    assert "html" not in comms.claim_send("mailwork", "r1", directory=store)
+
+
+def test_the_html_is_part_of_what_a_result_id_names(store):
+    connect(store)
+    kwargs = dict(destination="owner@example.com", text="Good morning!", directory=store)
+    comms.create_result("mailwork", "r1", html=PAGE, inline=[AVATAR], **kwargs)
+    again = comms.create_result("mailwork", "r1", html=PAGE, inline=[AVATAR], **kwargs)
+    assert again["duplicate"] is True
+    for change in ({"html": PAGE.replace("Good", "Bad"), "inline": [AVATAR]},
+                   {"html": PAGE, "inline": [dict(AVATAR, data=PNG + b"x")]},
+                   {}):
+        with pytest.raises(comms.IdConflict):
+            comms.create_result("mailwork", "r1", **change, **kwargs)
+
+
+def test_html_that_does_not_add_up_is_refused_before_anything_is_stored(store):
+    connect(store)
+    comms.create_connection("texts", channel="sms", address="+15550000000",
+                            policy={"allowed_senders": ["+15551112222"],
+                                    "owner_reply_target": "+15551112222"}, directory=store)
+    for cid, kwargs in (
+            ("mailwork", {"html": "<p>no picture</p>", "inline": [AVATAR]}),
+            ("mailwork", {"inline": [AVATAR]}),
+            ("mailwork", {"html": "x" * (comms.MAX_HTML_BYTES + 1)}),
+            ("texts", {"html": "<p>hi</p>"})):
+        destination = "+15551112222" if cid == "texts" else "owner@example.com"
+        with pytest.raises(comms.InvalidRequest):
+            comms.create_result(cid, "r1", destination=destination, text="hi",
+                                directory=store, **kwargs)
+    assert comms.list_results("mailwork", directory=store) == []
+    assert comms.list_results("texts", directory=store) == []
+
+
+def test_a_tampered_html_page_or_image_makes_the_store_refuse_itself(store):
+    connect(store)
+    comms.create_result("mailwork", "r1", destination="owner@example.com", text="hi",
+                        html=PAGE, inline=[AVATAR], directory=store)
+    path = comms.store_path("mailwork", root=comms._root(store))
+    pristine = open(path, encoding="utf-8").read()
+    for mutate in (lambda doc: doc["outbox"][0].update(html=PAGE + "<img src=https://x>"),
+                   lambda doc: doc["outbox"][0]["inline"][0].update(bytes=1)):
+        doc = json.loads(pristine)
+        mutate(doc)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        with pytest.raises(comms.StoreCorrupt):
+            comms.get_result("mailwork", "r1", directory=store)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(pristine)
+    assert comms.get_result("mailwork", "r1", directory=store)["format"] == "html"
+
+
+def test_editing_an_html_draft_sends_the_words_that_were_edited(store):
+    connect(store)
+    made = comms.create_result("mailwork", "r1", destination="owner@example.com",
+                               text="Good morning!", html=PAGE, inline=[AVATAR], directory=store)
+    revised = comms.revise_result("mailwork", "r1", "r2", text="Good afternoon!",
+                                  actor="daming", expected_digest=made["digest"], directory=store)
+    # The page still says "morning"; sending it beside the corrected text would put
+    # two different messages in one email.  The edit is what goes.
+    assert revised["format"] == "text"
+    assert "html" not in comms.claim_send("mailwork", "r2", directory=store)
+
+
 # ------------------------------------------------------------ store integrity
 
 def _corrupt_cases():

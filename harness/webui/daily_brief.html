@@ -145,6 +145,7 @@ input[type=checkbox]{width:20px;height:20px;min-height:0;padding:0;margin:2px 0 
     <p class="muted" data-en="Off until you turn it on. Sent to the owner address already saved with your chosen email connection." data-zh="默认关闭。开启后，通过所选邮箱连接，发到该连接已绑定的你的收件地址。"></p>
 
     <ul id="schedFacts" class="facts"></ul>
+    <div class="actions" style="margin-top:12px"><button id="schedNow" type="button" data-en="Send me one now" data-zh="现在发我一份"></button><span id="schedNowNote" class="muted"></span></div>
     <div id="schedNotice" class="notice" role="status" aria-live="polite" hidden></div>
 
     <details id="schedOptions">
@@ -154,6 +155,12 @@ input[type=checkbox]{width:20px;height:20px;min-height:0;padding:0;margin:2px 0 
         <p class="field"><label for="schedConn" data-en="Send from this email account" data-zh="使用这个邮箱账号发送"></label><select id="schedConn"></select><span id="schedConnNote" class="muted"></span></p>
         <p class="field"><label for="schedAt" data-en="Local time to send" data-zh="本地发送时间"></label><input id="schedAt" type="time" step="60" value="07:30"><span class="muted" data-en="Your morning, on a 24-hour clock." data-zh="按 24 小时制填写你的早晨时间。"></span></p>
         <p class="field"><label for="schedLang" data-en="Language of the email" data-zh="邮件语言"></label><select id="schedLang"><option value="en">English</option><option value="zh">中文</option></select><span class="muted" data-en="Independent of the language of this page." data-zh="与本页面的显示语言无关。"></span></p>
+        <p class="field"><label for="schedContent" data-en="What to send" data-zh="发送内容"></label><select id="schedContent"><option value="brief" data-en="The Daily Brief (plain text)" data-zh="每日简报（纯文本）"></option><option value="morning_report" data-en="The morning report (designed)" data-zh="晨报（排好版）"></option></select><span class="muted" data-en="One email a morning: the report replaces the brief, never both." data-zh="每天早上只发一封：选了晨报就不再发简报，不会两封都发。"></span></p>
+      </div>
+      <div id="schedDraftsRow">
+        <label class="check"><input id="schedDrafts" type="checkbox"><span data-en="Write reply drafts in Gmail" data-zh="在 Gmail 里写好回复草稿"></span></label>
+        <p class="muted" style="margin-top:4px" data-en="When Google is connected, the report puts suggested replies in your Gmail drafts, each addressed only to whoever wrote to you. Nothing is ever sent from there; you send each one yourself." data-zh="连接 Google 后，晨报会把建议的回复放进你的 Gmail 草稿箱，每封只写给来信的那个人。草稿不会被自动发出，每一封都由你自己发送。"></p>
+        <p id="schedDraftsLocked" class="muted" hidden></p>
       </div>
       <p id="schedNoConn" class="muted" hidden><span data-en="No email account is connected yet, so there is nowhere to send it." data-zh="尚未连接邮箱账号，因此没有可发送的目标。"></span> <a href="/communications" data-en="Connect email" data-zh="连接邮箱"></a></p>
 
@@ -175,6 +182,8 @@ input[type=checkbox]{width:20px;height:20px;min-height:0;padding:0;margin:2px 0 
       <li data-en="This switch is its own: it creates or touches no mail account, and it is separate from a connection's auto-reply, which replies to people who write to you." data-zh="这是一个独立开关：不会创建或改动邮箱账号，也与连接的自动回复无关（那个用于回复给你写信的人）。"></li>
       <li data-en="If you save while this morning's window is already open, today's brief may be emailed within a few minutes." data-zh="如果保存时今天的发送时段已经开始，今天的简报可能会在几分钟内发出。"></li>
       <li data-en="Collie can only report that your mail account accepted the message. That is not proof it arrived." data-zh="Collie 只能确认邮箱账号已接受该邮件，这不等于邮件已送达。"></li>
+      <li data-en="The morning report is built when the window opens: it reads your connected sources and asks your model, so it arrives a minute or two after the time you set. Reply “mute &lt;project&gt;” to it to stop hearing about a project." data-zh="晨报在发送时段开始时生成：它会读取你已连接的来源并询问你的模型，所以会比设定时间晚一两分钟到达。回复“mute 项目名”即可不再收到某个项目的消息。"></li>
+      <li data-en="“Send me one now” builds a real report straight away and emails it to the saved account. It does not replace the morning's email, and at most three go out a day." data-zh="“现在发我一份”会立刻生成一份真实的晨报，发到已保存的账号。它不会代替当天早上的那封邮件，每天最多发三份。"></li>
     </ul>
 
     </details>
@@ -663,12 +672,63 @@ function fillFields(){
   const grace=$("schedGrace"),range=defaults.grace_range||[15,720];
   grace.min=String(range[0]);grace.max=String(range[1]);
   grace.value=String(p.grace_minutes||defaults.grace_minutes||240);
+  $("schedContent").value=p.report?"morning_report":"brief";
+  $("schedDrafts").checked=p.gmail_drafts!==false;
+}
+
+// The drafts switch only matters for the report, and one held by an environment variable
+// is shown as held: a checkbox that saves and changes nothing would be a lie.
+function renderDrafts(){
+  const p=prefs||{},locked=!!p.gmail_drafts_locked;
+  $("schedDraftsRow").hidden=$("schedContent").value!=="morning_report";
+  $("schedDrafts").disabled=locked;
+  text($("schedDraftsLocked"),locked?tr("Set by an environment variable on this computer (COLLIE_REPORT_GMAIL_DRAFTS); change it there.",
+    "由这台电脑上的环境变量（COLLIE_REPORT_GMAIL_DRAFTS）设定，请在那里修改。"):"");
+  $("schedDraftsLocked").hidden=!locked;
+}
+
+// "Send me one now" is a real email to the saved account, so it needs one saved, says where
+// it goes, and asks before it sends.
+function renderNow(){
+  const p=prefs||{},req=p.requests||{};
+  const ready=!!req.available&&!prefsError&&p.available!==false;
+  $("schedNow").hidden=p.available===false;
+  $("schedNow").disabled=!ready;
+  text($("schedNowNote"),ready
+    ?tr("Builds a morning report now and emails it to "+(p.destination_masked||"")+". A real email; at most "+(req.per_day||3)+" a day.",
+        "现在生成一份晨报并发到 "+(p.destination_masked||"")+"。这是一封真实的邮件，每天最多 "+(req.per_day||3)+" 份。")
+    :tr("Save an email account above first; then a report can be sent to it now.","请先在上方保存一个邮箱账号，之后就能立刻发一份晨报过去。"));
+}
+async function sendNow(){
+  const p=prefs||{};
+  if(!confirm(tr("Build a morning report now and email it to ","现在生成一份晨报并发到 ")+(p.destination_masked||"")
+    +tr("? This can take a minute or two.","？这可能需要一两分钟。")))return;
+  notice(tr("Building your report and sending it. This can take a minute or two.","正在生成并发送晨报，可能需要一两分钟。"),false,"schedNotice");
+  const out=await api("/api/brief/send-now",{confirm:true});
+  const sent=out.state==="submitted";
+  notice((sent?tr("Sent. ","已发送。"):"")+(jobWord(out.state)||out.detail||out.state||""),!sent,"schedNotice");
+  await loadPrefs();
+}
+
+function jobLine(job){
+  const bits=[];
+  if(job.trigger==="request")bits.push(tr("Sent on request","按需发送"));
+  if(job.content==="morning_report")bits.push(tr("Morning report","晨报"));
+  let word=jobWord(job.state)||job.detail||job.state||"";
+  if(job.content==="morning_report"&&job.format==="text"&&job.state==="submitted")
+    word+=tr(" It went as plain text"," 以纯文本发出")+(job.format_detail?" ("+job.format_detail+")":"")+tr(".","。");
+  else if(job.content!=="morning_report"&&job.format_detail)
+    word+=" ("+job.format_detail+")";        // the brief that went because the report could not be built
+  bits.push(word);
+  return bits.join(" · ");
 }
 
 function renderSched(){
   const facts=$("schedFacts"),p=prefs;
   facts.replaceChildren();
   fillConnections();
+  renderDrafts();
+  renderNow();
   const broken=!!prefsError||!!(p&&p.available===false);
   text($("schedSave"),p&&p.enabled?tr("Save changes","保存修改"):tr("Turn on and save","开启并保存"));
   // Turning off is also the repair for settings that cannot be read: it is the one
@@ -688,6 +748,8 @@ function renderSched(){
   facts.append(fact(tr("Daily email","每日邮件"),p.enabled
     ?tr("On","已开启"):tr("Off — the brief stays in this app only.","已关闭——简报仅在本应用内查看。")));
   if(p.enabled){
+    facts.append(fact(tr("Sends","发送内容"),p.report?tr("The morning report, as a designed email","晨报（排好版的邮件）")
+      :tr("The Daily Brief, as plain text","每日简报（纯文本）")));
     facts.append(fact(tr("Sent to","发送至"),p.destination_masked||tr("this account's own address","该账号本人的地址")));
     facts.append(fact(tr("Each morning at","每天早上"),(p.at||"")+" · "+(p.timezone||"")));
     facts.append(fact(tr("Email language","邮件语言"),p.language==="zh"?"中文":"English"));
@@ -699,15 +761,18 @@ function renderSched(){
       +tr("Choose an account and save again.","请重新选择账号并保存。"),true));
   const last=p.last;
   if(last){
-    const when=last.date||"",word=jobWord(last.state)||last.detail||"";
-    facts.append(fact(tr("Last email","最近一次"),(when?when+" · ":"")+(word||last.state||""),
+    const when=last.date||"";
+    facts.append(fact(tr("Last email","最近一次"),(when?when+" · ":"")+jobLine(last),
       ["failed","error","unknown"].indexOf(last.state)>=0));
   }else if(p.enabled){
     facts.append(fact(tr("Last email","最近一次"),tr("none yet","还没有发送过")));
   }
+  const asked=(p.requests||{}).last;
+  if(asked)facts.append(fact(tr("Last one on request","最近一次按需发送"),(asked.date?asked.date+" · ":"")+jobLine(asked),
+    ["failed","error","unknown"].indexOf(asked.state)>=0));
   const jobs=(p.jobs||[]).slice().reverse(),list=$("schedJobs");
   list.replaceChildren();
-  jobs.forEach(job=>list.append(fact(job.date||"",jobWord(job.state)||job.state||"")));
+  jobs.forEach(job=>list.append(fact(job.date||"",jobLine(job))));
   $("schedHistory").hidden=!jobs.length;
 }
 
@@ -736,7 +801,8 @@ function schedBody(enable){
   const grace=Number($("schedGrace").value);
   if(!Number.isInteger(grace))throw new Error(tr("The late cutoff must be a whole number of minutes.","延迟上限需为整数分钟。"));
   return {enabled:true,connection:connection,timezone:timezone,at:at,
-          language:$("schedLang").value==="zh"?"zh":"en",grace_minutes:grace};
+          language:$("schedLang").value==="zh"?"zh":"en",grace_minutes:grace,
+          report:$("schedContent").value==="morning_report",gmail_drafts:$("schedDrafts").checked};
 }
 
 async function saveSched(enable){
@@ -787,6 +853,7 @@ $("schedForm").addEventListener("submit",event=>{
   busy($("schedSave"),()=>saveSched(true),"schedNotice");
 });
 $("schedOff").addEventListener("click",()=>busy($("schedOff"),()=>saveSched(false),"schedNotice"));
+$("schedNow").addEventListener("click",()=>busy($("schedNow"),sendNow,"schedNotice"));
 // Re-reading the status never throws away what someone typed; undoing is its own,
 // clearly named button, and it is local -- it asks the server for nothing.
 $("schedReload").addEventListener("click",()=>{

@@ -485,16 +485,23 @@ class ChannelService:
             return dict(existing, duplicate=True)
         # A missing sender is a message the store will refuse, not a crash.
         message = dict(message, sender=message.get("sender") or "")
+        metadata = {"message_id": message.get("message_id", ""),
+                    "references": message.get("references") or [],
+                    "automatic": bool(message.get("automatic")),
+                    "input_error": message.get("error", "")}
+        verdict = str(message.get("authentication_results") or "")[:mail_messages.MAX_AUTH_RESULTS]
+        if verdict and not (existing and "authentication_results" not in (existing.get("metadata") or {})):
+            # The receiving server's authentication verdict, kept for the one decision that
+            # needs it (a reply that asks to change a setting).  An event recorded before
+            # this existed is re-delivered as it was recorded, so it stays a duplicate.
+            metadata["authentication_results"] = verdict
         try:
             thread = existing.get("thread_key", "") if existing else self._thread(connection, message)
             refs = self._store_attachments(connection, message.get("attachments") or [])
             event = comms.record_received(connection, message["event_id"], sender=message["sender"],
                                           recipient=message.get("recipient") or "", text=message.get("text") or "(No text)",
                                           subject=message.get("subject", ""), thread_key=thread, attachments=refs,
-                                          metadata={"message_id": message.get("message_id", ""),
-                                                    "references": message.get("references") or [],
-                                                    "automatic": bool(message.get("automatic")),
-                                                    "input_error": message.get("error", "")},
+                                          metadata=metadata,
                                           received_at=message.get("received_at"), directory=self.directory)
         except (comms.InvalidRequest, PoisonMessage) as exc:
             # Refused for what this delivery *is*.  StoreFull, IdConflict and
@@ -506,7 +513,27 @@ class ChannelService:
             event = comms.reject_event(connection, message["event_id"], actor="channel-intake",
                                reason="Automatic message" if message.get("automatic") else "Input could not be read completely",
                                directory=self.directory)
+        elif event.get("state") == "pending":
+            # Re-checked on a re-delivery too: a command whose handling was interrupted is
+            # still waiting here, and must not be handed to the drafting lane as work.
+            event = self._reply_command(connection, message["event_id"]) or event
         return event
+
+    def _reply_command(self, connection, event_id):
+        """A reply that is a command to the morning report ("mute <project>"), handled.
+
+        ``None`` for everything else, and for any failure: intake must never stop on
+        this, and a message that was not handled simply stays pending for a person.
+        """
+        from . import daily_brief_reply
+        try:
+            private = comms.get_event(connection, event_id, include_private=True,
+                                      directory=self.directory)
+            if not daily_brief_reply.mute_command(self, private, connection):
+                return None
+            return comms.get_event(connection, event_id, directory=self.directory)
+        except Exception:                             # noqa: BLE001 - never blocks intake
+            return None
 
     def _record_unstorable(self, connection, row, message, reason):
         """Record "something arrived here that could not be kept" and settle it.
@@ -852,8 +879,11 @@ class ChannelService:
             return settle(connection, result_id, token=claim["token"],
                           error="Delivery status is unknown; check before retrying" if unknown else "Provider refused the request; check connection settings",
                           directory=self.directory)
+        # A transport that sent something other than what was stored -- the Collie Mail
+        # relay sending an HTML result as its plain text -- says so, and the record keeps it.
         return comms.mark_submitted(connection, result_id, token=claim["token"],
                                      provider_message_id=str(receipt.get("provider_message_id") or ""),
+                                     detail=str(receipt.get("detail") or "")[:300],
                                      directory=self.directory)
 
     def retry(self, connection, result_id):
@@ -1334,17 +1364,30 @@ def start_pump(state_dir=None, interval=60):
         if existing and existing[0].is_alive():
             return existing[1]
         stop = threading.Event()
+        morning_pass = {"thread": None}
+
+        def morning():
+            try:
+                from . import daily_brief_schedule
+                daily_brief_schedule.tick(root)
+            except Exception:
+                pass  # Daily Brief settings expose their own failure; other lanes continue.
+
         def run():
             while not stop.is_set():
                 try:
                     ChannelService(root).tick()
                 except Exception:
                     pass  # The connections API exposes a malformed settings file.
-                try:
-                    from . import daily_brief_schedule
-                    daily_brief_schedule.tick(root)
-                except Exception:
-                    pass  # Daily Brief settings expose their own failure; other lanes continue.
+                # The morning email may build the morning report -- a model call, Gmail,
+                # GitHub -- which takes minutes.  It runs beside the channel lanes, one pass
+                # at a time, so a slow build never holds up mail arriving or a reply leaving.
+                current = morning_pass["thread"]
+                if current is None or not current.is_alive():
+                    current = threading.Thread(target=morning, name="collie-morning-email",
+                                               daemon=True)
+                    morning_pass["thread"] = current
+                    current.start()
                 stop.wait(max(10, interval))
         thread = threading.Thread(target=run, name="collie-channels", daemon=True)
         _PUMPS[root] = (thread, stop)

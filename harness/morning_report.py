@@ -1264,11 +1264,20 @@ def window_start(earlier, now, zone):
     return max(start, now - WINDOW_MAX_S)
 
 
+#: How many muted projects a report reads.  A longer list is kept, not cut, but a name past
+#: this many would never be read, so nothing is added to such a list as if it worked.
+MUTED_LIMIT = 200
+
+
+def split_muted(raw):
+    """``REPORT_MUTED`` as a list, whole: names separated by commas, semicolons or lines."""
+    return [part.strip() for part in re.split(r"[,;\n]", str(raw or "")) if part.strip()]
+
+
 def muted_names():
     """The projects the person asked not to hear about (the ``REPORT_MUTED`` setting)."""
     from . import settings
-    raw = str(settings.get("REPORT_MUTED", "") or "")
-    return [part.strip() for part in re.split(r"[,;\n]", raw) if part.strip()][:200]
+    return split_muted(settings.get("REPORT_MUTED", ""))[:MUTED_LIMIT]
 
 
 def mute(signals, activity, names):

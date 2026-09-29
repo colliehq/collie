@@ -76,16 +76,75 @@ The delivery history distinguishes **provider accepted**, **failed** and
 attempt is never automatically resent. Turning the schedule off prevents new
 submissions; a submission already in progress may still finish.
 
+## Get the morning report instead
+
+In **Email settings**, set **What to send** to **The morning report** and save. The
+morning email is then the morning report (the same one `collie report build` makes) — what went well
+overnight, quick things for you, replies that are ready, your projects and a few reads —
+as a designed email, with the same report as plain text inside it for mail apps that
+show no HTML. Everything above still applies: the same account, time, window, one
+email a morning, and the same delivery history.
+
+- **One email a morning, never two.** The report replaces the brief. If you switch
+  after that morning's email has gone, the change starts tomorrow.
+- **It is built when the window opens.** Collie reads your connected sources and asks
+  your model, so the email arrives a minute or two after the time you chose. A build
+  that fails is tried again ten minutes later, then twenty minutes after that — three
+  builds a day at most. If none succeeds, or the next try would miss the morning
+  window, that morning's plain Daily Brief is sent instead (still one email), and the
+  history says why. Once built, the email is frozen: a restart sends that one and
+  never builds a second.
+- **Write reply drafts in Gmail** (on by default) lets the report put suggested
+  replies in your Gmail drafts, each addressed only to whoever wrote to you. Nothing is
+  sent from there; you open each draft and send it yourself. If the
+  `COLLIE_REPORT_GMAIL_DRAFTS` environment variable is set, the switch shows that and
+  cannot be changed on the page.
+- **Send me one now** builds a report straight away and emails it to the saved
+  account, after you confirm. It is a real email. It does not replace the morning's
+  email, only one can be on its way at a time, and at most three go out a day.
+
+**What reaches your inbox.** With an **email account** connection, Collie's own SMTP
+session sends one message: the plain text first, then the designed page, with the
+dog's picture attached inside the message (a `cid:` image), so no mail app has to
+fetch anything and nothing reports back when you open it. With **Collie Mail**, the
+relay at `mail.collie.run` carries the same designed email once it has been updated to
+a version that accepts pages; until then Collie asks the relay first, sends the plain
+text alone, and the history says the report “went as plain text” and why. Links in
+the report are `https://` only; there are no scripts, web fonts or remote images.
+
 ## Reply to the brief
 
 A reply from the connection's owner can use the exact retained snapshot from that
 email. For example, “What was the second appointment?” refers to that morning's
 text, even if today's dashboard has changed. If the thread cannot be matched
-reliably, Collie does not substitute a different day's brief.
+reliably, Collie does not substitute a different day's brief. A reply to the morning
+report works the same way, with the report's plain text.
 
 Normal inbox controls still apply: prepare a reply, or explicitly choose **Run as
 project task** for work requiring tools. A reply to a brief does not silently
 approve project work or external actions.
+
+**Mute a project from the report.** Reply to the morning report with
+`mute <project>` opening the first line — one project the report named, as it
+shows it (`colliehq/collie`) or by the repository's name alone (`collie`). Collie adds
+it to *Projects to leave out* (the `REPORT_MUTED` setting), answers in the same thread
+to confirm, and the next report leaves it out. Anything else you wrote — later on that
+line or below it, not counting quoted history or a signature — is passed on as its own
+ordinary reply, exactly as if the mute line were not there, and the confirmation says
+so. Only your own reply, from the connection's owner address and in the thread of a
+report Collie sent you, counts; “mute” anywhere but the first line, a name the report
+never mentioned (“mute the standup reminders”), a reply to the plain brief, or an
+automatic message is an ordinary reply and mutes nothing. To hear about the project
+again, remove it under Settings → Morning report → Projects to leave out.
+
+Because a mute changes a setting, Collie also needs your mail provider's word that
+the reply really came from your address: the receiving server's
+`Authentication-Results` must show a DMARC pass for your domain, or a DKIM pass signed
+by it. Anyone can write your address in a From line; they cannot make your provider
+vouch for it. An **email account** connection reads that verdict from the message
+its provider stored. **Collie Mail** cannot yet: Cloudflare's email routing hands the
+relay no authentication verdict, so a mute sent there changes nothing — the reply
+says so, and your message is kept as an ordinary reply. Use the setting instead.
 
 ## Available now
 

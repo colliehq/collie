@@ -490,27 +490,91 @@ def _receipt(result):
                          delivery_unknown=unknown)
 
 
-def send(name, result, *, relay="", state_dir=None):
-    """Submit once with a body-bound auth stamp and stable result id."""
+#: What a plain-text /send may weigh; every relay version has accepted this much.
+TEXT_SEND_LIMIT = 96 * 1024
+#: The most a designed (HTML) /send may weigh, whatever a relay advertises.
+DESIGNED_SEND_LIMIT = 640 * 1024
+
+
+def _send_payload(result, *, design=False):
+    """The /send body for one stored result.
+
+    Plain text is the request it has always been, field for field.  ``design`` adds the HTML
+    page and its stored (base64) inline images, for a relay that has said it carries them.
+    """
     metadata = result.get("metadata") or {}
     references = result.get("references") or metadata.get("references") or []
     references = references if isinstance(references, str) else " ".join(references)
     payload = {"id": result.get("id"), "to": result.get("destination"), "text": result.get("text"),
                "subject": result.get("subject") or "Collie result", "in_reply_to": result.get("in_reply_to") or "",
                "references": references}
+    if design and result.get("html"):
+        payload["html"] = result["html"]
+        if result.get("inline"):
+            payload["inline"] = [dict(part) for part in result["inline"]]
+    return payload
+
+
+def _wire(payload):
     # The same serialization as _post: the digest covers the EXACT wire bytes.
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    if len(body) > 96 * 1024:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _designed_limit(relay=""):
+    """``(bytes, "")`` when this relay carries HTML pages, or ``(0, why)`` when it does not.
+
+    Asked before every designed send rather than remembered: the relay is a separate
+    deployment, and a relay that was downgraded -- or never upgraded -- refuses an ``html``
+    field outright, which would turn a report that could have gone as text into a failure.
+    """
+    try:
+        info = _get("/capabilities", relay=relay)
+    except Exception:                                 # noqa: BLE001 - a question, not a send
+        return 0, "the Collie Mail relay could not say whether it carries HTML"
+    send_info = info.get("send") if isinstance(info, dict) else None
+    formats = send_info.get("formats") if isinstance(send_info, dict) else None
+    if not isinstance(formats, list) or "html" not in formats:
+        return 0, "the Collie Mail relay does not carry HTML yet"
+    limit = send_info.get("max_body_bytes")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        return 0, "the Collie Mail relay did not say how large a message it accepts"
+    return min(limit, DESIGNED_SEND_LIMIT), ""
+
+
+def send(name, result, *, relay="", state_dir=None):
+    """Submit once with a body-bound auth stamp and stable result id.
+
+    A result with an HTML page goes out designed when the relay says it carries HTML and the
+    request fits; otherwise the plain text goes alone and the receipt says why, so what
+    reached the inbox is on record rather than assumed.  The choice is made once, before the
+    one submission: there is never a second attempt in the other format.
+    """
+    payload, receipt_format, why = _send_payload(result), "text", ""
+    if result.get("html"):
+        limit, why = _designed_limit(relay)
+        if limit:
+            designed = _send_payload(result, design=True)
+            if len(_wire(designed)) <= limit:
+                payload, receipt_format, why = designed, "html", ""
+            else:
+                why = "the designed email is larger than the Collie Mail relay accepts"
+    body = _wire(payload)
+    if receipt_format == "text" and len(body) > TEXT_SEND_LIMIT:
         raise MailRelayError("outgoing mail exceeds the relay's message limit")
     path = "/send?sha256=" + hashlib.sha256(body).hexdigest()
     try:
         response = _mail_request(name, "POST", path, payload=payload, relay=relay, state_dir=state_dir)
-        return _receipt(response)
+        receipt = _receipt(response)
     except MailRelayError:
         raise
     except Exception:
         raise MailRelayError("mail submission is uncertain; check its receipt before retrying",
                              delivery_unknown=True) from None
+    if result.get("html"):
+        receipt["format"] = receipt_format
+        if why:
+            receipt["detail"] = "sent as plain text: " + why
+    return receipt
 
 
 def send_status(name, result_id, *, relay="", state_dir=None):

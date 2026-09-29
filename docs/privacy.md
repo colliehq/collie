@@ -86,6 +86,21 @@ feature inherently requires:
   icon — until you open a link in your browser. Headlines are kept in
   `~/.collie/daily-brief/news.db`, shown as text, and never given to a model as instructions; if
   you turn on the morning email, they are part of it. Remove every feed to stop all requests.
+- **The morning email (opt-in; off until you turn it on in the Daily Brief).** Once a morning,
+  Collie emails you the Daily Brief as plain text or, if you choose it, the morning report as a
+  designed email with its plain text inside. The report can include what Collie wrote about your
+  mail, calendar, GitHub activity, local repositories and news, links to reply drafts waiting in
+  your Gmail, and a small picture of your Collie embedded in the message; it carries no scripts,
+  web fonts, remote images or tracking, and only `https://` links. It goes only to the owner
+  address saved with the email connection you chose, and only through that connection: your own
+  mail provider over SMTP for an email account, or, for Collie Mail, the relay at
+  `mail.collie.run`, which composes the message in memory, hands it to Cloudflare's email service
+  and keeps only an id, a digest and a status — never the subject or the text. *Send me one now*
+  sends one more to the same address when you click it. On this computer the email is kept in
+  the daily email's ledger (`~/.collie/daily-brief-schedule/`) until it has been sent, and in the
+  connection's outbox afterwards, so a reply can be answered against the morning it quotes.
+  Replying `mute <project>` changes one setting, *Projects to leave out* (`REPORT_MUTED`), and
+  Collie answers only to that same owner address.
 - **Gmail and Google Calendar (opt-in; off until you connect Google).** When you run
   `collie google connect` or press *Connect* in Settings → Connections, Collie asks Google for three
   permissions: read your Gmail, write Gmail drafts, and read your Google Calendar. Your computer then
@@ -141,9 +156,9 @@ only those.
   text. Short-lived access tokens are held in memory only.
 - **When mail content leaves your computer.** Only when Collie builds your morning report, and
   only to the model provider you chose, which receives the messages and events the report needs.
-  With a local model (Ollama) nothing leaves the machine. If you turn on the morning email, the
-  report, which can include what Collie wrote about your mail and events, is delivered to you by
-  email.
+  With a local model (Ollama) nothing leaves the machine. If you choose the morning report for
+  the morning email, the report, which can include what Collie wrote about your mail and events,
+  is delivered to you by email, as described under *The morning email* above.
 - **Disconnecting.** `collie google disconnect`, or *Disconnect* in Settings → Connections,
   revokes Collie's access at Google and deletes the connection from this computer, including the
   Keychain item on macOS. `collie uninstall` does the same before it removes anything else, and
