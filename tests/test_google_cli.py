@@ -61,3 +61,44 @@ def test_cli_disconnect_revokes_and_forgets(env, capsys):
     out = capsys.readouterr().out
     assert "disconnected" in out.lower()
     assert gc.status()["state"] == "not_connected"
+
+
+def _uninstall_home(env, monkeypatch, tmp_path):
+    import types
+    import urllib.parse
+    from harness import plat
+    from _google_fakes import ALL, CLIENT_ID
+    home = tmp_path / "home"
+    cdir = home / ".collie"
+    cdir.mkdir(parents=True)
+    gc._save_connection(REFRESH, ALL.split(), account="owner@example.com", client_id=CLIENT_ID,
+                        state_dir=str(cdir))
+    env["fake"].on("POST", gc.REVOKE_URI, {})
+    monkeypatch.setattr(cli.os.path, "expanduser", lambda p: str(home) if p == "~" else p)
+    monkeypatch.setattr(cli, "_collie_procs", lambda: [])
+    monkeypatch.setattr(plat, "is_macos", lambda: False)
+
+    def revoked():
+        return [dict(urllib.parse.parse_qsl(c["data"].decode()))["token"]
+                for c in env["fake"].calls if c["url"] == gc.REVOKE_URI]
+    return cdir, revoked, lambda yes: cli.cmd_uninstall(
+        types.SimpleNamespace(yes=yes, keep_config=False))
+
+
+def test_uninstall_dry_run_names_the_google_connection_and_touches_nothing(env, monkeypatch,
+                                                                            tmp_path, capsys):
+    cdir, revoked, uninstall = _uninstall_home(env, monkeypatch, tmp_path)
+    assert uninstall(False) == 0
+    assert "Google" in capsys.readouterr().out
+    assert revoked() == [] and env["backend"].secrets
+
+
+def test_uninstall_revokes_google_and_removes_the_sealed_sign_in(env, monkeypatch, tmp_path,
+                                                                 capsys):
+    # Deleting ~/.collie alone would leave the grant live at Google and, on macOS, the
+    # Keychain item behind.
+    cdir, revoked, uninstall = _uninstall_home(env, monkeypatch, tmp_path)
+    assert uninstall(True) == 0
+    assert revoked() == [REFRESH]
+    assert not env["backend"].secrets and not cdir.exists()
+    assert REFRESH not in capsys.readouterr().out

@@ -210,6 +210,49 @@ def test_gmail_thread_caps_each_body(env):
     assert len(first["body"]) <= 1000 and first["body_truncated"] is True
 
 
+def test_html_fallback_reads_a_bounded_amount_of_markup():
+    # A sender controls this HTML. Past MAX_HTML_CHARS (after dropping style/script/comments)
+    # nothing more is read, and the body says it was cut.
+    head = "<p>start</p><style>" + "p{color:red}" * 20000 + "</style><!--" + "c" * 50000 + "-->"
+    markup = head + "<p>kept after the style block</p><div>" + "x " * 60000 + "</div><p>TAIL</p>"
+    text, complete = gc._html_text(markup)
+    assert "start" in text and "kept after the style block" in text
+    assert "TAIL" not in text and complete is False
+    body, truncated = gc._message_body({"mimeType": "text/html", "body": {"data": b64u(markup)}},
+                                       100_000)
+    assert truncated is True and "TAIL" not in body
+
+
+def test_html_fallback_stops_at_its_time_budget():
+    text, complete = gc._html_text("<p>para</p>" * 5000, budget=0)
+    assert complete is False and len(text) < 100
+
+
+@pytest.mark.parametrize("attack", ["<a ", "<!--", "</", "<!", "<style", "<script>x<", "<a b='",
+                                    "&#", "<![CDATA["])
+def test_html_fallback_is_linear_on_malformed_markup(attack):
+    # CPython's own CVE-2025-6069 regression inputs take seconds in html.parser on the 3.12.10
+    # that the Windows installer embeds; the fallback must not depend on that parser at all.
+    import time
+    start = time.perf_counter()
+    gc._html_text(attack * 20000)
+    assert time.perf_counter() - start < 1.0
+    source = inspect.getsource(gc)
+    assert not re.search(r"(?m)^\s*(import html\.parser|from html(\.parser)? import)", source)
+    assert "HTMLParser" not in source
+
+
+@pytest.mark.parametrize("charset", ["idna", "undefined", "punycode", "rot13", "hex", "base64",
+                                     "no-such-charset"])
+def test_a_sender_chosen_charset_never_breaks_the_thread_read(charset):
+    raw = "hello ÿ world".encode("latin-1")
+    part = {"mimeType": "text/plain", "headers": [
+        {"name": "Content-Type", "value": "text/plain; charset=%s" % charset}],
+        "body": {"data": base64.urlsafe_b64encode(raw).decode()}}
+    text, _cut = gc._message_body({"mimeType": "multipart/alternative", "parts": [part]}, 1000)
+    assert "hello" in text and "world" in text
+
+
 def test_body_decoding_tolerates_missing_padding_and_other_charsets():
     raw = "café".encode("latin-1")
     data = base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -279,6 +322,80 @@ def test_draft_looks_up_the_thread_when_reply_headers_are_not_given(env):
     msg = _decoded(captured)
     assert msg["In-Reply-To"] == "<CAB2@mail.gmail.com>"
     assert msg["References"].split() == ["<CAB1@mail.example.com>", "<CAB2@mail.gmail.com>"]
+
+
+def _thread_with_headers(headers):
+    return {"id": THREAD, "messages": [{"id": "m1", "threadId": THREAD, "labelIds": ["INBOX"],
+                                        "payload": {"headers": [{"name": k, "value": v}
+                                                                for k, v in headers]}}]}
+
+
+def test_draft_tolerates_a_thread_whose_subject_is_too_long(env):
+    # The thread's headers come from whoever sent the mail; they cannot be allowed to refuse
+    # the person's own reply.
+    captured = _drafts(env)
+    env["fake"].on("GET", gc.GMAIL_API + "/users/me/threads/" + THREAD, _thread_with_headers(
+        [("Message-ID", "<CAB1@mail.example.com>"), ("Subject", "x" * 999)]))
+    gc.gmail_create_draft(THREAD, "ana@example.com", "", "ok")
+    msg = _decoded(captured)
+    assert msg["Subject"].startswith("Re: xxx") and len(msg["Subject"]) <= 1002
+    assert msg["In-Reply-To"] == "<CAB1@mail.example.com>"
+
+
+def test_draft_skips_a_malformed_message_id_from_the_thread(env):
+    captured = _drafts(env)
+    env["fake"].on("GET", gc.GMAIL_API + "/users/me/threads/" + THREAD, _thread_with_headers(
+        [("Message-ID", "<not a valid id@example.com>"), ("Subject", "hi"),
+         ("References", "<ok-1@example.com> junk <bad id> " + "<r%d@example.com> " * 400 % tuple(
+             range(400)))]))
+    gc.gmail_create_draft(THREAD, "ana@example.com", "", "ok")
+    msg = _decoded(captured)
+    assert msg["In-Reply-To"] is None
+    refs = msg["References"].split()
+    assert len(refs) <= gc.MAX_REFERENCES and refs[-1] == "<r399@example.com>"
+    assert all(r.startswith("<") and r.endswith(">") for r in refs)
+    assert captured["body"]["message"]["threadId"] == THREAD
+
+
+@pytest.mark.parametrize("to", [
+    "boss@corp.com, attacker@evil.com",                  # a list
+    "boss@corp.com; attacker@evil.com",
+    '"boss@corp.com" <attacker@evil.com>',               # the name shows another address
+    "boss＠corp.com <attacker@evil.com>",            # ...with a full-width at sign
+    "Boss <boss@corp.com> attacker@evil.com",
+    "undisclosed-recipients:;",                          # group syntax
+    "Team: a@x.com, b@y.com;",
+    "not an address", "a@b", "@corp.com", "boss@", "boss@@corp.com", "bo ss@corp.com",
+    "boss@corp..com", ".boss@corp.com", "boss@-corp.com", "<boss@corp.com",
+    "böss@corp.com", "boss@corp.com Bcc: x@y.com", "=?utf-8?q?x?= <a@b.com>",
+])
+def test_draft_goes_to_exactly_one_plain_address(env, to):
+    _drafts(env)
+    with pytest.raises(ValueError):
+        gc.gmail_create_draft(THREAD, to, "hi", "b", in_reply_to="<a@b>")
+    assert not env["fake"].urls(gc.GMAIL_API + "/users/me/drafts")
+
+
+@pytest.mark.parametrize("to,header", [
+    ("ana@example.com", "ana@example.com"),
+    ("Ana <ana@example.com>", "Ana <ana@example.com>"),
+    ('"Ana Díaz" <ana@example.com>', "Ana Díaz <ana@example.com>"),
+    ("  <ana.b+tag@mail.example.co.uk>  ", "ana.b+tag@mail.example.co.uk"),
+])
+def test_draft_accepts_one_address_with_an_honest_name(env, to, header):
+    captured = _drafts(env)
+    gc.gmail_create_draft(THREAD, to, "hi", "b", in_reply_to="<a@b>")
+    assert _decoded(captured)["To"] == header
+
+
+@pytest.mark.parametrize("bad", [" ", " ", "\x85", "\x0b", "\x0c", "\x1b", "\x7f"])
+def test_draft_headers_refuse_every_line_break_and_control_character(env, bad):
+    _drafts(env)
+    with pytest.raises(ValueError) as info:
+        gc.gmail_create_draft(THREAD, "ana@example.com", "hi" + bad + "Bcc: x@y.com", "b",
+                              in_reply_to="<a@b>")
+    assert "single line" in str(info.value)
+    assert not env["fake"].calls
 
 
 @pytest.mark.parametrize("field", ["to", "subject", "in_reply_to", "references"])

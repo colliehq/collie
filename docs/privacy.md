@@ -160,7 +160,9 @@ only those.
   the morning email, the report, which can include what Collie wrote about your mail and events,
   is delivered to you by email, as described under *The morning email* above.
 - **Disconnecting.** `collie google disconnect`, or *Disconnect* in Settings → Connections,
-  revokes Collie's access at Google and deletes the connection from this computer. You can also
+  revokes Collie's access at Google and deletes the connection from this computer, including the
+  Keychain item on macOS. `collie uninstall` does the same before it removes anything else, and
+  connecting a different Google account revokes the one it replaces. You can also
   remove Collie at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
   While Collie's Google app is in testing, Google ends every sign-in after 7 days, and Collie then
   asks you to connect again.
@@ -228,9 +230,11 @@ provider's tools is actually used.
 
 Collie's local state (settings, memory, sessions, meeting schedules, meeting recordings/notes,
 paired-device list) lives under `~/.collie` on your machine. A meeting recording or manually added
-scheduled meeting can be deleted individually from Meeting Notes; delete the whole folder to remove
-all Collie state. The Google connection is removed with `collie google disconnect`, which also
-revokes it at Google. Uninstalling Collie removes the program.
+scheduled meeting can be deleted individually from Meeting Notes. Deleting the whole folder removes
+Collie's local state, with one exception: a Google connection. Its access stays granted at Google,
+and on macOS its sign-in is a Keychain item outside the folder. Run `collie google disconnect`
+first, which revokes the access and deletes both. `collie uninstall` removes the folder and does this
+for you. Uninstalling Collie removes the program.
 
 ## Changes
 
