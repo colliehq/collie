@@ -264,8 +264,10 @@ def prompt(signals, sources, profile, now, weather, active=None):
         "what matters most; an empty section is fine.\n"
         "5. \"greeting\" greets the user by name for the time of day, at most 6 words, like "
         "\"Good morning, Daming!\" \"headline\" is one upbeat sentence about the day, at most "
-        "10 words, like \"Four quick ones and you're clear.\" \"summary\" is at most 30 words "
-        "with the best news and what is ready.\n"
+        "10 words, like \"Three quick ones to start with.\" If it counts things, the count is "
+        "the number of items you put in yours and ready together, and it says the day is clear "
+        "only when no needs_you, waiting_on_others or ready signal was left out. \"summary\" is "
+        "at most 30 words with the best news and what is ready.\n"
         "6. Keep it short: a title at most 8 words, a detail or line one sentence of at most 15 "
         "words, and a project line never repeats an item in yours. Never mention empty "
         "sections, sources that could not be read, or anything you "
@@ -441,8 +443,9 @@ def _projects_section(written, active, index, zh):
     return {"items": items, "more": max(0, len(active) - len(items))}
 
 
-def _more(section, kept, signals):
-    cited = {i for item in kept for i in item["signal_ids"]}
+def _more(section, kept, signals, shown=()):
+    """How many signals this section is for were left out of the whole report."""
+    cited = {i for item in kept for i in item["signal_ids"]} | set(shown)
     if section == "reads":
         pool = [s for s in signals if s["source"] == "news"]
     else:
@@ -515,8 +518,58 @@ def ground(raw, signals, zone, active=None, zh=False):
             continue
         kept = kept[:CAPS[section]]
         written += len(kept)
-        sections[section] = {"items": kept, "more": _more(section, kept, signals)}
+        sections[section] = {"items": kept, "more": 0}
+    _count_more(sections, signals)
     return sections, dropped, written
+
+
+def _count_more(sections, signals):
+    """Fill each section's ``more``: what it is for and no other item shows.  Project lines are
+    status, not a place a thing to do was shown, so they do not count as showing it."""
+    shown = {i for name in ("wins", "yours", "ready", "reads")
+             for item in sections[name]["items"] for i in item["signal_ids"]}
+    for name in ("wins", "yours", "ready", "reads"):
+        sections[name]["more"] = _more(name, sections[name]["items"], signals, shown)
+
+
+_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+_ZH_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8,
+              "九": 9}
+_ZH_COUNT = re.compile(r"([0-9]+|[一二两三四五六七八九十]+)\s*(?:件|个|項|项|条|樣|样|桩)")
+_CLEAR = re.compile(r"(?i)\b(?:clear|all done|all set|done for the day|nothing else)\b"
+                    r"|清爽|搞定|全部完成|就完事|没别的")
+
+
+def _zh_number(text):
+    if text.isdigit():
+        return int(text)
+    if "十" in text:
+        tens, _, ones = text.partition("十")
+        return (_ZH_DIGITS.get(tens, 1) if tens else 1) * 10 + _ZH_DIGITS.get(ones, 0)
+    return _ZH_DIGITS.get(text, -1)
+
+
+def _headline_problem(text, things, total, zh):
+    """Why a headline would disagree with the page, or ``""``.
+
+    The page shows ``things`` items to do (the dots), out of ``total``.  A headline may count
+    only the ones shown, and may say the day is clear only when nothing was left out.
+    """
+    if zh:
+        counts = [_zh_number(match.group(1)) for match in _ZH_COUNT.finditer(text)]
+    else:
+        words = re.findall(r"[A-Za-z]+|\d+", text)
+        counts = [int(word) if word.isdigit() else _COUNT_WORDS[word.lower()]
+                  for index, word in enumerate(words)
+                  if word.isdigit() or (word.lower() in _COUNT_WORDS
+                                        and (word.lower() != "one" or index == 0))]
+    wrong = [count for count in counts if count != things]
+    if wrong:
+        return "it counts %d things but the page lists %d" % (wrong[0], things)
+    if total > things and _CLEAR.search(text):
+        return "it says the day is clear but %d of %d things are listed" % (things, total)
+    return ""
 
 
 # ---------------------------------------------------------------- the words we write ourselves
@@ -537,17 +590,22 @@ def _greeting(profile, now):
     return "%s, %s!" % (word, name) if name else word + "!"
 
 
-def _headline(profile, things):
+def _headline(profile, things, total=None):
+    """Counted words that agree with the page: ``things`` listed, out of ``total``."""
+    total = things if total is None else max(total, things)
     if str(profile.get("language") or "").startswith("zh"):
-        return "今天早上没有要你操心的事。" if not things else \
-            "今天有 %d 件小事，做完就清爽了。" % things
+        if not things:
+            return "今天早上没有要你操心的事。"
+        return ("今天有 %d 件小事，做完就清爽了。" if total == things else
+                "先从这 %d 件小事开始。") % things
     if not things:
         return "Nothing needs you this morning."
+    word = _NUMBER_WORDS[things] if things < len(_NUMBER_WORDS) else str(things)
+    if total > things:
+        return "%s quick one%s to start with." % (word, "" if things == 1 else "s")
     if things == 1:
         return "One quick one and you're clear."
-    if things < len(_NUMBER_WORDS):
-        return "%s quick ones and you're clear." % _NUMBER_WORDS[things]
-    return "%d quick ones today, and I've lined them up." % things
+    return "%s quick ones and you're clear." % word
 
 
 def _summary(profile, signals):
@@ -592,11 +650,19 @@ def fallback(signals, profile, now, active=None):
              for s in sorted([s for s in signals if s["source"] == "news"],
                              key=lambda s: -(s.get("when") or 0.0))[:CAPS["reads"]]]
     for name, kept in (("wins", wins), ("yours", yours), ("ready", ready), ("reads", reads)):
-        sections[name] = {"items": kept, "more": _more(name, kept, signals)}
+        sections[name] = {"items": kept, "more": 0}
     sections["projects"] = _projects_section([], active, index, zh)
-    things = len(yours) + len(ready)
-    return {"greeting": _greeting(profile, now), "headline": _headline(profile, things),
-            "summary": _summary(profile, signals), "things_today": things, "sections": sections}
+    _count_more(sections, signals)
+    things, total = _things(sections)
+    return {"greeting": _greeting(profile, now), "headline": _headline(profile, things, total),
+            "summary": _summary(profile, signals), "things_today": things,
+            "things_total": total, "sections": sections}
+
+
+def _things(sections):
+    """``(listed, total)`` things to do: for you plus ready, and those plus what was left out."""
+    listed = len(sections["yours"]["items"]) + len(sections["ready"]["items"])
+    return listed, listed + sections["yours"]["more"] + sections["ready"]["more"]
 
 
 # ---------------------------------------------------------------- the model
@@ -695,24 +761,28 @@ def compose(signals, sources, profile, now, weather, *, caller=None, activity=No
     except Exception as exc:                          # noqa: BLE001 - reported, not raised
         return plain, dict(composer, mode="fallback",
                            error="the model could not be used (%s)" % type(exc).__name__)
-    things = len(sections["yours"]["items"]) + len(sections["ready"]["items"])
+    things, total = _things(sections)
     allowed = _top_numbers(sections, signals, profile, now, weather, things, zone)
-    words = {"greeting": _greeting(profile, now), "headline": _headline(profile, things),
+    words = {"greeting": _greeting(profile, now), "headline": _headline(profile, things, total),
              "summary": plain["summary"]}
     for key, limit in (("greeting", GREETING_LIMIT), ("headline", 140), ("summary", 400)):
         text = daily_brief._text(raw.get(key), 1000)
-        bad = _unsupported(text, allowed) if text else ""
-        if text and len(text) > limit:
+        if not text:
+            continue
+        if len(text) > limit:
             # A line cut mid-word in 32-pixel type reads as a mistake; our own words fit.
-            composer["dropped"].append({"section": key, "signal_ids": [],
-                                        "reason": "too long for the header (%d characters)"
-                                        % len(text)})
-        elif text and not bad:
+            reason = "too long for the header (%d characters)" % len(text)
+        elif key == "headline":
+            # The headline sits over the dots: its count is the page's count, nothing else.
+            reason = _headline_problem(text, things, total, zh)
+        else:
+            bad = _unsupported(text, allowed)
+            reason = "number %s is not in any signal" % bad if bad else ""
+        if reason:
+            composer["dropped"].append({"section": key, "signal_ids": [], "reason": reason})
+        else:
             words[key] = text
-        elif text:
-            composer["dropped"].append({"section": key, "signal_ids": [],
-                                        "reason": "number %s is not in any signal" % bad})
-    return dict(words, things_today=things, sections=sections), composer
+    return dict(words, things_today=things, things_total=total, sections=sections), composer
 
 
 # ---------------------------------------------------------------- drafts
@@ -869,8 +939,10 @@ def describe(report, saved=""):
         count, more = len(part.get("items") or []), int(part.get("more") or 0)
         parts.append("%d %s%s" % (count, one if count == 1 else many,
                                   " (+%d more)" % more if more else ""))
-    lines.append("Sections: %s; %d things today; grounding dropped %d" % (
-        ", ".join(parts), int(report.get("things_today") or 0),
+    listed = int(report.get("things_today") or 0)
+    total = max(listed, int(report.get("things_total") or 0))
+    lines.append("Sections: %s; %s things today; grounding dropped %d" % (
+        ", ".join(parts), ("%d of %d" % (listed, total)) if total > listed else str(listed),
         len(composer.get("dropped") or [])))
     drafts = (report.get("provenance") or {}).get("drafts") or {}
     if drafts.get("requested"):

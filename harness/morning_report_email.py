@@ -57,6 +57,7 @@ _WORDS = {
            "ready_note": "I prepared these. Nothing leaves until you say so.",
            "projects": "Your projects", "reads": "Good reads with your coffee",
            "care": "You'll care: ", "things": "%d things today", "thing": "1 thing today",
+           "things_of": "%d of %d things today",
            "clear": "All clear today", "more": "+ %d more", "review": "Review & send",
            "open": "Open", "in_drafts": "It's in your Gmail drafts.",
            "not_drafted": "I wrote a reply; it isn't in your Gmail drafts yet.",
@@ -65,7 +66,7 @@ _WORDS = {
     "zh": {"wins": "你睡着的时候", "yours": "几件小事等你", "ready": "都准备好了",
            "ready_note": "这些我已经准备好了，你点头之前什么都不会发出去。",
            "projects": "你的项目", "reads": "配咖啡读一读", "care": "你会在意：",
-           "things": "今天 %d 件事", "thing": "今天 1 件事", "clear": "今天没有要做的事",
+           "things": "今天 %d 件事", "thing": "今天 1 件事", "things_of": "今天 %d 件事（共 %d 件）", "clear": "今天没有要做的事",
            "more": "还有 %d 条", "review": "看看再发", "open": "打开",
            "in_drafts": "已经放进你的 Gmail 草稿箱。",
            "not_drafted": "回复我写好了，还没放进 Gmail 草稿箱。",
@@ -341,19 +342,36 @@ def _reads_html(report, items):
     return "".join(out)
 
 
+def _count(report):
+    """``(listed, total)`` things to do.  The dots are the listed ones, never more."""
+    def number(value):
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) \
+            and value > 0 else 0
+    listed = number(report.get("things_today"))
+    return listed, max(listed, number(report.get("things_total")))
+
+
+def _things_label(report):
+    words = _words(report)
+    listed, total = _count(report)
+    if not listed:
+        return words["clear"]
+    if total > listed:
+        return words["things_of"] % (listed, total)
+    return words["thing"] if listed == 1 else words["things"] % listed
+
+
 def _header(report, sky_name):
     fallback, gradient, light = SKIES.get(sky_name, SKIES["clear"])
     tone = _LIGHT_TEXT if light else _DARK_TEXT
-    words = _words(report)
-    things = report.get("things_today")
-    things = int(things) if isinstance(things, int) and not isinstance(things, bool) else 0
+    things = _count(report)[0]
     if things:
         dots = "".join('<td style="padding-right:6px"><div style="width:12px;height:12px;'
                        'border-radius:50%%;background:%s"></div></td>' % tone["dot"]
                        for _ in range(min(things, 8)))
-        label = words["thing"] if things == 1 else words["things"] % things
     else:
-        dots, label = "", words["clear"]
+        dots = ""
+    label = _things_label(report)
     return (
         '<tr><td style="padding:0"><table role="presentation" width="100%%" cellpadding="0" '
         'cellspacing="0" border="0" bgcolor="%s" style="background:%s;background-image:%s">'
@@ -406,9 +424,7 @@ def _text(report, parts):
     words = _words(report)
     lines = [str(report.get("greeting") or ""), _date_line(report), ""]
     lines += [bit for bit in (report.get("headline"), report.get("summary")) if bit]
-    things = report.get("things_today") or 0
-    lines.append(words["clear"] if not things else
-                 words["thing"] if things == 1 else words["things"] % things)
+    lines.append(_things_label(report))
     for name, formatter in (("wins", None), ("yours", None), ("ready", None),
                             ("projects", None), ("reads", None)):
         items, more = parts[name]

@@ -67,7 +67,7 @@ SOURCES = [{"name": "github", "label": "GitHub", "state": "ok", "reason": "", "r
 def model_answer(**over):
     base = {
         "greeting": "Good morning, Daming!",
-        "headline": "Four quick ones and you're clear.",
+        "headline": "Three quick ones to start with.",
         "summary": "Collie v0.31.0 shipped overnight. Two replies are ready in your drafts.",
         "wins": [{"title": "Collie 0.31.0 is out.", "detail": "3 downloads already.",
                   "signal_ids": [RELEASE["id"]]},
@@ -199,8 +199,8 @@ def test_top_lines_with_numbers_nothing_supports_are_rewritten_from_the_signals(
                                      summary="You made $9,000 overnight."))
     assert "12" not in out["headline"] and "9,000" not in out["summary"]
     assert out["headline"] and out["summary"]
-    kept, _, _ = compose(model_answer(headline="3 quick ones and you're clear."))
-    assert kept["headline"] == "3 quick ones and you're clear."       # the real count
+    kept, _, _ = compose(model_answer(headline="3 quick ones to start with."))
+    assert kept["headline"] == "3 quick ones to start with."          # the real count
 
 
 def test_a_reply_draft_goes_to_the_threads_sender_whatever_the_model_says():
@@ -592,3 +592,52 @@ def test_the_fallback_ranks_projects_the_same_way():
     assert composer["mode"] == "fallback"
     assert [p["project"] for p in items(out, "projects")] == ["o/p0", "o/p1", "o/p2", "o/p3", "o/p4"]
     assert out["sections"]["projects"]["more"] == 2 and items(out, "yours") == []
+
+
+# ---------------------------------------------------------------- counts that agree
+
+
+def _busy():
+    """Five things for the person: four needs_you signals and one reply ready."""
+    asks = [sig("collie", "ask%d" % i, "needs_you", "Approve step %d" % i) for i in range(4)]
+    return asks + [REPLY]
+
+
+def _answer(headline, yours=2):
+    signals = _busy()
+    return model_answer(
+        headline=headline, summary="", wins=[], projects=[], reads=[],
+        yours=[{"title": s["title"], "detail": "", "signal_ids": [s["id"]]} for s in signals[:yours]],
+        ready=[{"title": "Re: lunch", "detail": "", "signal_ids": [REPLY["id"]]}])
+
+
+def test_the_count_of_things_is_the_items_listed_and_the_total_is_kept_beside_it():
+    out, _, _ = compose(_answer("Three quick ones to start with."), signals=_busy())
+    assert out["things_today"] == 3                     # 2 for you + 1 ready, as listed
+    assert out["things_total"] == 5                     # + the 2 asks left out
+    assert out["sections"]["yours"]["more"] == 2
+    assert out["headline"] == "Three quick ones to start with."
+
+
+@pytest.mark.parametrize("headline", ["Four quick ones and you're clear.", "5 things need you.",
+                                      "Three quick ones and you're clear."])
+def test_a_headline_whose_count_or_all_clear_disagrees_with_the_page_is_replaced(headline):
+    out, composer, _ = compose(_answer(headline), signals=_busy())
+    assert out["headline"] != headline
+    assert out["headline"] == "Three quick ones to start with."
+    assert any(d["section"] == "headline" for d in composer["dropped"])
+
+
+def test_when_everything_is_listed_all_clear_is_true():
+    out, _, _ = compose(_answer("Three quick ones and you're clear."),
+                        signals=_busy()[:2] + [REPLY])
+    assert (out["things_today"], out["things_total"]) == (3, 3)
+    assert out["headline"] == "Three quick ones and you're clear."
+
+
+def test_chinese_counts_are_checked_too():
+    zh = dict(PROFILE, language="zh")
+    out, _, _ = compose(_answer("今天有 4 件小事等你。"), signals=_busy(), profile=zh)
+    assert out["headline"] == "先从这 3 件小事开始。"
+    kept, _, _ = compose(_answer("先看看这 3 件事。"), signals=_busy(), profile=zh)
+    assert kept["headline"] == "先看看这 3 件事。"

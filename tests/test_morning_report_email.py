@@ -202,3 +202,18 @@ def test_chinese_reports_get_chinese_labels():
                   "今天 4 件事", "你会在意：", "9月29日 星期二"):
         assert words in html, words
     assert "While you slept" not in html
+
+
+def test_the_dots_and_the_label_count_what_is_listed_out_of_the_total():
+    html = mail.render(report(things_today=3, things_total=5))["html"]
+    header = html[:html.index("While you slept")]
+    assert "3 of 5 things today" in header
+    assert header.count("border-radius:50%;background:rgba(20,33,61,.16)") == 3
+    assert "3 of 5 things today" in mail.render(report(things_today=3, things_total=5))["text"]
+    zh = mail.render(report(language="zh", things_today=3, things_total=5))["html"]
+    assert "今天 3 件事（共 5 件）" in zh
+
+
+def test_when_everything_is_listed_the_label_is_just_the_count():
+    html = mail.render(report(things_today=4, things_total=4))["html"]
+    assert "4 things today" in html and " of 4 " not in html
