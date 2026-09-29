@@ -1280,8 +1280,17 @@ def _angle(message_id):
     return message_id
 
 
+_MESSAGE_ID = re.compile(r"<[^<>\s]{1,994}>")
+
+
 def _reply_context(tid, state_dir):
-    """(Message-ID, References, Subject) of the last message in the thread that is not a draft."""
+    """(Message-ID, References, Subject) of the last message in the thread that is not a draft.
+
+    These headers were written by whoever sent the mail, so they are cleaned rather than
+    trusted or refused: a Message-ID that is not one is left out (Gmail still threads by
+    threadId), only well-formed ids are kept from References (the last MAX_REFERENCES), and the
+    subject is made one line of at most 998 characters.
+    """
     data = _api("GET", GMAIL_API + "/users/me/threads/" + tid, need=GMAIL_READ,
                 state_dir=state_dir, params=[("format", "metadata")] + [
                     ("metadataHeaders", h) for h in ("Message-ID", "References", "Subject")])
@@ -1291,8 +1300,12 @@ def _reply_context(tid, state_dir):
             last = msg
     head = _headers(last.get("payload"))
     first = _headers(((data.get("messages") or [{}])[0] or {}).get("payload"))
-    return (head.get("message-id", ""), head.get("references", ""),
-            head.get("subject", "") or first.get("subject", ""))
+    found_id = head.get("message-id", "").strip()
+    found_id = found_id if _MESSAGE_ID.fullmatch(found_id) else ""
+    refs = _MESSAGE_ID.findall(head.get("references", ""))[-MAX_REFERENCES:]
+    subject = head.get("subject", "") or first.get("subject", "")
+    subject = re.sub(r"\s+", " ", "".join(c if c.isprintable() else " " for c in subject))
+    return found_id, " ".join(refs), subject.strip()[:998]
 
 
 def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_reply_to: str = "",
@@ -1318,10 +1331,9 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
     if not in_reply_to or not subject:
         found_id, found_refs, found_subject = _reply_context(tid, state_dir)
         if not in_reply_to:
-            in_reply_to = _angle(_header_value(found_id, "in_reply_to", 998))
-            references = references or _header_value(found_refs.replace("\r", " ").replace(
-                "\n", " "), "references", 8000)
-        subject = subject or _header_value(found_subject, "subject", 998)
+            in_reply_to = found_id
+            references = references or found_refs
+        subject = subject or found_subject
     refs = []
     for item in references.split() + ([in_reply_to] if in_reply_to else []):
         item = _angle(item)

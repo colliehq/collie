@@ -324,6 +324,39 @@ def test_draft_looks_up_the_thread_when_reply_headers_are_not_given(env):
     assert msg["References"].split() == ["<CAB1@mail.example.com>", "<CAB2@mail.gmail.com>"]
 
 
+def _thread_with_headers(headers):
+    return {"id": THREAD, "messages": [{"id": "m1", "threadId": THREAD, "labelIds": ["INBOX"],
+                                        "payload": {"headers": [{"name": k, "value": v}
+                                                                for k, v in headers]}}]}
+
+
+def test_draft_tolerates_a_thread_whose_subject_is_too_long(env):
+    # The thread's headers come from whoever sent the mail; they cannot be allowed to refuse
+    # the person's own reply.
+    captured = _drafts(env)
+    env["fake"].on("GET", gc.GMAIL_API + "/users/me/threads/" + THREAD, _thread_with_headers(
+        [("Message-ID", "<CAB1@mail.example.com>"), ("Subject", "x" * 999)]))
+    gc.gmail_create_draft(THREAD, "ana@example.com", "", "ok")
+    msg = _decoded(captured)
+    assert msg["Subject"].startswith("Re: xxx") and len(msg["Subject"]) <= 1002
+    assert msg["In-Reply-To"] == "<CAB1@mail.example.com>"
+
+
+def test_draft_skips_a_malformed_message_id_from_the_thread(env):
+    captured = _drafts(env)
+    env["fake"].on("GET", gc.GMAIL_API + "/users/me/threads/" + THREAD, _thread_with_headers(
+        [("Message-ID", "<not a valid id@example.com>"), ("Subject", "hi"),
+         ("References", "<ok-1@example.com> junk <bad id> " + "<r%d@example.com> " * 400 % tuple(
+             range(400)))]))
+    gc.gmail_create_draft(THREAD, "ana@example.com", "", "ok")
+    msg = _decoded(captured)
+    assert msg["In-Reply-To"] is None
+    refs = msg["References"].split()
+    assert len(refs) <= gc.MAX_REFERENCES and refs[-1] == "<r399@example.com>"
+    assert all(r.startswith("<") and r.endswith(">") for r in refs)
+    assert captured["body"]["message"]["threadId"] == THREAD
+
+
 @pytest.mark.parametrize("field", ["to", "subject", "in_reply_to", "references"])
 def test_draft_refuses_header_injection_before_any_request(env, field):
     args = {"thread_id": THREAD, "to": "ana@example.com", "subject": "hi", "body": "b",
