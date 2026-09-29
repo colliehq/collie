@@ -257,7 +257,7 @@ def test_draft_is_an_in_thread_reply_with_rfc_2822_headers(env):
     assert msg["From"] is None and msg["Bcc"] is None
     assert out["draft_id"] == DRAFT and out["message_id"] == "19a0b1c2d3e4f5a6"
     assert out["thread_id"] == THREAD
-    assert out["open_url"].startswith("https://mail.google.com/mail/u/owner@example.com/#all?compose=")
+    assert out["open_url"].startswith("https://mail.google.com/mail/?authuser=owner@example.com#all?compose=")
     assert captured["headers"]["Content-Type"].startswith("application/json")
 
 
@@ -319,14 +319,14 @@ def test_draft_open_url_matches_the_published_gmail_compose_encoding():
     assert gc._compose_token("thread-f:1612800019161438603+msg-a:r-2174453288762984534") == (
         "CqMvqmRFntSzZfVtfBmPPsWMVrdJWrfWKgnmmQnBpjMBHZDDbfzgzMVWSNMwqsjkqbXqVSvsngB")
     url = gc.draft_open_url(THREAD, DRAFT, "owner@example.com")
-    assert url == ("https://mail.google.com/mail/u/owner@example.com/#all?compose="
+    assert url == ("https://mail.google.com/mail/?authuser=owner@example.com#all?compose="
                    "lLtBPXMfwdZJvWLlDhvxCqGbFRRnxnkhTqwPvxpBMCQbxPwdwWXVPRGQFfXwBlzFZRQLLvbX")
     assert gc.draft_open_url(THREAD, DRAFT, "").startswith("https://mail.google.com/mail/u/0/")
 
 
 def test_draft_open_url_falls_back_to_the_thread_for_unknown_id_shapes():
     assert gc.draft_open_url(THREAD, "weird-id", "a@b.c") == (
-        "https://mail.google.com/mail/u/a@b.c/#all/" + THREAD)
+        "https://mail.google.com/mail/?authuser=a@b.c#all/" + THREAD)
 
 
 # ------------------------------------------------------------------------ calendar

@@ -1271,14 +1271,17 @@ def _compose_token(plain):
 
 
 def _gmail_base(account):
-    who = urllib.parse.quote(account, safe="@.+-_") if account and "@" in account else "0"
-    return "https://mail.google.com/mail/u/%s/" % who
+    # ``?authuser=<address>`` selects the signed-in account by address. ``/mail/u/<address>/``
+    # does not: Gmail answers it with "Temporary Error (404)" (seen 2026-09-29 on a real draft).
+    if account and "@" in account:
+        return "https://mail.google.com/mail/?authuser=%s" % urllib.parse.quote(account, safe="@.+-_")
+    return "https://mail.google.com/mail/u/0/"
 
 
 def draft_open_url(thread_id: str, draft_id: str, account: str = "") -> str:
     """A Gmail web address that opens this reply draft for editing.
 
-    ``/mail/u/<account>/`` picks the right signed-in account; ``#all?compose=<token>`` opens the
+    ``?authuser=<account>`` picks the right signed-in account; ``#all?compose=<token>`` opens the
     draft, the token being ``thread-f:<decimal thread id>+msg-a:<draft id>`` in Gmail's URL
     encoding (see _compose_token). For an id of any other shape this falls back to the thread,
     where Gmail shows the draft inline.
