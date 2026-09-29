@@ -89,9 +89,11 @@ email a morning, and the same delivery history.
   after that morning's email has gone, the change starts tomorrow.
 - **It is built when the window opens.** Collie reads your connected sources and asks
   your model, so the email arrives a minute or two after the time you chose. A build
-  that fails is tried again a few minutes later, three times at most; after that the
-  day is marked as an error and nothing is sent. Once built, the email is frozen: a
-  restart sends that one and never builds a second.
+  that fails is tried again ten minutes later, then twenty minutes after that — three
+  builds a day at most. If none succeeds, or the next try would miss the morning
+  window, that morning's plain Daily Brief is sent instead (still one email), and the
+  history says why. Once built, the email is frozen: a restart sends that one and
+  never builds a second.
 - **Write reply drafts in Gmail** (on by default) lets the report put suggested
   replies in your Gmail drafts, each addressed only to whoever wrote to you. Nothing is
   sent from there; you open each draft and send it yourself. If the

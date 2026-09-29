@@ -55,9 +55,11 @@ gets the report *or* the brief, never both: switching after that morning's email
 went changes tomorrow, not today.  The report takes minutes to build (a model call,
 Gmail, GitHub), so it is built outside every lock, under a lease written to the
 ledger first: a second pass that arrives while it is being built waits, a build
-that fails is tried again after the lease runs out (at most ``MAX_BUILDS`` times),
-and once built the rendered email is frozen in the ledger exactly as the brief's
-text is.  A restart sends the frozen report; it never builds a second one.
+that fails is tried again later, spaced (``BUILD_RETRY_S``, at most ``MAX_BUILDS``
+builds a day), and when none succeeds -- or the next try would miss the window --
+that morning's plain brief goes instead, in the same job and outbox id.  Once built
+the rendered email is frozen in the ledger exactly as the brief's text is.  A
+restart sends the frozen report; it never builds a second one.
 
 **Send me one now** (:func:`send_now`) is a real send of a freshly built report to
 the same frozen destination, on an explicit request: its own job (never the
@@ -92,8 +94,11 @@ CONTENTS = ("brief", "morning_report")
 
 #: A report being built holds the day this long; a pass that finds it held waits.
 BUILD_LEASE_S = 10 * 60
-#: Builds of one morning's report, ever.  After that the day is an error, not a loop.
+#: Builds of one morning's report, ever.  After that the morning gets the plain brief.
 MAX_BUILDS = 3
+#: How long to wait after the first and after the second failed build: spaced, so a bug
+#: that fails every time costs at most MAX_BUILDS builds a day, never one a tick.
+BUILD_RETRY_S = (10 * 60, 20 * 60)
 #: "Send me one now": at most this many a local day, and one on its way at a time.
 NOW_PER_DAY = 3
 #: A requested send still open after this long was abandoned by a process that died.
@@ -453,13 +458,12 @@ def _report_payload(root, prefs, wall, date):
                    language=prefs["language"])
     report = morning_report.build(state_dir=root, now=wall, drafts=True, profile=profile)
     if not isinstance(report, dict) or report.get("date") != date:
-        raise ScheduleError("the morning report was built for a different day than the "
-                            "schedule, so nothing was sent")
+        raise ScheduleError("it was built for a different day than the schedule")
     rendered = morning_report_email.render(report)
     subject = _clip(rendered.get("subject") or "", SUBJECT_BYTES, "…")
     text = _clip(rendered.get("text") or "", TEXT_BYTES)
     if not subject.strip() or not text.strip():
-        raise ScheduleError("the morning report rendered an empty email, so nothing was sent")
+        raise ScheduleError("it rendered an empty email")
     html, inline, why = _designed(report, rendered)
     content = hashlib.sha256("\n".join((subject, text, html)).encode("utf-8")).hexdigest()[:16]
     return {"content": "morning_report", "brief_id": "report-%s-%s" % (date, content),
@@ -947,18 +951,19 @@ def tick(root, now=None, *, profile="default", service=None):
             # Transient: nothing is settled and nothing claims to have been sent.
             return _report(profile, "blocked", blocked, date=date, job=job)
 
-        token = ""
+        token = fallback = ""
         if not _prepared(job):
             if prefs["report"]:
                 # The report is built outside this lock, under a lease written first:
                 # a pass that finds the day already being built leaves it alone.
-                job, waiting = _lease(state, job, prefs, row, job_id,
-                                      _result_id(profile, prefs["connection"], date), date, wall)
+                job, waiting, fallback = _lease(
+                    state, job, prefs, row, job_id,
+                    _result_id(profile, prefs["connection"], date), date, wall)
                 _save(path, state)
                 if waiting:
                     return _report(profile, job["state"], waiting, date=date, job=job)
-                token = job["build_token"]
-            else:
+                token = "" if fallback else job["build_token"]
+            if not token:
                 try:
                     payload = _brief_payload(root, prefs, profile, wall, date)
                 except (ScheduleError, daily_brief.BriefError, OSError) as exc:
@@ -968,63 +973,81 @@ def tick(root, now=None, *, profile="default", service=None):
                                    date, prefs, row, wall)
                     state["jobs"].append(job)
                 # A report that was still being built becomes the brief the person
-                # switched to: nothing of it was frozen, so nothing of it can go out.
+                # switched to -- or the brief a morning whose report could not be built
+                # gets instead: nothing of the report was frozen, so none of it can go.
                 job.pop("build_token", None)
-                job.update(payload, detail="", updated=wall)
+                job.update(payload, detail=fallback, updated=wall)
+                if fallback:
+                    job.update(format="text", format_detail=fallback)
                 _save(path, state)                    # ledger first, always
         frozen = dict(job)
 
     if token:
         frozen, answer = _build(root, path, profile, prefs, job_id, token, date, wall,
-                                retry=True)
+                                window_end=window_end)
         if answer is not None:
             return answer
     return _deliver(path, profile, service, prefs, row, frozen, job_id, date, wall)
 
 
+def _instead(cause):
+    return ("the morning report could not be built (%s), so today's Daily Brief was sent "
+            "instead" % cause)[:300]
+
+
 def _lease(state, job, prefs, row, job_id, result_id, date, wall, *, trigger="schedule"):
-    """``(job, "")`` holding a fresh build lease, or ``(job, why not now)``.
+    """``(job, "", "")`` holding a fresh build lease, ``(job, why not now, "")``, or
+    ``(job, "", why the brief goes instead)``.
 
     The lease is the only thing that stops two passes -- a pump and a restarted app, or
     two ticks a minute apart around a slow model -- from building the same morning twice.
     A lease that runs out belonged to a pass that died or failed; the next pass takes it,
-    up to ``MAX_BUILDS`` builds for the day, after which the day is an error.
+    up to ``MAX_BUILDS`` builds for the day.  After that the morning is not lost: a
+    scheduled day gets the plain brief instead.
     """
     if job is None:
         job = _new_job(job_id, result_id, date, prefs, row, wall, trigger=trigger)
         job.update(content="morning_report", builds=0, build_started=0.0)
         state["jobs"].append(job)
     if wall < float(job.get("build_started") or 0.0) + BUILD_LEASE_S:
-        return job, str(job.get("detail") or "today's morning report is being built")
+        return job, str(job.get("detail") or "today's morning report is being built"), ""
     builds = int(job.get("builds") or 0)
     if builds >= MAX_BUILDS:
-        job.update(state="error", updated=wall,
-                   detail="the morning report could not be built after %d tries, so nothing "
-                          "was sent" % builds)
+        # The last build died without saying why (a crash holds no exception).
         job.pop("build_token", None)
-        return job, job["detail"]
+        return job, "", _instead(job.get("build_error") or "its last build did not finish")
     job.update(content="morning_report", builds=builds + 1, build_started=wall,
                build_token=os.urandom(8).hex(), detail="today's morning report is being built",
                updated=wall)
-    return job, ""
+    return job, "", ""
 
 
-def _build(root, path, profile, prefs, job_id, token, date, wall, *, retry):
+def _build(root, path, profile, prefs, job_id, token, date, wall, *, window_end=None):
     """Build the report with no lock held, then freeze it into the job holding ``token``.
 
     ``(frozen job, None)`` when it is ready to send, or ``(None, report)`` when there is
-    nothing to send this pass.  A failed build keeps its lease, so the next try waits for
-    it to run out (``retry``) -- or, for a report asked for on request, ends that request.
+    nothing to send this pass.  ``window_end`` is the scheduled morning's: a failed build
+    is tried again later, spaced (``BUILD_RETRY_S``), and when builds run out -- or the
+    next try would miss the window -- that morning's plain brief is frozen instead, in the
+    same job and outbox id.  Without it (a report asked for on request) a failed build
+    ends the request: it was a report that was asked for, not the brief.
     """
     try:
         payload = _report_payload(root, prefs, wall, date)
     except Exception as exc:                          # noqa: BLE001 - reported, not raised
-        final = isinstance(exc, ScheduleError) or not retry
-        reason = str(exc)[:200] if isinstance(exc, ScheduleError) else \
-            "the morning report could not be built (%s)" % type(exc).__name__
-        job = _edit(path, lambda st: _build_failed(st, job_id, token, wall, reason, final))
-        return None, _report(profile, "error", str((job or {}).get("detail") or reason),
-                             date=date, job=job)
+        cause = str(exc)[:200] if isinstance(exc, ScheduleError) else type(exc).__name__
+        job, instead = _edit(path, lambda st: _build_failed(
+            st, job_id, token, wall, cause, isinstance(exc, ScheduleError), window_end))
+        if not instead:
+            return None, _report(profile, "error", str((job or {}).get("detail") or cause),
+                                 date=date, job=job)
+        try:
+            payload = _brief_payload(root, prefs, profile, wall, date)
+        except (ScheduleError, daily_brief.BriefError, OSError) as brief_exc:
+            return None, _report(profile, "error", "%s; the Daily Brief could not be rendered "
+                                 "either (%s)" % (_instead(cause), str(brief_exc)[:120]),
+                                 date=date, job=job)
+        payload.update(format="text", format_detail=_instead(cause))
 
     def freeze(state):
         job = _find(state, job_id)
@@ -1032,7 +1055,8 @@ def _build(root, path, profile, prefs, job_id, token, date, wall, *, retry):
                 or job.get("state") != "preparing"):
             return None
         job.pop("build_token", None)
-        job.update(payload, detail="", updated=wall)
+        job.update(payload, detail=payload.get("format_detail") if payload.get(
+            "content") == "brief" else "", updated=wall)
         return dict(job)
 
     frozen = _edit(path, freeze)
@@ -1045,20 +1069,29 @@ def _build(root, path, profile, prefs, job_id, token, date, wall, *, retry):
     return frozen, None
 
 
-def _build_failed(state, job_id, token, wall, reason, final):
+def _build_failed(state, job_id, token, wall, cause, final, window_end):
+    """Record a failed build.  ``(job, True)`` when the brief should go instead now."""
     job = _find(state, job_id)
     if job is None or job.get("build_token") != token or _prepared(job):
-        return dict(job) if job else None
-    if final or int(job.get("builds") or 0) >= MAX_BUILDS:
+        return (dict(job) if job else None), False
+    job.update(build_error=cause, updated=wall)
+    if window_end is None:
         job.pop("build_token", None)
-        job.update(state="error", updated=wall,
-                   detail=reason if final and "nothing was sent" in reason
-                   else "%s; nothing was sent" % reason)
-    else:
-        # The lease stays: the next build waits for it to run out instead of retrying on
-        # every tick of the pump.
-        job.update(detail="%s; it will be tried again" % reason, updated=wall)
-    return dict(job)
+        job.update(state="error", detail="the morning report could not be built (%s), so "
+                                         "nothing was sent" % cause)
+        return dict(job), False
+    builds = int(job.get("builds") or 0)
+    retry_at = wall + BUILD_RETRY_S[min(max(builds, 1), len(BUILD_RETRY_S)) - 1]
+    if final or builds >= MAX_BUILDS or retry_at >= window_end:
+        # The token stays so the brief can be frozen into this very job.
+        job.update(detail=_instead(cause))
+        return dict(job), True
+    # The next build waits: the lease is moved to end when the retry is due, so a failure
+    # that repeats costs one build per spacing, not one per tick of the pump.
+    job.update(build_started=retry_at - BUILD_LEASE_S,
+               detail="the morning report could not be built (%s); it will be tried again in "
+                      "%d minutes" % (cause, (retry_at - wall) // 60))
+    return dict(job), False
 
 
 def _deliver(path, profile, service, prefs, row, frozen, job_id, date, wall):
@@ -1359,13 +1392,12 @@ def send_now(root, now=None, *, profile="default", service=None):
             _save(path, state)
             raise ScheduleError(blocked)
         job_id, result_id = _request_ids(profile, prefs["connection"], date, len(today) + 1)
-        job, _waiting = _lease(state, None, prefs, row, job_id, result_id, date, wall,
-                               trigger="request")
+        job, _waiting, _instead_of = _lease(state, None, prefs, row, job_id, result_id, date,
+                                            wall, trigger="request")
         _save(path, state)
         token, snapshot = job["build_token"], dict(prefs)
 
-    frozen, answer = _build(root, path, profile, snapshot, job_id, token, date, wall,
-                            retry=False)
+    frozen, answer = _build(root, path, profile, snapshot, job_id, token, date, wall)
     if answer is not None:
         return answer
     return _deliver(path, profile, service, snapshot, row, frozen, job_id, date, wall)

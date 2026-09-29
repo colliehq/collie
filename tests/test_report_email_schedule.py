@@ -259,30 +259,67 @@ def test_a_restart_sends_the_frozen_report_and_never_rebuilds_it(host, zones, bu
     assert "html" not in job(root) and "inline" not in job(root) and "text" not in job(root)
 
 
-def test_a_report_that_cannot_be_built_is_tried_again_later_then_given_up(host, zones, builds):
+def test_a_report_that_cannot_be_built_is_retried_spaced_then_the_brief_goes(host, zones,
+                                                                            builds):
     root, service, adapter = host
     report_on(root, service, grace_minutes=120)
     builds.fail = OSError("the snapshot could not be written")
     first = sched.tick(root, at(2026, 9, 10), service=service)
     assert first["state"] == "error" and "tried again" in first["detail"]
-    # Not every minute: the next try waits out the lease.
-    assert sched.tick(root, at(2026, 9, 10, 7, 33), service=service)["state"] == "preparing"
+    # Spaced, not every minute: ten minutes after the first failure, twenty after the second.
+    assert sched.tick(root, at(2026, 9, 10, 7, 40), service=service)["state"] == "preparing"
     assert len(builds.calls) == 1
-    sched.tick(root, at(2026, 9, 10, 7, 45), service=service)
-    last = sched.tick(root, at(2026, 9, 10, 8, 0), service=service)
-    assert len(builds.calls) == sched.MAX_BUILDS
-    assert last["state"] == "error" and "nothing was sent" in last["detail"]
-    assert sched.tick(root, at(2026, 9, 10, 9, 0), service=service)["state"] == "error"
-    assert len(builds.calls) == sched.MAX_BUILDS and adapter.sent == []
+    assert sched.tick(root, at(2026, 9, 10, 7, 41), service=service)["state"] == "error"
+    assert sched.tick(root, at(2026, 9, 10, 8, 0), service=service)["state"] == "preparing"
+    assert len(builds.calls) == 2 and adapter.sent == []
+    # The last build fails too: the morning is not lost, it gets the plain Daily Brief --
+    # in the same job and the same outbox id, still one email.
+    last = sched.tick(root, at(2026, 9, 10, 8, 1), service=service)
+    assert last["state"] == "submitted" and last["sent"] is True
+    assert len(builds.calls) == sched.MAX_BUILDS and len(adapter.sent) == 1
+    assert "html" not in adapter.sent[0]
+    day = job(root)
+    assert day["content"] == "brief" and day["format"] == "text"
+    assert "could not be built" in day["format_detail"] and "Daily Brief" in day["format_detail"]
+    assert [row["id"] for row in outbox(service)] == [
+        sched._result_id("default", "mail", "2026-09-10")]
+    assert "morning_report" not in json.dumps(outbox(service)[0]["metadata"])
+    # And that is the day: no fourth build, no second email.
+    assert sched.tick(root, at(2026, 9, 10, 9, 0), service=service)["state"] == "submitted"
+    assert len(builds.calls) == sched.MAX_BUILDS and len(adapter.sent) == 1
 
 
-def test_a_report_built_for_another_day_is_not_sent(host, zones, builds):
+def test_a_retry_that_would_miss_the_window_sends_the_brief_now(host, zones, builds):
+    root, service, adapter = host
+    report_on(root, service, grace_minutes=15)                # 07:30 to 07:45
+    builds.fail = RuntimeError("render bug")
+    assert sched.tick(root, at(2026, 9, 10, 7, 31), service=service)["state"] == "error"
+    # The second failure's retry would be after 07:45: the brief goes now instead.
+    out = sched.tick(root, at(2026, 9, 10, 7, 41), service=service)
+    assert out["state"] == "submitted" and len(builds.calls) == 2 and len(adapter.sent) == 1
+    assert job(root)["content"] == "brief"
+
+
+def test_a_build_that_dies_every_time_still_ends_in_the_brief(host, zones, builds):
+    root, service, adapter = host
+    report_on(root, service)
+    builds.fail = KeyboardInterrupt("power cut while the model was answering")
+    for minute in (31, 42, 53):                              # each lease runs out, then dies
+        with pytest.raises(KeyboardInterrupt):
+            sched.tick(root, at(2026, 9, 10, 7, minute), service=service)
+    out = sched.tick(root, at(2026, 9, 10, 8, 4), service=service)
+    assert out["state"] == "submitted" and len(builds.calls) == sched.MAX_BUILDS
+    assert job(root)["content"] == "brief" and "Daily Brief" in job(root)["format_detail"]
+
+
+def test_a_report_built_for_another_day_is_replaced_by_the_brief(host, zones, builds):
     root, service, adapter = host
     report_on(root, service)
     builds.date = "2026-09-09"
     report = sched.tick(root, at(2026, 9, 10), service=service)
-    assert report["state"] == "error" and "different day" in report["detail"]
-    assert adapter.sent == [] and outbox(service) == []
+    assert report["state"] == "submitted" and len(builds.calls) == 1   # not retried
+    assert "different day" in job(root)["format_detail"] and job(root)["content"] == "brief"
+    assert len(adapter.sent) == 1 and "html" not in adapter.sent[0]
 
 
 def test_a_report_too_large_for_email_sends_its_plain_text_and_says_so(host, zones, builds,

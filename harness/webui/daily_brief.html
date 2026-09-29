@@ -717,6 +717,8 @@ function jobLine(job){
   let word=jobWord(job.state)||job.detail||job.state||"";
   if(job.content==="morning_report"&&job.format==="text"&&job.state==="submitted")
     word+=tr(" It went as plain text"," 以纯文本发出")+(job.format_detail?" ("+job.format_detail+")":"")+tr(".","。");
+  else if(job.content!=="morning_report"&&job.format_detail)
+    word+=" ("+job.format_detail+")";        // the brief that went because the report could not be built
   bits.push(word);
   return bits.join(" · ");
 }
