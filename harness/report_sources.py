@@ -16,14 +16,16 @@ What each source may say, and what it must not:
   celebrate what finished after midnight.
 * **news** -- the headlines the feeds' background refresh already stored.  Never a fetch.
   Headlines are other people's words, so they are ``untrusted``.
-* **gmail**, **calendar** -- through ``harness.google_connect`` when it exists and is
-  connected.  It is imported lazily and every call is wrapped: a missing module, a connection
-  that was never made or needs making again, a scope that was not granted, or a failed call
-  each make that one source unavailable with a reason.  Mail is recent inbox threads (the last
-  36 hours, promotions and social left out), and every word of it is ``untrusted``: the sender
-  wrote it.  The sender's address and the thread id ride along in ``meta`` for the reply draft
-  step and go no further.  Calendar is today and the next seven days; invitations are written
-  by whoever sent them, so they are ``untrusted`` too.
+* **gmail**, **calendar** -- through ``harness.google_connect``, Collie's own Google
+  connection.  It is imported lazily and every call is wrapped.  ``status()`` decides first:
+  not set up, not connected, "reconnect Google", or a permission the person did not tick
+  (``status()["can"]``) makes that one source unavailable, and a call that fails is mapped by
+  the connector's own error types (``NeedsReconnect``, ``MissingScope``, ``GoogleAPIError``
+  with its HTTP status...), never by its message.  Mail is recent inbox threads (the last 36
+  hours, promotions, social and drafts left out), and every word of it is ``untrusted``: the
+  sender wrote it.  The sender's address and the thread id ride along in ``meta`` for the
+  reply-draft step and go no further.  Calendar is today and the next seven days;
+  invitations are written by whoever sent them, so they are ``untrusted`` too.
 * **github** -- through the ``gh`` CLI when it is installed and signed in: exactly two GraphQL
   calls, each with a timeout.  The person's repositories are the ones they can push to, their
   own, their organisations' and ones they collaborate on.  Wins since the report's window
@@ -223,44 +225,85 @@ def news(ctx):
 GMAIL_WINDOW_S = 36 * 3600
 GMAIL_LIMIT = 25
 GMAIL_QUERY = "in:inbox newer_than:2d -category:promotions -category:social -in:chats"
-_SKIP_LABELS = frozenset({"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "SPAM", "TRASH"})
+_SKIP_LABELS = frozenset({"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "SPAM", "TRASH", "DRAFT"})
 CALENDAR_DAYS = 7
 CALENDAR_LIMIT = 50
 
+#: ``google_connect.status()["state"]`` -> what the report says instead of reading that source.
+#: "reconnect Google" is short on purpose: it is what the email's footer says after "Not read".
 _GOOGLE_STATES = {
-    "not_connected": "Google isn't connected yet",
-    "needs_reconnect": "Google needs you to reconnect it",
     "not_configured": "Google isn't set up on this computer",
+    "not_connected": "Google isn't connected yet",
+    "needs_reconnect": "reconnect Google",
 }
+#: ``status()["can"]`` capability -> what Google did not allow.
+_CAN = {"gmail_read": "read Gmail", "gmail_drafts": "write Gmail drafts",
+        "calendar_read": "read your calendar"}
 
 
-def _google(scope_word, label):
-    """``(module, status)`` for a connected Google account that granted ``scope_word``."""
+def _google_module():
     try:
-        module = importlib.import_module(__package__ + ".google_connect")
+        return importlib.import_module(__package__ + ".google_connect")
     except ImportError:
         raise rs.Unavailable("Google isn't available in this version of Collie") from None
+
+
+def google_reason(module, exc, label):
+    """What the report says about one failed Google call, by the connector's own error types.
+
+    Only the type (and an HTTP status) is used: the connector's messages are written for
+    ``collie google`` and would repeat its advice in every line of the report.
+    """
+    def isa(name):
+        cls = getattr(module, name, None)
+        return isinstance(cls, type) and isinstance(exc, cls)
+
+    if isa("NeedsReconnect"):
+        return _GOOGLE_STATES["needs_reconnect"]
+    if isa("NotConnected"):
+        return _GOOGLE_STATES["not_connected"]
+    if isa("NotConfigured"):
+        return _GOOGLE_STATES["not_configured"]
+    if isa("MissingScope"):
+        scope = str(getattr(exc, "scope", "") or "")
+        what = next((words for key, words in (("compose", _CAN["gmail_drafts"]),
+                                              ("gmail", _CAN["gmail_read"]),
+                                              ("calendar", _CAN["calendar_read"]))
+                     if key in scope), "do that")
+        return "Google didn't allow Collie to %s" % what
+    if isa("GoogleAPIError"):
+        status = getattr(exc, "status", 0)
+        return "%s answered with an error%s" % (label, " (HTTP %s)" % status
+                                               if isinstance(status, int) and status else "")
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return "%s could not be reached" % label
+    return "%s could not be read (%s)" % (label, type(exc).__name__)
+
+
+def google(capability, label, state_dir=None):
+    """``(module, status)`` for a Google connection that allows ``capability``, or
+    :class:`report_signals.Unavailable` with the reason.  ``capability`` is a key of
+    ``status()["can"]``: gmail_read, gmail_drafts or calendar_read."""
+    module = _google_module()
     try:
-        status = module.status()
+        status = module.status(state_dir=state_dir or None)
     except Exception as exc:                          # noqa: BLE001 - reported, not raised
-        raise rs.Unavailable("Google's connection could not be checked (%s)"
-                             % type(exc).__name__) from None
+        raise rs.Unavailable(google_reason(module, exc, "Google")) from None
     status = status if isinstance(status, dict) else {}
     state = str(status.get("state") or "")
-    if state != "connected":
-        raise rs.Unavailable(_GOOGLE_STATES.get(state, "Google isn't connected yet"))
-    scopes = status.get("scopes")
-    if isinstance(scopes, (list, tuple)) and scopes and \
-            not any(scope_word in str(scope) for scope in scopes):
-        raise rs.Unavailable("Google is connected without %s access" % label)
+    if state not in ("connected", "missing_scope"):
+        raise rs.Unavailable(_GOOGLE_STATES.get(state, _GOOGLE_STATES["not_connected"]))
+    can = status.get("can") if isinstance(status.get("can"), dict) else {}
+    if not can.get(capability):
+        raise rs.Unavailable("Google didn't allow Collie to %s" % _CAN.get(capability, capability))
     return module, status
 
 
-def _call(label, fn, *args):
+def _call(module, label, fn, *args, **kwargs):
     try:
-        return fn(*args)
+        return fn(*args, **kwargs)
     except Exception as exc:                          # noqa: BLE001 - reported, not raised
-        raise rs.Unavailable("%s could not be read (%s)" % (label, type(exc).__name__)) from None
+        raise rs.Unavailable(google_reason(module, exc, label)) from None
 
 
 def _epoch(value, zone=None):
@@ -304,24 +347,33 @@ def _rfc3339(when):
         "%Y-%m-%dT%H:%M:%SZ")
 
 
+def gmail_thread_link(account, thread):
+    """The Gmail web address of a thread, for the account it lives in (as the connector
+    builds it: ``?authuser=`` picks the account; ``/u/<address>/`` does not)."""
+    base = ("https://mail.google.com/mail/?authuser=%s" % urllib.parse.quote(account, safe="@.+-_")
+            if account and "@" in account else "https://mail.google.com/mail/u/0/")
+    return base + "#all/" + urllib.parse.quote(thread, safe="")
+
+
 def gmail(ctx):
-    """Recent inbox threads.  The last message of each thread speaks for it."""
-    module, status = _google("gmail", "Gmail")
-    account = str(status.get("account") or "").strip().casefold()
-    rows = _call("Gmail", module.gmail_search, GMAIL_QUERY, GMAIL_LIMIT)
+    """Recent inbox threads.  The newest message of each thread speaks for it."""
+    module, status = google("gmail_read", "Gmail", ctx.state_dir)
+    account = str(status.get("account") or "").strip()
+    rows = _call(module, "Gmail", module.gmail_search, GMAIL_QUERY, GMAIL_LIMIT,
+                 state_dir=ctx.state_dir or None)
     rows = rows if isinstance(rows, list) else []
     threads = {}
     for row in rows[:GMAIL_LIMIT * 2]:
         if not isinstance(row, dict):
             continue
-        when = _epoch(row.get("date"))
+        when = _epoch(row.get("timestamp")) or _epoch(row.get("date"))
         if when is None or when < ctx.now - GMAIL_WINDOW_S or when > ctx.now + 3600:
             continue
         labels = {str(label) for label in (row.get("labels") or []) if label}
         if labels & _SKIP_LABELS:
             continue
         name, address = email.utils.parseaddr(str(row.get("from") or ""))
-        if address and account and address.casefold() == account:
+        if address and account and address.casefold() == account.casefold():
             continue                           # the person's own message, not one for them
         thread = daily_brief._text(row.get("thread_id") or row.get("id"), 120)
         if not thread:
@@ -333,14 +385,11 @@ def gmail(ctx):
     for thread, (when, row, name, address) in sorted(threads.items(),
                                                      key=lambda kv: -kv[1][0]):
         who = daily_brief._text(name, 60) or (address.split("@")[-1] if "@" in address else "")
-        link = "https://mail.google.com/mail/%s#all/%s" % (
-            ("?authuser=" + urllib.parse.quote(account, safe="")) if account else "",
-            urllib.parse.quote(thread, safe=""))
         signals.append(rs.make(
             "gmail", thread, kind="needs_you" if row.get("unread") else "fyi",
             title=row.get("subject") or ("(没有主题)" if _zh(ctx) else "(no subject)"),
-            detail=row.get("snippet"), when=when, link=link, project="",
-            evidence="Gmail · from %s" % who if who else "Gmail", untrusted=True,
+            detail=row.get("snippet"), when=when, link=gmail_thread_link(account, thread),
+            project="", evidence="Gmail · from %s" % who if who else "Gmail", untrusted=True,
             meta={"thread_id": thread, "sender": address, "sender_name": name,
                   "subject": daily_brief._text(row.get("subject"), 300)}))
     return {"signals": signals, "stats": {"threads": len(signals)}}
@@ -354,13 +403,13 @@ def _day_start(ctx):
 
 def calendar(ctx):
     """Today and the next seven days of the person's primary calendar."""
-    module, _status = _google("calendar", "Calendar")
+    module, _status = google("calendar_read", "Calendar", ctx.state_dir)
     zone = ctx.zone or _dt.timezone.utc
     start = _day_start(ctx)
     end = (start + _dt.timedelta(days=CALENDAR_DAYS + 1)).replace(hour=0)
     tomorrow = (start + _dt.timedelta(days=1)).timestamp()
-    rows = _call("Calendar", module.calendar_events, _rfc3339(start.timestamp()),
-                 _rfc3339(end.timestamp()), CALENDAR_LIMIT)
+    rows = _call(module, "Calendar", module.calendar_events, _rfc3339(start.timestamp()),
+                 _rfc3339(end.timestamp()), CALENDAR_LIMIT, state_dir=ctx.state_dir or None)
     rows = rows if isinstance(rows, list) else []
     signals, today = [], 0
     for row in rows[:CALENDAR_LIMIT]:

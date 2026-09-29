@@ -793,20 +793,35 @@ def _setting_on(key, default="on"):
     return str(settings.get(key, default) or default).strip().lower() in ("on", "1", "true", "yes")
 
 
-def _draft_scope(status):
-    scopes = status.get("scopes")
-    if not isinstance(scopes, (list, tuple)) or not scopes:
-        return True
-    return any(word in str(scope) for scope in scopes
-               for word in ("gmail.compose", "gmail.modify", "mail.google.com"))
+def _reply_target(thread, account):
+    """``(message, "")``: the message a reply answers -- the thread's latest message that is
+    not a draft -- or ``(None, why)`` when there is nothing to answer, or the person already
+    answered it."""
+    messages = thread.get("messages") if isinstance(thread, dict) else None
+    messages = [message for message in (messages if isinstance(messages, list) else [])
+                if isinstance(message, dict) and not message.get("is_draft")]
+    if not messages:
+        return None, "the thread has no message to answer"
+    last = messages[-1]
+    sender = email.utils.parseaddr(str(last.get("from") or ""))[1]
+    if not sender:
+        return None, "the last message in the thread has no sender address"
+    if account and sender.casefold() == account:
+        return None, "you already replied in this thread"
+    return last, ""
 
 
-def create_drafts(report, *, enabled, earlier=None):
-    """Put the report's reply drafts into Gmail's drafts folder.  Never sends anything."""
+def create_drafts(report, *, enabled, earlier=None, state_dir=None):
+    """Put the report's reply drafts into Gmail's drafts folder.  Never sends anything.
+
+    Each draft answers the thread's latest message that is not a draft, goes to that message's
+    sender and nobody else, and carries its Message-ID as In-Reply-To so Gmail threads it.
+    """
     from . import report_sources
     wanted = [item["draft"] for item in report["sections"]["ready"]["items"]
               if isinstance(item.get("draft"), dict)]
-    summary = {"requested": len(wanted), "created": 0, "reused": 0, "failed": 0, "reason": ""}
+    summary = {"requested": len(wanted), "created": 0, "reused": 0, "skipped": 0, "failed": 0,
+               "reason": ""}
     if not wanted:
         return summary
     reason, module, account = "", None, ""
@@ -816,13 +831,11 @@ def create_drafts(report, *, enabled, earlier=None):
         reason = "the REPORT_GMAIL_DRAFTS setting is off"
     else:
         try:
-            module, status = report_sources._google("gmail", "Gmail")
+            module, status = report_sources.google("gmail_drafts", "Gmail", state_dir)
         except rs.Unavailable as exc:
             reason = str(exc)
         else:
             account = str(status.get("account") or "").strip().casefold()
-            if not _draft_scope(status):
-                reason = "Google is connected without permission to write drafts"
     if reason:
         for draft in wanted:
             draft.update(state="not_created", reason=reason)
@@ -842,30 +855,32 @@ def create_drafts(report, *, enabled, earlier=None):
             summary["reused"] += 1
             continue
         try:
-            thread = module.gmail_thread(draft["thread_id"])
-            inbound = [m for m in (thread if isinstance(thread, list) else [])
-                       if isinstance(m, dict) and email.utils.parseaddr(
-                           str(m.get("from") or ""))[1].casefold() not in ("", account)]
-            if not inbound:
-                raise ReportError("no message to answer")
-            last = inbound[-1]
+            thread = module.gmail_thread(draft["thread_id"], state_dir=state_dir or None)
+            last, why = _reply_target(thread, account)
+            if last is None:
+                draft.update(state="not_created", reason=why)
+                summary["skipped"] += 1
+                continue
             to = email.utils.parseaddr(str(last.get("from") or ""))[1]
-            subject = daily_brief._text(last.get("subject"), 300) or draft["subject"]
+            subject = daily_brief._text(last.get("subject") or thread.get("subject"), 300) \
+                or draft["subject"]
             if not subject.lower().startswith("re:"):
                 subject = "Re: " + subject
-            message_id = daily_brief._text(last.get("message_id"), 500)
-            references = " ".join(bit for bit in (daily_brief._text(last.get("references"), 2000),
-                                                  message_id) if bit)
+            in_reply_to = daily_brief._text(last.get("rfc_message_id"), 998)
+            references = " ".join(bit for bit in (daily_brief._text(last.get("references"), 8000),
+                                                  in_reply_to) if bit)
             made = module.gmail_create_draft(draft["thread_id"], to, subject, draft["body"],
-                                             message_id, references)
+                                             in_reply_to, references,
+                                             state_dir=state_dir or None)
             made = made if isinstance(made, dict) else {}
             draft.update(state="created", to=to, subject=subject,
                          draft_id=daily_brief._text(made.get("draft_id"), 200),
-                         open_url=rs._https(made.get("open_url")))
+                         open_url=rs._https(made.get("open_url")),
+                         thread_url=rs._https(made.get("thread_url")))
             summary["created"] += 1
         except Exception as exc:                      # noqa: BLE001 - reported, not raised
             draft.update(state="failed",
-                         reason="the draft could not be created (%s)" % type(exc).__name__)
+                         reason=report_sources.google_reason(module, exc, "Gmail"))
             summary["failed"] += 1
     return summary
 
@@ -1076,7 +1091,7 @@ def build(*, state_dir=None, now=None, drafts=True, dry_run=False, adapters=None
                             "activity": dict(activity), "muted": muted}
     earlier = None if dry_run else load_day(root, report["date"])
     report["provenance"]["drafts"] = create_drafts(report, enabled=bool(drafts) and not dry_run,
-                                                   earlier=earlier)
+                                                   earlier=earlier, state_dir=root)
     if not dry_run:
         write_snapshot(report, root)
     return report
