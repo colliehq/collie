@@ -168,6 +168,25 @@ def test_an_answered_approval_is_done_and_an_unknown_one_is_not(root, monkeypatc
     assert (got["state"], got["done_by"]) == ("done", "approval_answered")
 
 
+def test_the_approval_rule_reads_what_the_collie_source_reports_inside_the_app(root, monkeypatch):
+    """The approvals are visible only to a report built inside the running app, which is where
+    the scheduled morning report is built. This pins the two ends together: the signal the Collie
+    source makes of a pending approval is the one the resolve pass knows and finds pending."""
+    import datetime as dt
+    from harness import daily_brief_web, report_sources
+    from harness import report_signals as rs
+    from test_report_sources import _payloads
+    waiting = [{"id": "perm-9c1", "title": "Run the tests", "tool": "bash", "session": "s1"}]
+    monkeypatch.setattr(daily_brief_web, "collect", lambda _root, now=None: _payloads(
+        approvals={"approvals": waiting}))
+    out = report_sources.collie(rs.Context(now=at(8), state_dir=root, zone=dt.timezone.utc,
+                                           zone_name="UTC"))
+    asks = [s for s in out["signals"] if s["evidence"] == md._APPROVAL_EVIDENCE]
+    assert [s["kind"] for s in asks] == ["needs_you"] and asks[0]["source"] == "collie"
+    assert md._pending_approvals(lambda: waiting) == {asks[0]["id"]}
+    assert md._pending_approvals(lambda: []) == set()
+
+
 def test_a_check_that_fails_leaves_the_item_open(root, monkeypatch):
     save(root, report())
 

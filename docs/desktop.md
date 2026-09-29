@@ -55,7 +55,9 @@ few seconds); a dot turns green and the headline cheers ("One down, four to go."
 is up, Collie also re-checks at most every 15 minutes whether things got done elsewhere: a reply
 draft that is no longer in the Gmail drafts of the account it was made in (you sent or deleted
 it; after connecting a different Google account it is not looked for), a pull request that was
-merged, and a question from Collie that is no longer waiting. Anything it cannot check (Google not
+merged, and a question from Collie that is no longer waiting. Collie's own questions are in a
+report only when it was built inside the running app, which is how the scheduled morning report
+is built; `collie report build` from a terminal cannot see them. Anything it cannot check (Google not
 connected, `gh` not installed, an error) stays as it was, and what you marked yourself always wins.
 Each green dot takes its mark back when clicked, whoever made it.
 When everything is done it says *All clear for today* for a moment (with *Undo* while it does)

@@ -30,7 +30,9 @@ the resolve pass, which runs on a background thread at most every ``RESOLVE_EVER
 re-checks three cheap facts: a reply draft that is no longer a draft in the Gmail account it was
 made in (sent or deleted; it is never looked for in another account, where it would always seem
 gone), a pull request that was merged, and an approval that is no longer waiting in this Collie
-(answered, or its run ended).  A fact that cannot be
+(answered, or its run ended).  Approvals live in the web server's memory, so a report has them
+only when it was built inside the running app (the scheduled morning report is; ``collie report
+build`` in a terminal is not, and its report simply has none to check).  A fact that cannot be
 checked -- Google not connected, ``gh`` missing, the approvals not in this process, any error --
 changes nothing: not knowing is never "done".  What the person said about an item always wins
 over a later check.  The sentence cheers as things get done ("One down, four to go.") and says
