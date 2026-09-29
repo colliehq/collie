@@ -4452,7 +4452,19 @@
     "Readable roots (comma/newline)":"可读取目录（逗号或换行分隔）",
     "Network hosts (comma/newline)":"可访问主机（逗号或换行分隔）",
     "Enabled":"启用","Permit external writes":"允许对外写入",
-    "Dry run trigger":"试运行触发条件","Save automation":"保存自动化"
+    "Dry run trigger":"试运行触发条件","Save automation":"保存自动化",
+    // Settings → Connections → Google
+    "Connect":"连接","Reconnect":"重新连接","not connected":"未连接","needs reconnect":"需要重新连接",
+    "some access missing":"部分权限未授予","not set up":"未设置",
+    "Read mail":"读取邮件","Write drafts":"写草稿","Read calendar":"读取日历",
+    "Collie never sends mail.":"Collie 从不发送邮件。",
+    "Collie's Google app is not set up on this computer.":"这台电脑上还没有设置 Collie 的 Google 应用。",
+    "Gmail and Calendar for your morning report":"为你的晨报读取 Gmail 和日历",
+    "Waiting for you in the browser…":"正在等你在浏览器里完成…",
+    "If the browser didn't open, use this link:":"如果浏览器没有打开，请用这个链接：",
+    "Open Google sign-in":"打开 Google 登录",
+    "Google asked Collie to sign in again. Press Reconnect.":"Google 要求 Collie 重新登录，请点“重新连接”。",
+    "Disconnect Google? Collie will stop reading your mail and calendar.":"断开 Google？Collie 将不再读取你的邮件和日历。"
   });
   Object.assign(ZHTW, {
     // Settings → Runtime reasons
@@ -4743,7 +4755,19 @@
     "Readable roots (comma/newline)":"可讀取目錄（逗號或換行分隔）",
     "Network hosts (comma/newline)":"可連線主機（逗號或換行分隔）",
     "Enabled":"啟用","Permit external writes":"允許對外寫入",
-    "Dry run trigger":"試執行觸發條件","Save automation":"儲存自動化"
+    "Dry run trigger":"試執行觸發條件","Save automation":"儲存自動化",
+    // Settings → Connections → Google
+    "Connect":"連線","Reconnect":"重新連線","not connected":"未連線","needs reconnect":"需要重新連線",
+    "some access missing":"部分權限未授予","not set up":"未設定",
+    "Read mail":"讀取郵件","Write drafts":"撰寫草稿","Read calendar":"讀取日曆",
+    "Collie never sends mail.":"Collie 從不寄出郵件。",
+    "Collie's Google app is not set up on this computer.":"這台電腦上還沒有設定 Collie 的 Google 應用程式。",
+    "Gmail and Calendar for your morning report":"為你的晨報讀取 Gmail 和日曆",
+    "Waiting for you in the browser…":"正在等你在瀏覽器中完成…",
+    "If the browser didn't open, use this link:":"如果瀏覽器沒有開啟，請使用這個連結：",
+    "Open Google sign-in":"開啟 Google 登入",
+    "Google asked Collie to sign in again. Press Reconnect.":"Google 要求 Collie 重新登入，請按「重新連線」。",
+    "Disconnect Google? Collie will stop reading your mail and calendar.":"中斷 Google 連線？Collie 將不再讀取你的郵件和日曆。"
   });
   var I18N = {
     zh: ZH,
@@ -5300,7 +5324,7 @@
           + setEsc(t("Connections give Collie scoped tools from outside this device. Review their status and access here."))
           + '</p><p><a href="/communications" class="set-connection-link">'
           + setEsc(loc ? "邮箱与电话 · 收件、草稿和结果通知" : "Email & phone · Inbox, drafts and result notifications")
-          + '</a></p><div id="workIdentityBox"></div><div id="mcpBox"></div></div>';
+          + '</a></p><div id="workIdentityBox"></div><div id="googleBox"></div><div id="mcpBox"></div></div>';
       panes += '<div class="set-pane' + on + '" data-cat="' + c.id + '"><h3>'
              + setEsc(loc && c.zh ? c.zh : c.label) + "</h3>" + body + "</div>";
     });
@@ -5318,6 +5342,7 @@
     loadSettingsOverview();
     updateRender(); updateLoad();
     workIdentityLoad();
+    googleLoad();
   }
 
   function workIdentityRender(d) {
@@ -5739,6 +5764,93 @@
         }, 3000);
       }
     }).catch(function () { b.disabled = false; });
+  });
+
+  // ---- Google: Collie's own connection (Gmail read + drafts, Calendar read) ----------------
+  // Sign-in finishes in the browser on human time, like an MCP login, so the entry watches the
+  // server's state instead of claiming success when the POST returns.
+  var googlePollTimer = null;
+  function googleRender(d) {
+    var box = document.getElementById("googleBox");
+    if (!box) return;
+    var st = (d && d.status) || {}, cx = (d && d.connect) || {};
+    var state = st.state || "not_connected", can = st.can || {};
+    var labels = { connected: t("connected"), missing_scope: t("some access missing"),
+                   needs_reconnect: t("needs reconnect"), not_connected: t("not connected"),
+                   not_configured: t("not set up") };
+    var badges = '<span class="mcp-badge' + (state === "connected" ? "" : " warn") + '">'
+               + setEsc(labels[state] || state) + "</span>";
+    var target = st.account || (state === "not_configured"
+      ? t("Collie's Google app is not set up on this computer.")
+      : t("Gmail and Calendar for your morning report"));
+    var access = "";
+    if (state === "connected" || state === "missing_scope" || state === "needs_reconnect") {
+      access = '<div class="set-hint">' + [[can.gmail_read, t("Read mail")],
+        [can.gmail_drafts, t("Write drafts")], [can.calendar_read, t("Read calendar")]]
+        .map(function (row) { return (row[0] ? "✓ " : "✗ ") + setEsc(row[1]); }).join(" · ")
+        + " · " + setEsc(t("Collie never sends mail.")) + "</div>";
+    }
+    var acts = "";
+    if (state !== "not_configured") {
+      acts = cx.busy
+        ? '<button disabled>' + setEsc(t("Waiting for you in the browser…")) + "</button>"
+        : '<button data-google="connect">' + setEsc(state === "not_connected" ? t("Connect") : t("Reconnect")) + "</button>";
+      if (state !== "not_connected")
+        acts += '<button class="danger" data-google="disconnect">' + setEsc(t("Disconnect")) + "</button>";
+    }
+    var note = "";
+    if (cx.busy && /^https:\/\/accounts\.google\.com\//.test(cx.auth_url || ""))
+      note = '<div class="set-hint">' + setEsc(t("If the browser didn't open, use this link:")) + ' <a href="'
+           + setEsc(cx.auth_url) + '" target="_blank" rel="noopener noreferrer">'
+           + setEsc(t("Open Google sign-in")) + "</a></div>";
+    var err = cx.error ? '<div class="mcp-err">' + setEsc(err_short(cx.error)) + "</div>"
+      : (state === "needs_reconnect" ? '<div class="mcp-err">'
+         + setEsc(t("Google asked Collie to sign in again. Press Reconnect.")) + "</div>" : "");
+    box.innerHTML = '<div class="mcp-item"><div class="mcp-top"><span class="mcp-name">Google</span>'
+      + badges + '</div><div class="mcp-target">' + setEsc(target) + "</div>" + access + note + err
+      + '<div class="mcp-acts">' + acts + "</div></div>";
+  }
+  function googleFetch() {
+    return fetch("/api/google?token=" + encodeURIComponent(CT)).then(function (r) { return r.json(); });
+  }
+  function googleLoad() {
+    if (!document.getElementById("googleBox")) return;
+    // Only the transport is caught: a render bug must reach the console, not read as "no Google".
+    return googleFetch().catch(function () { return null; }).then(function (d) {
+      if (!d || d.error) return;
+      googleRender(d);
+      if (d.connect && d.connect.busy) googleWatch();
+    });
+  }
+  function googleWatch() {
+    if (googlePollTimer) return;
+    var n = 0;
+    googlePollTimer = setInterval(function () {
+      if (++n > 160 || !setOverlay.classList.contains("open")) {
+        clearInterval(googlePollTimer); googlePollTimer = null; return;
+      }
+      googleFetch().then(function (d) {
+        if (!d || d.error) return;
+        googleRender(d);
+        if (!(d.connect && d.connect.busy)) { clearInterval(googlePollTimer); googlePollTimer = null; }
+      }).catch(function () {});
+    }, 2000);
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest ? e.target.closest("[data-google]") : null;
+    if (!b) return;
+    var action = b.getAttribute("data-google");
+    if (action === "disconnect" && !confirm(t("Disconnect Google? Collie will stop reading your mail and calendar."))) return;
+    b.disabled = true;
+    fetch("/api/google?token=" + encodeURIComponent(CT), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: action })
+    }).then(function (r) { return r.json(); }).then(function (p) {
+      b.disabled = false;
+      if (p && p.error) { alert(p.error); return; }
+      googleLoad();
+      if (action === "connect") googleWatch();
+    }).catch(function () { b.disabled = false; alert(t("Could not reach Collie.")); });
   });
 
   function openSettings(category) {

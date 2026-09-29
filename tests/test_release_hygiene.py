@@ -372,3 +372,71 @@ def test_the_extension_version_moves_whenever_the_extension_changes():
     raise AssertionError(
         f"the extension is now {power}; record it: set {_EXT_LOCK.name} to "
         f'{{"version": "{power}", "sha256": "{digest}"}}')
+
+
+_GOOGLE_CLIENT = "harness/google_oauth_client.json"
+_GOOGLE_WRITER = ROOT / "installer" / "write_google_oauth_client.py"
+
+
+def test_google_oauth_client_ships_in_packages_but_never_in_git():
+    """Collie's Desktop OAuth client is written at release time from a secret. The wheel and the
+    installers must carry it, and the repository must never hold it: GitHub push protection
+    refuses a Google client secret, and a copy in Git would outlive any rotation."""
+    config = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    patterns = _table_strings(config, "[tool.setuptools.package-data]")
+    assert any(fnmatchcase("google_oauth_client.json", p) for p in patterns)
+    ignored = [line.strip() for line in
+               (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
+    assert _GOOGLE_CLIENT in ignored or "/" + _GOOGLE_CLIENT in ignored
+    tracked = subprocess.run(["git", "ls-files", "--", _GOOGLE_CLIENT], cwd=ROOT,
+                             capture_output=True, text=True, errors="replace")
+    if tracked.returncode == 0:
+        assert tracked.stdout.strip() == "", "the Google OAuth client must never be committed"
+
+
+def test_release_jobs_write_the_google_client_only_from_the_secret():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for job in ("wheel", "installer", "dmg"):
+        body = _workflow_job(workflow, job)
+        assert "GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}" in body, job
+        assert "python installer/write_google_oauth_client.py" in body, job
+        # before anything is built from the tree
+        assert body.index("write_google_oauth_client.py") < max(
+            body.find("python -m build"), body.find("./installer/build.ps1"),
+            body.find("bash installer/build_mac.sh")), job
+    wheel = _workflow_job(workflow, "wheel")
+    assert "HAVE_GOOGLE_CLIENT" in wheel and _GOOGLE_CLIENT in wheel
+    assert "GOOGLE_OAUTH_CLIENT_JSON" not in _workflow_job(workflow, "quality-gate")
+
+
+def _run_writer(tmp_path, value):
+    import os
+    import sys
+    env = {k: v for k, v in os.environ.items() if k != "GOOGLE_OAUTH_CLIENT_JSON"}
+    if value is not None:
+        env["GOOGLE_OAUTH_CLIENT_JSON"] = value
+    out = tmp_path / "google_oauth_client.json"
+    done = subprocess.run([sys.executable, str(_GOOGLE_WRITER), str(out)], env=env,
+                          capture_output=True, text=True, errors="replace", timeout=60)
+    return done, out
+
+
+def test_google_client_writer_skips_silently_without_the_secret(tmp_path):
+    done, out = _run_writer(tmp_path, None)
+    assert done.returncode == 0 and not out.exists()
+    done, out = _run_writer(tmp_path, "   ")
+    assert done.returncode == 0 and not out.exists()
+
+
+def test_google_client_writer_validates_and_never_echoes_the_secret(tmp_path):
+    good = json.dumps({"installed": {"client_id": "1-x.apps.googleusercontent.com",
+                                     "client_secret": "GOCSPX-not-a-real-secret",
+                                     "token_uri": "https://oauth2.googleapis.com/token"}})
+    done, out = _run_writer(tmp_path, good)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(out.read_text(encoding="utf-8"))["installed"]["client_id"].startswith("1-x")
+    assert "GOCSPX-not-a-real-secret" not in done.stdout + done.stderr
+    out.unlink()
+    done, out = _run_writer(tmp_path, '{"web": {"client_id": "x"}}')
+    assert done.returncode != 0 and not out.exists()
+    assert "GOCSPX" not in done.stdout + done.stderr

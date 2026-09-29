@@ -190,6 +190,14 @@ Step "pip install collie-harness[local,remote,online,claude,desktop] from the re
 # dead in a release build. It's a compiled wheel, but pip pulls the matching cp/win_amd64 wheel here.
 & (Join-Path $py "python.exe") -m pip install --upgrade --no-build-isolation --no-warn-script-location "$repo[local,remote,online,claude,desktop]"
 Assert-NativeExit "install Collie into payload" $LASTEXITCODE
+# Collie's Google OAuth client is written into the tree from a release secret (see
+# write_google_oauth_client.py) and travels as package data. If the tree has it, so must the payload,
+# or the installed app cannot connect Google.
+if (Test-Path -LiteralPath (Join-Path $repo "harness\google_oauth_client.json")) {
+  if (-not (Test-Path -LiteralPath (Join-Path $site "harness\google_oauth_client.json"))) {
+    throw "the Google OAuth client is in the build tree but missing from the payload"
+  }
+}
 
 # SDK 0.2.157 currently has no Windows wheel. Its sdist installs Python code
 # without the native CLI, so an import-only smoke would ship a nonworking agent.

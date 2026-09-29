@@ -104,6 +104,13 @@ fi
 "$RES/python/bin/python3" -m pip install --quiet --upgrade pip
 "$RES/python/bin/python3" -m pip install --quiet --no-warn-script-location ".[$EXTRAS]"
 echo "  collie:  installed via the staged interpreter"
+# Collie's Google OAuth client comes from a release secret (write_google_oauth_client.py) as package
+# data. If the tree has it, the app must too, or the installed Collie cannot connect Google.
+if [ -f harness/google_oauth_client.json ] && \
+   [ ! -f "$RES/python/lib/python$PYVER/site-packages/harness/google_oauth_client.json" ]; then
+  echo "  the Google OAuth client is in the build tree but missing from the app" >&2
+  exit 1
+fi
 
 rm -rf "$RES/python/lib/python$PYVER/test" "$RES/python/lib/python$PYVER/idlelib" \
        "$RES/python/lib/python$PYVER/tkinter" "$RES/python/share" 2>/dev/null || true
