@@ -40,6 +40,9 @@ DEFAULT_CONFIG = {
         "music":    {"on": True,  "slot": "tr"},               # stacks under the clock, top-right
         "system":   {"on": False, "slot": "br"},               # CPU chip off by default
         "projects": {"on": False, "slot": "bl"},
+        # Not a corner widget: before noon on a morning-report day the whole desktop becomes the
+        # report over the day's weather (morning_desktop.py). Only on/off; it finds its own room.
+        "morning":  {"on": True},
     }
 }
 
@@ -229,6 +232,20 @@ def weather_enabled():
     clock = dict(DEFAULT_CONFIG["widgets"]["clock"])
     clock.update((saved.get("widgets") or {}).get("clock") or {})
     return bool(clock.get("on"))
+
+
+def morning_enabled():
+    """Is the wallpaper's morning scene switched on in desktop.json (``widgets.morning.on``)?
+
+    Unlike the weather, the scene asks no outside service the report does not already ask, so a
+    desktop.json that cannot be read leaves it at its default (on) instead of turning it off.
+    """
+    saved, problem = _read_saved()
+    morning = dict(DEFAULT_CONFIG["widgets"]["morning"])
+    entry = None if problem else (saved.get("widgets") or {}).get("morning")
+    if isinstance(entry, dict):
+        morning.update(entry)
+    return morning.get("on") is not False
 
 
 def save_config(cfg):

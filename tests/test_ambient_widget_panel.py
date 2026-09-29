@@ -79,7 +79,7 @@ def test_edit_mode_lists_every_widget_with_its_state(ambient):
     assert panel.is_visible()
     names = panel.locator(".wp-row:not(.wp-sub) .wp-name").all_inner_texts()
     assert [n.strip() for n in names] == ["Name and logo", "Clock & weather", "Apps", "Music",
-                                          "System", "Projects"]
+                                          "System", "Projects", "Morning report"]
     assert _row(page, "Music").locator("input[type=checkbox]").is_checked()
     assert not _row(page, "System").locator("input[type=checkbox]").is_checked()
     clock = _row(page, "Clock & weather")

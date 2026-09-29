@@ -337,6 +337,63 @@
   .composer { border-radius:14px; padding:7px 7px 7px 14px; box-shadow:0 10px 34px rgba(0,0,0,.18); }
   .composer:focus-within { box-shadow:0 12px 38px rgba(0,0,0,.20); }
   .iconbtn { border-radius:10px; }
+
+  /* ── morning: the day's report over the day's weather (before noon, on a report day) ──────────
+     The sky is one canvas behind everything; the colour blooms and the logo step aside, the
+     widgets stay. Text and panels take the sky's tone: dark words on bright skies, light words on
+     rain, storm and night. No backdrop blur while the sky moves: it would be redone every frame. */
+  .sky{position:fixed; inset:0; z-index:0; width:100%; height:100%; display:none; pointer-events:none;}
+  body.morning{background:var(--skybg,linear-gradient(170deg,#58aaff 0%,#8fcaff 40%,#d6ecff 68%,#ffe2ad 100%)); transition:background 1.2s ease;}
+  body.morning .sky{display:block;}
+  body.morning .blooms, body.morning .vignette, body.morning .widget[data-widget="brand"]{display:none;}
+  body.morning .opsbar, body.morning .composer, body.morning .card, body.morning .editbtn, body.morning .reply{backdrop-filter:none; -webkit-backdrop-filter:none;}
+  body.morning .clock, body.morning .np, body.morning .sys{text-shadow:none;}
+  body.morning.sky-light{color-scheme:light; --ink:#14213d; --mut:#34425f; --faint:#56627f;
+    --panel:rgba(255,255,255,.84); --panel-line:rgba(20,33,61,.12); --panel-ink:#14213d; --hover:rgba(20,33,61,.07);
+    --accent:32,150,110; --send-ink:#ffffff;
+    --t:#14213d; --t2:rgba(20,33,61,.78); --t3:rgba(20,33,61,.62); --chip:rgba(255,255,255,.74); --chipline:rgba(255,255,255,.95);}
+  body.morning.sky-dark{color-scheme:dark; --ink:#f4f7ff; --mut:#d3dbee; --faint:#b3bdd6;
+    --panel:rgba(16,22,38,.74); --panel-line:rgba(255,255,255,.16); --panel-ink:#f2f4ff; --hover:rgba(255,255,255,.10);
+    --accent:115,200,160; --send-ink:#0b120e;
+    --t:#f4f7ff; --t2:rgba(244,247,255,.86); --t3:rgba(244,247,255,.68); --chip:rgba(255,255,255,.14); --chipline:rgba(255,255,255,.28);}
+  .morning{--round:ui-rounded,"SF Pro Rounded","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif; --m-scale:1;
+    position:fixed; z-index:4; left:9vw; top:15vh; width:min(50vw,820px); display:grid; gap:calc(14px * var(--m-scale));
+    color:var(--t); pointer-events:none; transition:opacity .5s;}
+  .morning[hidden]{display:none;}
+  .morning > *{pointer-events:auto;}
+  body.chatting .morning{opacity:.42;}
+  .m-when{padding-right:40px; font:600 calc(13px * var(--m-scale))/1.4 var(--sans); letter-spacing:.1em; text-transform:uppercase; color:var(--t3);}
+  .m-say{font:800 calc(clamp(30px,4.2vw,56px) * var(--m-scale))/1.06 var(--round); letter-spacing:-.025em; text-wrap:balance; text-shadow:0 2px 24px rgba(0,0,0,.08);}
+  body.sky-dark .m-say{text-shadow:0 2px 28px rgba(0,0,0,.45);}
+  .m-more{max-width:44ch; font:500 calc(clamp(15px,1.45vw,19px) * var(--m-scale))/1.45 var(--round); color:var(--t2);}
+  .m-more:empty{display:none;}
+  .m-dots{display:flex; align-items:center; gap:7px; font:700 13px/1 var(--round); color:var(--t2);}
+  .m-dots[hidden]{display:none;}
+  .m-dots i{width:12px; height:12px; border-radius:50%; background:var(--chip); border:1px solid var(--chipline); transition:background .4s, border-color .4s, box-shadow .4s;}
+  .m-dots i.on{background:#1fa971; border-color:#1fa971; box-shadow:0 0 0 3px rgba(31,169,113,.22);}
+  .m-dots span{margin-left:6px;}
+  body.all-clear .m-dots i.on{animation:mglow 1.6s ease-in-out 2;}
+  @keyframes mglow{50%{box-shadow:0 0 0 8px rgba(31,169,113,.08)}}
+  .m-acts{display:flex; flex-wrap:wrap; gap:12px; margin-top:2px;}
+  .m-acts:empty{display:none;}
+  .m-act{position:relative; display:inline-flex;}
+  .m-pill{display:inline-flex; align-items:center; padding:11px 18px; border-radius:999px; font:700 14px/1 var(--round); text-decoration:none; white-space:nowrap;}
+  .m-pill.go{background:linear-gradient(100deg,#ffb547,#ff8a3d); color:#fff; box-shadow:0 10px 26px rgba(255,138,61,.4);}
+  .m-pill.soft{background:var(--chip); color:var(--t); border:1px solid var(--chipline);}
+  .m-pill:hover{filter:brightness(1.04);}
+  .m-check{position:absolute; top:-8px; right:-8px; width:24px; height:24px; padding:0; border-radius:50%; border:1px solid rgba(20,33,61,.12);
+    background:#fff; color:#1fa971; font:800 12px/1 var(--round); cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.18);
+    opacity:0; pointer-events:none; transition:opacity .15s;}
+  .m-act:hover .m-check, .m-act:focus-within .m-check{opacity:1; pointer-events:auto;}
+  .m-by{display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-top:2px; font:600 13px/1.3 var(--round); color:var(--t3);}
+  .m-by img{width:28px; height:28px; border-radius:50%; background:#fff; box-shadow:0 2px 8px rgba(0,0,0,.12);}
+  .m-by img:not([src]){visibility:hidden;}
+  .m-by a{color:inherit; text-underline-offset:3px;}
+  .m-note{min-height:1.3em; font:600 12.5px/1.3 var(--round); color:var(--t3);}
+  .m-note button{margin-left:8px; padding:0; border:0; background:none; color:inherit; font:inherit; text-decoration:underline; text-underline-offset:3px; cursor:pointer;}
+  .m-close{position:absolute; top:0; right:0; width:30px; height:30px; padding:0; border-radius:50%; border:1px solid var(--chipline);
+    background:var(--chip); color:var(--t2); font:500 17px/1 var(--sans); cursor:pointer; opacity:.5; transition:opacity .15s;}
+  .m-close:hover, .m-close:focus-visible{opacity:1;}
 </style>
 </head>
 <body>
@@ -371,6 +428,19 @@
   <div class="slot bl" id="slot-bl"></div>
   <div class="slot br" id="slot-br"></div>
   <div class="slot center" id="slot-center"></div>
+
+  <!-- morning: today's report over the day's weather, before noon (harness/morning_desktop.py) -->
+  <canvas class="sky" id="skyCanvas" width="0" height="0" aria-hidden="true"></canvas>
+  <section class="morning" id="morning" aria-labelledby="mSay" hidden>
+    <button class="m-close" id="mClose" type="button" title="Hide for today" aria-label="Hide the morning report for today" data-ops-title="Hide for today" data-ops-aria="Hide the morning report for today">×</button>
+    <div class="m-when" id="mWhen"></div>
+    <h1 class="m-say" id="mSay"></h1>
+    <p class="m-more" id="mMore"></p>
+    <div class="m-dots" id="mDots"></div>
+    <div class="m-acts" id="mActs"></div>
+    <div class="m-by" id="mBy"><img id="mAvatar" alt=""><span id="mByText"></span><a id="mOpen" href="/report" target="_blank" rel="noopener noreferrer" data-ops-t="Open report">Open report</a></div>
+    <p class="m-note" id="mNote" role="status" aria-live="polite"></p>
+  </section>
 
   <div class="lyrics" id="lyrics"><div class="inner" id="lyricsInner"></div></div>
 
@@ -424,7 +494,9 @@
     "Music":"音乐","System":"系统状态","Projects":"项目","Position":"位置","Top left":"左上","Top right":"右上",
     "Bottom left":"左下","Bottom right":"右下","Center":"中间","Layout was not saved":"布局未保存",
     "desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted.":"无法读取 desktop.json。在修复或删除它之前，这里的更改不会保存，天气也保持关闭。",
-    "Weather":"天气"});
+    "Weather":"天气","Morning report":"晨报","before noon":"中午之前","Open report":"打开晨报",
+    "Hide for today":"今天先收起","Hide the morning report for today":"今天不再显示晨报",
+    "That could not be saved. Try again.":"没能保存，请再试一次。"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
     "Starting":"啟動中","Restarting":"重新啟動中","Not healthy":"狀態異常","Restarts paused":"已暫停重新啟動",
@@ -440,7 +512,9 @@
     "Music":"音樂","System":"系統狀態","Projects":"專案","Position":"位置","Top left":"左上","Top right":"右上",
     "Bottom left":"左下","Bottom right":"右下","Center":"中間","Layout was not saved":"版面未儲存",
     "desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted.":"無法讀取 desktop.json。在修正或刪除它之前，這裡的變更不會儲存，天氣也維持關閉。",
-    "Weather":"天氣"});
+    "Weather":"天氣","Morning report":"晨報","before noon":"中午之前","Open report":"開啟晨報",
+    "Hide for today":"今天先收起","Hide the morning report for today":"今天不再顯示晨報",
+    "That could not be saved. Try again.":"無法儲存，請再試一次。"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
   function opsLocale(){return OPS_LANG==="zh-tw"?"zh-TW":(OPS_LANG==="zh"?"zh-CN":"en");}
@@ -450,7 +524,7 @@
     document.querySelectorAll("[data-ops-aria]").forEach(function(node){node.setAttribute("aria-label",tOps(node.getAttribute("data-ops-aria")));});
     document.querySelectorAll("[data-ops-title]").forEach(function(node){node.title=tOps(node.getAttribute("data-ops-title"));});
     document.querySelectorAll("[data-ops-open-name]").forEach(function(node){var name=node.getAttribute("data-ops-open-name");node.setAttribute("aria-label",tOps("Open")+" "+(name||tOps("app")));});
-    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();paintWeather();paintWidgetPanel();if(opsPanelOpen)refreshAmbientActivity();
+    $("opsState").setAttribute("aria-label",tOps("Open Activity"));$("input").placeholder=tOps("Describe the outcome you want…");$("input").setAttribute("aria-label",tOps("Message Collie"));$("mic").title=tOps("Voice input");$("mic").setAttribute("aria-label",tOps("Voice input"));$("send").title=tOps("Send");$("send").setAttribute("aria-label",tOps("Send"));$("editbtn").title=tOps("Edit layout");$("editbtn").setAttribute("aria-label",tOps("Edit desktop layout"));$("replyX").title=tOps("Dismiss");$("replyX").setAttribute("aria-label",tOps("Dismiss reply"));document.querySelector(".edithint").textContent=tOps("Drag any widget to a corner · click ✓ when done");paintOps();paintIdentity();tick();paintWeather();paintWidgetPanel();if(opsPanelOpen)refreshAmbientActivity();if(MORNING.showing)renderMorning();
   }
   function ambientName(){return String(OPS_IDENTITY.name||"Collie");}
   function paintIdentity(){
@@ -770,6 +844,7 @@
       if (wel) { wel.classList.add("widget"); wel.setAttribute("data-widget", name); wel.addEventListener("mousedown", onWidgetDown); }
     });
     if (editMode) paintWidgetPanel();
+    morningConfigChanged(cfg);
   }
   function loadConfig(){ fetch("/api/desktop/config").then(function(r){return r.json();}).then(applyConfig).catch(function(){}); }
   loadConfig(); setInterval(loadConfig, 5000);
@@ -818,7 +893,7 @@
   // so the gesture is handed back here. Double, not single, so it never fights the page's own
   // controls; ignored entirely when the click landed on a widget or the composer.
   document.addEventListener("dblclick", function(e){
-    if (e.target.closest && e.target.closest(".slot, .composer, .reply, .editbtn, .widget-panel")) return;
+    if (e.target.closest && e.target.closest(".slot, .composer, .reply, .editbtn, .widget-panel, .morning")) return;
     api("/api/desktop/reveal", {show: true});
   });
   var PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
@@ -888,6 +963,15 @@
         sub.appendChild(weather); sub.appendChild(asks); panel.appendChild(sub);
       }
     });
+    // The morning scene is not a corner widget: it is on or off, and finds room around the others.
+    var morningRow = document.createElement("div"); morningRow.className = "wp-row";
+    var morningName = document.createElement("label"); morningName.className = "wp-name";
+    var morningOn = document.createElement("input"); morningOn.type = "checkbox"; morningOn.disabled = busy;
+    morningOn.checked = !(W.morning && W.morning.on === false); morningOn.setAttribute("data-wp", "morning:on");
+    morningOn.onchange = function(){ saveWidget("morning", {on: morningOn.checked}); };
+    morningName.appendChild(morningOn); morningName.appendChild(document.createTextNode(tOps("Morning report")));
+    var morningWhenHint = document.createElement("span"); morningWhenHint.className = "wp-hint"; morningWhenHint.textContent = tOps("before noon");
+    morningRow.appendChild(morningName); morningRow.appendChild(morningWhenHint); panel.appendChild(morningRow);
     if (widgetPanelError) { var err = document.createElement("p"); err.className = "wp-error"; err.setAttribute("role", "status"); err.textContent = widgetPanelError; panel.appendChild(err); }
     if (keep && widgetFocus) { var again = panel.querySelector('[data-wp="' + widgetFocus + '"]'); if (again && !again.disabled) again.focus(); }
   }
@@ -987,10 +1071,12 @@
     e.title = (d.stale ? tOps("Last available conditions") : tOps("Current conditions")) + " · Open-Meteo";
   }
   function loadWeather(){
-    if (!$("wWx")) return;
+    // Asked for by the clock's line, and by the morning sky while it shows.
+    if (!$("wWx") && !MORNING.showing) return;
     if (weatherOff()) weatherData = null;      // switched back on later, it starts from "Loading", not old news
     paintWeather();
-    if (weatherOff() || weatherLoading) return;
+    if (weatherOff()) { morningWeather(); return; }
+    if (weatherLoading) return;
     weatherLoading = fetch(authUrl("/api/desktop/weather"), {cache:"no-store"}).then(function(r){
       if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
     }).then(function(d){
@@ -1007,7 +1093,7 @@
       // marked stale; after that say it is unavailable.
       var d = weatherData, recent = d && d.ok && Date.now() / 1000 - Number(d.fetched_at) < 3600;
       weatherData = recent ? Object.assign({}, d, {stale:true}) : {ok:false};
-    }).then(function(){ weatherLoading = null; paintWeather(); });
+    }).then(function(){ weatherLoading = null; paintWeather(); morningWeather(); });
   }
   setInterval(loadWeather, 60*1000);
 
@@ -1039,6 +1125,395 @@
   }
   setInterval(loadSys, 5000);
 
+  // ── morning: today's report over the day's weather ───────────────────────────────────────────
+  // Before noon on a day with a morning report, the desktop shows the report's headline over a live
+  // sky drawn from the weather code. harness/morning_desktop.py decides whether it shows and what it
+  // says (GET /api/report/today); this page only draws it. One loop paints the sky, capped near
+  // 30 fps, and it runs only while the scene shows, the page is visible and the code map is not
+  // over it; with reduced motion it paints one still frame. Cloud sprites are drawn once, there are
+  // no blur filters, and the canvas is at most 1.5 device pixels per CSS pixel.
+  var MORNING = {data:null, showing:false, checked:false, fitted:false, timer:0, clearTimer:0, noteTimer:0,
+                 fitTimer:0, lastResolve:0, cfgOn:null, settingOn:null, observer:null};
+  var RESOLVE_MS = 15 * 60 * 1000;
+  var SKIES = {
+    clear:  {bg:"linear-gradient(170deg,#58aaff 0%,#8fcaff 40%,#d6ecff 68%,#ffe2ad 100%)", dark:false},
+    cloudy: {bg:"linear-gradient(170deg,#8fb3d9 0%,#b8cde3 45%,#dfe7ef 75%,#efe6d8 100%)", dark:false},
+    rain:   {bg:"linear-gradient(170deg,#3d4f66 0%,#56687e 45%,#76869a 80%,#8a96a5 100%)", dark:true},
+    storm:  {bg:"linear-gradient(170deg,#1f2636 0%,#2f3a4f 50%,#48536a 100%)", dark:true},
+    snow:   {bg:"linear-gradient(170deg,#b9cbe0 0%,#d4e0ec 45%,#eef3f8 80%,#f7f9fc 100%)", dark:false},
+    fog:    {bg:"linear-gradient(170deg,#c7ced6 0%,#d9dee3 50%,#e9ebe8 100%)", dark:false},
+    night:  {bg:"linear-gradient(170deg,#070b1f 0%,#131c45 50%,#2a2f6b 85%,#3d3470 100%)", dark:true}
+  };
+  // The Open-Meteo code and day/night as morning_report.sky() reads them for the morning email.
+  function skyFor(d){
+    if (!d || !d.ok) return "clear";
+    var c = (typeof d.code === "number" && isFinite(d.code)) ? Math.trunc(d.code) : 0;
+    if (c >= 95) return "storm";
+    if ((c >= 71 && c <= 77) || c === 85 || c === 86) return "snow";
+    if ((c >= 51 && c <= 67) || (c >= 80 && c <= 82)) return "rain";
+    if (c === 45 || c === 48) return "fog";
+    if (d.is_day === 0) return "night";
+    return (c === 2 || c === 3) ? "cloudy" : "clear";
+  }
+
+  var sky = (function(){
+    var cv = $("skyCanvas"), ctx = null, W = 0, H = 0, dpr = 1, kind = "clear", sunX = .82;
+    var t0 = 0, last = 0, raf = 0, frames = 0, still = false, flash = 0, nextFlash = 0;
+    var clouds = [], drops = [], flakes = [], stars = [], fogs = [], sprites = null, crescent = null;
+    var motion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+    function reduced(){ return !!(motion && motion.matches); }
+    function rnd(a, b){ return a + Math.random() * (b - a); }
+    function sprite(tint, alpha){            // one soft cloud, drawn once and reused
+      var c = document.createElement("canvas"); c.width = 420; c.height = 200;
+      var g = c.getContext("2d");
+      for (var i = 0; i < 16; i++){
+        var x = rnd(90, 330), y = rnd(80, 130), r = rnd(38, 78), grd = g.createRadialGradient(x, y, 0, x, y, r);
+        grd.addColorStop(0, "rgba(" + tint + "," + alpha + ")"); grd.addColorStop(1, "rgba(" + tint + ",0)");
+        g.fillStyle = grd; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+      }
+      return c;
+    }
+    function setup(){
+      if (!sprites) sprites = {light:sprite("255,255,255", .55), grey:sprite("90,100,118", .45), night:sprite("140,150,200", .16)};
+      dpr = Math.min(1.5, window.devicePixelRatio || 1);
+      W = Math.max(1, innerWidth); H = Math.max(1, innerHeight);
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var n = {clear:5, cloudy:11, rain:9, storm:10, snow:7, fog:4, night:4}[kind] || 5, i;
+      clouds = []; drops = []; flakes = []; stars = []; fogs = [];
+      for (i = 0; i < n; i++) clouds.push({x:rnd(-300, W), y:rnd(-40, H * .5), s:rnd(.7, 1.6), v:rnd(4, 12) * (i % 3 + 1) / 2});
+      if (kind === "rain" || kind === "storm") for (i = 0; i < (kind === "storm" ? 220 : 150); i++) drops.push({x:rnd(0, W), y:rnd(0, H), l:rnd(10, 22), v:rnd(420, 700)});
+      if (kind === "snow") for (i = 0; i < 140; i++) flakes.push({x:rnd(0, W), y:rnd(0, H), r:rnd(1, 3.2), v:rnd(20, 55), p:rnd(0, 6.28)});
+      if (kind === "night") for (i = 0; i < 150; i++) stars.push({x:rnd(0, W), y:rnd(0, H * .75), r:rnd(.4, 1.5), p:rnd(0, 6.28), s:rnd(.6, 1.8)});
+      if (kind === "fog") for (i = 0; i < 6; i++) fogs.push({y:H * (.35 + i * .1), v:rnd(6, 16) * (i % 2 ? 1 : -1), x:rnd(0, W)});
+      crescent = null;
+      if (kind === "night") {                 // a real crescent, cut out once: the sky shows through it
+        var R = Math.min(W, H) * .065, size = Math.ceil(R * 2 + 4), m = document.createElement("canvas");
+        m.width = m.height = Math.ceil(size * dpr);
+        var g = m.getContext("2d"); g.scale(dpr, dpr);
+        g.fillStyle = "#f4f1e4"; g.beginPath(); g.arc(size / 2, size / 2, R, 0, Math.PI * 2); g.fill();
+        g.globalCompositeOperation = "destination-out";
+        g.beginPath(); g.arc(size / 2 + R * .45, size / 2 - R * .2, R * .92, 0, Math.PI * 2); g.fill();
+        crescent = {canvas:m, size:size, R:R};
+      }
+      t0 = performance.now(); flash = 0; nextFlash = rnd(2, 5); still = false;
+    }
+    function sun(t){
+      var cx = W * sunX, cy = H * .22, R = Math.min(W, H) * .1;
+      var glow = ctx.createRadialGradient(cx, cy, R * .3, cx, cy, R * 5);
+      glow.addColorStop(0, "rgba(255,236,170,.9)"); glow.addColorStop(.25, "rgba(255,205,120,.35)"); glow.addColorStop(1, "rgba(255,200,120,0)");
+      ctx.fillStyle = glow; ctx.fillRect(cx - R * 5, cy - R * 5, R * 10, R * 10);
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * .02);
+      for (var i = 0; i < 12; i++){      // soft rays, turning slowly
+        ctx.rotate(Math.PI / 6);
+        ctx.fillStyle = "rgba(255,240,200," + (.05 + .03 * Math.sin(t * .6 + i)) + ")";
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(R * 7, -R * .35); ctx.lineTo(R * 7, R * .35); ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+      var disc = ctx.createRadialGradient(cx - R * .2, cy - R * .2, 0, cx, cy, R);
+      disc.addColorStop(0, "#fffbe8"); disc.addColorStop(.6, "#ffd66e"); disc.addColorStop(1, "#ffb547");
+      ctx.fillStyle = disc; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+    }
+    function moon(){
+      if (!crescent) return;
+      var cx = W * sunX, cy = H * .22, R = crescent.R;
+      var glow = ctx.createRadialGradient(cx, cy, R, cx, cy, R * 6);
+      glow.addColorStop(0, "rgba(210,220,255,.35)"); glow.addColorStop(1, "rgba(210,220,255,0)");
+      ctx.fillStyle = glow; ctx.fillRect(cx - R * 6, cy - R * 6, R * 12, R * 12);
+      ctx.drawImage(crescent.canvas, cx - crescent.size / 2, cy - crescent.size / 2, crescent.size, crescent.size);
+    }
+    function drawClouds(dt, s){
+      for (var i = 0; i < clouds.length; i++){
+        var c = clouds[i];
+        c.x += c.v * dt; if (c.x > W + 50) { c.x = -420 * c.s - 50; c.y = rnd(-40, H * .5); }
+        ctx.drawImage(s, c.x, c.y, 420 * c.s, 200 * c.s);
+      }
+    }
+    function frame(now){
+      if (!ctx) return;
+      var t = (now - t0) / 1000, dt = Math.min(.05, Math.max(0, (now - last) / 1000)), i;
+      last = now;
+      ctx.clearRect(0, 0, W, H);
+      if (kind === "clear") { sun(t); drawClouds(dt, sprites.light); }
+      else if (kind === "cloudy") { sun(t); ctx.fillStyle = "rgba(255,255,255,.25)"; ctx.fillRect(0, 0, W, H); drawClouds(dt, sprites.light); }
+      else if (kind === "night") {
+        ctx.fillStyle = "#fff";
+        for (i = 0; i < stars.length; i++){ var st = stars[i]; ctx.globalAlpha = .35 + .65 * Math.abs(Math.sin(t * st.s + st.p)); ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, 6.283); ctx.fill(); }
+        ctx.globalAlpha = 1; moon(); drawClouds(dt, sprites.night);
+      } else if (kind === "rain" || kind === "storm") {
+        drawClouds(dt, sprites.grey);
+        ctx.strokeStyle = kind === "storm" ? "rgba(210,225,255,.42)" : "rgba(220,232,250,.45)"; ctx.lineWidth = 1.1; ctx.beginPath();
+        for (i = 0; i < drops.length; i++){
+          var d = drops[i];
+          d.y += d.v * dt; d.x -= d.v * dt * .12; if (d.y > H) { d.y = rnd(-40, 0); d.x = rnd(0, W * 1.1); }
+          ctx.moveTo(d.x, d.y); ctx.lineTo(d.x + d.l * .12, d.y - d.l);
+        }
+        ctx.stroke();
+        if (kind === "storm" && !still) {         // now and then a flash; never in a still frame
+          if (t > nextFlash) { flash = 1; nextFlash = t + rnd(3.5, 8); }
+          if (flash > 0) { ctx.fillStyle = "rgba(235,240,255," + (flash * .55) + ")"; ctx.fillRect(0, 0, W, H); flash = Math.max(0, flash - dt * 3.2); }
+        }
+      } else if (kind === "snow") {
+        drawClouds(dt, sprites.light); ctx.fillStyle = "rgba(255,255,255,.95)";
+        for (i = 0; i < flakes.length; i++){
+          var f = flakes[i];
+          f.y += f.v * dt; f.x += Math.sin(t * .8 + f.p) * 12 * dt; if (f.y > H) { f.y = -5; f.x = rnd(0, W); }
+          ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 6.283); ctx.fill();
+        }
+      } else if (kind === "fog") {
+        sun(t); ctx.fillStyle = "rgba(235,238,240,.45)"; ctx.fillRect(0, 0, W, H);
+        for (i = 0; i < fogs.length; i++){
+          var b = fogs[i];
+          b.x += b.v * dt; if (b.x > W) b.x -= W; if (b.x < 0) b.x += W;
+          var grd = ctx.createLinearGradient(0, b.y - 60, 0, b.y + 60);
+          grd.addColorStop(0, "rgba(245,246,247,0)"); grd.addColorStop(.5, "rgba(245,246,247,.5)"); grd.addColorStop(1, "rgba(245,246,247,0)");
+          ctx.fillStyle = grd; ctx.fillRect(0, b.y - 60, W, 120);
+        }
+      }
+      frames++;
+    }
+    function wanted(){ return MORNING.showing && W > 0 && !document.hidden && !document.body.classList.contains("coding"); }
+    function loop(now){
+      raf = 0;
+      if (!wanted() || reduced()) { sync(); return; }
+      raf = requestAnimationFrame(loop);
+      if (now - last < 33) return;              // ~30 fps is plenty for drifting clouds
+      frame(now);
+    }
+    function sync(){
+      if (!wanted()) { if (raf) { cancelAnimationFrame(raf); raf = 0; } return; }
+      if (reduced()) {
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        if (!still) { still = true; last = performance.now(); frame(last); }
+        return;
+      }
+      still = false;
+      if (!raf) { last = performance.now() - 34; raf = requestAnimationFrame(loop); }
+    }
+    function show(k){
+      if (!W || k !== kind) { kind = k; setup(); }
+      sync();
+    }
+    // Where the sun or moon stands across the sky (a fraction of the width): in the room the words
+    // and the widgets leave. A small move is not worth a new still frame.
+    function place(x){
+      if (!(x > 0 && x < 1) || Math.abs(x - sunX) < .05) return;
+      sunX = x; still = false; sync();
+    }
+    function stop(){                          // nothing is kept: no loop, no pixels, no sprites
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0; ctx = null; W = H = 0; cv.width = 0; cv.height = 0; sprites = null; crescent = null; still = false;
+      clouds = []; drops = []; flakes = []; stars = []; fogs = [];
+    }
+    function resize(){ if (W) { setup(); sync(); } }
+    if (motion) {
+      var again = function(){ still = false; sync(); };
+      if (motion.addEventListener) motion.addEventListener("change", again); else if (motion.addListener) motion.addListener(again);
+    }
+    return {show:show, place:place, stop:stop, sync:sync, resize:resize,
+            frames:function(){ return frames; }, running:function(){ return !!raf; }};
+  })();
+
+  function weatherKnown(){ return weatherOff() || !!weatherData; }
+  function applySky(){
+    if (!MORNING.showing) return;
+    // Until the weather has answered, the calm clear gradient; then the sky it describes.
+    var kind = weatherOff() ? "clear" : skyFor(weatherData), s = SKIES[kind] || SKIES.clear;
+    document.body.dataset.sky = kind;
+    document.body.classList.toggle("sky-dark", s.dark); document.body.classList.toggle("sky-light", !s.dark);
+    document.body.style.setProperty("--skybg", s.bg);
+    // The loop starts once the weather has answered and the words have a place (the sun goes
+    // where they are not), so the first frame is already the right one.
+    if (weatherKnown() && MORNING.fitted) sky.show(kind);
+  }
+  function morningWeather(){ if (MORNING.showing) { applySky(); morningWhen(); scheduleFit(); } }
+  function morningWhen(){
+    var d = MORNING.data, bits = [];
+    if (!d) return;
+    try { bits.push(new Date(d.date + "T12:00:00").toLocaleDateString(opsLocale(), {weekday:"long", month:"long", day:"numeric"})); }
+    catch(_) { bits.push(String(d.date || "")); }
+    var w = weatherData;
+    if (!weatherOff() && w && w.ok && typeof w.temp_c === "number" && isFinite(w.temp_c))
+      bits.push((Math.round(w.temp_c) + "° " + tOps((WX[w.code] || ["", ""])[1])).trim());
+    $("mWhen").textContent = bits.join(" · ");
+  }
+
+  // Where the words go: the first spot, left then right, that no widget, the status bar, the
+  // composer or the edit button covers, shrinking the type a step at a time if none fits.
+  function scheduleFit(){ clearTimeout(MORNING.fitTimer); MORNING.fitTimer = setTimeout(fitMorning, 60); }
+  function fitMorning(){
+    var box = $("morning");
+    if (!MORNING.showing || box.hidden) return;
+    var vw = innerWidth, vh = innerHeight, gap = Math.max(14, Math.round(Math.min(vw, vh) * .02)), obstacles = [];
+    document.querySelectorAll(".slot > .widget, .opsbar, .composer, #editbtn").forEach(function(el){
+      var r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) obstacles.push(r);
+    });
+    function clear(x, y, w, h){
+      return !obstacles.some(function(o){
+        return !(x + w + gap <= o.left || o.right + gap <= x || y + h + gap <= o.top || o.bottom + gap <= y);
+      });
+    }
+    var widths = [Math.min(vw * .5, 820), Math.min(vw * .42, 680), vw * .36], scales = [1, .9, .8, .7, .6];
+    var prefer = vh * .15, lowest = vh * .06, floor = vh - Math.max(12, vh * .03), s, w, side, i;
+    for (s = 0; s < scales.length; s++) {
+      box.style.setProperty("--m-scale", scales[s]);
+      for (w = 0; w < widths.length; w++) {
+        box.style.width = widths[w] + "px";
+        var h = box.offsetHeight;
+        for (side = 0; side < 2; side++) {
+          var x = side ? vw - vw * .08 - widths[w] : vw * .08;
+          var tops = [prefer, lowest];
+          obstacles.forEach(function(o){ if (!(x + widths[w] + gap <= o.left || o.right + gap <= x)) tops.push(o.bottom + gap); });
+          tops.sort(function(a, b){ return Math.abs(a - prefer) - Math.abs(b - prefer); });
+          for (i = 0; i < tops.length; i++) {
+            if (tops[i] < lowest || tops[i] + h > floor || !clear(x, tops[i], widths[w], h)) continue;
+            return placeMorning(box, side ? "right" : "left", x, tops[i], obstacles);
+          }
+        }
+      }
+    }
+    placeMorning(box, "left", vw * .08, lowest, obstacles);   // nothing fits: smallest type, top left
+  }
+  function placeMorning(box, side, x, top, obstacles){
+    box.style.left = Math.round(Math.max(8, x)) + "px"; box.style.top = Math.round(top) + "px";
+    box.dataset.side = side;
+    // The sun (or moon) stands in the open sky beside the words, clear of the widgets above.
+    var vw = innerWidth, range = document.createRange(), textL = vw, textR = 0, lo, hi;
+    ["mWhen", "mSay", "mMore", "mDots", "mActs", "mBy"].forEach(function(id){
+      var el = $(id); if (el.hidden) return;
+      range.selectNodeContents(el); var r = range.getBoundingClientRect();
+      if (r.width > 0) { textL = Math.min(textL, r.left); textR = Math.max(textR, r.right); }
+    });
+    if (side === "right") {
+      lo = 0; hi = textL;
+      obstacles.forEach(function(o){ if (o.top < innerHeight * .45 && o.right <= textL) lo = Math.max(lo, o.right); });
+    } else {
+      lo = textR; hi = vw;
+      obstacles.forEach(function(o){ if (o.top < innerHeight * .45 && o.left >= textR) hi = Math.min(hi, o.left); });
+    }
+    sky.place((lo + hi) / 2 / vw);
+    if (!MORNING.fitted) { MORNING.fitted = true; applySky(); }
+  }
+  function watchMorningLayout(on){
+    if (MORNING.observer) { MORNING.observer.disconnect(); MORNING.observer = null; }
+    if (!on || typeof ResizeObserver === "undefined") return;
+    MORNING.observer = new ResizeObserver(scheduleFit);
+    ["slot-tl", "slot-tr", "slot-bl", "slot-br", "slot-center"].forEach(function(id){ MORNING.observer.observe($(id)); });
+    document.querySelectorAll(".opsbar, .composer").forEach(function(el){ MORNING.observer.observe(el); });
+  }
+
+  // Only an https address or Collie's own report page, whatever the answer says.
+  function pillHref(p){
+    var href = String((p && p.href) || "");
+    if (p && p.kind === "report") return href === "/report" ? authUrl("/report") : "";
+    return /^https:\/\/[^\s"'<>\\]+$/.test(href) ? href : "";
+  }
+  function renderMorning(){
+    var d = MORNING.data;
+    if (!d) return;
+    $("mSay").textContent = d.sentence || "";
+    $("mMore").textContent = d.summary || "";
+    var dots = $("mDots"), total = Math.max(0, Number(d.total) || 0), done = Math.min(total, Math.max(0, Number(d.done) || 0));
+    var shown = Math.min(total, 8), lit = total ? Math.round(done * shown / total) : 0, i;
+    dots.textContent = "";
+    for (i = 0; i < shown; i++) { var dot = document.createElement("i"); if (i < lit) dot.className = "on"; dots.appendChild(dot); }
+    if (d.dots_label) { var label = document.createElement("span"); label.textContent = d.dots_label; dots.appendChild(label); }
+    dots.hidden = !total;
+    var acts = $("mActs");
+    acts.textContent = "";
+    (d.pills || []).forEach(function(p){
+      var href = pillHref(p);
+      if (!href) return;
+      var wrap = document.createElement("span"), a = document.createElement("a");
+      wrap.className = "m-act";
+      a.className = "m-pill " + (p.primary ? "go" : "soft"); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = String(p.label || "");
+      wrap.appendChild(a); acts.appendChild(wrap);
+    });
+    var by = d.by || {};
+    $("mByText").textContent = [by.companion, by.words].filter(Boolean).join(" · ");
+    $("mOpen").href = authUrl("/report"); $("mOpen").textContent = tOps("Open report");
+    var img = $("mAvatar"), avatar = OPS_IDENTITY.avatar || "/api/avatar.png";
+    if (img.getAttribute("src") !== avatar) { img.onerror = function(){ this.onerror = null; this.src = "/logo.svg"; }; img.src = avatar; }
+    morningWhen();
+    scheduleFit();
+  }
+  function morningNote(text){
+    var note = $("mNote"); clearTimeout(MORNING.noteTimer); note.textContent = text || "";
+    if (text) MORNING.noteTimer = setTimeout(function(){ note.textContent = ""; }, 10000);
+  }
+  function enterMorning(){
+    MORNING.showing = true; MORNING.fitted = false;
+    $("morning").hidden = false;
+    document.body.classList.add("morning");
+    applySky();
+    if (!weatherKnown()) loadWeather();
+    watchMorningLayout(true);
+  }
+  function exitMorning(){
+    $("morning").hidden = true;
+    if (!MORNING.showing) return;
+    MORNING.showing = false;
+    document.body.classList.remove("morning", "sky-dark", "sky-light");
+    delete document.body.dataset.sky; document.body.style.removeProperty("--skybg");
+    morningNote(""); sky.stop(); watchMorningLayout(false);
+  }
+  function applyToday(d){
+    MORNING.checked = true;
+    if (!d || typeof d !== "object" || d.ok === false) { scheduleToday(MORNING.showing ? 60 : 300); return; }
+    if (!d.show) { MORNING.data = null; exitMorning(); scheduleToday(d.recheck_s); return; }
+    MORNING.data = d;
+    if (!MORNING.showing) enterMorning();
+    renderMorning();
+    scheduleToday(d.recheck_s);
+  }
+  function scheduleToday(seconds){
+    clearTimeout(MORNING.timer);
+    var s = Math.max(30, Math.min(6 * 3600, Number(seconds) || 300));
+    MORNING.timer = setTimeout(fetchToday, s * 1000);
+  }
+  function fetchToday(){
+    // The server re-checks drafts, pull requests and approvals only while the scene shows, and at
+    // most every 15 minutes; the page asks no more often than that either.
+    var resolve = Date.now() - MORNING.lastResolve >= RESOLVE_MS;
+    if (resolve) MORNING.lastResolve = Date.now();
+    return fetch(authUrl("/api/report/today" + (resolve ? "?resolve=1" : "")), {cache:"no-store"})
+      .then(function(r){ if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(applyToday)
+      .catch(function(){ MORNING.checked = true; scheduleToday(MORNING.showing ? 60 : 300); });
+  }
+  function morningPost(body){ return opsPost("/api/report/today", body); }
+  $("mClose").onclick = function(){
+    morningPost({action:"dismiss"}).then(function(r){ applyToday(r && r.today); })
+      .catch(function(){ morningNote(tOps("That could not be saved. Try again.")); });
+  };
+  // Either switch (desktop.json's morning widget, Settings → Desktop) is asked again when it changes.
+  function morningConfigChanged(cfg){
+    var on = !(cfg && cfg.widgets && cfg.widgets.morning && cfg.widgets.morning.on === false);
+    var was = MORNING.cfgOn; MORNING.cfgOn = on;
+    if (was !== null && was !== on) fetchToday();
+    if (MORNING.showing) scheduleFit();
+  }
+  function morningSettingChanged(values){
+    var on = String((values && values.DESKTOP_MORNING_REPORT) || "on").toLowerCase();
+    var was = MORNING.settingOn; MORNING.settingOn = on;
+    if (was !== null && was !== on) fetchToday();
+  }
+  document.addEventListener("visibilitychange", function(){ sky.sync(); if (!document.hidden) fetchToday(); });
+  var morningResize = 0;
+  window.addEventListener("resize", function(){
+    clearTimeout(morningResize);
+    morningResize = setTimeout(function(){ if (MORNING.showing) { sky.resize(); fitMorning(); } }, 150);
+  });
+  // Read-only, for tests and for looking at a running desktop from DevTools.
+  try {
+    Object.defineProperty(window, "collieMorning", {value: Object.freeze({
+      frames: function(){ return sky.frames(); }, running: function(){ return sky.running(); },
+      checked: function(){ return MORNING.checked; }, scene: function(){ return document.body.dataset.sky || ""; },
+      skyFor: skyFor})});
+  } catch(_){}
+  fetchToday();
+
 
   // ── coding mode: watch collie's live run feed; when it's working, reveal the code galaxy ───────
   // Logic: stay in the star-map while ANY run is in flight (thinking counts — a run can go quiet
@@ -1057,7 +1532,7 @@
   // read keeps the last answer.
   function refreshCodeMapSetting(){
     fetch(authUrl("/api/settings"), {cache:"no-store"}).then(function(r){ if(!r.ok)throw new Error("HTTP "+r.status); return r.json(); })
-      .then(function(s){ applyCodeMapSetting(s && s.values); }).catch(function(){});
+      .then(function(s){ applyCodeMapSetting(s && s.values); morningSettingChanged(s && s.values); }).catch(function(){});
   }
   setInterval(refreshCodeMapSetting, 15000);
   function enterCoding(){
@@ -1068,9 +1543,10 @@
     // Only if still coding when the frame comes: an exit in between must not bring the map back.
     requestAnimationFrame(function(){ if (document.body.classList.contains("coding")) g.classList.add("on"); });
     document.body.classList.add("coding");
+    sky.sync();                                          // the map covers the morning sky: stop drawing it
   }
   function exitCoding(){
-    var g = $("galaxy"); g.classList.remove("on"); document.body.classList.remove("coding");
+    var g = $("galaxy"); g.classList.remove("on"); document.body.classList.remove("coding"); sky.sync();
     setTimeout(function(){ if (!document.body.classList.contains("coding")) g.style.display = "none"; }, 950);
   }
   function armGrace(){ clearTimeout(codeGrace); codeGrace = setTimeout(function(){ if (activeRuns <= 0) exitCoding(); }, 30000); }
@@ -1219,7 +1695,7 @@
   var LOCALE = { en:"en-US", zh:"zh-CN", "zh-tw":"zh-TW", ja:"ja-JP", ko:"ko-KR", es:"es-ES",
                  fr:"fr-FR", de:"de-DE", pt:"pt-BR", ru:"ru-RU" };
   fetch(authUrl("/api/settings")).then(function(r){ if(!r.ok)throw new Error("HTTP "+r.status);return r.json(); }).then(function(s){
-    var l = ((s && s.values && s.values.LANG) || "").toLowerCase(); if (LOCALE[l]) VOICE_LANG = LOCALE[l];OPS_LANG=resolveOpsLang(l);applyCodeMapSetting(s && s.values);applyOpsStatic();
+    var l = ((s && s.values && s.values.LANG) || "").toLowerCase(); if (LOCALE[l]) VOICE_LANG = LOCALE[l];OPS_LANG=resolveOpsLang(l);applyCodeMapSetting(s && s.values);morningSettingChanged(s && s.values);applyOpsStatic();
   }).catch(function(){OPS_LANG=resolveOpsLang("");applyOpsStatic();});
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition, mic = $("mic"), recog = null, recording = false;
   if (SR) {

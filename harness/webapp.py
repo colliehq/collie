@@ -2585,6 +2585,26 @@ class Handler(BaseHTTPRequestHandler):
                 except meetings.MeetingError as exc:
                     return self._send_json({"error": str(exc)},
                                            404 if "not found" in str(exc) else 400)
+            if path == "/api/report/today":
+                # The wallpaper's morning scene (morning_desktop.py). The report's words are
+                # personal, and a request may start the resolve pass, so the token is required.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import morning_desktop as morning_today
+                query = urllib.parse.parse_qs(parsed.query)
+                return self._send_json(morning_today.today(
+                    _state_root(), resolve=query.get("resolve", [""])[0] == "1",
+                    approvals=self._inbox_pending_all))
+            if path == "/report":
+                # The whole morning report, as its email, for the "Open report" window.
+                if not self._authed(parsed):
+                    return self._send_html(b"<!doctype html><title>Morning report</title>"
+                                           b"<p>Open the morning report from Collie.</p>", 403)
+                from . import morning_desktop as morning_page
+                query = urllib.parse.parse_qs(parsed.query)
+                status, page = morning_page.page(
+                    _state_root(), str(query.get("date", [""])[0] or "")[:10])
+                return self._send_html(page.encode("utf-8"), status)
             if path == "/api/desktop/config":
                 from . import desktop as dt
                 return self._send_json(dt.load_config())
@@ -3861,6 +3881,17 @@ class Handler(BaseHTTPRequestHandler):
                                                     "error": "could not apply ambient desktop: %s" % exc,
                                                     "values": settings.all_values()}, 500)
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
+            if path == "/api/report/today":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import morning_desktop as morning_act
+                try:
+                    return self._send_json(morning_act.act(_state_root(), body))
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
             if path == "/api/brief":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

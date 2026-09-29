@@ -31,6 +31,33 @@ While Collie edits code, the background can switch to Collie's star-map (the cod
 run ends. That is off by default; turn on *Show the code map while Collie edits code* in Settings →
 Desktop. The map always opens from **Map** in Collie.
 
+### The morning report on the desktop
+
+On a morning when `collie report build` has saved a report, the desktop shows it until noon: a
+sky that follows the real weather (sun and slow clouds, rain, a storm with the odd flash of
+lightning, snow, fog, or stars and a crescent moon before sunrise), the report's headline in large
+type, its summary, one dot for each thing to do, and up to three buttons. The first button is the
+reply drafts together (*Review 2 drafts* opens the first draft in Gmail); the others are the next
+things in the report's order. A button opens an `https` address in your default browser, or the
+full report in a Collie window when the thing has no address of its own; *Open report* under the
+buttons always does the latter. The words are dark on bright skies and light on rain, storm and
+night.
+
+The sky comes from the weather the clock already shows (the Open-Meteo weather code and whether
+it is day). With the clock's weather switched off, the sky is a calm clear one and no temperature
+is shown; the morning scene never asks for the weather itself. The clock and the other widgets
+stay where they are and the words find room around them; the logo steps aside until noon.
+
+It goes back to the normal desktop at noon, or for the rest of the day when you close it (×). Turn
+it off with *Show the morning report on the desktop* in Settings → Desktop, or with *Morning
+report* in the desktop's edit-mode widget panel (`widgets.morning.on` in `~/.collie/desktop.json`).
+
+The sky is one canvas drawn at most 30 times a second, and only while the morning scene is on
+screen: it stops whenever the browser engine reports the page hidden, and while the code map is
+up, and with *reduce motion* turned on in the system settings it is one still picture. The
+wallpaper host does not yet tell the page when another window covers the whole desktop, so that
+case relies on the engine's own occlusion detection.
+
 ## Native application control
 
 The **Control desktop apps** setting enables Collie's `desktop_*` tools. Collie always chooses the
