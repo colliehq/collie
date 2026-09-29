@@ -87,7 +87,8 @@ jobs:
         with:
           python-version: "3.12"
       # Collie's Google OAuth (Desktop-app) client is never in Git; it comes from this secret and
-      # ships as package data. No secret: the script says so and the build has no Google client.
+      # ships as package data. No secret: a manual dry run says so and builds without Google; a
+      # version tag fails here, because a release without the client cannot connect Google.
       - name: Collie's Google OAuth client, from its secret
         env:
           GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}

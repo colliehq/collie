@@ -409,10 +409,15 @@ def test_release_jobs_write_the_google_client_only_from_the_secret():
     assert "GOOGLE_OAUTH_CLIENT_JSON" not in _workflow_job(workflow, "quality-gate")
 
 
-def _run_writer(tmp_path, value):
+def _run_writer(tmp_path, value, **extra):
     import os
     import sys
-    env = {k: v for k, v in os.environ.items() if k != "GOOGLE_OAUTH_CLIENT_JSON"}
+    # The suite itself runs in release CI on a tag push; what ref this test pretends to build
+    # must not depend on that.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GOOGLE_OAUTH_CLIENT_JSON", "GITHUB_REF", "GITHUB_REF_TYPE",
+                        "GITHUB_REF_NAME")}
+    env.update(extra)
     if value is not None:
         env["GOOGLE_OAUTH_CLIENT_JSON"] = value
     out = tmp_path / "google_oauth_client.json"
@@ -440,3 +445,17 @@ def test_google_client_writer_validates_and_never_echoes_the_secret(tmp_path):
     done, out = _run_writer(tmp_path, '{"web": {"client_id": "x"}}')
     assert done.returncode != 0 and not out.exists()
     assert "GOCSPX" not in done.stdout + done.stderr
+
+
+def test_a_tagged_release_cannot_ship_without_the_google_client(tmp_path):
+    """Skipping is for forks and dry runs. A version tag is a release people install, and one
+    without the client would quietly ship a Google connection that says "not set up"."""
+    done, out = _run_writer(tmp_path, None, GITHUB_REF="refs/tags/v0.32.0",
+                            GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v0.32.0")
+    assert done.returncode != 0 and not out.exists()
+    assert "::error::" in done.stdout and "GOOGLE_OAUTH_CLIENT_JSON" in done.stdout
+    done, out = _run_writer(tmp_path, "", GITHUB_REF="refs/tags/v0.32.0", GITHUB_REF_TYPE="tag")
+    assert done.returncode != 0
+    for ref, kind in (("refs/heads/main", "branch"), ("refs/pull/29/merge", "branch")):
+        done, out = _run_writer(tmp_path, None, GITHUB_REF=ref, GITHUB_REF_TYPE=kind)
+        assert done.returncode == 0 and not out.exists(), ref
