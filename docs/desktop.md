@@ -65,11 +65,12 @@ It goes back to the normal desktop at noon, or for the rest of the day when you 
 it off with *Show the morning report on the desktop* in Settings → Desktop, or with *Morning
 report* in the desktop's edit-mode widget panel (`widgets.morning.on` in `~/.collie/desktop.json`).
 
-The sky is one canvas drawn at most 30 times a second, and only while the morning scene is on
-screen: it stops whenever the browser engine reports the page hidden, and while the code map is
-up, and with *reduce motion* turned on in the system settings it is one still picture. The
-wallpaper host does not yet tell the page when another window covers the whole desktop, so that
-case relies on the engine's own occlusion detection.
+The sky is one canvas drawn at most 30 times a second for rain and snow and 20 for the slower
+skies, and only while the morning scene is on screen: it stops whenever the browser engine
+reports the page hidden and while the code map is up, and with *reduce motion* turned on in the
+system settings it is one still picture. The wallpaper host does not yet tell the page when
+another window covers the whole desktop, so that case relies on the engine's own occlusion
+detection.
 
 ## Native application control
 

@@ -1132,10 +1132,11 @@
   // ── morning: today's report over the day's weather ───────────────────────────────────────────
   // Before noon on a day with a morning report, the desktop shows the report's headline over a live
   // sky drawn from the weather code. harness/morning_desktop.py decides whether it shows and what it
-  // says (GET /api/report/today); this page only draws it. One loop paints the sky, capped near
-  // 30 fps, and it runs only while the scene shows, the page is visible and the code map is not
-  // over it; with reduced motion it paints one still frame. Cloud sprites are drawn once, there are
-  // no blur filters, and the canvas is at most 1.5 device pixels per CSS pixel.
+  // says (GET /api/report/today); this page only draws it. One loop paints the sky, at most 30 fps
+  // (20 for the slow skies), and it runs only while the scene shows, the page is visible and the
+  // code map is not over it; with reduced motion it paints one still frame. Clouds, the sun's glow, the moon and the
+  // fog are painted once and copied; there are no blur filters, and the canvas is at most 1.5
+  // device pixels per CSS pixel.
   var MORNING = {data:null, showing:false, checked:false, fitted:false, busy:false, timer:0, clearTimer:0,
                  noteTimer:0, fitTimer:0, lastResolve:0, cfgOn:null, settingOn:null, observer:null};
   var RESOLVE_MS = 15 * 60 * 1000, ALL_CLEAR_MS = 12000;
@@ -1163,7 +1164,7 @@
   var sky = (function(){
     var cv = $("skyCanvas"), ctx = null, W = 0, H = 0, dpr = 1, kind = "clear", sunX = .82;
     var t0 = 0, last = 0, raf = 0, frames = 0, still = false, flash = 0, nextFlash = 0;
-    var clouds = [], drops = [], flakes = [], stars = [], fogs = [], sprites = null, crescent = null;
+    var clouds = [], drops = [], flakes = [], stars = [], sprites = null, sunLayers = null, moonLayer = null, veil = null;
     var motion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
     function reduced(){ return !!(motion && motion.matches); }
     function rnd(a, b){ return a + Math.random() * (b - a); }
@@ -1184,29 +1185,60 @@
       cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
       ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       var n = {clear:5, cloudy:11, rain:9, storm:10, snow:7, fog:4, night:4}[kind] || 5, i;
-      clouds = []; drops = []; flakes = []; stars = []; fogs = [];
+      clouds = []; drops = []; flakes = []; stars = [];
       for (i = 0; i < n; i++) clouds.push({x:rnd(-300, W), y:rnd(-40, H * .5), s:rnd(.7, 1.6), v:rnd(4, 12) * (i % 3 + 1) / 2});
       if (kind === "rain" || kind === "storm") for (i = 0; i < (kind === "storm" ? 220 : 150); i++) drops.push({x:rnd(0, W), y:rnd(0, H), l:rnd(10, 22), v:rnd(420, 700)});
       if (kind === "snow") for (i = 0; i < 140; i++) flakes.push({x:rnd(0, W), y:rnd(0, H), r:rnd(1, 3.2), v:rnd(20, 55), p:rnd(0, 6.28)});
       if (kind === "night") for (i = 0; i < 150; i++) stars.push({x:rnd(0, W), y:rnd(0, H * .75), r:rnd(.4, 1.5), p:rnd(0, 6.28), s:rnd(.6, 1.8)});
-      if (kind === "fog") for (i = 0; i < 6; i++) fogs.push({y:H * (.35 + i * .1), v:rnd(6, 16) * (i % 2 ? 1 : -1), x:rnd(0, W)});
-      crescent = null;
-      if (kind === "night") {                 // a real crescent, cut out once: the sky shows through it
-        var R = Math.min(W, H) * .065, size = Math.ceil(R * 2 + 4), m = document.createElement("canvas");
-        m.width = m.height = Math.ceil(size * dpr);
-        var g = m.getContext("2d"); g.scale(dpr, dpr);
-        g.fillStyle = "#f4f1e4"; g.beginPath(); g.arc(size / 2, size / 2, R, 0, Math.PI * 2); g.fill();
-        g.globalCompositeOperation = "destination-out";
-        g.beginPath(); g.arc(size / 2 + R * .45, size / 2 - R * .2, R * .92, 0, Math.PI * 2); g.fill();
-        crescent = {canvas:m, size:size, R:R};
+      // Everything that does not move is painted once here and copied each frame: shading a
+      // gradient over a million pixels thirty times a second is the costly part of the sky.
+      sunLayers = null; moonLayer = null; veil = null;
+      if (kind === "clear" || kind === "cloudy" || kind === "fog") {
+        var r = Math.min(W, H) * .1;
+        sunLayers = {R:r, glow:layer(r * 10, r * 10, function(g){
+          var grd = g.createRadialGradient(r * 5, r * 5, r * .3, r * 5, r * 5, r * 5);
+          grd.addColorStop(0, "rgba(255,236,170,.9)"); grd.addColorStop(.25, "rgba(255,205,120,.35)"); grd.addColorStop(1, "rgba(255,200,120,0)");
+          g.fillStyle = grd; g.fillRect(0, 0, r * 10, r * 10);
+        }), disc:layer(r * 2, r * 2, function(g){
+          var grd = g.createRadialGradient(r * .8, r * .8, 0, r, r, r);
+          grd.addColorStop(0, "#fffbe8"); grd.addColorStop(.6, "#ffd66e"); grd.addColorStop(1, "#ffb547");
+          g.fillStyle = grd; g.beginPath(); g.arc(r, r, r, 0, Math.PI * 2); g.fill();
+        })};
+      }
+      if (kind === "fog") veil = layer(W, H, function(g){      // the haze and its bands lie still
+        g.fillStyle = "rgba(235,238,240,.45)"; g.fillRect(0, 0, W, H);
+        for (var b = 0; b < 6; b++) {
+          var y = H * (.35 + b * .1), band = g.createLinearGradient(0, y - 60, 0, y + 60);
+          band.addColorStop(0, "rgba(245,246,247,0)"); band.addColorStop(.5, "rgba(245,246,247,.5)"); band.addColorStop(1, "rgba(245,246,247,0)");
+          g.fillStyle = band; g.fillRect(0, y - 60, W, 120);
+        }
+      });
+      if (kind === "night") {                 // a real crescent: the sky shows through its dark side
+        var mr = Math.min(W, H) * .065, cut = layer(mr * 2 + 4, mr * 2 + 4, function(g){
+          g.fillStyle = "#f4f1e4"; g.beginPath(); g.arc(mr + 2, mr + 2, mr, 0, Math.PI * 2); g.fill();
+          g.globalCompositeOperation = "destination-out";
+          g.beginPath(); g.arc(mr + 2 + mr * .45, mr + 2 - mr * .2, mr * .92, 0, Math.PI * 2); g.fill();
+        });
+        moonLayer = {R:mr, canvas:layer(mr * 12, mr * 12, function(g){
+          var grd = g.createRadialGradient(mr * 6, mr * 6, mr, mr * 6, mr * 6, mr * 6);
+          grd.addColorStop(0, "rgba(210,220,255,.35)"); grd.addColorStop(1, "rgba(210,220,255,0)");
+          g.fillStyle = grd; g.fillRect(0, 0, mr * 12, mr * 12);
+          g.drawImage(cut, mr * 5 - 2, mr * 5 - 2, mr * 2 + 4, mr * 2 + 4);    // centred in its glow
+        })};
       }
       t0 = performance.now(); flash = 0; nextFlash = rnd(2, 5); still = false;
     }
+    // A canvas of w x h CSS pixels at the sky's pixel density, painted once by draw(context).
+    function layer(w, h, draw){
+      var c = document.createElement("canvas");
+      c.width = Math.max(1, Math.ceil(w * dpr)); c.height = Math.max(1, Math.ceil(h * dpr));
+      var g = c.getContext("2d"); g.scale(dpr, dpr); draw(g);
+      return c;
+    }
     function sun(t){
-      var cx = W * sunX, cy = H * .22, R = Math.min(W, H) * .1;
-      var glow = ctx.createRadialGradient(cx, cy, R * .3, cx, cy, R * 5);
-      glow.addColorStop(0, "rgba(255,236,170,.9)"); glow.addColorStop(.25, "rgba(255,205,120,.35)"); glow.addColorStop(1, "rgba(255,200,120,0)");
-      ctx.fillStyle = glow; ctx.fillRect(cx - R * 5, cy - R * 5, R * 10, R * 10);
+      if (!sunLayers) return;
+      var R = sunLayers.R, cx = W * sunX, cy = H * .22;
+      ctx.drawImage(sunLayers.glow, cx - R * 5, cy - R * 5, R * 10, R * 10);
       ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * .02);
       for (var i = 0; i < 12; i++){      // soft rays, turning slowly
         ctx.rotate(Math.PI / 6);
@@ -1214,17 +1246,12 @@
         ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(R * 7, -R * .35); ctx.lineTo(R * 7, R * .35); ctx.closePath(); ctx.fill();
       }
       ctx.restore();
-      var disc = ctx.createRadialGradient(cx - R * .2, cy - R * .2, 0, cx, cy, R);
-      disc.addColorStop(0, "#fffbe8"); disc.addColorStop(.6, "#ffd66e"); disc.addColorStop(1, "#ffb547");
-      ctx.fillStyle = disc; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+      ctx.drawImage(sunLayers.disc, cx - R, cy - R, R * 2, R * 2);
     }
     function moon(){
-      if (!crescent) return;
-      var cx = W * sunX, cy = H * .22, R = crescent.R;
-      var glow = ctx.createRadialGradient(cx, cy, R, cx, cy, R * 6);
-      glow.addColorStop(0, "rgba(210,220,255,.35)"); glow.addColorStop(1, "rgba(210,220,255,0)");
-      ctx.fillStyle = glow; ctx.fillRect(cx - R * 6, cy - R * 6, R * 12, R * 12);
-      ctx.drawImage(crescent.canvas, cx - crescent.size / 2, cy - crescent.size / 2, crescent.size, crescent.size);
+      if (!moonLayer) return;
+      var R = moonLayer.R;
+      ctx.drawImage(moonLayer.canvas, W * sunX - R * 6, H * .22 - R * 6, R * 12, R * 12);
     }
     function drawClouds(dt, s){
       for (var i = 0; i < clouds.length; i++){
@@ -1265,14 +1292,7 @@
           ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 6.283); ctx.fill();
         }
       } else if (kind === "fog") {
-        sun(t); ctx.fillStyle = "rgba(235,238,240,.45)"; ctx.fillRect(0, 0, W, H);
-        for (i = 0; i < fogs.length; i++){
-          var b = fogs[i];
-          b.x += b.v * dt; if (b.x > W) b.x -= W; if (b.x < 0) b.x += W;
-          var grd = ctx.createLinearGradient(0, b.y - 60, 0, b.y + 60);
-          grd.addColorStop(0, "rgba(245,246,247,0)"); grd.addColorStop(.5, "rgba(245,246,247,.5)"); grd.addColorStop(1, "rgba(245,246,247,0)");
-          ctx.fillStyle = grd; ctx.fillRect(0, b.y - 60, W, 120);
-        }
+        sun(t); if (veil) ctx.drawImage(veil, 0, 0, W, H);
       }
       frames++;
     }
@@ -1281,7 +1301,8 @@
       raf = 0;
       if (!wanted() || reduced()) { sync(); return; }
       raf = requestAnimationFrame(loop);
-      if (now - last < 33) return;              // ~30 fps is plenty for drifting clouds
+      // 30 fps for falling rain and snow; clouds and rays move a pixel a frame even at 20.
+      if (now - last < (kind === "rain" || kind === "storm" || kind === "snow" ? 33 : 49)) return;
       frame(now);
     }
     function sync(){
@@ -1306,8 +1327,9 @@
     }
     function stop(){                          // nothing is kept: no loop, no pixels, no sprites
       if (raf) cancelAnimationFrame(raf);
-      raf = 0; ctx = null; W = H = 0; cv.width = 0; cv.height = 0; sprites = null; crescent = null; still = false;
-      clouds = []; drops = []; flakes = []; stars = []; fogs = [];
+      raf = 0; ctx = null; W = H = 0; cv.width = 0; cv.height = 0; still = false;
+      sprites = null; sunLayers = null; moonLayer = null; veil = null;
+      clouds = []; drops = []; flakes = []; stars = [];
     }
     function resize(){ if (W) { setup(); sync(); } }
     if (motion) {

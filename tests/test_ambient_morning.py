@@ -218,14 +218,23 @@ HIDE = """(hidden) => {
 }"""
 
 
-def test_the_sky_runs_near_30_fps_and_stops_while_the_page_is_hidden(desk):
+def _rate(page, seconds=2.0):
+    start, began = _frames(page), time.time()
+    page.wait_for_timeout(int(seconds * 1000))
+    return (_frames(page) - start) / (time.time() - began)
+
+
+def test_the_sky_is_capped_and_stops_while_the_page_is_hidden(desk):
     save(desk.state, report())
+    desk.weather["now"] = dict(CLEAR_DAY, code=63, fetched_at=int(time.time()))
+    rain = _open(desk)
+    assert _poll(rain, "() => window.collieMorning.frames() > 5")
+    assert 10 <= _rate(rain) <= 31                         # falling rain: at most 30 a second
+    rain.context.close()
+    desk.weather["now"] = dict(CLEAR_DAY, fetched_at=int(time.time()))
     page = _open(desk)
     assert _poll(page, "() => window.collieMorning.frames() > 5")
-    start, began = _frames(page), time.time()
-    page.wait_for_timeout(2000)
-    rate = (_frames(page) - start) / (time.time() - began)
-    assert 10 <= rate <= 34, rate                         # capped near 30 (headless may be slower)
+    assert 8 <= _rate(page) <= 21                          # drifting clouds: at most 20
     page.evaluate(HIDE, True)
     paused = _frames(page)
     page.wait_for_timeout(1000)
