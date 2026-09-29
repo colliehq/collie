@@ -137,6 +137,15 @@ never mentioned (“mute the standup reminders”), a reply to the plain brief, 
 automatic message is an ordinary reply and mutes nothing. To hear about the project
 again, remove it under Settings → Morning report → Projects to leave out.
 
+Because a mute changes a setting, Collie also needs your mail provider's word that
+the reply really came from your address: the receiving server's
+`Authentication-Results` must show a DMARC pass for your domain, or a DKIM pass signed
+by it. Anyone can write your address in a From line; they cannot make your provider
+vouch for it. An **email account** connection reads that verdict from the message
+its provider stored. **Collie Mail** cannot yet: Cloudflare's email routing hands the
+relay no authentication verdict, so a mute sent there changes nothing — the reply
+says so, and your message is kept as an ordinary reply. Use the setting instead.
+
 ## Available now
 
 The desktop and email share one brief snapshot, with English and Chinese display.

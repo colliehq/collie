@@ -16,6 +16,8 @@ MAX_TEXT_CHARS = 128_000
 MAX_TEXT_BYTES = 64 * 1024
 MAX_ATTACHMENTS = 16
 MAX_PARTS = 64
+#: The receiving server's authentication verdict, kept only as long as it is useful.
+MAX_AUTH_RESULTS = 2000
 #: An HTML result is a designed page, not a document: Gmail clips a body past ~102 KB, so
 #: anything near this ceiling is already a page nobody reads whole.
 MAX_HTML_BYTES = 128 * 1024
@@ -145,8 +147,13 @@ def parse(raw, *, envelope_from="", envelope_to=""):
         raise MailFormatError("email has ambiguous Message-ID headers")
     sender = envelope_from or str(message.get("From") or "")
     recipient = envelope_to or str(message.get("To") or "")
+    # Only the topmost Authentication-Results: the receiving server prepends its own
+    # verdict, and any such header a sender wrote into the message sits below it.
+    verdicts = message.get_all("Authentication-Results", [])
+    verdict = " ".join(str(verdicts[0]).split())[:MAX_AUTH_RESULTS] if verdicts else ""
     return {
         "sender": address(sender), "recipient": address(recipient),
+        "authentication_results": verdict,
         "subject": subject, "text": text, "message_id": ids[0] if ids else "",
         "in_reply_to": message_ids(message.get("In-Reply-To")),
         "references": message_ids(message.get("References")), "attachments": attachments,
@@ -179,7 +186,7 @@ def from_relay(row):
     if not isinstance(text, str) or not text or len(text.encode("utf-8")) > MAX_TEXT_BYTES:
         raise MailFormatError("email has no supported body")
     return {"sender": address(str(row.get("from") or "")),
-            "recipient": address(str(row.get("to") or "")),
+            "recipient": address(str(row.get("to") or "")), "authentication_results": "",
             "subject": str(row.get("subject") or ""), "text": text,
             "message_id": "", "in_reply_to": [], "references": [],
             "attachments": [], "automatic": False}

@@ -485,16 +485,23 @@ class ChannelService:
             return dict(existing, duplicate=True)
         # A missing sender is a message the store will refuse, not a crash.
         message = dict(message, sender=message.get("sender") or "")
+        metadata = {"message_id": message.get("message_id", ""),
+                    "references": message.get("references") or [],
+                    "automatic": bool(message.get("automatic")),
+                    "input_error": message.get("error", "")}
+        verdict = str(message.get("authentication_results") or "")[:mail_messages.MAX_AUTH_RESULTS]
+        if verdict and not (existing and "authentication_results" not in (existing.get("metadata") or {})):
+            # The receiving server's authentication verdict, kept for the one decision that
+            # needs it (a reply that asks to change a setting).  An event recorded before
+            # this existed is re-delivered as it was recorded, so it stays a duplicate.
+            metadata["authentication_results"] = verdict
         try:
             thread = existing.get("thread_key", "") if existing else self._thread(connection, message)
             refs = self._store_attachments(connection, message.get("attachments") or [])
             event = comms.record_received(connection, message["event_id"], sender=message["sender"],
                                           recipient=message.get("recipient") or "", text=message.get("text") or "(No text)",
                                           subject=message.get("subject", ""), thread_key=thread, attachments=refs,
-                                          metadata={"message_id": message.get("message_id", ""),
-                                                    "references": message.get("references") or [],
-                                                    "automatic": bool(message.get("automatic")),
-                                                    "input_error": message.get("error", "")},
+                                          metadata=metadata,
                                           received_at=message.get("received_at"), directory=self.directory)
         except (comms.InvalidRequest, PoisonMessage) as exc:
             # Refused for what this delivery *is*.  StoreFull, IdConflict and

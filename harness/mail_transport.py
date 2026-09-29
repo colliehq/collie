@@ -544,7 +544,8 @@ def _rejected(base, cfg, reason):
     obviously empty one.
     """
     return dict(base, status="rejected", error=reason, sender=UNREADABLE_SENDER,
-                recipient=cfg["address"], subject="Unreadable email", text="",
+                recipient=cfg["address"], authentication_results="",
+                subject="Unreadable email", text="",
                 message_id="", in_reply_to=[], references=[], attachments=[],
                 automatic=False)
 

@@ -94,6 +94,21 @@ def test_follow_up_and_result_retain_the_original_thread():
     assert parsed["automatic"]
 
 
+def test_the_receiving_servers_authentication_results_is_read_and_only_that_one():
+    message = _message()
+    assert mail.parse(message.as_bytes())["authentication_results"] == ""
+    # The receiving server prepends its verdict; a header the sender wrote sits below it.
+    raw = (b"Authentication-Results: mx.example.test; dkim=pass header.i=@example.test;"
+           b" dmarc=pass (p=none) header.from=example.test\n"
+           b"Authentication-Results: forged.example; dmarc=pass header.from=bank.example\n"
+           + message.as_bytes())
+    parsed = mail.parse(raw)
+    assert parsed["authentication_results"].startswith("mx.example.test;")
+    assert "bank.example" not in parsed["authentication_results"]
+    long = b"Authentication-Results: mx.example.test; " + b"x" * 5000 + b"\n" + message.as_bytes()
+    assert len(mail.parse(long)["authentication_results"]) <= mail.MAX_AUTH_RESULTS
+
+
 def test_injected_recipient_header_cannot_expand_result_audience():
     with pytest.raises(mail.MailFormatError):
         mail.compose(sender="collie@example.test", recipient="owner@example.test\r\nBcc: other@example.test",

@@ -57,8 +57,11 @@ same way, labelled as the morning report.  Its footer also invites one command:
 a reply whose *first line* is ``mute <project>``.  :func:`mute_command` handles
 that and nothing else, under the same proof as a restore -- a submitted report in
 this thread, sent to this owner, answered by this owner, not an automatic message
--- plus one more: it has to be the report, never the plain brief, whose footer
-offers no such thing.  It adds the name to ``REPORT_MUTED``, answers with a short
+-- plus two more: it has to be the report, never the plain brief, whose footer
+offers no such thing, and because it changes a setting, the receiving server must
+have authenticated the owner's domain (DMARC pass, or an aligned DKIM pass, in the
+topmost ``Authentication-Results``) -- a From address and a Message-ID are things
+anyone can write.  It adds the name to ``REPORT_MUTED``, answers with a short
 confirmation in the same thread, and settles the message so it never becomes a
 task.  It is the only thing here that writes anything, and what it writes is one
 settings value the person asked for by name.
@@ -325,6 +328,43 @@ def _projects(service, sent):
     return {name for name in names if isinstance(name, str) and report_signals.is_project(name)}
 
 
+_CLAUSE = re.compile(r"\(.*?\)")
+
+
+def _aligned(domain, owner_domain):
+    """Relaxed alignment: the same domain, or one a subdomain of the other."""
+    domain, owner_domain = domain.strip().strip(".").lower(), owner_domain.lower()
+    return bool(domain) and (domain == owner_domain or domain.endswith("." + owner_domain)
+                             or owner_domain.endswith("." + domain))
+
+
+def _verified(event, owner):
+    """``""`` when the receiving server authenticated ``owner``'s domain, else which of
+    ``"why_none"`` / ``"why_unaligned"`` explains why not.
+
+    The From address and a quoted Message-ID are both things a stranger can write, so a
+    reply that would change a setting also needs the verdict the receiving server
+    stamped on it (the topmost ``Authentication-Results``; see ``mail_messages.parse``):
+    DMARC pass for the owner's domain, or a DKIM pass signed by an aligned domain.
+    """
+    domain = str(owner or "").rsplit("@", 1)[-1].lower()
+    verdict = str((event.get("metadata") or {}).get("authentication_results") or "")
+    if not verdict:
+        return "why_none"
+    for clause in _CLAUSE.sub(" ", verdict).split(";")[1:]:
+        fields = {}
+        for token in clause.split():
+            key, _, value = token.partition("=")
+            fields.setdefault(key.lower(), value.strip().strip('"'))
+        if fields.get("dmarc") == "pass" and fields.get("header.from", "").lower() == domain:
+            return ""
+        if fields.get("dkim") == "pass":
+            signer = fields.get("header.d") or fields.get("header.i", "").rsplit("@", 1)[-1]
+            if _aligned(signer, domain):
+                return ""
+    return "why_unaligned"
+
+
 def _known(name, projects):
     """Does ``name`` name one of ``projects``, the way :func:`morning_report.mute` matches?"""
     from . import report_signals
@@ -369,6 +409,13 @@ _CONFIRM = {
            "full": "I couldn't mute “{name}”: Projects to leave out already holds {limit} or "
                    "more names, the most the report reads. Remove some first.",
            "passed": "The rest of your message was passed on as its own request.",
+           "unverified": "I didn't mute “{name}”: I couldn't confirm this message came from "
+                         "your mailbox ({why}), so nothing was changed and your message was "
+                         "kept as an ordinary reply. You can mute it under Settings → Morning "
+                         "report → Projects to leave out.",
+           "why_none": "its receiving server recorded no authentication result for it",
+           "why_unaligned": "its receiving server recorded no DMARC pass or aligned DKIM pass "
+                            "for {domain}",
            "undo": "To hear about a project again, remove it under Settings → Morning report "
                    "→ Projects to leave out."},
     "zh": {"muted": "好的，已经把“{name}”静音。从下一份晨报开始不再提它。",
@@ -378,6 +425,10 @@ _CONFIRM = {
            "full": "没能静音“{name}”：晨报不再提的项目已经有 {limit} 个或更多，这是晨报能读取的上限。"
                    "请先删掉一些。",
            "passed": "你消息里其余的内容已经作为一条单独的请求转交处理。",
+           "unverified": "没有静音“{name}”：无法确认这封邮件来自你的邮箱（{why}），所以什么都没改，"
+                         "你的邮件按普通回复保留。可以在 设置 → 晨报 → 晨报不再提的项目 里静音它。",
+           "why_none": "收件服务器没有为它记录任何认证结果",
+           "why_unaligned": "收件服务器没有记录 {domain} 的 DMARC 通过或对齐的 DKIM 通过",
            "undo": "想重新看到某个项目，在 设置 → 晨报 → 晨报不再提的项目 里把它删掉即可。"},
 }
 
@@ -442,7 +493,10 @@ def mute_command(service, event, connection=""):
     ``event`` is the private view of a received message still ``pending``.  It is a
     command when it is the owner's own reply in the thread of a morning report this
     account sent them, its first line opens with ``mute <project>``, and that project is
-    one the report (or the latest one) named.  Then the name is added to
+    one the report (or the latest one) named.  A command that would change a setting also
+    needs the receiving server's verdict that the owner's domain sent it (:func:`_verified`);
+    without it nothing changes, the message stays an ordinary reply, and the reply to the
+    owner says why.  Otherwise the name is added to
     ``REPORT_MUTED`` (unless it is there already, the list is full, or an environment
     variable holds it); if the person wrote anything besides the command -- quoted
     history and signatures aside -- the rest is passed on as its own ordinary reply; a
@@ -466,9 +520,20 @@ def mute_command(service, event, connection=""):
     if not _known(project, _projects(service, report)):
         # "mute the standup reminders" names no project: it is somebody talking.
         return None
-    outcome = _mute(project)
     words = _CONFIRM["zh" if str((report.get("metadata") or {}).get("language") or "")
                      .startswith("zh") else "en"]
+    doubt = _verified(event, row.get("owner"))
+    if doubt:
+        # A setting changes only on the receiving server's word that the owner sent this.
+        # Otherwise nothing changes, the message stays an ordinary reply, and the owner --
+        # the only address a reply can go to -- is told why.
+        why = words[doubt].format(domain=str(row.get("owner") or "").rsplit("@", 1)[-1])
+        result_id = _confirm(service, connection, row, report, event, "%s\n" % words[
+            "unverified"].format(name=project, why=why))
+        _send_confirmation(service, connection, result_id)
+        return {"project": project, "outcome": "unverified", "result_id": result_id,
+                "passed_on": ""}
+    outcome = _mute(project)
     handed = _pass_on(service, connection, event, rest) if _own_words(rest) else ""
     from . import morning_report
     lines = [words[outcome].format(name=project, limit=morning_report.MUTED_LIMIT)]

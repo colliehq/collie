@@ -34,14 +34,20 @@ def sent_report(host, day=10):
                             directory=service.directory)
 
 
+#: What the owner's receiving server writes on a genuine reply from example.test.
+VERIFIED = ("mx.example.test; dkim=pass header.i=@example.test header.s=s1; spf=pass "
+            "smtp.mailfrom=example.test; dmarc=pass (p=none dis=none) header.from=example.test")
+
+
 def arrive(service, row, *, event_id="in-1", sender=OWNER, text="mute colliehq/collie",
-           refs=None, automatic=False):
+           refs=None, automatic=False, auth=VERIFIED):
     refs = [row["metadata"]["message_id"]] if refs is None else refs
     return service.ingest("mail", {
         "event_id": event_id, "sender": sender, "recipient": "collie@example.test",
         "subject": "Re: " + row["subject"], "text": text,
         "message_id": "<%s@example.test>" % event_id, "automatic": automatic,
-        "in_reply_to": list(refs), "references": list(refs)})
+        "in_reply_to": list(refs), "references": list(refs),
+        "authentication_results": auth})
 
 
 def event(service, event_id="in-1"):
@@ -175,6 +181,66 @@ def test_a_first_line_that_is_not_one_known_project_is_an_ordinary_reply(
     assert not own_settings.get("REPORT_MUTED")
     assert event(service)["state"] == "pending"                 # the person's, as it came
     assert confirmations(service) == [] and passed_on(service) == []
+
+
+@pytest.mark.parametrize("auth, why", [
+    ("", "no verdict at all (a Collie Mail relay passes none)"),
+    ("mx.example.test; dkim=fail header.i=@example.test; dmarc=fail header.from=example.test",
+     "a failing verdict"),
+    ("mx.example.test; dkim=pass header.i=@attacker.example; dmarc=none header.from=example.test",
+     "a signature from somebody else's domain"),
+    ("mx.example.test; dmarc=pass header.from=attacker.example", "DMARC for another domain"),
+    ("mx.example.test; spf=pass smtp.mailfrom=example.test", "SPF alone"),
+])
+def test_an_unverified_mute_changes_nothing_and_says_why(host, zones, builds, own_settings,
+                                                         auth, why):
+    root, service, adapter = host
+    row = sent_report(host)
+    arrive(service, row, text="mute collie\n\nAlso reschedule my 3pm", auth=auth)
+    assert not own_settings.get("REPORT_MUTED"), why
+    # An ordinary reply: the whole message stays the person's, nothing is split off.
+    assert event(service)["state"] == "pending" and passed_on(service) == [], why
+    [reply] = confirmations(service)
+    assert "couldn't confirm" in reply["text"] and "collie" in reply["text"], why
+    assert reply["destination"] == OWNER                   # the real owner hears of it
+
+
+def test_a_verdict_the_sender_wrote_below_the_servers_does_not_count(host, zones, builds,
+                                                                    own_settings):
+    root, service, _adapter = host
+    row = sent_report(host)
+    # Only the receiving server's own, topmost header is what parse() hands over.
+    from harness import mail_messages
+    raw = ("Authentication-Results: mx.example.test; dmarc=fail header.from=example.test\n"
+           "Authentication-Results: mx.example.test; dmarc=pass header.from=example.test\n"
+           "From: %s\nTo: collie@example.test\nSubject: Re: x\nMessage-ID: <in-1@example.test>\n"
+           "In-Reply-To: %s\n\nmute collie\n" % (OWNER, row["metadata"]["message_id"]))
+    parsed = mail_messages.parse(raw.encode())
+    arrive(service, row, text=parsed["text"], auth=parsed["authentication_results"])
+    assert not own_settings.get("REPORT_MUTED")
+
+
+def test_an_aligned_dkim_pass_is_enough(host, zones, builds, own_settings):
+    root, service, _adapter = host
+    row = sent_report(host)
+    arrive(service, row, text="mute collie",
+           auth="mx.example.test; dkim=pass header.d=mail.example.test header.s=s1")
+    assert morning_report.muted_names() == ["collie"]
+
+
+def test_a_redelivered_old_message_is_still_a_duplicate(host, zones, builds, own_settings):
+    root, service, _adapter = host
+    row = sent_report(host)
+    # Recorded before intake kept the verdict; the relay hands the same message over again.
+    first = service.ingest("mail", {
+        "event_id": "old-1", "sender": OWNER, "recipient": "collie@example.test",
+        "subject": "Re: hello", "text": "thanks", "message_id": "<old-1@example.test>",
+        "in_reply_to": [], "references": []})
+    again = service.ingest("mail", {
+        "event_id": "old-1", "sender": OWNER, "recipient": "collie@example.test",
+        "subject": "Re: hello", "text": "thanks", "message_id": "<old-1@example.test>",
+        "in_reply_to": [], "references": [], "authentication_results": VERIFIED})
+    assert first["duplicate"] is False and again["duplicate"] is True
 
 
 def saved_muted(settings_module):
