@@ -204,3 +204,37 @@ def test_adapters_are_a_registry_so_a_new_source_changes_no_report_code():
     signals, sources, _ = rs.collect(ctx(), [_adapter("stripe", extra)])
     assert seen == [NOW] and signals[0]["source"] == "stripe"
     assert sources[0]["label"] == "Stripe"
+
+
+# ---------------------------------------------------------------- projects: activity and aliases
+
+
+def test_sources_report_when_the_person_last_worked_on_a_project():
+    def github(c):
+        return {"signals": [rs.make("github", "r", kind="done", title="v1 is out", project="Owner/Repo")],
+                "activity": {"Owner/Repo": NOW - 3600, "source:github": NOW, "bad": "yesterday"}}
+
+    def local(c):
+        return {"signals": [], "activity": {"owner/repo": NOW - 60, "Other": NOW - 7200}}
+
+    got = rs.collect(ctx(), [_adapter("github", github), _adapter("local", local)])
+    signals, sources, counters = got                  # still unpacks as before
+    assert got.activity == {"Owner/Repo": NOW - 60, "Other": NOW - 7200}
+
+
+def test_one_checkout_with_two_remotes_makes_them_one_project():
+    def local(c):
+        return {"signals": [rs.make("local", "x", kind="fyi", title="2 commits not pushed yet on main",
+                                    project="wudaming00/collie")],
+                "activity": {"wudaming00/collie": NOW - 60},
+                "aliases": [["wudaming00/collie", "colliehq/collie"]]}
+
+    def github(c):
+        return {"signals": [rs.make("github", n, kind="done", title=n, project="colliehq/collie")
+                            for n in ("release", "merged")],
+                "activity": {"colliehq/collie": NOW - 86400}}
+
+    got = rs.collect(ctx(), [_adapter("local", local), _adapter("github", github)])
+    assert {s["project"] for s in got[0]} == {"colliehq/collie"}   # the name most signals use
+    assert got.activity == {"colliehq/collie": NOW - 60}
+    assert list(rs.group_by_project(got[0])) == ["colliehq/collie"]

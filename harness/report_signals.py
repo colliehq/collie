@@ -216,16 +216,16 @@ def _settle(adapter, box, finished, started_at):
     if not finished:
         row["reason"] = "took longer than %d s" % max(1, round(adapter.timeout))
         row["took_ms"] = int(adapter.timeout * 1000)
-        return row, [], {}
+        return row, [], {}, {}, []
     row["took_ms"] = max(0, int(box.get("took", 0.0) * 1000))
     row["read_at"] = started_at + box.get("took", 0.0)
     if "error" in box:
         row["reason"] = box["error"]
-        return row, [], {}
+        return row, [], {}, {}, []
     value = box.get("value")
     if not isinstance(value, dict):
         row["reason"] = "answered with something that is not a report"
-        return row, [], {}
+        return row, [], {}, {}, []
     raw = value.get("signals") if isinstance(value.get("signals"), list) else []
     kept, seen, bad = [], set(), 0
     for signal in raw:
@@ -255,16 +255,74 @@ def _settle(adapter, box, finished, started_at):
                       if isinstance(v, (int, float, str)) and not isinstance(v, bool)})
     counters = {daily_brief._text(k, 160): v for k, v in list(counters.items())[:500]
                 if isinstance(v, (int, float)) and not isinstance(v, bool)}
-    return row, kept, counters
+    activity = value.get("activity") if isinstance(value.get("activity"), dict) else {}
+    activity = {daily_brief._text(k, PROJECT_LIMIT): daily_brief._stamp(v)
+                for k, v in list(activity.items())[:500]
+                if is_project(daily_brief._text(k, PROJECT_LIMIT))
+                and not isinstance(v, bool) and daily_brief._stamp(v) is not None}
+    aliases = [[daily_brief._text(name, PROJECT_LIMIT) for name in group[:10]
+                if is_project(daily_brief._text(name, PROJECT_LIMIT))]
+               for group in (value.get("aliases") or [])[:200] if isinstance(group, list)]
+    return row, kept, counters, activity, [group for group in aliases if len(group) > 1]
+
+
+class Collection(tuple):
+    """``(signals, sources, counters)``, and ``activity``: project -> when the person last
+    worked on it, as the sources saw it."""
+
+    def __new__(cls, signals, sources, counters, activity):
+        self = super().__new__(cls, (signals, sources, counters))
+        self.activity = activity
+        return self
+
+
+def _canonical(signals, activity, aliases):
+    """One name per project.  ``aliases`` are names sources know to be the same project (one
+    checkout with two remotes, a fork and its upstream); spelling differences are the same
+    project anyway.  The name most signals already use wins, then the most recently active."""
+    parent = {}
+
+    def find(key):
+        while parent.setdefault(key, key) != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for group in aliases:
+        for name in group[1:]:
+            parent[find(project_key(name))] = find(project_key(group[0]))
+    names = {}
+    for signal in signals:
+        if is_project(signal["project"]):
+            names.setdefault(find(project_key(signal["project"])), {}).setdefault(
+                signal["project"], [0, 0.0])[0] += 1
+    for name, when in activity.items():
+        entry = names.setdefault(find(project_key(name)), {}).setdefault(name, [0, 0.0])
+        entry[1] = max(entry[1], when)
+    chosen = {root: sorted(options.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0]))[0][0]
+              for root, options in names.items()}
+    for signal in signals:
+        if is_project(signal["project"]):
+            signal["project"] = chosen[find(project_key(signal["project"]))]
+    merged = {}
+    for name, when in activity.items():
+        label = chosen[find(project_key(name))]
+        merged[label] = max(merged.get(label, 0.0), when)
+    return merged
 
 
 def collect(context, adapters):
-    """``(signals, sources, counters)`` from every adapter, read in parallel.
+    """``(signals, sources, counters)`` from every adapter, read in parallel, with
+    ``.activity`` on the result.
 
     ``sources`` is the provenance: one row per adapter with its ``state`` (ok, partial,
     unavailable), a ``reason`` when it is not ok, when it was read and how long it took.  A
     source that does not answer inside its own ``timeout`` is ``unavailable``; whatever it
     returns later is ignored.  Signal ids are unique across the whole result.
+
+    An adapter may also return ``activity`` (project -> when the person last worked on it) and
+    ``aliases`` (lists of project names that are one project).  Every project then has one
+    name across all sources, and ``activity`` keeps the latest time for each.
     """
     runs = []
     for adapter in adapters:
@@ -274,12 +332,17 @@ def collect(context, adapters):
         runs.append((adapter, box, worker, time.time(), time.monotonic()))
         worker.start()
     signals, sources, counters, seen = [], [], {}, set()
+    activity, aliases = {}, []
     for adapter, box, worker, started_at, started in runs:
         worker.join(max(0.0, float(adapter.timeout) - (time.monotonic() - started)))
-        row, kept, found = _settle(adapter, dict(box), not worker.is_alive(), started_at)
+        row, kept, found, active, same = _settle(adapter, dict(box), not worker.is_alive(),
+                                                 started_at)
         fresh = [signal for signal in kept if signal["id"] not in seen]
         seen.update(signal["id"] for signal in fresh)
         signals += fresh
         counters.update(found)
+        for name, when in active.items():
+            activity[name] = max(activity.get(name, 0.0), when)
+        aliases += same
         sources.append(row)
-    return signals, sources, counters
+    return Collection(signals, sources, counters, _canonical(signals, activity, aliases))
