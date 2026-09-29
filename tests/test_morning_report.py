@@ -445,6 +445,19 @@ def test_building_again_the_same_day_reuses_the_draft(world):
     assert items(again, "ready")[0]["draft"]["draft_id"] == "r-1"
 
 
+def test_a_draft_remembers_the_google_account_it_was_made_in(world, monkeypatch):
+    first = items(world["build"](), "ready")[0]["draft"]
+    assert first["account"] == "me@example.com"
+    # Reconnected as someone else the same morning: that draft is not in this mailbox, so it is
+    # not "reused"; a new one is made where the person now is.
+    google = world["google"]
+    real = google.status
+    monkeypatch.setattr(google, "status", lambda **kw: dict(real(**kw), account="Other@Example.com"))
+    again = items(world["build"](), "ready")[0]["draft"]
+    assert len(google.created) == 2 and again["draft_id"] == "r-2"
+    assert again["account"] == "other@example.com" and not again.get("reused")
+
+
 def test_no_drafts_flag_setting_off_or_google_disconnected_create_nothing(world, monkeypatch):
     first = world["build"](drafts=False)
     assert items(first, "ready")[0]["draft"]["state"] == "not_created"

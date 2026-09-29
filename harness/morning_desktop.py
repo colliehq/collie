@@ -24,11 +24,13 @@ links to an https address the report vetted (vetted again here: a snapshot is a 
 the account can edit), or to the report page (``/report``) when the item has none.  A morning
 with nothing to do offers the report page.
 
-**Progress.**  The person marks a thing done (the check beside its button) or undoes that.
-While the scene shows, the page also asks for the resolve pass, which runs on a background
-thread at most every ``RESOLVE_EVERY_S`` and re-checks three cheap facts: a reply draft that is
-no longer a draft in Gmail (sent or deleted), a pull request that was merged, and an approval
-that is no longer waiting in this Collie (answered, or its run ended).  A fact that cannot be
+**Progress.**  The person marks a thing done (the check beside its button) or undoes that,
+including a mark a check made (the green dots).  While the scene shows, the page also asks for
+the resolve pass, which runs on a background thread at most every ``RESOLVE_EVERY_S`` and
+re-checks three cheap facts: a reply draft that is no longer a draft in the Gmail account it was
+made in (sent or deleted; it is never looked for in another account, where it would always seem
+gone), a pull request that was merged, and an approval that is no longer waiting in this Collie
+(answered, or its run ended).  A fact that cannot be
 checked -- Google not connected, ``gh`` missing, the approvals not in this process, any error --
 changes nothing: not knowing is never "done".  What the person said about an item always wins
 over a later check.  The sentence cheers as things get done ("One down, four to go.") and says
@@ -375,14 +377,15 @@ def act(root, body, *, now=None):
 # ---------------------------------------------------------------- the resolve pass
 
 
-def _google_ready(root):
-    """Is Google connected with permission to write drafts (and so to look one up)?"""
+def _google_account(root):
+    """The Google account (lower case) connected with permission to write drafts, and so to look
+    one up; ``None`` when Google is not ready, ``""`` when it does not say whose it is."""
     from . import report_sources
     try:
-        report_sources.google("gmail_drafts", "Gmail", root)
+        _module, status = report_sources.google("gmail_drafts", "Gmail", root)
     except Exception:                                 # noqa: BLE001 - not ready is the answer
-        return False
-    return True
+        return None
+    return str((status or {}).get("account") or "").strip().casefold()
 
 
 def _draft_exists(draft_id, root):
@@ -450,9 +453,14 @@ def resolve(root, *, now=None, approvals=None):
         draft = item.get("draft") if isinstance(item.get("draft"), dict) else None
         if name == "ready" and draft and draft.get("state") == "created" and \
                 isinstance(draft.get("draft_id"), str) and draft["draft_id"]:
-            drafts.append((key, draft["draft_id"]))
-    if drafts and _google_ready(root):
-        for key, draft_id in drafts:
+            drafts.append((key, draft["draft_id"], mr.draft_account(draft)))
+    account = _google_account(root) if drafts else None
+    if account:
+        # A draft is looked for only in the mailbox it was made in: in any other it 404s, and
+        # that is not "sent". A draft whose account is unknown is not looked for at all.
+        for key, draft_id, made_in in drafts:
+            if made_in != account:
+                continue
             try:
                 exists = _draft_exists(draft_id, root)
             except Exception:                         # noqa: BLE001 - unknown stays open

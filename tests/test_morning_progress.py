@@ -11,8 +11,11 @@ import pytest
 
 from harness import morning_desktop as md
 from harness import morning_report as mr
-from _morning_fixture import APPROVAL, AZURE_LINK, DAY, at, report, save
+from _morning_fixture import APPROVAL, AZURE_LINK, DAY, at, report, rewrite, save
 from test_morning_desktop import call, keys_of, root, web  # noqa: F401 - fixtures
+
+#: The real account lookup, before the fixture replaces it with one that fails the test.
+REAL_GOOGLE_ACCOUNT = getattr(md, "_google_account", None)
 
 
 def done(root, *titles, now=None):
@@ -123,7 +126,7 @@ def pending(*natives):
 def test_a_draft_that_was_sent_or_deleted_is_done(root, monkeypatch):
     save(root, report())
     asked = []
-    monkeypatch.setattr(md, "_google_ready", lambda _root: True)
+    monkeypatch.setattr(md, "_google_account", lambda _root: "owner@example.com")
     monkeypatch.setattr(md, "_draft_exists", lambda draft_id, _root: asked.append(draft_id)
                         or draft_id != "r111")
     monkeypatch.setattr(md, "_pr_merged", lambda slug, number: False)
@@ -140,7 +143,7 @@ def test_a_draft_that_was_sent_or_deleted_is_done(root, monkeypatch):
 def test_a_merged_pull_request_is_done(root, monkeypatch):
     save(root, report())
     asked = []
-    monkeypatch.setattr(md, "_google_ready", lambda _root: False)
+    monkeypatch.setattr(md, "_google_account", lambda _root: None)
     monkeypatch.setattr(md, "_pr_merged", lambda slug, number: asked.append((slug, number))
                         or True)
     md.resolve(root, now=at(8), approvals=pending(APPROVAL))
@@ -151,7 +154,7 @@ def test_a_merged_pull_request_is_done(root, monkeypatch):
 
 def test_an_answered_approval_is_done_and_an_unknown_one_is_not(root, monkeypatch):
     save(root, report())
-    monkeypatch.setattr(md, "_google_ready", lambda _root: False)
+    monkeypatch.setattr(md, "_google_account", lambda _root: None)
     monkeypatch.setattr(md, "_pr_merged", lambda slug, number: False)
 
     def boom():
@@ -171,7 +174,7 @@ def test_a_check_that_fails_leaves_the_item_open(root, monkeypatch):
     def fails(*_args):
         raise OSError("offline")
 
-    monkeypatch.setattr(md, "_google_ready", lambda _root: True)
+    monkeypatch.setattr(md, "_google_account", lambda _root: "owner@example.com")
     monkeypatch.setattr(md, "_draft_exists", fails)
     monkeypatch.setattr(md, "_pr_merged", fails)
     result = md.resolve(root, now=at(8), approvals=pending(APPROVAL))
@@ -181,16 +184,39 @@ def test_a_check_that_fails_leaves_the_item_open(root, monkeypatch):
 def test_google_not_connected_means_drafts_are_not_asked_about(root, monkeypatch):
     save(root, report())
     asked = []
-    monkeypatch.setattr(md, "_google_ready", lambda _root: False)
+    monkeypatch.setattr(md, "_google_account", lambda _root: None)
     monkeypatch.setattr(md, "_draft_exists", lambda draft_id, _root: asked.append(draft_id))
     monkeypatch.setattr(md, "_pr_merged", lambda slug, number: False)
     md.resolve(root, now=at(8), approvals=pending(APPROVAL))
     assert asked == [] and md.today(root, now=at(8))["done"] == 0
 
 
+def test_a_draft_is_only_looked_for_in_the_account_it_was_made_in(root, monkeypatch):
+    """Reconnected as someone else, every draft of the first account 404s in the new mailbox;
+    that is not "sent". The account comes from the draft, or from its open_url's authuser."""
+    from harness import report_sources
+    rep = report()
+    rep["sections"]["ready"]["items"][1]["draft"]["open_url"] = \
+        "https://mail.google.com/mail/u/0/#all/18f1a2b3c4d5e6f1"            # made before any account
+    rewrite(root, rep)
+    connected = {"account": "someone-else@example.com"}
+    monkeypatch.setattr(report_sources, "google", lambda capability, label, state_dir=None: (
+        None, {"state": "connected", "account": connected["account"], "can": {capability: True}}))
+    monkeypatch.setattr(md, "_google_account", REAL_GOOGLE_ACCOUNT)
+    asked = []
+    monkeypatch.setattr(md, "_draft_exists", lambda draft_id, _root: asked.append(draft_id) or False)
+    monkeypatch.setattr(md, "_pr_merged", lambda slug, number: False)
+    assert md.resolve(root, now=at(8), approvals=pending(APPROVAL))["done"] == {}
+    assert asked == []
+    connected["account"] = "Owner@Example.com"                    # back where Ana's draft lives
+    result = md.resolve(root, now=at(8, 1), approvals=pending(APPROVAL))
+    assert asked == ["r111"]                                      # Ben's: no account to match
+    assert list(result["done"].values()) == ["draft_gone"]
+
+
 def test_the_persons_word_wins_over_a_later_check(root, monkeypatch):
     save(root, report())
-    monkeypatch.setattr(md, "_google_ready", lambda _root: False)
+    monkeypatch.setattr(md, "_google_account", lambda _root: None)
     monkeypatch.setattr(md, "_pr_merged", lambda slug, number: True)
     md.resolve(root, now=at(8), approvals=pending(APPROVAL))
     key = keys_of(md.today(root, now=at(8)))["Review Ana's pull request"]
@@ -225,7 +251,7 @@ def test_the_pass_runs_at_most_every_15_minutes_and_only_while_the_morning_shows
 
 def test_the_pass_that_is_started_checks_with_the_live_approvals(root, monkeypatch):
     save(root, report())
-    monkeypatch.setattr(md, "_google_ready", lambda _root: False)
+    monkeypatch.setattr(md, "_google_account", lambda _root: None)
     monkeypatch.setattr(md, "_pr_merged", lambda slug, number: False)
     monkeypatch.setattr(md, "_spawn", lambda fn: fn())
     monkeypatch.setattr(md, "_now", lambda: at(8, 2))

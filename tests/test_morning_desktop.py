@@ -28,7 +28,7 @@ def root(tmp_path, monkeypatch):
     monkeypatch.setenv("COLLIE_DESKTOP_MORNING_REPORT", "on")
     monkeypatch.setattr(desktop, "CONFIG_PATH", str(tmp_path / "desktop.json"))
     # No check may reach Google or GitHub unless a test says what it answers.
-    for name in ("_google_ready", "_draft_exists", "_pr_merged"):
+    for name in ("_google_account", "_draft_exists", "_pr_merged"):
         if hasattr(md, name):
             monkeypatch.setattr(md, name, _never)
     monkeypatch.setattr(md, "_spawn", lambda _fn: None)

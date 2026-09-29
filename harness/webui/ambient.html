@@ -377,10 +377,12 @@
   .m-more:empty{display:none;}
   .m-dots{display:flex; align-items:center; gap:7px; font:700 13px/1 var(--round); color:var(--t2);}
   .m-dots[hidden]{display:none;}
-  .m-dots i{width:12px; height:12px; border-radius:50%; background:var(--chip); border:1px solid var(--chipline); transition:background .4s, border-color .4s, box-shadow .4s;}
-  .m-dots i.on{background:#1fa971; border-color:#1fa971; box-shadow:0 0 0 3px rgba(31,169,113,.22);}
+  .m-dot{display:block; width:12px; height:12px; padding:0; border-radius:50%; background:var(--chip); border:1px solid var(--chipline); transition:background .4s, border-color .4s, box-shadow .4s;}
+  .m-dot.on{background:#1fa971; border-color:#1fa971; box-shadow:0 0 0 3px rgba(31,169,113,.22);}
+  button.m-dot{cursor:pointer;}
+  button.m-dot:hover{box-shadow:0 0 0 4px rgba(31,169,113,.34);}
   .m-dots span{margin-left:6px;}
-  body.all-clear .m-dots i.on{animation:mglow 1.6s ease-in-out 2;}
+  body.all-clear .m-dot.on{animation:mglow 1.6s ease-in-out 2;}
   @keyframes mglow{50%{box-shadow:0 0 0 8px rgba(31,169,113,.08)}}
   .m-acts{display:flex; flex-wrap:wrap; gap:12px; margin-top:2px;}
   .m-acts:empty{display:none;}
@@ -505,6 +507,7 @@
     "Weather":"天气","Morning report":"晨报","before noon":"中午之前","Open report":"打开晨报",
     "Hide for today":"今天先收起","Hide the morning report for today":"今天不再显示晨报",
     "Mark done":"标记为完成","Marked done.":"已标记完成。","Undo":"撤销",
+    "Mark not done":"标记为未完成","No longer in your Gmail drafts":"已不在你的 Gmail 草稿箱里","Merged on GitHub":"已在 GitHub 合并","No longer waiting for you":"已不再等你",
     "That could not be saved. Try again.":"没能保存，请再试一次。"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
@@ -524,6 +527,7 @@
     "Weather":"天氣","Morning report":"晨報","before noon":"中午之前","Open report":"開啟晨報",
     "Hide for today":"今天先收起","Hide the morning report for today":"今天不再顯示晨報",
     "Mark done":"標記為完成","Marked done.":"已標記完成。","Undo":"復原",
+    "Mark not done":"標記為未完成","No longer in your Gmail drafts":"已不在你的 Gmail 草稿匣裡","Merged on GitHub":"已在 GitHub 合併","No longer waiting for you":"已不再等你",
     "That could not be saved. Try again.":"無法儲存，請再試一次。"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
@@ -1459,12 +1463,27 @@
     if (!d) return;
     $("mSay").textContent = d.sentence || "";
     $("mMore").textContent = d.summary || "";
-    var dots = $("mDots"), total = Math.max(0, Number(d.total) || 0), done = Math.min(total, Math.max(0, Number(d.done) || 0));
-    var shown = Math.min(total, 8), lit = total ? Math.round(done * shown / total) : 0, i;
+    // One dot per thing, the done ones first. A done dot is a button that takes the mark back,
+    // whoever made it: the person, or a check that found the draft sent or the pull request merged.
+    var dots = $("mDots"), items = (d.items || []).filter(function(item){ return item && item.key; });
+    var ordered = items.filter(function(item){ return item.state === "done"; })
+      .concat(items.filter(function(item){ return item.state !== "done"; }));
     dots.textContent = "";
-    for (i = 0; i < shown; i++) { var dot = document.createElement("i"); if (i < lit) dot.className = "on"; dots.appendChild(dot); }
+    ordered.forEach(function(item){
+      var dot, title = String(item.title || "");
+      if (item.state === "done") {
+        dot = document.createElement("button"); dot.type = "button"; dot.className = "m-dot on";
+        var why = doneWhy(item.done_by);
+        dot.title = title + (why ? " · " + why : "");
+        dot.setAttribute("aria-label", tOps("Mark not done") + ": " + title);
+        dot.onclick = function(){ markOpen([item.key]); };
+      } else {
+        dot = document.createElement("i"); dot.className = "m-dot"; dot.title = title;
+      }
+      dots.appendChild(dot);
+    });
     if (d.dots_label) { var label = document.createElement("span"); label.textContent = d.dots_label; dots.appendChild(label); }
-    dots.hidden = !total;
+    dots.hidden = !ordered.length;
     var acts = $("mActs");
     acts.textContent = "";
     (d.pills || []).forEach(function(p){
@@ -1500,6 +1519,20 @@
       again.onclick = undo; note.appendChild(again);
     }
     if (text) MORNING.noteTimer = setTimeout(function(){ note.textContent = ""; }, 10000);
+  }
+  function doneWhy(by){
+    return by === "draft_gone" ? tOps("No longer in your Gmail drafts") :
+      by === "pr_merged" ? tOps("Merged on GitHub") :
+      by === "approval_answered" ? tOps("No longer waiting for you") : "";
+  }
+  // Taking a mark back, from a green dot: open again on the person's word, which a later check
+  // never overrides.
+  function markOpen(keys){
+    if (MORNING.busy) return;
+    MORNING.busy = true;
+    morningPost({action:"undo", keys:keys}).then(function(r){ morningNote(""); applyToday(r && r.today); })
+      .catch(function(){ morningNote(tOps("That could not be saved. Try again.")); })
+      .then(function(){ MORNING.busy = false; });
   }
   // Marked from the page; the server keeps it for the day, and a later check never overrides it.
   function markDone(keys){

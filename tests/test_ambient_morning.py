@@ -93,7 +93,7 @@ def test_it_shows_before_noon_with_the_reports_words_and_the_normal_desktop_othe
     page = _open(desk)
     assert page.inner_text("#mSay") == "Five quick ones and you're clear."
     assert page.inner_text("#mMore").startswith("Collie 0.31.0 shipped overnight")
-    assert page.locator("#mDots i").count() == 5 and page.locator("#mDots i.on").count() == 0
+    assert page.locator("#mDots .m-dot").count() == 5 and page.locator("#mDots .m-dot.on").count() == 0
     assert page.inner_text("#mDots").strip() == "0 of 5 done"
     by = page.inner_text("#mBy")
     assert "Rowan" in by and "caught up at 6:38 AM" in by

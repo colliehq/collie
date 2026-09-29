@@ -6,7 +6,7 @@ reduced motion keeps the sky to one still frame while it does.
 """
 import pytest
 
-from _morning_fixture import at, report, save
+from _morning_fixture import APPROVAL, at, report, save
 from test_ambient_morning import NORMAL, _open, _poll, desk  # noqa: F401 - fixture
 
 pytest.importorskip("playwright.sync_api")
@@ -23,7 +23,7 @@ def test_progress_follows_the_server_and_the_check_marks_an_item_done(desk):
     page.clock.fast_forward(61000)                             # the page asks again each minute
     assert _poll(page, SAYS, "One down, four to go.")
     assert page.inner_text("#mDots").strip() == "1 of 5 done"
-    assert page.locator("#mDots i.on").count() == 1
+    assert page.locator("#mDots .m-dot.on").count() == 1
     # The small check beside a pill marks that one done, here and on the server.
     act = page.locator("#mActs .m-act").nth(1)
     assert act.locator("a").inner_text() == "Answer Collie's question"
@@ -49,12 +49,34 @@ def test_all_done_is_a_moment_and_then_the_desktop_returns_to_normal(desk):
     act.hover()
     act.locator("button.m-check").click()
     assert _poll(page, SAYS, "All clear for today.")
-    assert page.locator("#mDots i.on").count() == 5 and page.locator("#mActs a").count() == 0
+    assert page.locator("#mDots .m-dot.on").count() == 5 and page.locator("#mActs a").count() == 0
     assert page.evaluate("() => document.body.classList.contains('all-clear')")
     assert page.inner_text("#mNote") == ""
     page.clock.fast_forward(15000)
     assert _poll(page, NORMAL)
     assert md.today(desk.state, now=at(8, 5))["why"] == "dismissed"
+
+
+def test_a_mark_the_resolve_pass_made_can_be_undone_from_the_page(desk, monkeypatch):
+    from harness import morning_desktop as md
+    save(desk.state, report())
+    monkeypatch.setattr(md, "_google_account", lambda _root: "owner@example.com")
+    monkeypatch.setattr(md, "_draft_exists", lambda draft_id, _root: draft_id != "r111")
+    monkeypatch.setattr(md, "_pr_merged", lambda slug, number: False)
+    md.resolve(desk.state, now=at(8), approvals=lambda: [{"id": APPROVAL}])
+    page = _open(desk, fake_clock=True, reduced=True)
+    assert page.inner_text("#mDots").strip() == "1 of 5 done"
+    done = page.locator("#mDots button.m-dot.on")
+    assert done.count() == 1
+    label = done.get_attribute("aria-label")
+    assert "Reply to Ana about Thursday" in label and "Gmail" in done.get_attribute("title")
+    done.click()
+    assert _poll(page, SAYS, "Five quick ones and you're clear.")
+    ana = next(i for i in md.today(desk.state, now=at(8))["items"]
+               if i["title"] == "Reply to Ana about Thursday")
+    assert ana["state"] == "open"
+    md.resolve(desk.state, now=at(8, 30), approvals=lambda: [{"id": APPROVAL}])
+    assert md.today(desk.state, now=at(8, 30))["done"] == 0      # the person's word stands
 
 
 def test_while_it_shows_the_page_asks_for_the_resolve_pass(desk, monkeypatch):
