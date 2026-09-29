@@ -23,9 +23,14 @@ tests/test_google_api.py fails if an endpoint that does ever appears in this fil
 from __future__ import annotations
 
 import base64
+import datetime as _dt
+import email.errors
+import email.message
+import email.policy
 import hashlib
 import hmac
 import html
+import html.parser
 import http.server
 import json
 import os
@@ -65,12 +70,22 @@ PLAINTEXT_FILE = "google-token.json"          # what the first prototype left be
 
 HTTP_TIMEOUT = 20
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024         # a long thread in format=full can be several MB
+MAX_SEARCH_RESULTS = 50
+MAX_QUERY_CHARS = 1000
+MAX_EVENTS = 250
+MAX_THREAD_MESSAGES = 100
+MAX_DRAFT_BODY = 200_000
+MAX_REFERENCES = 20
 USER_AGENT = "Collie-Google/1.0 (+https://github.com/colliehq/collie)"
 
 RECONNECT_HINT = "Run `collie google connect` (or press Connect in Settings → Connections)."
 _WHAT = {GMAIL_READ: "read your Gmail", GMAIL_COMPOSE: "write Gmail drafts",
          CALENDAR_READ: "read your Google Calendar"}
+_ID = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
 _CLIENT_ID = re.compile(r"[A-Za-z0-9._-]{1,200}\.apps\.googleusercontent\.com\Z")
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})\Z")
+_DRAFT_ID = re.compile(r"r-?\d{1,20}\Z")
+_HEX_ID = re.compile(r"[0-9a-fA-F]{1,16}\Z")
 
 
 # ------------------------------------------------------------------------------------ errors
@@ -934,6 +949,390 @@ def disconnect(*, state_dir=None) -> dict:
         message = ("Disconnected on this computer. Google didn't confirm that access was revoked; "
                    "to be sure, remove Collie at %s." % PERMISSIONS_PAGE)
     return {"removed": True, "revoked": revoked, "message": message}
+
+
+# ------------------------------------------------------------------------------------ API
+
+def _check_id(value, what="id"):
+    if not isinstance(value, str) or not _ID.match(value):
+        raise ValueError("%s must be a Gmail id (letters, digits, - and _)" % what)
+    return value
+
+
+def _api(method, url, *, need, params=None, body=None, state_dir=None):
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    for attempt in (0, 1):
+        token = _access_token(need, state_dir=state_dir)
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+        if data is not None:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        status_code, raw = _send(method, url, headers=headers, data=data)
+        if status_code == 401 and attempt == 0:
+            _drop_cached(state_dir)             # revoked or expired early: refresh once, retry
+            continue
+        break
+    if 200 <= status_code < 300:
+        return _loads(raw)
+    message, reasons = _google_error(raw)
+    if status_code == 403 and (reasons & {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+                                          "insufficient_scope"}
+                               or "insufficient authentication scopes" in message.lower()):
+        raise MissingScope(need)
+    if status_code == 429 or status_code >= 500:
+        raise GoogleAPIError(status_code, "Google is busy right now (HTTP %d%s). Try again in a "
+                                          "minute." % (status_code, (": " + message) if message else ""))
+    raise GoogleAPIError(status_code, "Google answered HTTP %d: %s" % (
+        status_code, message or "no detail"))
+
+
+def _headers(payload):
+    out = {}
+    for row in (payload or {}).get("headers") or []:
+        if isinstance(row, dict) and isinstance(row.get("name"), str):
+            out.setdefault(row["name"].lower(), str(row.get("value") or ""))
+    return out
+
+
+def _summary(msg):
+    head = _headers(msg.get("payload"))
+    labels = [str(x) for x in msg.get("labelIds") or []]
+    try:
+        stamp = int(msg.get("internalDate") or 0) // 1000
+    except (TypeError, ValueError):
+        stamp = 0
+    return {"id": str(msg.get("id") or ""), "thread_id": str(msg.get("threadId") or ""),
+            "from": head.get("from", "")[:1000], "to": head.get("to", "")[:2000],
+            "subject": head.get("subject", "")[:1000], "date": head.get("date", "")[:200],
+            "snippet": html.unescape(str(msg.get("snippet") or ""))[:1000],
+            "labels": labels, "unread": "UNREAD" in labels, "timestamp": stamp}
+
+
+def gmail_search(query: str, max_results: int = 20, *, state_dir=None) -> list:
+    """Messages matching a Gmail search (the same syntax as the search box), newest first.
+
+    Returns ``[{id, thread_id, from, to, subject, date, snippet, labels, unread, timestamp}]``;
+    ``max_results`` is clamped to 1..50. Needs gmail.readonly.
+    """
+    if not isinstance(query, str) or len(query) > MAX_QUERY_CHARS:
+        raise ValueError("query must be a string of at most %d characters" % MAX_QUERY_CHARS)
+    count = max(1, min(int(max_results), MAX_SEARCH_RESULTS))
+    listing = _api("GET", GMAIL_API + "/users/me/messages", need=GMAIL_READ, state_dir=state_dir,
+                   params={"q": query, "maxResults": count})
+    rows = []
+    for item in (listing.get("messages") or [])[:count]:
+        mid = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(mid, str) or not _ID.match(mid):
+            continue
+        msg = _api("GET", GMAIL_API + "/users/me/messages/" + mid, need=GMAIL_READ,
+                   state_dir=state_dir, params=[("format", "metadata")] + [
+                       ("metadataHeaders", h) for h in ("From", "To", "Subject", "Date")])
+        rows.append(_summary(msg))
+    return rows
+
+
+class _TextOf(html.parser.HTMLParser):
+    _SKIP = {"script", "style", "title", "noscript", "template"}
+    _BLOCK = {"p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "section", "article",
+              "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "hr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.skip = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self.skip += 1
+        elif tag == "br" or tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "br" or tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP:
+            self.skip = max(0, self.skip - 1)
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(data)
+
+
+def _html_text(markup):
+    parser = _TextOf()
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception:
+        pass
+    return "".join(parser.parts)
+
+
+def _tidy(text):
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ")
+    lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _leaves(part, depth=0, out=None):
+    out = [] if out is None else out
+    if depth > 20 or len(out) > 200 or not isinstance(part, dict):
+        return out
+    children = part.get("parts")
+    if isinstance(children, list) and children:
+        for child in children:
+            _leaves(child, depth + 1, out)
+    else:
+        out.append(part)
+    return out
+
+
+def _decode_part(part):
+    data = ((part.get("body") or {}).get("data")) or ""
+    if not isinstance(data, str) or not data:
+        return ""
+    try:
+        raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+    except (ValueError, TypeError):
+        return ""
+    ctype = _headers(part).get("content-type", "")
+    match = re.search(r"""charset\s*=\s*["']?([A-Za-z0-9._:-]+)""", ctype, re.I)
+    charset = match.group(1) if match else "utf-8"
+    try:
+        return raw.decode(charset, errors="replace")
+    except LookupError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _message_body(payload, cap):
+    """(plain text, truncated): text/plain parts, else the HTML part stripped to text."""
+    leaves = [p for p in _leaves(payload) if not p.get("filename")
+              and "attachment" not in _headers(p).get("content-disposition", "").lower()]
+    plain = [_decode_part(p) for p in leaves if str(p.get("mimeType", "")).lower() == "text/plain"]
+    plain = [t for t in plain if t.strip()]
+    if plain:
+        text = _tidy("\n\n".join(plain))
+    else:
+        markup = [_decode_part(p) for p in leaves if str(p.get("mimeType", "")).lower() == "text/html"]
+        text = _tidy(_html_text("\n".join(markup)))
+    if len(text) > cap:
+        return text[:cap].rstrip(), True
+    return text, False
+
+
+def gmail_thread(thread_id: str, *, max_body_chars: int = 20000, state_dir=None) -> dict:
+    """One conversation with readable bodies.
+
+    Returns ``{thread_id, subject, messages: [{id, thread_id, from, to, cc, subject, date,
+    snippet, labels, unread, timestamp, rfc_message_id, in_reply_to, references, is_draft, body,
+    body_truncated}]}``. Bodies prefer text/plain, fall back to HTML stripped to text, skip
+    attachments and are capped at ``max_body_chars`` (200..100000). Needs gmail.readonly.
+    """
+    tid = _check_id(thread_id, "thread_id")
+    cap = max(200, min(int(max_body_chars), 100_000))
+    data = _api("GET", GMAIL_API + "/users/me/threads/" + tid, need=GMAIL_READ,
+                state_dir=state_dir, params={"format": "full"})
+    messages = []
+    for msg in (data.get("messages") or [])[:MAX_THREAD_MESSAGES]:
+        if not isinstance(msg, dict):
+            continue
+        row = _summary(msg)
+        head = _headers(msg.get("payload"))
+        body, truncated = _message_body(msg.get("payload") or {}, cap)
+        row.update(cc=head.get("cc", "")[:2000], rfc_message_id=head.get("message-id", "")[:998],
+                   in_reply_to=head.get("in-reply-to", "")[:998],
+                   references=head.get("references", "")[:8000],
+                   is_draft="DRAFT" in row["labels"], body=body, body_truncated=truncated)
+        messages.append(row)
+    return {"thread_id": str(data.get("id") or tid),
+            "subject": messages[0]["subject"] if messages else "", "messages": messages}
+
+
+def _header_value(value, field, limit):
+    if value is None:
+        value = ""
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError("%s must be text of at most %d characters" % (field, limit))
+    if "\r" in value or "\n" in value or "\x00" in value:
+        raise ValueError("%s must be a single line" % field)
+    return value.strip()
+
+
+def _angle(message_id):
+    message_id = message_id.strip()
+    if not message_id:
+        return ""
+    if not (message_id.startswith("<") and message_id.endswith(">")):
+        message_id = "<" + message_id.strip("<>") + ">"
+    if re.search(r"\s", message_id):
+        raise ValueError("a Message-ID cannot contain spaces")
+    return message_id
+
+
+def _reply_context(tid, state_dir):
+    """(Message-ID, References, Subject) of the last message in the thread that is not a draft."""
+    data = _api("GET", GMAIL_API + "/users/me/threads/" + tid, need=GMAIL_READ,
+                state_dir=state_dir, params=[("format", "metadata")] + [
+                    ("metadataHeaders", h) for h in ("Message-ID", "References", "Subject")])
+    last = {}
+    for msg in data.get("messages") or []:
+        if isinstance(msg, dict) and "DRAFT" not in (msg.get("labelIds") or []):
+            last = msg
+    head = _headers(last.get("payload"))
+    first = _headers(((data.get("messages") or [{}])[0] or {}).get("payload"))
+    return (head.get("message-id", ""), head.get("references", ""),
+            head.get("subject", "") or first.get("subject", ""))
+
+
+def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_reply_to: str = "",
+                       references: str = "", *, state_dir=None) -> dict:
+    """Save a reply draft in ``thread_id``. It is never sent: the person opens it and presses Send.
+
+    Follows Gmail's threading rules (threadId on the draft, RFC 2822 In-Reply-To/References,
+    matching Subject). ``in_reply_to``/``references`` are the Message-ID headers of the message
+    being answered; when ``in_reply_to`` is empty they are read from the thread's last message.
+    Returns ``{draft_id, message_id, thread_id, open_url, thread_url}``. Needs gmail.compose
+    (and gmail.readonly when the reply headers have to be looked up).
+    """
+    tid = _check_id(thread_id, "thread_id")
+    to = _header_value(to, "to", 2000)
+    if not to:
+        raise ValueError("to is required")
+    subject = _header_value(subject, "subject", 998)
+    in_reply_to = _angle(_header_value(in_reply_to, "in_reply_to", 998))
+    references = _header_value(references, "references", 8000)
+    if not isinstance(body, str) or len(body) > MAX_DRAFT_BODY:
+        raise ValueError("body must be text of at most %d characters" % MAX_DRAFT_BODY)
+    _access_token(GMAIL_COMPOSE, state_dir=state_dir)       # scope refusal before any lookup
+    if not in_reply_to or not subject:
+        found_id, found_refs, found_subject = _reply_context(tid, state_dir)
+        if not in_reply_to:
+            in_reply_to = _angle(_header_value(found_id, "in_reply_to", 998))
+            references = references or _header_value(found_refs.replace("\r", " ").replace(
+                "\n", " "), "references", 8000)
+        subject = subject or _header_value(found_subject, "subject", 998)
+    refs = []
+    for item in references.split() + ([in_reply_to] if in_reply_to else []):
+        item = _angle(item)
+        if item and item not in refs:
+            refs.append(item)
+    refs = refs[-MAX_REFERENCES:]
+    if in_reply_to and not re.match(r"(?i)\s*re\s*:", subject):
+        subject = "Re: " + subject if subject else "Re:"
+    msg = email.message.EmailMessage(policy=email.policy.SMTP)
+    try:
+        msg["To"] = to
+        msg["Subject"] = subject
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if refs:
+            msg["References"] = " ".join(refs)
+        msg.set_content(body)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    except (ValueError, TypeError, email.errors.MessageError) as exc:
+        raise ValueError("the draft could not be written as an email: %s" % exc) from None
+    made = _api("POST", GMAIL_API + "/users/me/drafts", need=GMAIL_COMPOSE, state_dir=state_dir,
+                body={"message": {"raw": raw, "threadId": tid}})
+    message = made.get("message") if isinstance(made.get("message"), dict) else {}
+    draft_id = str(made.get("id") or "")
+    thread = str(message.get("threadId") or tid)
+    account = (_read_record(_conn_path(state_dir)) or {}).get("account") or ""
+    return {"draft_id": draft_id, "message_id": str(message.get("id") or ""), "thread_id": thread,
+            "open_url": draft_open_url(thread, draft_id, account),
+            "thread_url": _gmail_base(account) + "#all/" + thread}
+
+
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_GMAIL_URL_ALPHABET = "BCDFGHJKLMNPQRSTVWXZbcdfghjklmnpqrstvwxz"
+
+
+def _compose_token(plain):
+    """Gmail's web-UI id encoding: base64 of the text (without "thread-"), read as a base-64
+    number and written in Gmail's 40-consonant alphabet. Matches the published vectors of
+    github.com/GoodMeasuresLLC/gmail_compose_encoder and decodes with ArsenalRecon's
+    GmailURLDecoder; Google does not document it."""
+    digits = base64.b64encode(plain.replace("thread-", "").encode("utf-8")).decode("ascii").rstrip("=")
+    number = 0
+    for ch in digits:
+        number = number * 64 + _B64.index(ch)
+    out = []
+    while number:
+        number, rest = divmod(number, 40)
+        out.append(_GMAIL_URL_ALPHABET[rest])
+    return "".join(reversed(out))
+
+
+def _gmail_base(account):
+    who = urllib.parse.quote(account, safe="@.+-_") if account and "@" in account else "0"
+    return "https://mail.google.com/mail/u/%s/" % who
+
+
+def draft_open_url(thread_id: str, draft_id: str, account: str = "") -> str:
+    """A Gmail web address that opens this reply draft for editing.
+
+    ``/mail/u/<account>/`` picks the right signed-in account; ``#all?compose=<token>`` opens the
+    draft, the token being ``thread-f:<decimal thread id>+msg-a:<draft id>`` in Gmail's URL
+    encoding (see _compose_token). For an id of any other shape this falls back to the thread,
+    where Gmail shows the draft inline.
+    """
+    base = _gmail_base(account)
+    if isinstance(thread_id, str) and _HEX_ID.match(thread_id) and \
+            isinstance(draft_id, str) and _DRAFT_ID.match(draft_id):
+        return base + "#all?compose=" + _compose_token(
+            "thread-f:%d+msg-a:%s" % (int(thread_id, 16), draft_id))
+    return base + "#all/" + str(thread_id)
+
+
+def _rfc3339(value, name):
+    if isinstance(value, _dt.datetime):
+        aware = value if value.tzinfo else value.astimezone()
+        return aware.isoformat(timespec="seconds")
+    if isinstance(value, _dt.date):
+        return _dt.datetime(value.year, value.month, value.day).astimezone().isoformat(
+            timespec="seconds")
+    if isinstance(value, str) and _RFC3339.match(value.strip()):
+        return value.strip()
+    raise ValueError("%s must be a datetime or an RFC 3339 timestamp such as "
+                     "2026-09-30T09:00:00-07:00" % name)
+
+
+def calendar_events(time_min=None, time_max=None, max_results: int = 50, *,
+                    calendar_id: str = "primary", state_dir=None) -> list:
+    """Events between ``time_min`` and ``time_max`` (datetimes or RFC 3339 strings; default now
+    to seven days from now), recurring events expanded, in start order, cancelled ones left out.
+
+    Returns ``[{id, summary, start, end, all_day, location, attendees_count, html_link}]`` where
+    start/end are RFC 3339 for timed events and YYYY-MM-DD for all-day ones. Needs
+    calendar.readonly.
+    """
+    now = _dt.datetime.now(_dt.timezone.utc)
+    start = _rfc3339(now if time_min is None else time_min, "time_min")
+    end = _rfc3339(now + _dt.timedelta(days=7) if time_max is None else time_max, "time_max")
+    if not isinstance(calendar_id, str) or not calendar_id or len(calendar_id) > 320 or \
+            re.search(r"[/?#\s\\]", calendar_id):
+        raise ValueError("calendar_id must be 'primary' or a calendar address")
+    count = max(1, min(int(max_results), MAX_EVENTS))
+    data = _api("GET", CALENDAR_API + "/calendars/%s/events" % urllib.parse.quote(
+        calendar_id, safe="@.+-_"), need=CALENDAR_READ, state_dir=state_dir, params={
+        "timeMin": start, "timeMax": end, "singleEvents": "true", "orderBy": "startTime",
+        "maxResults": count})
+    rows = []
+    for ev in (data.get("items") or [])[:count]:
+        if not isinstance(ev, dict) or ev.get("status") == "cancelled":
+            continue
+        when, until = ev.get("start") or {}, ev.get("end") or {}
+        all_day = "dateTime" not in when and "date" in when
+        people = [a for a in ev.get("attendees") or [] if isinstance(a, dict) and not a.get("resource")]
+        rows.append({"id": str(ev.get("id") or ""), "summary": str(ev.get("summary") or "")[:500],
+                     "start": str(when.get("dateTime") or when.get("date") or ""),
+                     "end": str(until.get("dateTime") or until.get("date") or ""),
+                     "all_day": all_day, "location": str(ev.get("location") or "")[:500],
+                     "attendees_count": len(people), "html_link": str(ev.get("htmlLink") or "")})
+    return rows
 
 
 # ------------------------------------------------------------------------------------ pages
