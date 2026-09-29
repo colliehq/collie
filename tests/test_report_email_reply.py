@@ -118,6 +118,65 @@ def test_other_projects_already_muted_are_kept(host, zones, builds, own_settings
     assert morning_report.muted_names() == ["AgentGalaxy", "old-thing", "collie"]
 
 
+def passed_on(service):
+    """Messages the mute command handed on as ordinary replies (private views)."""
+    return [row for row in comms.list_events("mail", include_private=True,
+                                             directory=service.directory)
+            if (row.get("metadata") or {}).get("derived_from")]
+
+
+@pytest.mark.parametrize("text, rest", [
+    ("mute collie\n\nAlso reschedule my 3pm with Jo to Friday.",
+     "Also reschedule my 3pm with Jo to Friday."),
+    ("Mute collie. Also can you draft a reply to Jo about Friday",
+     "Also can you draft a reply to Jo about Friday"),
+    ("mute colliehq/collie, and thanks for the drafts!", "and thanks for the drafts!"),
+])
+def test_mute_and_the_rest_of_the_reply_is_passed_on(host, zones, builds, own_settings,
+                                                     text, rest):
+    root, service, adapter = host
+    row = sent_report(host)
+    arrive(service, row, text=text)
+    muted = morning_report.muted_names()
+    assert len(muted) == 1 and muted[0] in ("collie", "colliehq/collie")
+    assert event(service)["state"] == "rejected"             # the command itself is settled
+    [handed] = passed_on(service)
+    # The rest is an ordinary reply in the same thread, as if the command were not there.
+    assert handed["state"] == "pending" and rest in handed["text"]
+    assert "mute" not in handed["text"].lower()
+    assert handed["thread_key"] == row["thread_key"] and handed["sender"] == OWNER
+    assert handed["metadata"]["message_id"] == "<in-1@example.test>"
+    [reply] = confirmations(service)
+    assert "“%s”" % muted[0] in reply["text"] and "passed on" in reply["text"]
+
+
+def test_quoted_history_and_a_signature_are_not_a_rest(host, zones, builds, own_settings):
+    root, service, _adapter = host
+    row = sent_report(host)
+    arrive(service, row, text="mute collie\n\n-- \nDaming\nSent from my iPhone\n\n"
+                              "On Thu, Rowan wrote:\n> Two quick ones\n> mute me")
+    assert morning_report.muted_names() == ["collie"]
+    assert passed_on(service) == []
+    assert "passed on" not in confirmations(service)[0]["text"]
+
+
+@pytest.mark.parametrize("text", [
+    "Mute the standup reminders until Friday please",          # not a project
+    "mute nothere",                                             # no such project in the report
+    "mute collie‮eilloc",                                  # a bidi override in the name
+    "mute colliehq/collie/extra",                               # not one project token
+    "mute coll​ie",                                        # a zero-width character
+])
+def test_a_first_line_that_is_not_one_known_project_is_an_ordinary_reply(
+        host, zones, builds, own_settings, text):
+    root, service, adapter = host
+    row = sent_report(host)
+    arrive(service, row, text=text)
+    assert not own_settings.get("REPORT_MUTED")
+    assert event(service)["state"] == "pending"                 # the person's, as it came
+    assert confirmations(service) == [] and passed_on(service) == []
+
+
 def saved_muted(settings_module):
     raw = settings_module._read_uncached().get("REPORT_MUTED", "")
     return [part.strip() for part in raw.split(",") if part.strip()]

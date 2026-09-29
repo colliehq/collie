@@ -69,6 +69,12 @@ class Builds:
             raise self.fail
         zone = (profile or {}).get("zone") or dt.timezone.utc
         local = dt.datetime.fromtimestamp(now, zone)
+        report = self.report(now, local, profile)
+        if state_dir:                                   # the real build saves what it made
+            morning_report.write_snapshot(report, state_dir)
+        return report
+
+    def report(self, now, local, profile):
         return {
             "schema": morning_report.SCHEMA, "date": self.date or local.strftime("%Y-%m-%d"),
             "generated_at": now, "language": (profile or {}).get("language") or "en",

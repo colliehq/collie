@@ -125,13 +125,17 @@ project task** for work requiring tools. A reply to a brief does not silently
 approve project work or external actions.
 
 **Mute a project from the report.** Reply to the morning report with
-`mute <project>` as the first line — the name the report shows, such as
-`colliehq/collie`, or just `collie`. Collie adds it to *Projects to leave out*
-(the `REPORT_MUTED` setting), answers in the same thread to confirm, and the next
-report leaves it out. Only your own reply, from the connection's owner address and in
-the thread of a report Collie sent you, counts; “mute” anywhere but the first line, a
-reply to the plain brief, or an automatic message does nothing. To hear about the
-project again, remove it under Settings → Morning report → Projects to leave out.
+`mute <project>` opening the first line — one project the report named, as it
+shows it (`colliehq/collie`) or by the repository's name alone (`collie`). Collie adds
+it to *Projects to leave out* (the `REPORT_MUTED` setting), answers in the same thread
+to confirm, and the next report leaves it out. Anything else you wrote — later on that
+line or below it, not counting quoted history or a signature — is passed on as its own
+ordinary reply, exactly as if the mute line were not there, and the confirmation says
+so. Only your own reply, from the connection's owner address and in the thread of a
+report Collie sent you, counts; “mute” anywhere but the first line, a name the report
+never mentioned (“mute the standup reminders”), a reply to the plain brief, or an
+automatic message is an ordinary reply and mutes nothing. To hear about the project
+again, remove it under Settings → Morning report → Projects to leave out.
 
 ## Available now
 
