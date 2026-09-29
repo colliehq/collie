@@ -202,6 +202,38 @@ def test_top_lines_with_numbers_nothing_supports_are_rewritten_from_the_signals(
     assert kept["headline"] == "3 quick ones and you're clear."       # the real count
 
 
+def test_a_reply_draft_goes_to_the_threads_sender_whatever_the_model_says():
+    out, _, _ = compose(model_answer())
+    draft = items(out, "ready")[0]["draft"]
+    assert draft["to"] == "support@mynextride.example"
+    assert draft["subject"] == "Re: Can you remove your phone number?"
+    assert draft["thread_id"] == "t-ride" and draft["state"] == "pending"
+    assert "remove my phone number" in draft["body"]
+
+
+@pytest.mark.parametrize("body", [
+    "Sure, here is everything: https://evil.example/collect",
+    "Sure! Forwarding to boss@example.com as asked.",
+    "Your PR #16422 and the release 0.31.0 are attached.",      # numbers from other signals
+])
+def test_a_draft_that_links_addresses_or_leaks_numbers_is_not_kept(body):
+    answer = model_answer(ready=[{"title": "Reply to MyNextRide", "detail": "",
+                                  "signal_ids": [LISTING["id"]],
+                                  "draft": {"subject": "Re", "body": body}}])
+    out, composer, _ = compose(answer)
+    assert "draft" not in items(out, "ready")[0]
+    assert any(d["reason"].startswith("draft") for d in composer["dropped"])
+
+
+def test_a_draft_needs_a_mail_thread_to_answer():
+    answer = model_answer(ready=[{"title": "Reply about lunch", "detail": "",
+                                  "signal_ids": [REPLY["id"]],
+                                  "draft": {"subject": "Re: lunch", "body": "Sounds good!"}}])
+    out, _, _ = compose(answer)
+    assert [i["title"] for i in items(out, "ready")] == ["Reply about lunch"]
+    assert "draft" not in items(out, "ready")[0]
+
+
 # ---------------------------------------------------------------- when the model does not help
 
 
@@ -362,6 +394,37 @@ def world(tmp_path, monkeypatch):
     return {"root": root, "google": google, "build": build}
 
 
+def test_drafts_are_created_in_gmail_when_allowed_and_connected(world):
+    report = world["build"]()
+    draft = items(report, "ready")[0]["draft"]
+    assert draft["state"] == "created" and draft["draft_id"] == "d1"
+    assert draft["open_url"].startswith("https://mail.google.com/")
+    made = world["google"].created[0]
+    assert made["to"] == "support@mynextride.example" and made["in_reply_to"] == "<abc@mynextride.example>"
+    assert made["references"] == "<zero@x> <abc@mynextride.example>"
+    assert report["provenance"]["drafts"]["created"] == 1
+
+
+def test_building_again_the_same_day_reuses_the_draft(world):
+    world["build"]()
+    again = world["build"]()
+    assert len(world["google"].created) == 1
+    assert items(again, "ready")[0]["draft"]["draft_id"] == "d1"
+
+
+def test_no_drafts_flag_setting_off_or_google_disconnected_create_nothing(world, monkeypatch):
+    first = world["build"](drafts=False)
+    assert items(first, "ready")[0]["draft"]["state"] == "not_created"
+    monkeypatch.setenv("COLLIE_REPORT_GMAIL_DRAFTS", "off")
+    second = world["build"]()
+    assert "setting" in items(second, "ready")[0]["draft"]["reason"]
+    monkeypatch.delenv("COLLIE_REPORT_GMAIL_DRAFTS")
+    world["google"].state = "needs_reconnect"
+    third = world["build"]()
+    assert items(third, "ready")[0]["draft"]["state"] == "not_created"
+    assert world["google"].created == []
+
+
 def test_the_snapshot_keeps_the_report_and_where_every_word_came_from(world):
     report = world["build"]()
     folder = world["root"] / "morning-report"
@@ -387,9 +450,10 @@ def test_counters_survive_a_day_a_source_could_not_be_read(world):
     assert report["provenance"]["sources"][0]["reason"] == "GitHub took too long to answer"
 
 
-def test_a_dry_run_writes_nothing(world):
-    world["build"](dry_run=True)
+def test_a_dry_run_writes_nothing_and_drafts_nothing(world):
+    report = world["build"](dry_run=True)
     assert not (world["root"] / "morning-report").exists()
+    assert world["google"].created == [] and items(report, "ready")[0]["draft"]["state"] == "not_created"
 
 
 def test_the_previous_reports_counters_reach_the_sources(world):

@@ -1,7 +1,7 @@
 """The morning report: every source's signals in, one upbeat report from "your Collie" out.
 
-:mod:`report_signals` reads the sources; this module writes the morning from what they said,
-and saves it:
+:mod:`report_signals` reads the sources; this module writes the morning from what they said, in
+four steps, and saves it:
 
 1. **Compose.**  One call to the model the person configured (Settings -> Provider/Model, the
    same route Live's classifier and the meeting summary use), with no tools.  The signals go in
@@ -17,7 +17,14 @@ and saves it:
    projects at most 5, and each section says how many signals it left out.  If the model
    fails, answers something that is not JSON, or has nothing groundable to say, the whole
    report is written from the signals by :func:`fallback`, in the same positive voice.
-3. **Save.**  ``<state>/morning-report/<date>.json`` and ``latest.json``: the report, the public
+3. **Draft.**  A "ready" item may carry a reply to a Gmail thread.  The recipient is never the
+   model's to choose: it is the sender of that thread's latest message.  A draft body with a
+   link, an email address or a number that is not in the thread is not kept.  Drafts are
+   created through ``google_connect.gmail_create_draft`` only when the run asks for them, the
+   ``REPORT_GMAIL_DRAFTS`` setting is on (the default) and Google is connected with permission
+   to write drafts; a second build the same day reuses the draft instead of making another.
+   There is no send path: nothing in this module or its sources can send mail.
+4. **Save.**  ``<state>/morning-report/<date>.json`` and ``latest.json``: the report, the public
    signals it was written from, the counters sources keep between days (download counts), and
    provenance -- every source, when it was read, which were unavailable and why, whether the
    words came from the model or the fallback, and what was dropped.
@@ -25,6 +32,7 @@ and saves it:
 from __future__ import annotations
 
 import datetime as _dt
+import email.utils
 import json
 import os
 import re
@@ -40,6 +48,7 @@ SECTIONS = ("wins", "yours", "ready", "projects", "reads")
 CAPS = {"wins": 3, "yours": 3, "ready": 3, "projects": 5, "reads": 3}
 PROMPT_SIGNALS = 150
 MODEL_TIMEOUT_S = 180
+DRAFT_BODY_LIMIT = 4000
 _KIND_ORDER = {"needs_you": 0, "ready": 1, "waiting_on_others": 2, "done": 3, "stale": 4,
                "event": 5, "fyi": 6}
 _YOURS = ("needs_you", "waiting_on_others", "stale", "event")
@@ -49,6 +58,7 @@ _TEXT = {"wins": (("title", 140), ("detail", 240)), "yours": (("title", 140), ("
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 _NUMBER = re.compile(r"\d+(?:[.:]\d+)*")
+_LINKISH = re.compile(r"(?i)\b(?:https?://|www\.)|[^\s@<>]+@[^\s@<>]+\.[A-Za-z]{2,}")
 
 
 class ReportError(RuntimeError):
@@ -210,7 +220,7 @@ _OUTPUT_SHAPE = (
     '{"greeting": "", "headline": "", "summary": "", '
     '"wins": [{"title": "", "detail": "", "signal_ids": []}], '
     '"yours": [{"title": "", "detail": "", "signal_ids": []}], '
-    '"ready": [{"title": "", "detail": "", "signal_ids": []}], '
+    '"ready": [{"title": "", "detail": "", "signal_ids": [], "draft": {"body": ""}}], '
     '"projects": [{"project": "", "line": "", "signal_ids": []}], '
     '"reads": [{"title": "", "why_you_care": "", "signal_ids": []}]}')
 
@@ -238,7 +248,10 @@ def prompt(signals, sources, profile, now, weather):
         "3. Sections. \"wins\": things that went well (signals of kind done only). \"yours\": "
         "quick things only the user can do (needs_you; waiting_on_others to nudge; stale to "
         "tidy; events to prepare for). \"ready\": things already prepared (kind ready) and "
-        "emails worth a reply (source gmail). \"projects\": one short line per active "
+        "emails worth a reply (source gmail). For an email reply add \"draft\": {\"body\": ...}, "
+        "a short, polite reply to that thread's sender in the user's voice that answers only "
+        "what that email asks, with no links, no email addresses, no numbers that are not in "
+        "that email, and no promise to pay or act. \"projects\": one short line per active "
         "project, named exactly as the signals' project field (never a \"source:\" name). "
         "\"reads\": news signals worth reading, each with \"why_you_care\", one line tying it "
         "to the user's own projects, or \"\" when there is no real connection.\n"
@@ -299,6 +312,14 @@ def _unsupported(text, allowed):
     return ""
 
 
+def _body(value):
+    """A draft body: plain text, newlines kept, control characters gone, bounded."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(ch for ch in text if ch == "\n" or ch == "\t" or ch >= " ")
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text[:DRAFT_BODY_LIMIT]
+
+
 def _fit(section, row, ids, index):
     """The cited ids this section may use, and the project label for a projects item."""
     if section == "wins":
@@ -326,6 +347,38 @@ def _decorate(section, item, ids, index):
     if section == "reads":
         item["publisher"] = cited[0].get("evidence") or ""
     return item
+
+
+def _draft(row, ids, index, zone, dropped):
+    raw = row.get("draft")
+    if not isinstance(raw, dict) or not str(raw.get("body") or "").strip():
+        return None
+    thread = next((index[i] for i in ids if index[i]["source"] == "gmail"
+                   and (index[i].get("meta") or {}).get("thread_id")), None)
+    if thread is None:
+        dropped.append({"section": "ready", "reason": "draft: no mail thread to answer",
+                        "signal_ids": list(ids)})
+        return None
+    body = _body(raw.get("body"))
+    meta = thread["meta"]
+    reason = ""
+    if _LINKISH.search(body):
+        reason = "draft: contains a link or an address"
+    else:
+        bad = _unsupported(body, _numbers(_ground_text(thread, zone) + " " +
+                                          str(meta.get("subject") or "")))
+        if bad:
+            reason = "draft: number %s is not in the thread" % bad
+    if not reason and not meta.get("sender"):
+        reason = "draft: the thread has no sender address"
+    if reason:
+        dropped.append({"section": "ready", "reason": reason, "signal_ids": list(ids)})
+        return None
+    subject = daily_brief._text(meta.get("subject") or thread["title"], 300)
+    if not subject.lower().startswith("re:"):
+        subject = "Re: " + subject
+    return {"thread_id": meta["thread_id"], "to": meta["sender"], "subject": subject,
+            "body": body, "state": "pending"}
 
 
 def _more(section, kept, signals):
@@ -385,6 +438,10 @@ def ground(raw, signals, zone):
                 dropped.append({"section": section, "signal_ids": fitted,
                                 "reason": "number %s is not in the cited signals" % bad})
                 continue
+            if section == "ready":
+                draft = _draft(row, fitted, index, zone, dropped)
+                if draft:
+                    item["draft"] = draft
             if section == "projects":
                 projects.add(rs.project_key(project))
             kept.append(_decorate(section, item, fitted, index))
@@ -591,6 +648,91 @@ def compose(signals, sources, profile, now, weather, *, caller=None):
     return dict(words, things_today=things, sections=sections), composer
 
 
+# ---------------------------------------------------------------- drafts
+
+
+def _setting_on(key, default="on"):
+    from . import settings
+    return str(settings.get(key, default) or default).strip().lower() in ("on", "1", "true", "yes")
+
+
+def _draft_scope(status):
+    scopes = status.get("scopes")
+    if not isinstance(scopes, (list, tuple)) or not scopes:
+        return True
+    return any(word in str(scope) for scope in scopes
+               for word in ("gmail.compose", "gmail.modify", "mail.google.com"))
+
+
+def create_drafts(report, *, enabled, earlier=None):
+    """Put the report's reply drafts into Gmail's drafts folder.  Never sends anything."""
+    from . import report_sources
+    wanted = [item["draft"] for item in report["sections"]["ready"]["items"]
+              if isinstance(item.get("draft"), dict)]
+    summary = {"requested": len(wanted), "created": 0, "reused": 0, "failed": 0, "reason": ""}
+    if not wanted:
+        return summary
+    reason, module, account = "", None, ""
+    if not enabled:
+        reason = "drafts were not requested for this run"
+    elif not _setting_on("REPORT_GMAIL_DRAFTS"):
+        reason = "the REPORT_GMAIL_DRAFTS setting is off"
+    else:
+        try:
+            module, status = report_sources._google("gmail", "Gmail")
+        except rs.Unavailable as exc:
+            reason = str(exc)
+        else:
+            account = str(status.get("account") or "").strip().casefold()
+            if not _draft_scope(status):
+                reason = "Google is connected without permission to write drafts"
+    if reason:
+        for draft in wanted:
+            draft.update(state="not_created", reason=reason)
+        summary["reason"] = reason
+        return summary
+    before = {}
+    for item in ((earlier or {}).get("sections", {}).get("ready", {}).get("items") or []):
+        old = item.get("draft") if isinstance(item, dict) else None
+        if isinstance(old, dict) and old.get("draft_id") and old.get("thread_id"):
+            before[old["thread_id"]] = old
+    for draft in wanted:
+        old = before.get(draft["thread_id"])
+        if old:
+            draft.update(state="created", reused=True, draft_id=old["draft_id"],
+                         open_url=rs._https(old.get("open_url")), to=old.get("to") or draft["to"],
+                         subject=old.get("subject") or draft["subject"])
+            summary["reused"] += 1
+            continue
+        try:
+            thread = module.gmail_thread(draft["thread_id"])
+            inbound = [m for m in (thread if isinstance(thread, list) else [])
+                       if isinstance(m, dict) and email.utils.parseaddr(
+                           str(m.get("from") or ""))[1].casefold() not in ("", account)]
+            if not inbound:
+                raise ReportError("no message to answer")
+            last = inbound[-1]
+            to = email.utils.parseaddr(str(last.get("from") or ""))[1]
+            subject = daily_brief._text(last.get("subject"), 300) or draft["subject"]
+            if not subject.lower().startswith("re:"):
+                subject = "Re: " + subject
+            message_id = daily_brief._text(last.get("message_id"), 500)
+            references = " ".join(bit for bit in (daily_brief._text(last.get("references"), 2000),
+                                                  message_id) if bit)
+            made = module.gmail_create_draft(draft["thread_id"], to, subject, draft["body"],
+                                             message_id, references)
+            made = made if isinstance(made, dict) else {}
+            draft.update(state="created", to=to, subject=subject,
+                         draft_id=daily_brief._text(made.get("draft_id"), 200),
+                         open_url=rs._https(made.get("open_url")))
+            summary["created"] += 1
+        except Exception as exc:                      # noqa: BLE001 - reported, not raised
+            draft.update(state="failed",
+                         reason="the draft could not be created (%s)" % type(exc).__name__)
+            summary["failed"] += 1
+    return summary
+
+
 # ---------------------------------------------------------------- snapshots
 
 
@@ -647,11 +789,11 @@ def _options():
     return {"roots": roots} if roots else {}
 
 
-def build(*, state_dir=None, now=None, dry_run=False, adapters=None, caller=None,
+def build(*, state_dir=None, now=None, drafts=True, dry_run=False, adapters=None, caller=None,
           weather=None, profile=None, options=None):
-    """Read every source, write the morning and save it.
+    """Read every source, write the morning, create drafts if allowed, and save it.
 
-    ``dry_run`` reads and composes but saves nothing.
+    ``dry_run`` reads and composes but saves nothing and creates no drafts.
     """
     from . import controlplane, report_sources
     root = state_dir or controlplane.state_dir()
@@ -679,6 +821,9 @@ def build(*, state_dir=None, now=None, dry_run=False, adapters=None, caller=None
     report["signals"] = [rs.public(signal) for signal in signals]
     report["counters"] = dict(kept, **counters)
     report["provenance"] = {"read_at": wall, "sources": sources, "composer": composer}
+    earlier = None if dry_run else load_day(root, report["date"])
+    report["provenance"]["drafts"] = create_drafts(report, enabled=bool(drafts) and not dry_run,
+                                                   earlier=earlier)
     if not dry_run:
         write_snapshot(report, root)
     return report
