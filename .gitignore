@@ -31,6 +31,8 @@ data/sessions/
 .env
 *.key
 credentials.json
+# Collie's Google OAuth client, written at release time from the GOOGLE_OAUTH_CLIENT_JSON secret
+harness/google_oauth_client.json
 
 # os / editor
 .DS_Store
