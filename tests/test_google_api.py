@@ -357,6 +357,47 @@ def test_draft_skips_a_malformed_message_id_from_the_thread(env):
     assert captured["body"]["message"]["threadId"] == THREAD
 
 
+@pytest.mark.parametrize("to", [
+    "boss@corp.com, attacker@evil.com",                  # a list
+    "boss@corp.com; attacker@evil.com",
+    '"boss@corp.com" <attacker@evil.com>',               # the name shows another address
+    "boss＠corp.com <attacker@evil.com>",            # ...with a full-width at sign
+    "Boss <boss@corp.com> attacker@evil.com",
+    "undisclosed-recipients:;",                          # group syntax
+    "Team: a@x.com, b@y.com;",
+    "not an address", "a@b", "@corp.com", "boss@", "boss@@corp.com", "bo ss@corp.com",
+    "boss@corp..com", ".boss@corp.com", "boss@-corp.com", "<boss@corp.com",
+    "böss@corp.com", "boss@corp.com Bcc: x@y.com", "=?utf-8?q?x?= <a@b.com>",
+])
+def test_draft_goes_to_exactly_one_plain_address(env, to):
+    _drafts(env)
+    with pytest.raises(ValueError):
+        gc.gmail_create_draft(THREAD, to, "hi", "b", in_reply_to="<a@b>")
+    assert not env["fake"].urls(gc.GMAIL_API + "/users/me/drafts")
+
+
+@pytest.mark.parametrize("to,header", [
+    ("ana@example.com", "ana@example.com"),
+    ("Ana <ana@example.com>", "Ana <ana@example.com>"),
+    ('"Ana Díaz" <ana@example.com>', "Ana Díaz <ana@example.com>"),
+    ("  <ana.b+tag@mail.example.co.uk>  ", "ana.b+tag@mail.example.co.uk"),
+])
+def test_draft_accepts_one_address_with_an_honest_name(env, to, header):
+    captured = _drafts(env)
+    gc.gmail_create_draft(THREAD, to, "hi", "b", in_reply_to="<a@b>")
+    assert _decoded(captured)["To"] == header
+
+
+@pytest.mark.parametrize("bad", [" ", " ", "\x85", "\x0b", "\x0c", "\x1b", "\x7f"])
+def test_draft_headers_refuse_every_line_break_and_control_character(env, bad):
+    _drafts(env)
+    with pytest.raises(ValueError) as info:
+        gc.gmail_create_draft(THREAD, "ana@example.com", "hi" + bad + "Bcc: x@y.com", "b",
+                              in_reply_to="<a@b>")
+    assert "single line" in str(info.value)
+    assert not env["fake"].calls
+
+
 @pytest.mark.parametrize("field", ["to", "subject", "in_reply_to", "references"])
 def test_draft_refuses_header_injection_before_any_request(env, field):
     args = {"thread_id": THREAD, "to": "ana@example.com", "subject": "hi", "body": "b",

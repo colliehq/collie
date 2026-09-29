@@ -26,6 +26,7 @@ import base64
 import codecs
 import datetime as _dt
 import email.errors
+import email.headerregistry
 import email.message
 import email.policy
 import hashlib
@@ -40,6 +41,7 @@ import socket
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1264,9 +1266,40 @@ def _header_value(value, field, limit):
         value = ""
     if not isinstance(value, str) or len(value) > limit:
         raise ValueError("%s must be text of at most %d characters" % (field, limit))
-    if "\r" in value or "\n" in value or "\x00" in value:
-        raise ValueError("%s must be a single line" % field)
+    # CR and LF are not the only line breaks: NEL, VT, FF and U+2028/2029 are too, to some
+    # reader somewhere. No control character or line separator belongs in a header value.
+    if any(c != "\t" and unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in value):
+        raise ValueError("%s must be a single line without control characters" % field)
     return value.strip()
+
+
+_ADDRESS = re.compile(
+    r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_NAME_FORBIDDEN = set('@＠﹫<>,;:"\\()[]')
+
+
+def _one_recipient(value):
+    """``value`` as exactly one address, optionally with a display name, or ValueError.
+
+    A reply goes to one person. Lists, groups and names that carry an address of their own
+    ('"boss@corp.com" <attacker@evil.com>') are refused, so what the person sees is who gets it.
+    """
+    name, addr = "", value.strip()
+    if addr.endswith(">") and "<" in addr:
+        cut = addr.rindex("<")
+        name, addr = addr[:cut].strip(), addr[cut + 1:-1].strip()
+        if len(name) >= 2 and name[0] == name[-1] == '"':
+            name = name[1:-1].strip()
+    local = addr.split("@", 1)[0]
+    if not _ADDRESS.fullmatch(addr) or len(addr) > 254 or len(local) > 64:
+        raise ValueError("to must be one email address, like ana@example.com or "
+                         "Ana <ana@example.com>")
+    if len(name) > 200 or "=?" in name or any(c in _NAME_FORBIDDEN for c in name) or \
+            not all(c.isprintable() for c in name):
+        raise ValueError("to has a display name Collie will not write: it may not contain an "
+                         "address, quotes, brackets or separators")
+    return email.headerregistry.Address(display_name=name, addr_spec=addr)
 
 
 def _angle(message_id):
@@ -1322,6 +1355,7 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
     to = _header_value(to, "to", 2000)
     if not to:
         raise ValueError("to is required")
+    recipient = _one_recipient(to)
     subject = _header_value(subject, "subject", 998)
     in_reply_to = _angle(_header_value(in_reply_to, "in_reply_to", 998))
     references = _header_value(references, "references", 8000)
@@ -1344,7 +1378,7 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
         subject = "Re: " + subject if subject else "Re:"
     msg = email.message.EmailMessage(policy=email.policy.SMTP)
     try:
-        msg["To"] = to
+        msg["To"] = recipient
         msg["Subject"] = subject
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
