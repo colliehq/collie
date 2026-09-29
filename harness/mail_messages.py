@@ -27,7 +27,12 @@ INLINE_TYPES = ("image/png", "image/jpeg", "image/gif")
 _MESSAGE_ID = re.compile(r"<[^<>\s\x00-\x1f]{1,250}>")
 _CID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _INLINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-_CID_REF = re.compile(r"cid:([^\"'\s>)]*)", re.IGNORECASE)
+#: A ``cid:`` reference is the quoted value of a ``src`` or ``background`` attribute and
+#: nothing else: "Lucid:" or "ACID:" in a headline are words.  Escaped text cannot match,
+#: because the renderer writes a quote inside text as ``&quot;``.  relay/mail_worker.js
+#: applies the same pattern, so both halves agree on what a page references.
+_CID_REF = re.compile(r"""\s(?:src|background)\s*=\s*(?:"\s*cid:([^"]*)"|'\s*cid:([^']*)')""",
+                      re.IGNORECASE)
 _HTML_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -196,6 +201,11 @@ def check_html(html):
     return html
 
 
+def cid_references(html):
+    """The content ids a page shows, from its ``src``/``background`` attributes only."""
+    return {first or second for first, second in _CID_REF.findall(html or "")}
+
+
 def check_inline(parts, html):
     """The inline images of an HTML result, validated against the HTML that shows them.
 
@@ -232,7 +242,7 @@ def check_inline(parts, html):
             raise MailFormatError("the inline images exceed %d bytes together" % MAX_INLINE_TOTAL)
         seen.add(cid)
         clean.append({"cid": cid, "filename": name, "content_type": kind, "data": bytes(data)})
-    named = set(_CID_REF.findall(html or ""))
+    named = cid_references(html)
     dangling = sorted(named - seen)
     if dangling:
         raise MailFormatError("the HTML shows cid:%s, and there is no inline part by that name"
@@ -245,8 +255,8 @@ def check_inline(parts, html):
 
 def encode_inline(parts, html=None):
     """Inline images as a JSON store keeps them: base64 text plus the decoded size."""
-    checked = check_inline(parts, html if html is not None else " ".join(
-        "cid:%s" % part.get("cid") for part in parts or () if isinstance(part, dict)))
+    checked = check_inline(parts, html if html is not None else _showing(
+        part.get("cid") for part in parts or () if isinstance(part, dict)))
     return [{"cid": part["cid"], "filename": part["filename"],
              "content_type": part["content_type"],
              "data": base64.b64encode(part["data"]).decode("ascii"), "bytes": len(part["data"])}
@@ -267,8 +277,13 @@ def decode_inline(stored, html=None):
             raise MailFormatError("a stored inline image does not match its recorded size")
         parts.append({"cid": row.get("cid"), "filename": row.get("filename"),
                       "content_type": row.get("content_type"), "data": data})
-    return check_inline(parts, html if html is not None else " ".join(
-        "cid:%s" % part["cid"] for part in parts))
+    return check_inline(parts, html if html is not None else _showing(
+        part["cid"] for part in parts))
+
+
+def _showing(cids):
+    """A stand-in page that shows exactly these images, for checking parts on their own."""
+    return "".join('<img src="cid:%s">' % cid for cid in cids)
 
 
 def compose(*, sender, recipient, subject, text, message_id, in_reply_to="", references=(),

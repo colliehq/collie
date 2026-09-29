@@ -422,6 +422,7 @@ def _designed(report, rendered):
     reader can still use, and the reason is kept with the day.
     """
     from . import morning_report_email
+    problem = ""
     for avatar in ("cid", "none"):
         if avatar == "none":
             try:
@@ -432,9 +433,11 @@ def _designed(report, rendered):
         try:
             mail_messages.check_html(html)
             return html, mail_messages.encode_inline(rendered.get("inline") or [], html), ""
-        except mail_messages.MailFormatError:
-            continue
-    return "", [], "the designed report was too large for an email, so its plain text was sent"
+        except mail_messages.MailFormatError as exc:
+            # The first refusal is the one that describes the designed email as written.
+            problem = problem or str(exc)
+    return "", [], ("the designed report could not be sent as an email (%s), so its plain "
+                    "text was sent" % (problem or "it could not be rendered"))[:300]
 
 
 def _report_payload(root, prefs, wall, date):

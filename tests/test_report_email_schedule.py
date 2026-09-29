@@ -300,6 +300,40 @@ def test_a_report_too_large_for_email_sends_its_plain_text_and_says_so(host, zon
     assert sched.tick(root, at(2026, 9, 10), service=service)["state"] == "submitted"
     assert "html" not in adapter.sent[0] and "Reply to Jo" in adapter.sent[0]["text"]
     assert job(root)["format"] == "text" and "plain text" in job(root)["format_detail"]
+    assert "exceeds" in job(root)["format_detail"]         # the real reason, not a guess
+
+
+def test_a_headline_that_says_acid_or_lucid_still_goes_designed(host, zones, builds, monkeypatch):
+    root, service, adapter = host
+    report_on(root, service)
+    real = Builds.__call__
+
+    def with_words(self, **kw):
+        report = real(self, **kw)
+        report["sections"]["projects"]["items"][0]["line"] = "Postgres ACID: isolation fix merged"
+        report["headline"] = "Lucid: two quick ones."
+        return report
+
+    monkeypatch.setattr(Builds, "__call__", with_words)
+    out = sched.tick(root, at(2026, 9, 10), service=service)
+    assert out["state"] == "submitted" and out["job"]["format"] == "html"
+    assert "ACID:" in adapter.sent[0]["html"]
+
+
+def test_a_page_that_cannot_go_designed_says_the_real_reason(host, zones, builds, monkeypatch):
+    root, service, adapter = host
+    report_on(root, service)
+    from harness import morning_report_email
+    real = morning_report_email.render
+
+    def broken(report, avatar="cid"):
+        out = real(report, avatar=avatar)
+        return dict(out, html=out["html"] + '<img src="cid:ghost">')
+
+    monkeypatch.setattr(morning_report_email, "render", broken)
+    assert sched.tick(root, at(2026, 9, 10), service=service)["state"] == "submitted"
+    assert job(root)["format"] == "text"
+    assert "no inline part" in job(root)["format_detail"] and "large" not in job(root)["format_detail"]
 
 
 # ------------------------------------------------------------------ same failure semantics

@@ -198,6 +198,27 @@ def test_an_html_result_that_does_not_add_up_is_refused(html, inline, why):
         _compose(html=html, inline=inline)
 
 
+@pytest.mark.parametrize("words", ["Lucid: Gravity deliveries begin",
+                                   "Postgres ACID: what changed in 18",
+                                   "Handle cid:image001.png in replies",
+                                   'Write src=&quot;cid:logo&quot; in your template'])
+def test_cid_in_the_words_of_a_page_is_not_an_image_reference(words):
+    # Only a cid: that is the value of a src or background attribute names an image;
+    # the same letters in a headline are words, and must not turn a page into a refusal.
+    page = '<p>%s</p><img alt="" src="cid:collie-avatar">' % words
+    message = _compose(html=page, inline=[AVATAR])
+    assert message.get_content_type() == "multipart/alternative"
+    assert _compose(html="<p>%s</p>" % words).get_content_type() == "multipart/alternative"
+
+
+def test_every_attribute_form_of_a_cid_reference_counts():
+    for page in ('<img src="cid:collie-avatar">', "<img src='cid:collie-avatar'>",
+                 '<IMG SRC = "CID:collie-avatar">', '<td background="cid:collie-avatar"></td>'):
+        assert _compose(html=page, inline=[AVATAR]).is_multipart(), page
+    with pytest.raises(mail.MailFormatError, match="no inline part"):
+        _compose(html='<p>Lucid: fine</p><img src="cid:ghost">')
+
+
 def test_html_and_images_are_bounded():
     with pytest.raises(mail.MailFormatError, match="HTML"):
         _compose(html="<p>" + "x" * mail.MAX_HTML_BYTES + "</p>")

@@ -538,6 +538,10 @@ function designedBody(msg, stableId) {
 }
 
 const CID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A cid: reference is the quoted value of a src or background attribute and nothing else: "Lucid:"
+// or "ACID:" in a headline are words. The same pattern as harness/mail_messages.py, so both halves
+// agree on what a page references.
+const CID_ATTR_RE = /\s(?:src|background)\s*=\s*(?:"\s*cid:([^"]*)"|'\s*cid:([^']*)')/gi;
 const HTML_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 /**
@@ -586,7 +590,7 @@ function validateDesign(body) {
     seen.add(cid);
   }
   if (hasHtml) {
-    const named = new Set([...out.html.matchAll(/cid:([^"'\s>)]*)/gi)].map((m) => m[1]));
+    const named = new Set([...out.html.matchAll(CID_ATTR_RE)].map((m) => m[1] ?? m[2]));
     for (const cid of named)
       if (!seen.has(cid)) return { error: "the page shows a cid: that no inline image carries" };
     for (const cid of seen)

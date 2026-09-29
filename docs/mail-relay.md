@@ -109,7 +109,8 @@ Body, `application/json`, ≤640 KiB:
 ignored — an ignored field looks like a supported one.
 
 **The page widens nothing.** Every inline image must be one the page shows by `cid:<cid>` and every
-`cid:` in the page must be one of the images: an image nothing names would arrive as a stray
+`cid:` a quoted `src` or `background` attribute names must be one of the images (the same letters in
+the page's text, such as "Lucid:" in a headline, are words): an image nothing names would arrive as a stray
 attachment and a name with no image is a broken picture, so either is a 400. `cid` and `filename`
 are plain tokens (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), so neither can carry a header break into the
 legacy raw message. In `structured` mode the page is the builder's `html` and each image an

@@ -472,6 +472,19 @@ async function main() {
   }
 
   {
+    // A cid: in the words of the page is words: only a src or background value names an image.
+    const ctx = await fixture();
+    const words = '<p>Lucid: Gravity ships. Postgres ACID: fine. Handle cid:image001.png.</p>';
+    const a = await postSend(ctx, note({ id: "req-cid-words-1", html: words + PAGE, inline: [AVATAR] }));
+    const b = await postSend(ctx, note({ id: "req-cid-words-2", html: words }));
+    check(a.status === 200 && b.status === 200 && ctx.mailer.calls.length === 2,
+          "a page whose text says 'Lucid:' or 'cid:image001.png' is accepted, with or without the dog");
+    const c = await postSend(ctx, note({ id: "req-cid-words-3", html: words + "<td background='cid:x'>" }));
+    check(c.status === 400 && ctx.mailer.calls.length === 2,
+          "while a background attribute naming a missing image is still refused");
+  }
+
+  {
     const ctx = await fixture();
     const caps = await (await worker.fetch(
       new Request("https://mail.collie.run/capabilities"), ctx.env)).json();
