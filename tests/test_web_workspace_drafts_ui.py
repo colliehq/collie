@@ -185,3 +185,32 @@ def test_missing_workspace_exposes_an_explicit_location_recovery(ui):
     expect(page.locator('#taskWorkspacePath')).to_have_text('/restored')
     assert relocated==[{'session':'s-read','cwd':'/restored'}]
     assert not _Fixture.stream_requests
+
+
+def test_a_late_session_load_does_not_erase_a_new_location_being_typed(ui):
+    """The session load and the folder check race. When the check's "missing" answer lands first,
+    the person starts typing the new location; the session load arriving afterwards must not put
+    the old folder back into the field (CI caught this twice: the relocation posted /gone)."""
+    page=ui.page; gone=True; relocated=[]
+    def session(route):
+        route.fulfill(content_type='application/json',body=json.dumps({'messages':[],
+            'cwd':'/gone' if gone else '/restored','workspace':{'mode':'isolated','path':'/gone','origin':'/main'} if gone else {}}))
+    def detect(route):
+        route.fulfill(status=409 if gone else 200,content_type='application/json',
+            body=json.dumps({'error':'workspace is missing','workspace_missing':True} if gone else {'cwd':'/restored','candidates':[]}))
+    def relocate(route):
+        nonlocal gone
+        relocated.append(route.request.post_data_json); gone=False
+        route.fulfill(content_type='application/json',body='{"ok":true}')
+    page.route('**/api/session/s-read',session)
+    page.route('**/api/verification*',detect)
+    page.route('**/api/session/relocate*',relocate)
+    read_thread(page)
+    expect(page.locator('#taskWorkspaceNote')).to_contain_text('does not copy or recover files')
+    page.locator('#taskFolder').fill('/restored')
+    # the slow session load reports the saved (missing) folder only now
+    page.evaluate("window.showTaskWorkspace('/gone', {mode:'isolated', path:'/gone', origin:'/main'})")
+    expect(page.locator('#taskFolder')).to_have_value('/restored')
+    page.locator('#taskFolderUse').click()
+    expect(page.locator('#taskWorkspacePath')).to_have_text('/restored')
+    assert relocated==[{'session':'s-read','cwd':'/restored'}]
