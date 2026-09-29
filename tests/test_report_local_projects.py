@@ -10,6 +10,7 @@ than a day, and a branch far behind its upstream.  Every repository here is made
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -323,3 +324,74 @@ def test_active_projects_come_back_most_recent_first(tmp_path):
     assert list(out["activity"]) == ["o/a", "o/b", "o/c"]
     assert list(dict.fromkeys(s["project"] for s in out["signals"])) == ["o/a", "o/b", "o/c"]
     assert all(s["kind"] == "fyi" for s in out["signals"])
+
+
+# ---------------------------------------------------------------- security: a scanned repo runs nothing
+
+
+def test_the_scan_runs_git_only_through_the_hardened_runner(tmp_path, monkeypatch):
+    """Every git the scan runs carries the neutralizing -c flags, the hardened env, and blanks
+    the filter drivers the repository defines.  No git is really run: subprocess is a spy."""
+    repo = make_repo(tmp_path / "root" / "repo")
+    git(repo, "config", "filter.lfs.clean", "git-lfs clean -- %f")
+    git(repo, "config", "filter.evil.process", "run-me")
+    seen = []
+    real = src.subprocess.run
+
+    def spy(argv, **kwargs):
+        seen.append((list(argv), dict(kwargs.get("env") or {})))
+        if "--get-regexp" in argv:                 # the read that lists filter drivers
+            return real(argv, **kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("GIT_SSH_COMMAND", "run-me")
+    monkeypatch.setattr(src.subprocess, "run", spy)
+    src.local_projects(context([tmp_path / "root"]))
+    scan = [(argv, env) for argv, env in seen if "-C" in argv and str(repo) in argv]
+    assert scan
+    for argv, env in scan:
+        joined = " ".join(argv)
+        for flag in ("core.fsmonitor=false", "core.hooksPath=", "core.pager=cat",
+                     "diff.external=", "protocol.allow=never", "log.showSignature=false",
+                     "gpg.program=", "safe.directory="):
+            assert "-c " + flag in joined, (flag, argv)
+        assert env.get("GIT_CONFIG_NOSYSTEM") == "1" and env.get("GIT_TERMINAL_PROMPT") == "0"
+        assert "GIT_DIR" not in env and "GIT_SSH_COMMAND" not in env
+    status = " ".join(next(argv for argv, _ in scan if "status" in argv))
+    assert "-c filter.lfs.clean=" in status and "-c filter.evil.process=" in status
+
+
+def test_a_config_command_in_a_scanned_repo_is_never_executed(tmp_path):
+    """A downloaded repo with core.fsmonitor and a clean filter set to a sentinel command: a
+    real scan must not run either.  The fixture commits everything BEFORE the config is set, so
+    building it never triggers the very hooks under test."""
+    root = tmp_path / "root"
+    repo = make_repo(root / "downloaded")          # init + add + commit, no malicious config yet
+    (repo / ".gitattributes").write_text("*.txt filter=evil\n", encoding="utf-8")
+    (repo / "work.txt").write_text("one\n", encoding="utf-8")
+    git(repo, "add", ".gitattributes", "work.txt")
+    git(repo, "commit", "-q", "-m", "tracked files")
+    ran = tmp_path / "ran"
+    cmd = '%s -c "open(r\'%s\',\'w\').close()"' % (sys.executable.replace("\\", "/"), str(ran))
+    git(repo, "config", "core.fsmonitor", cmd)     # only now, so no fixture step runs it
+    git(repo, "config", "filter.evil.clean", cmd)
+    time.sleep(1.1)
+    (repo / "work.txt").write_text("two\n", encoding="utf-8")   # stat-dirty: status rehashes it
+    out = src.local_projects(context([root]))
+    assert out["stats"]["repos"] == 1
+    assert not ran.exists()
+
+
+def test_a_repository_git_reports_as_not_owned_is_skipped_not_failed(tmp_path):
+    root = tmp_path / "root"
+    make_repo(root / "odd")
+    real = src._git_runner(rs.Context(now=time.time()))
+
+    def runner(args, timeout):
+        if "status" in args:
+            return 128, "", "fatal: detected dubious ownership in repository at '%s'" % (root / "odd")
+        return real(args, timeout)
+
+    out = src.local_projects(context([root], git=runner))
+    assert out["state"] == "ok" and out["stats"]["not_owned"] == 1 and out["signals"] == []
