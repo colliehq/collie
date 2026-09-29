@@ -304,6 +304,22 @@ def test_the_date_line_is_left_to_a_clock_on_the_same_side(desk, widgets, shown)
     assert (clock == side) is (not shown) or not clock
 
 
+def test_the_morning_blocks_own_styles_never_reach_the_page_itself(desk):
+    """body carries the class "morning" while the scene shows; the block's layout, colour and
+    click-through must stay on the block."""
+    save(desk.state, report())
+    page = _open(desk)
+    body = page.evaluate("""() => { const b = getComputedStyle(document.body);
+      return {position: b.position, pointer: b.pointerEvents, display: b.display, opacity: b.opacity}; }""")
+    assert body == {"position": "static", "pointer": "auto", "display": "block", "opacity": "1"}
+    # The centre slot covers the screen; its empty space must not start taking clicks.
+    assert page.evaluate("() => getComputedStyle(document.getElementById('slot-center')).pointerEvents") == "none"
+    # A reply dims the widgets and the words, never the page with the reply on it.
+    page.evaluate("() => document.body.classList.add('chatting')")
+    assert page.evaluate("() => getComputedStyle(document.body).opacity") == "1"
+    assert _poll(page, "() => getComputedStyle(document.getElementById('morning')).opacity === '0.42'")
+
+
 def test_the_widget_panel_turns_the_morning_scene_off_and_on(desk):
     save(desk.state, report())
     page = _open(desk)
