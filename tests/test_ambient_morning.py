@@ -320,6 +320,38 @@ def test_the_morning_blocks_own_styles_never_reach_the_page_itself(desk):
     assert _poll(page, "() => getComputedStyle(document.getElementById('morning')).opacity === '0.42'")
 
 
+def test_the_code_map_keeps_its_dark_look_over_a_bright_morning(desk, monkeypatch):
+    """With the code map on, a run over a clear-sky morning must look as it does any other time:
+    light clock with its shadow, dark composer. The morning's own tokens are for the sky only."""
+    from harness import webapp
+    monkeypatch.setenv("COLLIE_DESKTOP_CODE_MAP", "on")
+    save(desk.state, report())
+    page = desk.browser.new_context(viewport={"width": 1920, "height": 1080},
+                                    color_scheme="light").new_page()
+    page.route(re.compile(r"https://.*"), lambda route: route.abort())
+    page.route(re.compile(r".*/wallpaper\?bg=1.*"), lambda route: route.fulfill(
+        status=200, content_type="text/html", body="<!doctype html><title>map</title>"))
+    subscribers = len(webapp.Handler._live_subs)
+    page.goto(desk.base + "/ambient", wait_until="load")
+    assert _poll(page, SHOWING) and _poll(page, "() => document.body.classList.contains('sky-light')")
+    deadline = time.time() + 10
+    while len(webapp.Handler._live_subs) <= subscribers and time.time() < deadline:
+        time.sleep(0.05)
+    webapp.Handler._live_pub("start", {"session": "morning-code-map", "run": "r1"})
+    for _ in range(40):          # until the page has read the setting that lets the map in
+        webapp.Handler._live_pub("edit", {"session": "morning-code-map", "path": "harness/x.py"})
+        if _poll(page, "() => document.body.classList.contains('coding')", seconds=0.3):
+            break
+    assert _poll(page, "() => document.body.classList.contains('coding')")
+    look = page.evaluate("""() => { const c = getComputedStyle(document.querySelector('.slot .clock'));
+      const box = getComputedStyle(document.querySelector('.composer'));
+      return {clock: c.color, shadow: c.textShadow, composer: box.backgroundColor}; }""")
+    assert _luminance(look["clock"]) > 0.8, look                  # light words on the dark map
+    assert look["shadow"] != "none", look
+    assert _luminance(look["composer"]) < 0.3, look              # the dark panel, not white
+    assert page.evaluate("() => window.collieMorning.running()") is False
+
+
 def test_the_widget_panel_turns_the_morning_scene_off_and_on(desk):
     save(desk.state, report())
     page = _open(desk)

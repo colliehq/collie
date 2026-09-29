@@ -341,21 +341,25 @@
   /* ── morning: the day's report over the day's weather (before noon, on a report day) ──────────
      The sky is one canvas behind everything; the colour blooms and the logo step aside, the
      widgets stay. Text and panels take the sky's tone: dark words on bright skies, light words on
-     rain, storm and night. No backdrop blur while the sky moves: it would be redone every frame. */
+     rain, storm and night. No backdrop blur while the sky moves: it would be redone every frame.
+     While the code map is up (body.coding) it covers the sky, so everything outside the morning
+     block keeps the map's own dark look: every rule that retints the page says :not(.coding). */
   .sky{position:fixed; inset:0; z-index:0; width:100%; height:100%; display:none; pointer-events:none;}
   body.morning{background:var(--skybg,linear-gradient(170deg,#58aaff 0%,#8fcaff 40%,#d6ecff 68%,#ffe2ad 100%)); transition:background 1.2s ease;}
   body.morning .sky{display:block;}
   body.morning .blooms, body.morning .vignette, body.morning .widget[data-widget="brand"]{display:none;}
-  body.morning .opsbar, body.morning .composer, body.morning .card, body.morning .editbtn, body.morning .reply{backdrop-filter:none; -webkit-backdrop-filter:none;}
-  body.morning .clock, body.morning .np, body.morning .sys{text-shadow:none;}
-  body.morning.sky-light{color-scheme:light; --ink:#14213d; --mut:#34425f; --faint:#56627f;
+  body.morning:not(.coding) .opsbar, body.morning:not(.coding) .composer, body.morning:not(.coding) .card,
+  body.morning:not(.coding) .editbtn, body.morning:not(.coding) .reply{backdrop-filter:none; -webkit-backdrop-filter:none;}
+  body.morning:not(.coding) .clock, body.morning:not(.coding) .np, body.morning:not(.coding) .sys{text-shadow:none;}
+  body.morning.sky-light:not(.coding){color-scheme:light; --ink:#14213d; --mut:#34425f; --faint:#56627f;
     --panel:rgba(255,255,255,.84); --panel-line:rgba(20,33,61,.12); --panel-ink:#14213d; --hover:rgba(20,33,61,.07);
-    --accent:32,150,110; --send-ink:#ffffff;
-    --t:#14213d; --t2:rgba(20,33,61,.78); --t3:rgba(20,33,61,.62); --chip:rgba(255,255,255,.74); --chipline:rgba(255,255,255,.95);}
-  body.morning.sky-dark{color-scheme:dark; --ink:#f4f7ff; --mut:#d3dbee; --faint:#b3bdd6;
+    --accent:32,150,110; --send-ink:#ffffff;}
+  body.morning.sky-dark:not(.coding){color-scheme:dark; --ink:#f4f7ff; --mut:#d3dbee; --faint:#b3bdd6;
     --panel:rgba(16,22,38,.74); --panel-line:rgba(255,255,255,.16); --panel-ink:#f2f4ff; --hover:rgba(255,255,255,.10);
-    --accent:115,200,160; --send-ink:#0b120e;
-    --t:#f4f7ff; --t2:rgba(244,247,255,.86); --t3:rgba(244,247,255,.68); --chip:rgba(255,255,255,.14); --chipline:rgba(255,255,255,.28);}
+    --accent:115,200,160; --send-ink:#0b120e;}
+  /* The block's own words and glass follow the sky always; only the block uses these. */
+  body.morning.sky-light{--t:#14213d; --t2:rgba(20,33,61,.78); --t3:rgba(20,33,61,.62); --chip:rgba(255,255,255,.74); --chipline:rgba(255,255,255,.95);}
+  body.morning.sky-dark{--t:#f4f7ff; --t2:rgba(244,247,255,.86); --t3:rgba(244,247,255,.68); --chip:rgba(255,255,255,.14); --chipline:rgba(255,255,255,.28);}
   /* The block is .m-block, never .morning: that class is the body's while the scene shows, and a
      rule for the block written as .morning styled the whole page with it. */
   .m-block{--round:ui-rounded,"SF Pro Rounded","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif; --m-scale:1;
