@@ -363,9 +363,11 @@
   .morning > *{pointer-events:auto;}
   body.chatting .morning{opacity:.42;}
   .m-when{padding-right:40px; font:600 calc(13px * var(--m-scale))/1.4 var(--sans); letter-spacing:.1em; text-transform:uppercase; color:var(--t3);}
+  .m-when[hidden]{display:none;}
   .m-say{font:800 calc(clamp(30px,4.2vw,56px) * var(--m-scale))/1.06 var(--round); letter-spacing:-.025em; text-wrap:balance; text-shadow:0 2px 24px rgba(0,0,0,.08);}
+  .morning.no-when .m-say{padding-right:40px;}
   body.sky-dark .m-say{text-shadow:0 2px 28px rgba(0,0,0,.45);}
-  .m-more{max-width:44ch; font:500 calc(clamp(15px,1.45vw,19px) * var(--m-scale))/1.45 var(--round); color:var(--t2);}
+  .m-more{max-width:44ch; font:500 calc(clamp(15px,1.45vw,19px) * var(--m-scale))/1.45 var(--round); color:var(--t2); text-wrap:pretty;}
   .m-more:empty{display:none;}
   .m-dots{display:flex; align-items:center; gap:7px; font:700 13px/1 var(--round); color:var(--t2);}
   .m-dots[hidden]{display:none;}
@@ -1338,45 +1340,59 @@
     $("mWhen").textContent = bits.join(" · ");
   }
 
-  // Where the words go: the first spot, left then right, that no widget, the status bar, the
-  // composer or the edit button covers, shrinking the type a step at a time if none fits.
+  // Where the words go: the spot nearest the upper third, left before right, that no widget, the
+  // status bar, the composer or the edit button comes within a comfortable gap of; the type
+  // shrinks a step at a time only when no spot fits. The date-and-weather line is left out on the
+  // clock's side of the screen, where the clock already says it.
   function scheduleFit(){ clearTimeout(MORNING.fitTimer); MORNING.fitTimer = setTimeout(fitMorning, 60); }
   function fitMorning(){
-    var box = $("morning");
+    var box = $("morning"), when = $("mWhen");
     if (!MORNING.showing || box.hidden) return;
-    var vw = innerWidth, vh = innerHeight, gap = Math.max(14, Math.round(Math.min(vw, vh) * .02)), obstacles = [];
+    var vw = innerWidth, vh = innerHeight, gapX = Math.max(16, Math.round(Math.min(vw, vh) * .025)),
+        gapY = Math.round(gapX * 1.5), obstacles = [], clockSide = "";
     document.querySelectorAll(".slot > .widget, .opsbar, .composer, #editbtn").forEach(function(el){
-      var r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) obstacles.push(r);
+      var r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) return;
+      obstacles.push(r);
+      if (el.getAttribute("data-widget") === "clock") {
+        var mid = (r.left + r.right) / 2;
+        clockSide = Math.abs(mid - vw / 2) < vw * .1 ? "both" : (mid < vw / 2 ? "left" : "right");
+      }
     });
+    function sameSide(side){ return clockSide === "both" || clockSide === side; }
     function clear(x, y, w, h){
       return !obstacles.some(function(o){
-        return !(x + w + gap <= o.left || o.right + gap <= x || y + h + gap <= o.top || o.bottom + gap <= y);
+        return !(x + w + gapX <= o.left || o.right + gapX <= x || y + h + gapY <= o.top || o.bottom + gapY <= y);
       });
     }
     var widths = [Math.min(vw * .5, 820), Math.min(vw * .42, 680), vw * .36], scales = [1, .9, .8, .7, .6];
-    var prefer = vh * .15, lowest = vh * .06, floor = vh - Math.max(12, vh * .03), s, w, side, i;
+    var prefer = vh * .15, lowest = vh * .06, floor = vh - Math.max(12, vh * .03), s, w, i;
     for (s = 0; s < scales.length; s++) {
       box.style.setProperty("--m-scale", scales[s]);
       for (w = 0; w < widths.length; w++) {
-        box.style.width = widths[w] + "px";
-        var h = box.offsetHeight;
-        for (side = 0; side < 2; side++) {
-          var x = side ? vw - vw * .08 - widths[w] : vw * .08;
-          var tops = [prefer, lowest];
-          obstacles.forEach(function(o){ if (!(x + widths[w] + gap <= o.left || o.right + gap <= x)) tops.push(o.bottom + gap); });
-          tops.sort(function(a, b){ return Math.abs(a - prefer) - Math.abs(b - prefer); });
-          for (i = 0; i < tops.length; i++) {
-            if (tops[i] < lowest || tops[i] + h > floor || !clear(x, tops[i], widths[w], h)) continue;
-            return placeMorning(box, side ? "right" : "left", x, tops[i], obstacles);
-          }
+        var width = widths[w], spots = [];
+        box.style.width = width + "px";
+        ["left", "right"].forEach(function(side, order){
+          when.hidden = sameSide(side);
+          var h = box.offsetHeight, x = side === "right" ? vw - vw * .08 - width : vw * .08, tops = [prefer, lowest];
+          obstacles.forEach(function(o){ if (!(x + width + gapX <= o.left || o.right + gapX <= x)) tops.push(o.bottom + gapY); });
+          tops.forEach(function(top){ spots.push({side:side, order:order, x:x, top:top, h:h}); });
+        });
+        spots.sort(function(a, b){ return Math.abs(a.top - prefer) - Math.abs(b.top - prefer) || a.order - b.order; });
+        for (i = 0; i < spots.length; i++) {
+          var spot = spots[i];
+          if (spot.top < lowest || spot.top + spot.h > floor || !clear(spot.x, spot.top, width, spot.h)) continue;
+          when.hidden = sameSide(spot.side);
+          return placeMorning(box, spot.side, spot.x, spot.top, obstacles);
         }
       }
     }
+    when.hidden = sameSide("left");
     placeMorning(box, "left", vw * .08, lowest, obstacles);   // nothing fits: smallest type, top left
   }
   function placeMorning(box, side, x, top, obstacles){
     box.style.left = Math.round(Math.max(8, x)) + "px"; box.style.top = Math.round(top) + "px";
-    box.dataset.side = side;
+    box.dataset.side = side; box.classList.toggle("no-when", $("mWhen").hidden);
     // The sun (or moon) stands in the open sky beside the words, clear of the widgets above.
     var vw = innerWidth, range = document.createRange(), textL = vw, textR = 0, lo, hi;
     ["mWhen", "mSay", "mMore", "mDots", "mActs", "mBy"].forEach(function(id){

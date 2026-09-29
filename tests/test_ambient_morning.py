@@ -240,11 +240,14 @@ OBSTACLES = """() => [...document.querySelectorAll('.slot > .widget, .opsbar, .c
                return {name: el.dataset.widget || el.className || el.id,
                        x: r.left, y: r.top, r: r.right, b: r.bottom}; })
   .filter(r => r.r - r.x > 0 && r.b - r.y > 0)"""
-TEXT = """() => ['mWhen', 'mSay', 'mMore', 'mDots', 'mActs', 'mBy'].map(id => {
-  const r = document.getElementById(id).getBoundingClientRect();
-  return {name: id, x: r.left, y: r.top, r: r.right, b: r.bottom}; })"""
+TEXT = """() => ['mWhen', 'mSay', 'mMore', 'mDots', 'mActs', 'mBy']
+  .map(id => document.getElementById(id)).filter(el => !el.hidden).map(el => {
+  const r = el.getBoundingClientRect();
+  return {name: el.id, x: r.left, y: r.top, r: r.right, b: r.bottom}; })"""
 BUSY = {"widgets": {"clock": {"on": True, "slot": "tl"}, "music": {"on": True, "slot": "tl"},
                     "system": {"on": True, "slot": "bl"}, "brand": {"on": True, "slot": "center"}}}
+#: The words keep at least this much sky between themselves and anything else on the desktop.
+CLEARANCE = 16
 
 
 @pytest.mark.parametrize("size", [(1366, 768), (1920, 1080)])
@@ -256,12 +259,40 @@ def test_widgets_never_cover_the_words(desk, size, layout):
     page = _open(desk, size=size)
     page.wait_for_timeout(600)                            # widgets settle, then the fit runs
     obstacles, text = page.evaluate(OBSTACLES), page.evaluate(TEXT)
-    assert any(o["name"] == "clock" for o in obstacles)
+    names = {o["name"] for o in obstacles}
+    assert "clock" in names and "music" in names and any("composer" in n for n in names)
+    if layout == "busy":
+        assert "system" in names                          # the CPU line
+    assert {t["name"] for t in text} >= {"mSay", "mMore", "mDots", "mActs", "mBy"}
     for t in text:
         assert t["x"] >= 0 and t["y"] >= 0 and t["r"] <= size[0] and t["b"] <= size[1], t
         for o in obstacles:
-            apart = t["r"] <= o["x"] or o["r"] <= t["x"] or t["b"] <= o["y"] or o["b"] <= t["y"]
+            c = CLEARANCE
+            apart = (t["r"] + c <= o["x"] or o["r"] + c <= t["x"] or t["b"] + c <= o["y"]
+                     or o["b"] + c <= t["y"])
             assert apart, (layout, size, t, o)
+
+
+@pytest.mark.parametrize("widgets, shown", [
+    ({}, True),                                            # the clock is in the other corner
+    ({"clock": {"on": True, "slot": "tl"}}, True),         # the words move to the free side
+    ({"clock": {"on": True, "slot": "bl"}}, False),        # right under the words: said already
+    ({"clock": {"on": False}}, True),                      # no clock: the words say the date
+])
+def test_the_date_line_is_left_to_a_clock_on_the_same_side(desk, widgets, shown):
+    save(desk.state, report())
+    desk.config.write_text(json.dumps({"widgets": widgets}), encoding="utf-8")
+    context = desk.browser.new_context(viewport={"width": 1920, "height": 1080})
+    page = context.new_page()
+    page.route(re.compile(r"https://.*"), lambda route: route.abort())
+    page.goto(desk.base + "/ambient", wait_until="load")
+    assert _poll(page, SHOWING)
+    page.wait_for_timeout(600)
+    assert page.evaluate("() => !document.getElementById('mWhen').hidden") is shown, widgets
+    side = page.evaluate("() => document.getElementById('morning').dataset.side")
+    clock = page.evaluate("""() => { const c = document.querySelector('.widget[data-widget="clock"]');
+      if (!c) return ''; const r = c.getBoundingClientRect(); return r.left + r.width / 2 < innerWidth / 2 ? 'left' : 'right'; }""")
+    assert (clock == side) is (not shown) or not clock
 
 
 def test_the_widget_panel_turns_the_morning_scene_off_and_on(desk):

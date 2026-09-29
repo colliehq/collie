@@ -46,7 +46,9 @@ night.
 The sky comes from the weather the clock already shows (the Open-Meteo weather code and whether
 it is day). With the clock's weather switched off, the sky is a calm clear one and no temperature
 is shown; the morning scene never asks for the weather itself. The clock and the other widgets
-stay where they are and the words find room around them; the logo steps aside until noon.
+stay where they are and the words find room around them, with a clear gap; the logo steps aside
+until noon. The date-and-weather line above the headline is left out when the clock sits on the
+same side of the screen and already says it.
 
 It goes back to the normal desktop at noon, or for the rest of the day when you close it (×). Turn
 it off with *Show the morning report on the desktop* in Settings → Desktop, or with *Morning
