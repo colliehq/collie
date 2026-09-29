@@ -607,6 +607,38 @@ def _audio_host_ok(target):
     return any(host == h or host.endswith("." + h) for h in _AUDIO_OK_HOSTS)
 
 
+# The morning report page (/report) is opened from the desktop by a link signed for one day's
+# report that lasts minutes, so the per-process token that runs everything never travels in a URL
+# a default browser would keep in its history. The key is derived from the token: a restart ends
+# every link.
+REPORT_LINK_TTL_S = 15 * 60
+_REPORT_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _report_link_sig(date, expires):
+    key = hmac.new(TOKEN.encode("utf-8"), b"collie.report-link/1", hashlib.sha256).digest()
+    return hmac.new(key, ("%s|%d" % (date, expires)).encode("ascii"), hashlib.sha256).hexdigest()[:32]
+
+
+def report_link(date, now=None):
+    """``/report?date=...&exp=...&sig=...`` for ``date``'s report, good for REPORT_LINK_TTL_S."""
+    expires = int(time.time() if now is None else now) + REPORT_LINK_TTL_S
+    return "/report?" + urllib.parse.urlencode(
+        {"date": date, "exp": expires, "sig": _report_link_sig(date, expires)})
+
+
+def report_link_date(query, now=None):
+    """The date a signed /report link opens, or ``""`` when it is not a live link of ours."""
+    date = str((query.get("date") or [""])[0])
+    raw_exp, sig = str((query.get("exp") or [""])[0]), str((query.get("sig") or [""])[0])
+    if not _REPORT_DATE_RE.fullmatch(date) or not raw_exp.isdigit() or len(raw_exp) > 12:
+        return ""
+    expires, wall = int(raw_exp), time.time() if now is None else now
+    if not wall <= expires <= wall + REPORT_LINK_TTL_S + 60:
+        return ""
+    return date if hmac.compare_digest(sig, _report_link_sig(date, expires)) else ""
+
+
 def _pair_mint():
     """A fresh pairing secret. Also expires stale ones, so the dict can't grow."""
     import time as _time
@@ -1755,11 +1787,15 @@ class Handler(BaseHTTPRequestHandler):
         super().end_headers()
 
     @staticmethod
-    def _html_csp(body: bytes, vscode_embed: bool = False) -> str:
-        """Authorize this exact document's inline scripts without allowing arbitrary inline JS."""
+    def _html_csp(body: bytes, vscode_embed: bool = False, scripts_allowed: bool = True) -> str:
+        """Authorize this exact document's inline scripts without allowing arbitrary inline JS.
+
+        A page that needs no script at all (``scripts_allowed=False``, the morning report page)
+        gets ``script-src 'none'`` instead: hashing its inline scripts would authorize whatever
+        script escaping had ever let into it."""
         scripts = re.findall(
             br"<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script\s*>", body,
-            flags=re.IGNORECASE | re.DOTALL)
+            flags=re.IGNORECASE | re.DOTALL) if scripts_allowed else []
         hashes = []
         for script in scripts:
             # The HTML tokenizer normalizes CRLF/CR to LF before CSP checks the inline text.
@@ -1769,7 +1805,8 @@ class Handler(BaseHTTPRequestHandler):
             value = "'sha256-%s'" % digest
             if value not in hashes:
                 hashes.append(value)
-        script_src = "script-src 'self'" + ((" " + " ".join(hashes)) if hashes else "")
+        script_src = ("script-src 'self'" + ((" " + " ".join(hashes)) if hashes else "")
+                      if scripts_allowed else "script-src 'none'")
         frame_ancestors = ("vscode-webview: https://*.vscode-cdn.net"
                            if vscode_embed else "'self'")
         return "; ".join((
@@ -1789,7 +1826,7 @@ class Handler(BaseHTTPRequestHandler):
         ))
 
     def _send_html(self, body: bytes, code: int = 200, ctype: str = "text/html; charset=utf-8",
-                   headers=None):
+                   headers=None, scripts_allowed=True):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -1798,7 +1835,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, str(value))
         if ctype.lower().startswith("text/html"):
             self.send_header("Content-Security-Policy", self._html_csp(
-                body, vscode_embed=bool(getattr(self, "_vscode_embed", False))))
+                body, vscode_embed=bool(getattr(self, "_vscode_embed", False)),
+                scripts_allowed=scripts_allowed))
         self.end_headers()
         self.wfile.write(body)
 
@@ -2585,6 +2623,33 @@ class Handler(BaseHTTPRequestHandler):
                 except meetings.MeetingError as exc:
                     return self._send_json({"error": str(exc)},
                                            404 if "not found" in str(exc) else 400)
+            if path == "/api/report/today":
+                # The wallpaper's morning scene (morning_desktop.py). The report's words are
+                # personal, and a request may start the resolve pass, so the token is required.
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                from . import morning_desktop as morning_today
+                query = urllib.parse.parse_qs(parsed.query)
+                payload = morning_today.today(
+                    _state_root(), resolve=query.get("resolve", [""])[0] == "1",
+                    approvals=self._inbox_pending_all)
+                if payload.get("show"):
+                    payload["report_url"] = report_link(payload["date"])
+                return self._send_json(payload)
+            if path == "/report":
+                # The whole morning report, as its email, for the "Open report" window: from a
+                # signed link for that day that lasts minutes, or with the token. It needs no
+                # script, and its policy allows none.
+                query = urllib.parse.parse_qs(parsed.query)
+                date = report_link_date(query)
+                if not date and not self._authed(parsed):
+                    return self._send_html(b"<!doctype html><title>Morning report</title>"
+                                           b"<p>Open the morning report from Collie.</p>", 403,
+                                           scripts_allowed=False)
+                from . import morning_desktop as morning_page
+                status, page = morning_page.page(
+                    _state_root(), date or str(query.get("date", [""])[0] or "")[:10])
+                return self._send_html(page.encode("utf-8"), status, scripts_allowed=False)
             if path == "/api/desktop/config":
                 from . import desktop as dt
                 return self._send_json(dt.load_config())
@@ -3861,6 +3926,21 @@ class Handler(BaseHTTPRequestHandler):
                                                     "error": "could not apply ambient desktop: %s" % exc,
                                                     "values": settings.all_values()}, 500)
                 return self._send_json({"ok": True, "values": settings.all_values(), "saved": saved})
+            if path == "/api/report/today":
+                if not self._authed(parsed):
+                    return self._send_json({"error": "forbidden"}, 403)
+                body = self._read_json(8192)
+                if body is None:
+                    return self._send_json({"error": "expected JSON object"}, 400)
+                from . import morning_desktop as morning_act
+                try:
+                    result = morning_act.act(_state_root(), body)
+                except ValueError as exc:
+                    return self._send_json({"error": str(exc)}, 400)
+                shown = result.get("today") or {}
+                if shown.get("show"):                  # the same answer as GET gives, link and all
+                    shown["report_url"] = report_link(shown["date"])
+                return self._send_json(result)
             if path == "/api/brief":
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)

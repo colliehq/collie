@@ -227,6 +227,11 @@ SCHEMA = [
      "label_zh": "Collie 改代码时在桌面显示代码地图", "type": "bool", "default": "off",
      "hint": "While a run edits files or reproduces a bug, the ambient desktop's background becomes the live code map, and returns about 30 seconds after the run ends. Off keeps the calm desktop; the map still opens from Map in Collie.",
      "hint_zh": "任务修改文件或复现问题时，把动态桌面的背景换成实时代码地图，任务结束约 30 秒后恢复。关闭则保持安静的桌面；代码地图仍可从 Collie 的「地图」打开。"},
+    # ambient.html asks GET /api/report/today, and morning_desktop.py reads this before answering.
+    {"group": "Desktop", "key": "DESKTOP_MORNING_REPORT", "label": "Show the morning report on the desktop",
+     "label_zh": "在桌面上显示晨报", "type": "bool", "default": "on",
+     "hint": "Before noon on a day with a morning report, the ambient desktop shows it over a sky that follows the weather: the headline, one dot for each thing to do, and up to three buttons. It goes back to the calm desktop at noon, when everything is done, or when you close it. Off keeps the calm desktop all day.",
+     "hint_zh": "有晨报的那天中午之前，动态桌面会在跟随天气变化的天空上显示晨报：一句话、每件要做的事一个圆点，以及最多三个按钮。到中午、事情都做完或你关掉它时，就回到安静的桌面。关闭则全天保持安静的桌面。"},
 
     {"group": "Retrieval", "key": "EMBED", "label": "Embedder", "type": "select", "default": "auto",
      "options": [

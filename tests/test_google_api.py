@@ -418,6 +418,27 @@ def test_draft_needs_the_compose_scope(env):
     assert not env["fake"].urls(gc.GMAIL_API + "/users/me/drafts")
 
 
+def test_a_draft_that_is_still_a_draft_exists_and_a_sent_or_deleted_one_does_not(env):
+    fake = env["fake"]
+    fake.on("GET", gc.GMAIL_API + "/users/me/drafts/" + DRAFT, {"id": DRAFT, "message": {
+        "id": "19a0b1c2d3e4f5a6", "threadId": THREAD}})
+    assert gc.gmail_draft_exists(DRAFT) is True
+    asked = fake.urls(gc.GMAIL_API + "/users/me/drafts/")
+    assert asked and all(u.split("?")[0].endswith("/drafts/" + DRAFT) and "format=minimal" in u
+                         for u in asked)
+    assert all(c["method"] == "GET" for c in fake.calls if "/drafts" in c["url"])
+    fake.on("GET", gc.GMAIL_API + "/users/me/drafts/" + DRAFT, {"error": {
+        "code": 404, "message": "Requested entity was not found.", "status": "NOT_FOUND"}},
+        status=404)
+    assert gc.gmail_draft_exists(DRAFT) is False
+    fake.on("GET", gc.GMAIL_API + "/users/me/drafts/" + DRAFT, {"error": {"code": 500}},
+            status=500)
+    with pytest.raises(gc.GoogleAPIError):          # not knowing is not "gone"
+        gc.gmail_draft_exists(DRAFT)
+    with pytest.raises(ValueError):
+        gc.gmail_draft_exists("../threads/x")
+
+
 def test_the_module_can_never_send_mail():
     source = inspect.getsource(gc)
     for pattern in (r"messages\s*[/.]\s*send", r"drafts\s*[/.]\s*send", r"/send\b",

@@ -31,6 +31,55 @@ While Collie edits code, the background can switch to Collie's star-map (the cod
 run ends. That is off by default; turn on *Show the code map while Collie edits code* in Settings →
 Desktop. The map always opens from **Map** in Collie.
 
+### The morning report on the desktop
+
+On a morning when `collie report build` has saved a report, the desktop shows it until noon: a
+sky that follows the real weather (sun and slow clouds, rain, a storm with the odd flash of
+lightning, snow, fog, or stars and a crescent moon before sunrise), the report's headline in large
+type, its summary, one dot for each thing to do, and up to three buttons. The first button is the
+reply drafts together (*Review 2 drafts* opens the first draft in Gmail); the others are the next
+things in the report's order. A button opens an `https` address in your default browser, or the
+full report in a Collie window when the thing has no address of its own; *Open report* under the
+buttons always does the latter. That page runs no script, and the desktop opens it with a link
+made for that day's report that works for 15 minutes, so Collie's session token never appears in
+an address. The words are dark on bright skies and light on rain, storm and
+night.
+
+The sky comes from the weather the clock already shows (the Open-Meteo weather code and whether
+it is day). With the clock's weather switched off, the sky is a calm clear one and no temperature
+is shown; the morning scene never asks for the weather itself. The clock and the other widgets
+stay where they are and the words find room around them, with a clear gap; the logo steps aside
+until noon. The date-and-weather line above the headline is left out when the clock sits on the
+same side of the screen and already says it.
+
+Progress moves on its own. Hover a button and a small ✓ marks that thing done (with *Undo* for a
+few seconds); a dot turns green and the headline cheers ("One down, four to go."). While the scene
+is up, Collie also re-checks at most every 15 minutes whether things got done elsewhere: a reply
+draft that is no longer in the Gmail drafts of the account it was made in (you sent or deleted
+it; after connecting a different Google account it is not looked for), a pull request that was
+merged, and a question from Collie that is no longer waiting. Collie's own questions are in a
+report only when it was built inside the running app, which is how the scheduled morning report
+is built; `collie report build` from a terminal cannot see them. Anything it cannot check (Google not
+connected, `gh` not installed, an error) stays as it was, and what you marked yourself always wins.
+Each green dot takes its mark back when clicked, whoever made it.
+When everything is done it says *All clear for today* for a moment (with *Undo* while it does)
+and then goes back to the normal desktop. What was done is kept beside the report in
+`~/.collie/morning-report/<date>.state.json`, so it survives a restart or a second
+`collie report build` the same morning.
+
+It goes back to the normal desktop at noon, or for the rest of the day when you close it (×). Turn
+it off with *Show the morning report on the desktop* in Settings → Desktop, or with *Morning
+report* in the desktop's edit-mode widget panel (`widgets.morning.on` in `~/.collie/desktop.json`).
+Closed for the day (or after its all-clear), it comes back before noon with *Show again* in that
+panel, or by turning either switch off and on again.
+
+The sky is one canvas drawn at most 30 times a second for rain and snow and 20 for the slower
+skies, and only while the morning scene is on screen: it stops whenever the browser engine
+reports the page hidden and while the code map is up, and with *reduce motion* turned on in the
+system settings it is one still picture. The wallpaper host does not yet tell the page when
+another window covers the whole desktop, so that case relies on the engine's own occlusion
+detection.
+
 ## Native application control
 
 The **Control desktop apps** setting enables Collie's `desktop_*` tools. Collie always chooses the

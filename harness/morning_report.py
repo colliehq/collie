@@ -47,6 +47,7 @@ import re
 import secrets
 import threading
 import time
+import urllib.parse
 import unicodedata
 
 from . import daily_brief
@@ -944,6 +945,26 @@ def _reply_target(thread, account):
     return last, ""
 
 
+def draft_account(draft):
+    """The Google account (lower case) a draft was made in, or ``""`` when that is unknown.
+
+    Recorded since drafts carry it; before that, the ``authuser=`` of the address it opens with,
+    which the connector writes whenever it knows the account.
+    """
+    if not isinstance(draft, dict):
+        return ""
+    if isinstance(draft.get("account"), str) and draft["account"].strip():
+        return draft["account"].strip().casefold()
+    for key in ("open_url", "thread_url"):
+        url = rs._https(draft.get(key))
+        if url:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            found = (query.get("authuser") or [""])[0].strip()
+            if "@" in found:
+                return found.casefold()
+    return ""
+
+
 def _thread_text(thread):
     """The readable text of a thread's non-draft messages, for grounding a reply's numbers."""
     parts = [str(thread.get("subject") or "")]
@@ -1060,14 +1081,17 @@ def create_drafts(report, *, enabled, earlier=None, state_dir=None, caller=None)
     before = {}
     for item in ((earlier or {}).get("sections", {}).get("ready", {}).get("items") or []):
         old = item.get("draft") if isinstance(item, dict) else None
-        if isinstance(old, dict) and old.get("draft_id") and old.get("thread_id"):
+        # A draft lives in one mailbox: after reconnecting as someone else it is not there to
+        # reuse, and a new one is made where the person now is.
+        if isinstance(old, dict) and old.get("draft_id") and old.get("thread_id") and \
+                draft_account(old) == account:
             before[old["thread_id"]] = old
     for draft in wanted:
         old = before.get(draft["thread_id"])
         if old:
             draft.update(state="created", reused=True, draft_id=old["draft_id"],
                          open_url=rs._https(old.get("open_url")), to=old.get("to") or "",
-                         subject=old.get("subject") or "")
+                         subject=old.get("subject") or "", account=account)
             summary["reused"] += 1
             continue
         try:
@@ -1100,7 +1124,7 @@ def create_drafts(report, *, enabled, earlier=None, state_dir=None, caller=None)
             draft.update(state="created", to=to, subject=subject,
                          draft_id=daily_brief._text(made.get("draft_id"), 200),
                          open_url=rs._https(made.get("open_url")),
-                         thread_url=rs._https(made.get("thread_url")))
+                         thread_url=rs._https(made.get("thread_url")), account=account)
             summary["created"] += 1
         except Exception as exc:                      # noqa: BLE001 - reported, not raised
             draft.update(state="failed",
