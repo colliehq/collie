@@ -598,6 +598,56 @@ def test_a_real_accepted_send_reports_submitted():
     assert socket_.written.lower().count(b"rcpt to:") == 1  # one envelope recipient
 
 
+def _sent_message(socket_):
+    """The message the real smtplib wrote after DATA, parsed back the way a client reads it."""
+    import email as email_pkg
+    import email.policy
+    body = socket_.written.split(b"354", 1)[0]          # everything we wrote, commands first
+    data = socket_.written[socket_.written.lower().index(b"data\r\n") + 6:]
+    data = data[:data.index(b"\r\n.\r\n")].replace(b"\r\n..", b"\r\n.")
+    assert body                                         # the commands really went first
+    return email_pkg.message_from_bytes(data, policy=email.policy.default)
+
+
+def test_an_html_result_goes_out_as_one_multipart_message():
+    from harness import mail_messages
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    page = '<p>Good morning — 早上好</p><img alt="" src="cid:collie-avatar">'
+    stored = mail_messages.encode_inline([{"cid": "collie-avatar", "filename": "collie.png",
+                                           "content_type": "image/png", "data": png}], page)
+    socket_ = conversation(b"250 2.0.0 Ok: queued as ABC123\r\n")
+    out = mt.send(CONFIG, CREDS, result(html=page, inline=stored),
+                  smtp_factory=genuine_factory(socket_, []))
+    assert out["status"] == "submitted"
+    sent = _sent_message(socket_)
+    assert sent.get_content_type() == "multipart/alternative"
+    plain, related = sent.get_payload()
+    assert plain.get_content_type() == "text/plain" and "the task finished" in plain.get_content()
+    page_part, image = related.get_payload()
+    assert page_part.get_content_type() == "text/html"
+    assert "早上好" in page_part.get_content()
+    assert image["Content-ID"] == "<collie-avatar>" and image.get_payload(decode=True) == png
+    assert socket_.written.lower().count(b"rcpt to:") == 1       # still one recipient
+
+
+def test_a_text_result_still_goes_out_as_plain_text():
+    socket_ = conversation(b"250 2.0.0 Ok: queued as ABC123\r\n")
+    mt.send(CONFIG, CREDS, result(), smtp_factory=genuine_factory(socket_, []))
+    sent = _sent_message(socket_)
+    assert sent.get_content_type() == "text/plain" and not sent.is_multipart()
+
+
+def test_a_damaged_stored_image_is_refused_before_connecting():
+    opened = []
+    page = '<img src="cid:collie-avatar">'
+    bad = [{"cid": "collie-avatar", "filename": "collie.png", "content_type": "image/png",
+            "data": "AAAA", "bytes": 99}]
+    with pytest.raises(mt.MailConfigError) as exc:
+        mt.send(CONFIG, CREDS, result(html=page, inline=bad),
+                smtp_factory=lambda *a: opened.append(a))
+    assert "nothing was sent" in str(exc.value) and opened == []
+
+
 def test_module_never_enables_client_debug_logging():
     source = open(mt.__file__, encoding="utf-8").read()
     assert "set_debuglevel" not in source and "debuglevel" not in source

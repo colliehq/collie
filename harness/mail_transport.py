@@ -608,10 +608,15 @@ def _compose(cfg, result):
     in_reply_to, refs = _thread_ids(result)
     try:
         recipient = mail_messages.address(result.get("destination") or "")
+        # A stored HTML result carries its page and base64 images; they are decoded and
+        # checked against each other here, before any connection is opened.
+        html = result.get("html") or ""
+        inline = mail_messages.decode_inline(result.get("inline"), html) if html else []
         message = mail_messages.compose(
             sender=cfg["address"], recipient=recipient,
             subject=result.get("subject") or "", text=result.get("text") or "",
-            message_id=message_id, in_reply_to=in_reply_to, references=refs)
+            message_id=message_id, in_reply_to=in_reply_to, references=refs,
+            html=html, inline=inline)
     except MailFormatError as exc:
         raise MailConfigError("%s; nothing was sent" % exc) from None
     return message, message_id, recipient

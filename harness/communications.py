@@ -114,7 +114,7 @@ import os
 import re
 import time
 
-from . import session_owner, sessions, task_inbox
+from . import mail_messages, session_owner, sessions, task_inbox
 
 # ``phone_transport.destination``'s rule, kept here rather than imported: this
 # module opens no socket and must not depend on a transport to validate a field.
@@ -151,6 +151,9 @@ MAX_ACTOR_LEN = 96
 MAX_SECRET_REF_LEN = 200
 MAX_SUBJECT_BYTES = 2 * 1024
 MAX_TEXT_BYTES = 64 * 1024        # one message body, received or outgoing
+#: An outgoing email may also carry an HTML page and its inline images (see
+#: ``create_result``); the plain text above is still required beside them.
+MAX_HTML_BYTES = mail_messages.MAX_HTML_BYTES
 MAX_REASON_LEN = 500
 MAX_METADATA_BYTES = 8 * 1024
 MAX_CONFIG_BYTES = task_inbox.MAX_CONFIG_BYTES
@@ -1050,12 +1053,22 @@ def _event_digest(event):
 
 
 def _message_digest(message):
-    return _digest({"id": message.get("id"), "destination": message.get("destination"),
-                    "subject": message.get("subject"), "text": message.get("text"),
-                    "thread_key": message.get("thread_key"),
-                    "in_reply_to": message.get("in_reply_to"),
-                    "session": message.get("session"),
-                    "metadata": message.get("metadata")})
+    """Identity of an outgoing message's content.
+
+    The HTML page and its images are part of what a result id names, but only for a
+    result that has them: a plain-text result digests exactly as every store written
+    before HTML existed does, so none of those rows reads back as tampered.
+    """
+    body = {"id": message.get("id"), "destination": message.get("destination"),
+            "subject": message.get("subject"), "text": message.get("text"),
+            "thread_key": message.get("thread_key"),
+            "in_reply_to": message.get("in_reply_to"),
+            "session": message.get("session"),
+            "metadata": message.get("metadata")}
+    if "html" in message:
+        body["html"] = message.get("html")
+        body["inline"] = message.get("inline")
+    return _digest(body)
 
 
 def _measure_event(event, channel):
@@ -1085,7 +1098,42 @@ def _measure_message(message, channel):
     if message.get("session") and not _valid_session_id(message["session"]):
         raise InvalidRequest("session must be a plain conversation id")
     _, meta = _json_field(message.get("metadata"), "metadata", MAX_METADATA_BYTES)
+    if "html" in message or "inline" in message:
+        total += _measure_html(message.get("html"), message.get("inline"), channel)
     return total + meta
+
+
+def _html_parts(html, inline, channel):
+    """``(html, stored inline images)`` for a new result, or ``("", None)`` for plain text.
+
+    The page and its images are checked by the same rules the composer applies, so a
+    result that is stored is a result that can be sent: no HTML without the plain text
+    beside it, no image the page does not show, nothing past the size limits.
+    """
+    if not html and not inline:
+        return "", None
+    if channel != "email":
+        raise InvalidRequest("only an email result can carry an HTML page; nothing was stored")
+    try:
+        html = mail_messages.check_html(html) if html else ""
+        stored = mail_messages.encode_inline(list(inline or ()), html)
+    except mail_messages.MailFormatError as exc:
+        raise InvalidRequest("%s; nothing was stored" % exc) from None
+    return html, stored
+
+
+def _measure_html(html, inline, channel):
+    """Re-check a stored page and its images with the rules that accepted them."""
+    if channel != "email":
+        raise InvalidRequest("only an email result can carry an HTML page")
+    if not isinstance(inline, list):
+        raise InvalidRequest("a result's inline images must be a list")
+    try:
+        mail_messages.check_html(html)
+        parts = mail_messages.decode_inline(inline, html)
+    except mail_messages.MailFormatError as exc:
+        raise InvalidRequest(str(exc)) from None
+    return len(html.encode("utf-8")) + sum(len(part["data"]) for part in parts)
 
 
 # ------------------------------------------------------------------- helpers
@@ -2156,13 +2204,20 @@ def mark_event_settled(connection_id, event_id, *, disposition, actor, result_id
 
 def create_result(connection_id, result_id, *, destination, text, subject="",
                   thread_key="", in_reply_to="", session="", metadata=None,
-                  for_event="", directory=None):
+                  for_event="", html="", inline=None, directory=None):
     """Store one outgoing message, immutably, before anything tries to send it.
 
     ``result_id`` is the caller's idempotency key: creating it twice with the
     same payload returns the stored message with ``duplicate=True``, and with a
     different payload is an ``IdConflict``. ``revise_result`` creates a new draft
     id and cancels the old unsent draft atomically; it never changes sent text.
+
+    An email result may also carry ``html`` and its ``inline`` images
+    (``[{"cid", "filename", "content_type", "data": bytes}]``, each named by a
+    ``cid:`` in the page).  They are stored beside the plain text -- which stays
+    required, because it is what a client without HTML shows and what a reply is
+    answered against -- and they are part of what the result id names.  A result
+    without them is stored exactly as it always was.
 
     ``for_event`` names the received message this is the reply to, and is the
     reason the two are one transaction: the outbox row and the event's
@@ -2215,6 +2270,9 @@ def create_result(connection_id, result_id, *, destination, text, subject="",
             "bytes": 0, "digest": "", "created": now, "updated": now, "attempts": 0,
             "claim": None, "outcome": None, "history": [],
         }
+        page, images = _html_parts(html, inline, channel)
+        if page:
+            message["html"], message["inline"] = page, images
         message["bytes"] = _measure_message(message, channel)
         message["digest"] = _message_digest(message)
         existing = _find(doc["outbox"], result_id)
@@ -2322,6 +2380,11 @@ def revise_result(connection_id, result_id, new_id, *, text, actor, expected_dig
                             (connection_id + ":" + new_id).encode()).hexdigest()[:40])
         revised.update(id=new_id, seq=doc["next_seq"], text=text, metadata=metadata,
                        created=now, updated=now, attempts=0, history=[], claim=None, outcome=None)
+        # An HTML page says what the old text said.  Sent beside the edited text it
+        # would be a second, contradicting message in the same email, so the edit --
+        # the words a person actually approved -- goes out as plain text.
+        revised.pop("html", None)
+        revised.pop("inline", None)
         revised["bytes"] = _measure_message(revised, conn["channel"])
         revised["digest"] = _message_digest(revised)
         old.update(state="cancelled", updated=now,
@@ -2369,11 +2432,16 @@ def claim_send(connection_id, result_id, *, transport="", directory=None):
                        outcome=None)
         _record_step(message, "sending", now, attempt=attempt, transport=transport)
         _save(doc, path)
-        return {"connection": connection_id, "id": result_id, "attempt": attempt,
-                "token": claim["token"], "destination": message["destination"],
-                "subject": message["subject"], "text": message["text"],
-                "thread_key": message["thread_key"], "in_reply_to": message["in_reply_to"],
-                "session": message["session"], "metadata": message["metadata"]}
+        out = {"connection": connection_id, "id": result_id, "attempt": attempt,
+               "token": claim["token"], "destination": message["destination"],
+               "subject": message["subject"], "text": message["text"],
+               "thread_key": message["thread_key"], "in_reply_to": message["in_reply_to"],
+               "session": message["session"], "metadata": message["metadata"]}
+        if message.get("html"):
+            # The transport gets the page and the stored (base64) images exactly as
+            # they were approved; a plain-text claim is the dict it always was.
+            out["html"], out["inline"] = message["html"], _copy(message.get("inline") or [])
+        return out
 
 
 def _settle(connection_id, result_id, token, state, root, *, detail):
@@ -2812,10 +2880,21 @@ def public_result(message, *, include_private=False):
     # Provider acceptance is not evidence of receipt by the recipient.
     out["delivery_known"] = False
     out["retryable"] = message["state"] == "failed"
+    # The shape of the message, never its page or pictures.
+    html = message.get("html") or ""
+    out["format"] = "html" if html else "text"
+    out["html_bytes"] = len(html.encode("utf-8"))
+    out["inline_images"] = len(message.get("inline") or [])
     if include_private:
         out.update({"destination": message.get("destination"),
                     "subject": message.get("subject"), "text": message.get("text"),
                     "metadata": _copy(message.get("metadata")) if message.get("metadata") else None,
                     "history": _copy(message.get("history") or []),
                     "outcome_detail": _copy(outcome) if isinstance(outcome, dict) else None})
+        if html:
+            # The page a person may review; the image bytes stay with the sender.
+            out["html"] = html
+            out["inline"] = [{key: part.get(key) for key in
+                              ("cid", "filename", "content_type", "bytes")}
+                             for part in message.get("inline") or []]
     return out
