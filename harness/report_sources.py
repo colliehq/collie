@@ -25,12 +25,15 @@ What each source may say, and what it must not:
   step and go no further.  Calendar is today and the next seven days; invitations are written
   by whoever sent them, so they are ``untrusted`` too.
 * **github** -- through the ``gh`` CLI when it is installed and signed in: exactly two GraphQL
-  calls, each with a timeout.  Wins are releases, new stars, merged pull requests and new
-  downloads from the last 24 hours (downloads are new only against the counts the previous
-  report saved).  The person's open pull requests carry their age and review state; failing CI
-  on the default branch of a repository they administer is a thing for them when the failing
-  commit is recent and a tidy-up when it is not; review requests are other people's words and
-  are ``untrusted``.
+  calls, each with a timeout.  The person's repositories are the ones they can push to, their
+  own, their organisations' and ones they collaborate on.  Wins since the report's window
+  opened: releases (with downloads so far, whoever pressed the button), new stars, and pull
+  requests the person authored that were merged (searched by merge date, in any repository).
+  New downloads are new only against the counts the previous report saved.  An open pull
+  request, a review request or a failing default branch that has not moved in two weeks says
+  nothing: there is nobody to nudge.  Review requests are other people's words and are
+  ``untrusted``.  ``activity`` is when the person last did something of their own in each
+  repository: merged or opened a pull request, or published a release.
 * **local** -- git repositories on this computer, found at most two folders below a set of
   project roots (the ``REPORT_PROJECT_ROOTS`` setting, else the folders holding Collie's recent
   workspaces plus ~/workspace, ~/code, ~/projects and ~/src).  Linked worktrees, hidden and
@@ -392,46 +395,56 @@ def calendar(ctx):
 # ---------------------------------------------------------------- GitHub (the gh CLI)
 
 GH_TIMEOUT_S = 25
-GH_REPOS = 20
+GH_REPOS = 30
 GH_PRS = 20
-CI_FRESH_DAYS = 14
-PR_STALE_DAYS = 60
+#: An open pull request, a review request or a failing branch that has not moved for this long
+#: is not something to nudge anyone about.
+QUIET_DAYS = 14
+#: The person's own GitHub activity older than this does not make a project active.
+ACTIVE_DAYS = 30
+_PUSH = ("ADMIN", "MAINTAIN", "WRITE")
 _AUTH_WORDS = ("gh auth login", "not logged", "authentication", "bad credentials", "401")
 
 _REPOS_QUERY = """query {
   viewer {
     login
-    repositories(first: %d, ownerAffiliations: [OWNER, ORGANIZATION_MEMBER],
+    repositories(first: %d, ownerAffiliations: [OWNER, ORGANIZATION_MEMBER, COLLABORATOR],
                  orderBy: {field: PUSHED_AT, direction: DESC}, isFork: false) {
       nodes { nameWithOwner url isArchived viewerPermission stargazerCount pushedAt
         defaultBranchRef { name target { ... on Commit { oid committedDate
           statusCheckRollup { state } } } }
-        releases(first: 2, orderBy: {field: CREATED_AT, direction: DESC}) {
-          nodes { tagName url createdAt isDraft
+        releases(first: 3, orderBy: {field: CREATED_AT, direction: DESC}) {
+          nodes { tagName url createdAt publishedAt isDraft author { login }
                   releaseAssets(first: 20) { nodes { name downloadCount } } } }
         stargazers(last: 10) { edges { starredAt } } }
     }
   }
 }""" % GH_REPOS
 
-_PRS_QUERY = """query {
+
+def _prs_query(since):
+    """The person's open pull requests, what of theirs was merged since ``since``, and the
+    reviews they were asked for."""
+    return """query {
   viewer {
     login
     openPrs: pullRequests(states: OPEN, first: %d, orderBy: {field: UPDATED_AT, direction: DESC}) {
       totalCount
-      nodes { number title url createdAt isDraft reviewDecision repository { nameWithOwner } }
+      nodes { number title url createdAt updatedAt isDraft reviewDecision
+              repository { nameWithOwner } }
     }
-    mergedPrs: pullRequests(states: MERGED, first: 30, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      nodes { number title url mergedAt repository { nameWithOwner } }
-    }
+  }
+  merged: search(query: "is:pr author:@me is:merged merged:>=%s", type: ISSUE, first: 50) {
+    issueCount
+    nodes { ... on PullRequest { number title url mergedAt repository { nameWithOwner } } }
   }
   reviewRequests: search(query: "is:open is:pr review-requested:@me archived:false",
                          type: ISSUE, first: 10) {
     issueCount
-    nodes { ... on PullRequest { number title url createdAt
+    nodes { ... on PullRequest { number title url createdAt updatedAt
                                  repository { nameWithOwner } author { login } } }
   }
-}""" % GH_PRS
+}""" % (GH_PRS, _rfc3339(since))
 
 
 def _gh_runner(ctx):
@@ -485,12 +498,23 @@ def _slug(row):
     return daily_brief._text(((row or {}).get("repository") or {}).get("nameWithOwner"), 120)
 
 
-def _repo_signals(ctx, repos, previous, counters):
+def _active(ctx, activity, slug, when):
+    """Record the person's own activity in ``slug`` when it is recent enough to count."""
+    if slug and when is not None and ctx.now - ACTIVE_DAYS * 86400 <= when <= ctx.now:
+        activity[slug] = max(activity.get(slug, 0.0), when)
+
+
+def _days(ctx, when):
+    days = max(0, int((ctx.now - when) // 86400))
+    return "%d day%s" % (days, "" if days == 1 else "s")
+
+
+def _repo_signals(ctx, repos, previous, counters, login, activity):
     out = []
     for repo in repos:
         slug = daily_brief._text(repo.get("nameWithOwner"), 120)
-        if not slug or repo.get("isArchived") or repo.get("viewerPermission") != "ADMIN":
-            continue
+        if not slug or repo.get("isArchived") or repo.get("viewerPermission") not in _PUSH:
+            continue                     # only repositories the person can push to are theirs
         url = repo.get("url") if isinstance(repo.get("url"), str) else ""
         for release in _nodes(repo, "releases", "nodes"):
             tag = daily_brief._text(release.get("tagName"), 80)
@@ -500,13 +524,16 @@ def _repo_signals(ctx, repos, previous, counters):
                             for asset in _nodes(release, "releaseAssets", "nodes"))
             key = "github.downloads:%s@%s" % (slug, tag)
             counters[key] = downloads
-            created = _epoch(release.get("createdAt"))
-            if created is not None and ctx.since <= created <= ctx.now:
+            published = _epoch(release.get("publishedAt")) or _epoch(release.get("createdAt"))
+            author = str(((release.get("author") or {}).get("login")) or "")
+            if login and author.casefold() == login.casefold():
+                _active(ctx, activity, slug, published)
+            if published is not None and ctx.since <= published <= ctx.now:
                 out.append(rs.make("github", "release:%s@%s" % (slug, tag), kind="done",
                                    title="%s %s is out" % (slug, tag),
                                    detail=("%d download%s so far" % (
                                        downloads, "" if downloads == 1 else "s"))
-                                   if downloads else "", when=created,
+                                   if downloads else "", when=published,
                                    link=release.get("url"), project=slug,
                                    evidence="GitHub release %s" % tag))
                 continue
@@ -536,30 +563,29 @@ def _repo_signals(ctx, repos, previous, counters):
         branch = repo.get("defaultBranchRef") or {}
         target = branch.get("target") or {}
         rollup = str(((target.get("statusCheckRollup") or {}).get("state")) or "")
-        if rollup in ("FAILURE", "ERROR"):
-            committed = _epoch(target.get("committedDate"))
+        committed = _epoch(target.get("committedDate"))
+        if rollup in ("FAILURE", "ERROR") and committed is not None and \
+                committed >= ctx.now - QUIET_DAYS * 86400:
             name = daily_brief._text(branch.get("name"), 60) or "the default branch"
-            fresh_ci = committed is not None and committed >= ctx.now - CI_FRESH_DAYS * 86400
             day = _dt.datetime.fromtimestamp(committed, ctx.zone or _dt.timezone.utc).strftime(
-                "%Y-%m-%d") if committed else ""
-            out.append(rs.make("github", "ci:%s" % slug,
-                               kind="needs_you" if fresh_ci else "stale",
+                "%Y-%m-%d")
+            out.append(rs.make("github", "ci:%s" % slug, kind="needs_you",
                                title="CI is failing on %s of %s" % (name, slug),
-                               detail="latest commit %s%s" % (
-                                   daily_brief._text(target.get("oid"), 40)[:7],
-                                   " from %s" % day if day else ""),
+                               detail="latest commit %s from %s" % (
+                                   daily_brief._text(target.get("oid"), 40)[:7], day),
                                when=committed, link=(url + "/actions") if url else "",
                                project=slug, evidence="GitHub checks: %s" % rollup))
     return out
 
 
-def _pr_signals(ctx, data):
+def _pr_signals(ctx, data, activity):
     out = []
     viewer = data.get("viewer") or {}
     merged = {}
-    for pr in _nodes(viewer, "mergedPrs", "nodes"):
+    for pr in _nodes(data, "merged", "nodes"):
         when = _epoch(pr.get("mergedAt"))
         slug = _slug(pr)
+        _active(ctx, activity, slug, when)
         if slug and when is not None and ctx.since <= when <= ctx.now:
             merged.setdefault(slug, []).append((when, pr))
     for slug, rows in merged.items():
@@ -575,11 +601,15 @@ def _pr_signals(ctx, data):
                            link=one.get("url") if one else
                            "https://github.com/%s/pulls?q=is%%3Apr+is%%3Amerged" % slug,
                            project=slug, evidence="GitHub merged pull requests"))
+    quiet = ctx.now - QUIET_DAYS * 86400
     for pr in _nodes(viewer, "openPrs", "nodes"):
         slug, created = _slug(pr), _epoch(pr.get("createdAt"))
+        updated = _epoch(pr.get("updatedAt")) or created
         if not slug or created is None:
             continue
-        age = max(0, int((ctx.now - created) // 86400))
+        _active(ctx, activity, slug, created)
+        if updated is None or updated < quiet:
+            continue                     # nothing has moved in two weeks: nobody to nudge
         decision = str(pr.get("reviewDecision") or "")
         if pr.get("isDraft"):
             kind, state = "fyi", "draft"
@@ -588,26 +618,26 @@ def _pr_signals(ctx, data):
         elif decision == "CHANGES_REQUESTED":
             kind, state = "needs_you", "changes requested"
         else:
-            kind = "stale" if age >= PR_STALE_DAYS else "waiting_on_others"
-            state = "waiting for a review"
+            kind, state = "waiting_on_others", "waiting for a review"
         out.append(rs.make("github", "pr:%s#%s" % (slug, pr.get("number")), kind=kind,
                            title=pr.get("title"),
-                           detail="#%s in %s · %s · open %d day%s" % (
-                               pr.get("number"), slug, state, age, "" if age == 1 else "s"),
+                           detail="#%s in %s · %s · open %s, last activity %s ago" % (
+                               pr.get("number"), slug, state, _days(ctx, created),
+                               _days(ctx, updated)),
                            when=created, link=pr.get("url"), project=slug,
                            evidence="GitHub pull request, review decision: %s" % (
                                decision.lower() or "none")))
     for pr in _nodes(data, "reviewRequests", "nodes"):
         slug, created = _slug(pr), _epoch(pr.get("createdAt"))
-        if not slug:
+        updated = _epoch(pr.get("updatedAt")) or created
+        if not slug or updated is None or updated < quiet:
             continue
-        age = max(0, int((ctx.now - created) // 86400)) if created else 0
         author = daily_brief._text((pr.get("author") or {}).get("login"), 40)
         out.append(rs.make("github", "review:%s#%s" % (slug, pr.get("number")), kind="needs_you",
                            title=pr.get("title"),
-                           detail="#%s in %s%s asks for your review · open %d day%s" % (
+                           detail="#%s in %s%s asks for your review · open %s" % (
                                pr.get("number"), slug, " from @%s" % author if author else "",
-                               age, "" if age == 1 else "s"),
+                               _days(ctx, created or updated)),
                            when=created, link=pr.get("url"), project=slug,
                            evidence="GitHub review request", untrusted=True))
     return out, viewer
@@ -617,7 +647,7 @@ def github(ctx):
     """The person's GitHub, in two GraphQL calls through ``gh``."""
     run = _gh_runner(ctx)
     repos_data, repos_problem = _graphql(run, _REPOS_QUERY)
-    prs_data, prs_problem = _graphql(run, _PRS_QUERY)
+    prs_data, prs_problem = _graphql(run, _prs_query(ctx.since))
     problems = [problem for problem in (repos_problem, prs_problem) if problem]
     if repos_data is None and prs_data is None:
         if "auth" in problems:
@@ -625,21 +655,23 @@ def github(ctx):
         if "slow" in problems:
             raise rs.Unavailable("GitHub took too long to answer")
         raise rs.Unavailable("GitHub could not be read (%s)" % problems[0])
-    counters, signals = {}, []
+    counters, signals, activity = {}, [], {}
+    login = str((((repos_data or {}).get("viewer") or {}).get("login"))
+                or (((prs_data or {}).get("viewer") or {}).get("login")) or "")
     repos = _nodes(repos_data or {}, "viewer", "repositories", "nodes")
-    signals += _repo_signals(ctx, repos, ctx.previous or {}, counters)
+    signals += _repo_signals(ctx, repos, ctx.previous or {}, counters, login, activity)
     viewer = {}
     if prs_data is not None:
-        more, viewer = _pr_signals(ctx, prs_data)
+        more, viewer = _pr_signals(ctx, prs_data, activity)
         signals += more
     missing = [name for name, problem in (("repositories", repos_problem),
                                           ("pull requests", prs_problem)) if problem]
-    admin = [repo for repo in repos if repo.get("viewerPermission") == "ADMIN"
-             and not repo.get("isArchived")]
-    return {"signals": signals, "counters": counters,
+    pushable = [repo for repo in repos if repo.get("viewerPermission") in _PUSH
+                and not repo.get("isArchived")]
+    return {"signals": signals, "counters": counters, "activity": activity,
             "state": "partial" if missing else "ok",
             "reason": ("%s could not be read" % " and ".join(missing)) if missing else "",
-            "stats": {"repos": len(admin),
+            "stats": {"repos": len(pushable),
                       "open_prs": int(((viewer.get("openPrs") or {}).get("totalCount")) or 0)},
             "detail": "2 GitHub calls"}
 
