@@ -35,7 +35,11 @@ What each source may say, and what it must not:
   requests the person authored that were merged (searched by merge date, in any repository).
   New downloads are new only against the counts the previous report saved.  An open pull
   request, a review request or a failing default branch that has not moved in two weeks says
-  nothing: there is nobody to nudge.  Review requests are other people's words and are
+  nothing: there is nobody to nudge.  The person's own open pull request is theirs to act on
+  where they can merge it (admin or maintain): failed checks need them, green checks with no
+  reviewers requested make it ready to merge (one line per repository), anything else is
+  status.  Only where somebody else merges is a review nudge fair, and only for a pull request
+  at least a day old that has not moved for two days.  Review requests are other people's words and are
   ``untrusted``.  ``activity`` is when the person last did something of their own in each
   repository: merged or opened a pull request, or published a release.
 * **local** -- git repositories on this computer, found at most two folders below a set of
@@ -461,6 +465,12 @@ QUIET_DAYS = 14
 #: The person's own GitHub activity older than this does not make a project active.
 ACTIVE_DAYS = 30
 _PUSH = ("ADMIN", "MAINTAIN", "WRITE")
+#: Who merges their own pull requests: nobody else is holding those up.
+_MERGERS = ("ADMIN", "MAINTAIN")
+#: A pull request younger than this, or one that moved more recently than NUDGE_AFTER_DAYS,
+#: is not a reason to nudge a reviewer.
+FRESH_PR_S = 24 * 3600
+NUDGE_AFTER_DAYS = 2
 _AUTH_WORDS = ("gh auth login", "not logged", "authentication", "bad credentials", "401")
 
 _REPOS_QUERY = """query {
@@ -489,7 +499,9 @@ def _prs_query(since):
     openPrs: pullRequests(states: OPEN, first: %d, orderBy: {field: UPDATED_AT, direction: DESC}) {
       totalCount
       nodes { number title url createdAt updatedAt isDraft reviewDecision
-              repository { nameWithOwner } }
+              repository { nameWithOwner viewerPermission }
+              reviewRequests(first: 1) { totalCount }
+              commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }
     }
   }
   merged: search(query: "is:pr author:@me is:merged merged:>=%s", type: ISSUE, first: 50) {
@@ -636,6 +648,45 @@ def _repo_signals(ctx, repos, previous, counters, login, activity):
     return out
 
 
+def _checks(pr):
+    """The state of the checks on a pull request's latest commit, or ``""`` when it has none."""
+    nodes = _nodes(pr, "commits", "nodes")
+    rollup = (nodes[0].get("commit") or {}).get("statusCheckRollup") if nodes else None
+    return str(rollup.get("state") or "") if isinstance(rollup, dict) else ""
+
+
+def _own_pr_state(ctx, pr, created, updated):
+    """``(kind, words)`` for one of the person's own open pull requests that moved lately.
+
+    Where the person can merge (admin or maintain), nobody else is holding the pull request
+    up: failed checks are theirs to fix, green checks with no reviewers requested make it
+    ready to merge, and anything else (checks running, a reviewer they asked) is status.
+    Elsewhere a review nudge is fair only for a pull request at least a day old that has not
+    moved for ``NUDGE_AFTER_DAYS``; one that moved since is status.
+    """
+    checks = _checks(pr)
+    decision = str(pr.get("reviewDecision") or "")
+    can_merge = ((pr.get("repository") or {}).get("viewerPermission")) in _MERGERS
+    reviewers = int(((pr.get("reviewRequests") or {}).get("totalCount")) or 0)
+    if pr.get("isDraft"):
+        return "fyi", "draft"
+    if checks in ("FAILURE", "ERROR"):
+        return "needs_you", "checks failed"
+    if decision == "CHANGES_REQUESTED":
+        return "needs_you", "changes requested"
+    if can_merge:
+        if checks in ("SUCCESS", "") and not reviewers:
+            return "ready", "ready to merge"
+        if checks in ("PENDING", "EXPECTED"):
+            return "fyi", "checks running"
+        return "fyi", "waiting for the reviewers you asked"
+    if decision == "APPROVED":
+        return "fyi", "approved, waiting for a maintainer to merge"
+    if created > ctx.now - FRESH_PR_S or updated > ctx.now - NUDGE_AFTER_DAYS * 86400:
+        return "fyi", "waiting for a review"
+    return "waiting_on_others", "waiting for a review"
+
+
 def _pr_signals(ctx, data, activity):
     out = []
     viewer = data.get("viewer") or {}
@@ -660,6 +711,7 @@ def _pr_signals(ctx, data, activity):
                            "https://github.com/%s/pulls?q=is%%3Apr+is%%3Amerged" % slug,
                            project=slug, evidence="GitHub merged pull requests"))
     quiet = ctx.now - QUIET_DAYS * 86400
+    mergeable = {}
     for pr in _nodes(viewer, "openPrs", "nodes"):
         slug, created = _slug(pr), _epoch(pr.get("createdAt"))
         updated = _epoch(pr.get("updatedAt")) or created
@@ -668,15 +720,10 @@ def _pr_signals(ctx, data, activity):
         _active(ctx, activity, slug, created)
         if updated is None or updated < quiet:
             continue                     # nothing has moved in two weeks: nobody to nudge
-        decision = str(pr.get("reviewDecision") or "")
-        if pr.get("isDraft"):
-            kind, state = "fyi", "draft"
-        elif decision == "APPROVED":
-            kind, state = "needs_you", "approved, ready to merge"
-        elif decision == "CHANGES_REQUESTED":
-            kind, state = "needs_you", "changes requested"
-        else:
-            kind, state = "waiting_on_others", "waiting for a review"
+        kind, state = _own_pr_state(ctx, pr, created, updated)
+        if kind == "ready":
+            mergeable.setdefault(slug, []).append(pr)
+            continue
         out.append(rs.make("github", "pr:%s#%s" % (slug, pr.get("number")), kind=kind,
                            title=pr.get("title"),
                            detail="#%s in %s · %s · open %s, last activity %s ago" % (
@@ -684,7 +731,21 @@ def _pr_signals(ctx, data, activity):
                                _days(ctx, updated)),
                            when=created, link=pr.get("url"), project=slug,
                            evidence="GitHub pull request, review decision: %s" % (
-                               decision.lower() or "none")))
+                               str(pr.get("reviewDecision") or "none").lower())))
+    for slug, prs in mergeable.items():          # one line per repository
+        prs.sort(key=lambda pr: pr.get("number") or 0)
+        numbers = ", ".join("#%s" % pr.get("number") for pr in prs)
+        one = prs[0] if len(prs) == 1 else None
+        out.append(rs.make("github", "ready:%s" % slug, kind="ready",
+                           title=one.get("title") if one else
+                           "%d pull requests ready to merge in %s" % (len(prs), slug),
+                           detail="%s in %s · checks passed, no reviewers requested · "
+                                  "ready to merge" % (numbers, slug),
+                           when=max(_epoch(pr.get("updatedAt")) or 0.0 for pr in prs) or None,
+                           link=one.get("url") if one else
+                           "https://github.com/%s/pulls?q=is%%3Apr+is%%3Aopen+author%%3A%%40me"
+                           % slug,
+                           project=slug, evidence="GitHub pull requests you can merge"))
     for pr in _nodes(data, "reviewRequests", "nodes"):
         slug, created = _slug(pr), _epoch(pr.get("createdAt"))
         updated = _epoch(pr.get("updatedAt")) or created

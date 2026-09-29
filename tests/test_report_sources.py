@@ -394,11 +394,15 @@ def _repo(slug, *, permission="ADMIN", archived=False, stars=0, starred=(), roll
 
 
 def _pr(slug, number, title, *, age_days=1.0, decision=None, draft=False, merged_hours=None,
-        author="someone", quiet_days=None):
+        author="someone", quiet_days=None, permission="READ", checks="SUCCESS", reviewers=0):
     row = {"number": number, "title": title, "url": "https://github.com/%s/pull/%d" % (slug, number),
            "createdAt": _iso(NOW - age_days * DAY),
            "updatedAt": _iso(NOW - (quiet_days * DAY if quiet_days is not None else 3600)),
-           "isDraft": draft, "reviewDecision": decision, "repository": {"nameWithOwner": slug},
+           "isDraft": draft, "reviewDecision": decision,
+           "repository": {"nameWithOwner": slug, "viewerPermission": permission},
+           "reviewRequests": {"totalCount": reviewers},
+           "commits": {"nodes": [{"commit": {"statusCheckRollup":
+                                             {"state": checks} if checks else None}}]},
            "reviews": {"totalCount": 0}, "author": {"login": author}}
     if merged_hours is not None:
         row["mergedAt"] = _iso(NOW - merged_hours * 3600)
@@ -418,9 +422,11 @@ def _github_world():
     ]
     prs = {"viewer": {"login": "wudaming00",
                       "openPrs": {"totalCount": 4, "nodes": [
-                          _pr("Comfy-Org/ComfyUI_frontend", 16422, "Fix the node search", age_days=29),
-                          _pr("colliehq/collie", 30, "Morning report", decision="APPROVED"),
-                          _pr("colliehq/collie", 31, "WIP idea", draft=True),
+                          _pr("Comfy-Org/ComfyUI_frontend", 16422, "Fix the node search",
+                              age_days=29, quiet_days=3, reviewers=1),
+                          _pr("colliehq/collie", 30, "Morning report", decision="APPROVED",
+                              permission="ADMIN"),
+                          _pr("colliehq/collie", 31, "WIP idea", draft=True, permission="ADMIN"),
                           _pr("jaywcjlove/awesome-mac", 2631, "Add VocalCode", age_days=90,
                               quiet_days=33),
                           _pr("Comfy-Candidate-Org/trial", 1, "Take-home exercise", age_days=26,
@@ -477,7 +483,7 @@ def test_github_turns_repos_and_pull_requests_into_signals(root):
     waiting = sig["Fix the node search"]
     assert waiting["kind"] == "waiting_on_others" and waiting["project"] == "Comfy-Org/ComfyUI_frontend"
     assert "29 days" in waiting["detail"] and "#16422" in waiting["detail"]
-    assert sig["Morning report"]["kind"] == "needs_you" and "approved" in sig["Morning report"]["detail"]
+    assert sig["Morning report"]["kind"] == "ready" and "ready to merge" in sig["Morning report"]["detail"]
     assert sig["WIP idea"]["kind"] == "fyi"
     # Nothing has moved on these for two weeks or more: there is nobody to nudge.
     assert not {"Add VocalCode", "Take-home exercise", "An old review nobody chased"} & set(sig)
@@ -556,3 +562,78 @@ def test_only_mail_from_people_or_that_gmail_marks_important_needs_the_person(ro
                      "New post in the forum": "fyi"}
     shipped = [s for s in src.gmail(context(root))["signals"] if s["title"] == "Your order has shipped"]
     assert shipped[0]["evidence"].startswith("Gmail · Updates")
+
+
+# ---------------------------------------------------------------- the person's own open pull requests
+
+
+def _own(*prs):
+    """A GitHub world whose open pull requests are exactly ``prs``."""
+    repos, prs_data = _github_world()
+    prs_data["data"]["viewer"]["openPrs"] = {"totalCount": len(prs), "nodes": list(prs)}
+    prs_data["data"]["reviewRequests"] = {"issueCount": 0, "nodes": []}
+    return FakeGh(repos=repos, prs=prs_data)
+
+
+def _open_signals(root, *prs):
+    out = src.github(context(root, options={"gh": _own(*prs)}))
+    return [s for s in out["signals"] if s["id"].startswith("github-") and
+            not any(word in s["title"] for word in ("is out", "merged into", "new star", "CI is"))]
+
+
+def test_a_pull_request_opened_today_is_never_a_review_nudge(root):
+    got = _open_signals(root, _pr("other/lib", 5, "Just opened", age_days=0.4, quiet_days=0.4))
+    assert [s["kind"] for s in got] == ["fyi"]
+
+
+def test_in_a_repo_the_person_can_merge_a_green_pr_is_ready_to_merge_once_per_repo(root):
+    got = _open_signals(root,
+                        _pr("colliehq/collie", 29, "Connect Google", age_days=0.01,
+                            quiet_days=0.01, permission="ADMIN"),
+                        _pr("colliehq/collie", 30, "Morning report", permission="ADMIN"),
+                        _pr("me/tool", 3, "Tidy", permission="MAINTAIN", checks=None))
+    kinds = sorted((s["project"], s["kind"], s["title"]) for s in got)
+    assert kinds == [("colliehq/collie", "ready", "2 pull requests ready to merge in colliehq/collie"),
+                     ("me/tool", "ready", "Tidy")]
+    both = [s for s in got if s["project"] == "colliehq/collie"][0]
+    assert "#29" in both["detail"] and "#30" in both["detail"]
+    assert not [s for s in got if s["kind"] == "waiting_on_others"]
+
+
+def test_in_a_repo_the_person_can_merge_failed_checks_need_them(root):
+    got = _open_signals(root, _pr("colliehq/collie", 29, "Connect Google", permission="ADMIN",
+                                  checks="FAILURE"))
+    assert [(s["kind"], "checks failed" in s["detail"]) for s in got] == [("needs_you", True)]
+
+
+def test_in_a_repo_the_person_can_merge_nobody_is_nudged(root):
+    got = _open_signals(root,
+                        _pr("colliehq/collie", 29, "Running", permission="ADMIN", checks="PENDING",
+                            quiet_days=5),
+                        _pr("colliehq/collie", 28, "Asked a friend", permission="ADMIN",
+                            reviewers=1, quiet_days=5))
+    assert sorted(s["kind"] for s in got) == ["fyi", "fyi"]
+
+
+def test_elsewhere_a_nudge_waits_two_days_without_movement_and_stops_after_fourteen(root):
+    got = _open_signals(root,
+                        _pr("other/lib", 1, "Moved yesterday", age_days=10, quiet_days=1),
+                        _pr("other/lib", 2, "Quiet for three days", age_days=10, quiet_days=3),
+                        _pr("other/lib", 3, "Quiet for three weeks", age_days=30, quiet_days=21),
+                        _pr("other/lib", 4, "Write access is not merging", age_days=10,
+                            quiet_days=3, permission="WRITE"))
+    kinds = {s["title"]: s["kind"] for s in got}
+    assert kinds == {"Moved yesterday": "fyi", "Quiet for three days": "waiting_on_others",
+                     "Write access is not merging": "waiting_on_others"}
+
+
+def test_failed_checks_on_the_persons_own_pr_need_them_anywhere(root):
+    got = _open_signals(root, _pr("other/lib", 9, "Broke the build", age_days=5, quiet_days=3,
+                                  checks="FAILURE"))
+    assert [s["kind"] for s in got] == ["needs_you"]
+
+
+def test_an_approved_pr_the_person_cannot_merge_waits_for_a_maintainer(root):
+    got = _open_signals(root, _pr("other/lib", 7, "Approved", decision="APPROVED", age_days=5,
+                                  quiet_days=3))
+    assert [(s["kind"], "maintainer" in s["detail"]) for s in got] == [("fyi", True)]
