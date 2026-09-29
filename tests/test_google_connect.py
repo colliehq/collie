@@ -184,17 +184,79 @@ def test_connect_verifies_pkce_stores_sealed_token_and_serves_success(env, capsy
     assert "FAKE-client-secret" not in out.out + out.err
 
 
-def test_connect_rejects_a_state_mismatch_and_stores_nothing(env):
+def _get(url):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=15) as r:
+            return r.status, r.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
+def test_a_mismatched_state_is_refused_without_ending_the_sign_in(env):
+    # Any local process can reach the loopback port. A wrong state is answered 400 and ignored;
+    # the real redirect that follows still completes the sign-in.
+    forms = []
+    _exchange(env, check=forms.append)
+    seen = {}
+
+    def browser(url):
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+
+        def go():
+            seen["forged"] = _get(q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+                {"state": "forged", "code": "4/forged-code"}))
+            seen["real"] = _get(q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+                {"state": q["state"], "code": "4/auth-code"}))
+        seen["thread"] = threading.Thread(target=go, daemon=True)
+        seen["thread"].start()
+    st = gc.connect(open_browser=browser, timeout=20)
+    seen["thread"].join(10)
+    assert seen["forged"][0] == 400 and "didn't match" in seen["forged"][1]
+    assert seen["real"][0] == 200 and st["state"] == "connected"
+    assert [f["code"] for f in forms] == ["4/auth-code"]      # the forged code was never exchanged
+
+
+def test_a_forged_callback_alone_ends_in_a_timeout_and_stores_nothing(env):
     _exchange(env)
     browser, seen = _browser(env, lambda q: q["redirect_uri"] + "/?" + urllib.parse.urlencode(
         {"state": "forged", "code": "4/auth-code"}))
     with pytest.raises(gc.GoogleError) as info:
-        gc.connect(open_browser=browser, timeout=20)
+        gc.connect(open_browser=browser, timeout=2)
     seen["thread"].join(10)
-    assert info.value.code == "state_mismatch"
-    assert "didn't match" in seen["page"]
-    assert not env["fake"].urls(gc.TOKEN_URI)            # the forged code was never exchanged
+    assert info.value.code == "timeout"
+    assert seen["status"] == 400 and "didn't match" in seen["page"]
+    assert not env["fake"].urls(gc.TOKEN_URI)
     assert gc.status()["state"] == "not_connected" and not env["backend"].secrets
+
+
+def test_the_callback_port_cannot_be_shared(env):
+    import socket
+    assert gc._CallbackServer.allow_reuse_address is False
+    _exchange(env)
+    seen = {}
+
+    def browser(url):
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        port = urllib.parse.urlsplit(q["redirect_uri"]).port
+        rival = socket.socket()
+        rival.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            rival.bind(("127.0.0.1", port))
+            seen["bound"] = True
+        except OSError:
+            seen["bound"] = False
+        finally:
+            rival.close()
+
+        def go():
+            seen["real"] = _get(q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+                {"state": q["state"], "code": "4/auth-code"}))
+        seen["thread"] = threading.Thread(target=go, daemon=True)
+        seen["thread"].start()
+    gc.connect(open_browser=browser, timeout=20)
+    seen["thread"].join(10)
+    assert seen["bound"] is False
 
 
 def test_connect_reports_a_denied_consent(env):

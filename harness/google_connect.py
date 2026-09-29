@@ -36,6 +36,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import threading
 import time
@@ -812,8 +813,6 @@ class _Flow:
 
 _CALLBACK_ERRORS = {
     "denied": "You chose not to give Collie access to Google. Nothing was saved. " + RECONNECT_HINT,
-    "state_mismatch": ("The answer from Google didn't match the sign-in Collie started, so Collie "
-                       "ignored it. Nothing was saved. " + RECONNECT_HINT),
 }
 
 _PAGE_HEADERS = (
@@ -853,6 +852,10 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             return self._reply(403, "forbidden")
         if verdict == "ignore":
             return self._reply(404, "not found")
+        if verdict == "state_mismatch":
+            # Any local process can reach this port, so a wrong state must not decide the
+            # sign-in. It is refused on its own and the wait continues for Google's redirect.
+            return self._reply(400, failure_page("state_mismatch"), "text/html; charset=utf-8")
         if not flow.claim():
             return self._reply(409, "This sign-in was already handled. You can close this tab.")
         status_code = 200
@@ -877,6 +880,23 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             flow.event.set()
 
 
+class _CallbackServer(ThreadingHTTPServer):
+    """The loopback listener, which no other socket may share.
+
+    http.server sets SO_REUSEADDR, and on Windows that lets a second socket bind the same
+    127.0.0.1:port and take the redirect (with its authorization code) instead. Reuse is off, and
+    on Windows SO_EXCLUSIVEADDRUSE refuses even a later socket that asks for SO_REUSEADDR itself.
+    """
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self):
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
+
+
 def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_hint="",
             state_dir=None) -> dict:
     """Connect Google: open the consent page, wait for the loopback redirect, store the grant.
@@ -884,13 +904,13 @@ def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_h
     ``open_browser(url)`` shows Google's page; ``announce(url)`` (optional) is handed the same
     address first, for a caller that must show it itself when no browser opens. Blocks until the
     redirect arrives or ``timeout`` seconds pass. Returns ``status()``; raises GoogleError with
-    ``code`` in denied / state_mismatch / no_scopes / timeout / error / storage, or NotConfigured.
+    ``code`` in denied / no_scopes / timeout / error / storage, or NotConfigured. A redirect whose
+    ``state`` does not match is refused on its own and does not end the wait.
     """
     client = client_config(state_dir=state_dir)
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(24)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _CallbackHandler)
-    server.daemon_threads = True
+    server = _CallbackServer(("127.0.0.1", 0), _CallbackHandler)
     port = server.server_address[1]
     redirect_uri = "http://127.0.0.1:%d" % port
     flow = server.flow = _Flow(client=client, state=state, verifier=verifier,
