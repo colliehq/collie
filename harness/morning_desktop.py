@@ -341,32 +341,36 @@ def _today_report(root, now):
 
 def act(root, body, *, now=None):
     """``POST /api/report/today``: ``{"action": "done" | "undo", "keys": [...]}`` marks things
-    done or open again, ``{"action": "dismiss"}`` hides the scene for the rest of the day.
-    Raises ``ValueError`` (a 400) for anything else."""
+    done or open again, ``{"action": "dismiss"}`` hides the scene for the rest of the day and
+    ``{"action": "restore"}`` brings it back (the widget panel's "Show again", or either switch
+    turned back on).  Raises ``ValueError`` (a 400) for anything else."""
     now = _now() if now is None else float(now)
     if not isinstance(body, dict):
         raise ValueError("expected a JSON object")
     action = body.get("action")
-    if action not in ("done", "undo", "dismiss"):
+    if action not in ("done", "undo", "dismiss", "restore"):
         raise ValueError("unknown action")
     reason = body.get("reason", "person")
     if reason not in ("person", "all_clear"):
         raise ValueError("unknown reason")
-    keys = body.get("keys", [])
-    if action != "dismiss" and (not isinstance(keys, list) or len(keys) > MAX_KEYS or
-                                not all(isinstance(key, str) for key in keys)):
+    marking = action in ("done", "undo")
+    keys = body.get("keys", []) if marking else []
+    if not isinstance(keys, list) or len(keys) > MAX_KEYS or \
+            not all(isinstance(key, str) for key in keys):
         raise ValueError("keys must be a list of item keys")
     report, date = _today_report(root, now)
     if not report:
         raise ValueError("there is no morning report for today")
     known = {key for _name, _item, key in _actionable(report)}
-    if action != "dismiss" and any(key not in known for key in keys):
+    if any(key not in known for key in keys):
         raise ValueError("that is not one of today's things to do")
     with _LOCK:
         state = load_state(root, date)
         if action == "dismiss":
             state.update(dismissed_at=now, dismissed_why=reason)
-        for key in keys if action != "dismiss" else ():
+        elif action == "restore":
+            state.update(dismissed_at=None, dismissed_why="")
+        for key in keys:
             # The person's word, either way; a later check never overrides it.
             state["items"][key] = {"state": "done" if action == "done" else "open",
                                    "by": "person", "at": now}

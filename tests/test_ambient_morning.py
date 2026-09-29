@@ -416,6 +416,44 @@ def test_every_small_word_reads_at_4_5_to_1_on_every_sky(desk):
     assert not low, "below 4.5:1 -- " + "; ".join(low)
 
 
+def test_a_morning_closed_for_the_day_can_be_shown_again_from_the_widget_panel(desk):
+    from harness import morning_desktop as md
+    save(desk.state, report())
+    page = _open(desk)
+    page.click("#mClose")
+    assert _poll(page, NORMAL)
+    page.click("#editbtn")
+    again = page.locator('#widgetPanel [data-wp="morning:again"]')
+    assert again.is_visible()
+    again.click()
+    assert _poll(page, SHOWING)
+    assert md.today(desk.state, now=at(8))["show"] is True
+    assert page.locator('#widgetPanel [data-wp="morning:again"]').count() == 0
+
+
+def test_turning_the_morning_back_on_brings_back_one_closed_for_the_day(desk, monkeypatch):
+    from harness import morning_desktop as md
+    save(desk.state, report())
+    page = _open(desk)
+    page.click("#mClose")
+    assert _poll(page, NORMAL)
+    page.click("#editbtn")
+    page.locator('#widgetPanel [data-wp="morning:on"]').uncheck()
+    page.wait_for_timeout(500)
+    page.locator('#widgetPanel [data-wp="morning:on"]').check()
+    assert _poll(page, SHOWING)
+    # The same from Settings: off, then on again.
+    page.click("#editbtn")
+    page.click("#mClose")
+    assert _poll(page, NORMAL)
+    monkeypatch.setenv("COLLIE_DESKTOP_MORNING_REPORT", "off")
+    page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+    page.wait_for_timeout(16000)                              # the page re-reads Settings every 15 s
+    monkeypatch.setenv("COLLIE_DESKTOP_MORNING_REPORT", "on")
+    assert _poll(page, SHOWING, seconds=20)
+    assert md.today(desk.state, now=at(8))["show"] is True
+
+
 def test_the_widget_panel_turns_the_morning_scene_off_and_on(desk):
     save(desk.state, report())
     page = _open(desk)

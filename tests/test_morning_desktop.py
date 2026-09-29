@@ -114,9 +114,19 @@ def test_dismissing_hides_it_for_the_rest_of_that_day_only(root):
             md.act(root, body, now=at(8, day="2026-09-30"))
 
 
+def test_a_dismissed_morning_can_be_brought_back_the_same_day(root):
+    save(root, report())
+    md.act(root, {"action": "dismiss", "reason": "all_clear"}, now=at(8))
+    back = md.act(root, {"action": "restore"}, now=at(9))["today"]
+    assert back["show"] is True and back["why"] == ""
+    md.act(root, {"action": "restore"}, now=at(9, 5))            # nothing hidden: nothing to do
+    assert md.today(root, now=at(9, 5))["show"] is True
+
+
 def test_there_is_nothing_to_dismiss_without_todays_report(root):
-    with pytest.raises(ValueError):
-        md.act(root, {"action": "dismiss"}, now=at(8))
+    for action in ("dismiss", "restore"):
+        with pytest.raises(ValueError):
+            md.act(root, {"action": action}, now=at(8))
 
 
 # ---------------------------------------------------------------- the pills

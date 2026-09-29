@@ -58,14 +58,16 @@ it; after connecting a different Google account it is not looked for), a pull re
 merged, and a question from Collie that is no longer waiting. Anything it cannot check (Google not
 connected, `gh` not installed, an error) stays as it was, and what you marked yourself always wins.
 Each green dot takes its mark back when clicked, whoever made it.
-When everything is done it says *All clear for today* for a moment and then goes back to the normal
-desktop. What was done is kept beside the report in
+When everything is done it says *All clear for today* for a moment (with *Undo* while it does)
+and then goes back to the normal desktop. What was done is kept beside the report in
 `~/.collie/morning-report/<date>.state.json`, so it survives a restart or a second
 `collie report build` the same morning.
 
 It goes back to the normal desktop at noon, or for the rest of the day when you close it (×). Turn
 it off with *Show the morning report on the desktop* in Settings → Desktop, or with *Morning
 report* in the desktop's edit-mode widget panel (`widgets.morning.on` in `~/.collie/desktop.json`).
+Closed for the day (or after its all-clear), it comes back before noon with *Show again* in that
+panel, or by turning either switch off and on again.
 
 The sky is one canvas drawn at most 30 times a second for rain and snow and 20 for the slower
 skies, and only while the morning scene is on screen: it stops whenever the browser engine

@@ -249,6 +249,9 @@
   .wp-error{margin-top:6px; color:#e36b79; font-size:11px;}
   .wp-sub{padding:0 0 5px 22px; border-top:0;}
   .wp-hint{color:var(--faint); font-size:10.5px; white-space:nowrap;}
+  .wp-again{min-height:24px; padding:0 9px; border:1px solid var(--panel-line); border-radius:6px; background:transparent;
+    color:var(--panel-ink); font:inherit; font-size:11px; cursor:pointer; white-space:nowrap;}
+  .wp-again:hover{background:var(--hover);}
   .edithint{position:fixed; left:50%; top:5vh; transform:translateX(-50%); z-index:9; display:none;
     padding:8px 16px; border-radius:999px; background:var(--panel); border:1px solid var(--panel-line);
     color:var(--panel-ink); font-size:13px; pointer-events:none; backdrop-filter:blur(12px);}
@@ -510,7 +513,7 @@
     "Weather":"天气","Morning report":"晨报","before noon":"中午之前","Open report":"打开晨报",
     "Hide for today":"今天先收起","Hide the morning report for today":"今天不再显示晨报",
     "Mark done":"标记为完成","Marked done.":"已标记完成。","Undo":"撤销",
-    "Mark not done":"标记为未完成","No longer in your Gmail drafts":"已不在你的 Gmail 草稿箱里","Merged on GitHub":"已在 GitHub 合并","No longer waiting for you":"已不再等你",
+    "Show again":"再次显示","Mark not done":"标记为未完成","No longer in your Gmail drafts":"已不在你的 Gmail 草稿箱里","Merged on GitHub":"已在 GitHub 合并","No longer waiting for you":"已不再等你",
     "That could not be saved. Try again.":"没能保存，请再试一次。"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
@@ -530,7 +533,7 @@
     "Weather":"天氣","Morning report":"晨報","before noon":"中午之前","Open report":"開啟晨報",
     "Hide for today":"今天先收起","Hide the morning report for today":"今天不再顯示晨報",
     "Mark done":"標記為完成","Marked done.":"已標記完成。","Undo":"復原",
-    "Mark not done":"標記為未完成","No longer in your Gmail drafts":"已不在你的 Gmail 草稿匣裡","Merged on GitHub":"已在 GitHub 合併","No longer waiting for you":"已不再等你",
+    "Show again":"再次顯示","Mark not done":"標記為未完成","No longer in your Gmail drafts":"已不在你的 Gmail 草稿匣裡","Merged on GitHub":"已在 GitHub 合併","No longer waiting for you":"已不再等你",
     "That could not be saved. Try again.":"無法儲存，請再試一次。"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
@@ -988,6 +991,11 @@
     morningOn.onchange = function(){ saveWidget("morning", {on: morningOn.checked}); };
     morningName.appendChild(morningOn); morningName.appendChild(document.createTextNode(tOps("Morning report")));
     var morningWhenHint = document.createElement("span"); morningWhenHint.className = "wp-hint"; morningWhenHint.textContent = tOps("before noon");
+    if (MORNING.why === "dismissed") {       // closed for today: the way back, where the switch is
+      morningWhenHint = document.createElement("button"); morningWhenHint.type = "button"; morningWhenHint.className = "wp-again";
+      morningWhenHint.textContent = tOps("Show again"); morningWhenHint.setAttribute("data-wp", "morning:again");
+      morningWhenHint.disabled = busy; morningWhenHint.onclick = function(){ restoreMorning(); };
+    }
     morningRow.appendChild(morningName); morningRow.appendChild(morningWhenHint); panel.appendChild(morningRow);
     if (widgetPanelError) { var err = document.createElement("p"); err.className = "wp-error"; err.setAttribute("role", "status"); err.textContent = widgetPanelError; panel.appendChild(err); }
     if (keep && widgetFocus) { var again = panel.querySelector('[data-wp="' + widgetFocus + '"]'); if (again && !again.disabled) again.focus(); }
@@ -1150,7 +1158,7 @@
   // code map is not over it; with reduced motion it paints one still frame. Clouds, the sun's glow, the moon and the
   // fog are painted once and copied; there are no blur filters, and the canvas is at most 1.5
   // device pixels per CSS pixel.
-  var MORNING = {data:null, showing:false, checked:false, fitted:false, busy:false, timer:0, clearTimer:0,
+  var MORNING = {data:null, showing:false, checked:false, fitted:false, busy:false, why:"", timer:0, clearTimer:0,
                  noteTimer:0, fitTimer:0, lastResolve:0, cfgOn:null, settingOn:null, observer:null};
   var RESOLVE_MS = 15 * 60 * 1000, ALL_CLEAR_MS = 12000;
   var SKIES = {
@@ -1594,7 +1602,8 @@
     morningPost({action:"done", keys:keys}).then(function(r){
       var d = r && r.today;
       applyToday(d);
-      if (d && d.show && !d.all_done) morningNote(tOps("Marked done."), function(){ markOpen(keys, this); });
+      // Also on the last one: the all-clear moment waits, and Undo cancels it.
+      if (d && d.show) morningNote(tOps("Marked done."), function(){ markOpen(keys, this); });
       if (focused && !document.contains(from)) refocus(null);
     }).catch(function(){ morningNote(tOps("That could not be saved. Try again.")); })
       .then(function(){ MORNING.busy = false; });
@@ -1630,6 +1639,8 @@
   function applyToday(d){
     MORNING.checked = true;
     if (!d || typeof d !== "object" || d.ok === false) { scheduleToday(MORNING.showing ? 60 : 300); return; }
+    var why = String(d.why || "");
+    if (why !== MORNING.why) { MORNING.why = why; if (editMode) paintWidgetPanel(); }   // "Show again"
     if (!d.show) { MORNING.data = null; exitMorning(); scheduleToday(d.recheck_s); return; }
     MORNING.data = d;
     if (!MORNING.showing) enterMorning();
@@ -1658,16 +1669,22 @@
       .catch(function(){ morningNote(tOps("That could not be saved. Try again.")); });
   };
   // Either switch (desktop.json's morning widget, Settings → Desktop) is asked again when it changes.
+  // Turning either back on also undoes "hide for today": the person just asked to see it.
   function morningConfigChanged(cfg){
     var on = !(cfg && cfg.widgets && cfg.widgets.morning && cfg.widgets.morning.on === false);
     var was = MORNING.cfgOn; MORNING.cfgOn = on;
-    if (was !== null && was !== on) fetchToday();
+    if (was === false && on) restoreMorning(); else if (was !== null && was !== on) fetchToday();
     if (MORNING.showing) scheduleFit();
   }
   function morningSettingChanged(values){
-    var on = String((values && values.DESKTOP_MORNING_REPORT) || "on").toLowerCase();
-    var was = MORNING.settingOn; MORNING.settingOn = on;
-    if (was !== null && was !== on) fetchToday();
+    var raw = String((values && values.DESKTOP_MORNING_REPORT) || "on").toLowerCase();
+    var on = ["off", "0", "false", "no"].indexOf(raw) < 0, was = MORNING.settingOn;
+    MORNING.settingOn = on;
+    if (was === false && on) restoreMorning(); else if (was !== null && was !== on) fetchToday();
+  }
+  function restoreMorning(){
+    return morningPost({action:"restore"}).then(function(r){ applyToday(r && r.today); })
+      .catch(function(){ fetchToday(); });     // no report today, say: just ask again
   }
   document.addEventListener("visibilitychange", function(){ sky.sync(); if (!document.hidden) fetchToday(); });
   var morningResize = 0;

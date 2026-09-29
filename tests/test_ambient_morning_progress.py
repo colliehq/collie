@@ -7,7 +7,7 @@ reduced motion keeps the sky to one still frame while it does.
 import pytest
 
 from _morning_fixture import APPROVAL, at, report, save
-from test_ambient_morning import NORMAL, _open, _poll, desk  # noqa: F401 - fixture
+from test_ambient_morning import NORMAL, SHOWING, _open, _poll, desk  # noqa: F401 - fixture
 
 pytest.importorskip("playwright.sync_api")
 
@@ -51,10 +51,30 @@ def test_all_done_is_a_moment_and_then_the_desktop_returns_to_normal(desk):
     assert _poll(page, SAYS, "All clear for today.")
     assert page.locator("#mDots .m-dot.on").count() == 5 and page.locator("#mActs a").count() == 0
     assert page.evaluate("() => document.body.classList.contains('all-clear')")
-    assert page.inner_text("#mNote") == ""
+    assert "Undo" in page.inner_text("#mNote")                  # until the moment ends
     page.clock.fast_forward(15000)
     assert _poll(page, NORMAL)
     assert md.today(desk.state, now=at(8, 5))["why"] == "dismissed"
+
+
+def test_the_all_clear_moment_offers_undo_before_it_goes(desk):
+    from harness import morning_desktop as md
+    save(desk.state, report())
+    keys = {i["title"]: i["key"] for i in md.today(desk.state, now=at(8))["items"]}
+    md.act(desk.state, {"action": "done", "keys": [k for t, k in keys.items()
+                                                   if t != "Pay the Azure invoice"]}, now=at(8))
+    page = _open(desk, fake_clock=True, reduced=True)
+    act = page.locator("#mActs .m-act").first
+    act.hover()
+    act.locator("button.m-check").click()
+    assert _poll(page, SAYS, "All clear for today.")
+    assert "Undo" in page.inner_text("#mNote")
+    page.click("#mNote button")
+    assert _poll(page, SAYS, "One to go. Almost there.")
+    page.clock.fast_forward(15000)                            # the moment would have ended here
+    page.wait_for_timeout(500)
+    assert page.evaluate(SHOWING)
+    assert md.today(desk.state, now=at(8, 1))["show"] is True
 
 
 def test_a_mark_the_resolve_pass_made_can_be_undone_from_the_page(desk, monkeypatch):
