@@ -466,3 +466,20 @@ def test_the_previous_reports_counters_reach_the_sources(world):
 
     world["build"](adapters=[rs.Adapter(name="github", label="GitHub", read=adapter)])
     assert seen == {"github.stars:colliehq/collie": 11}
+
+
+# ---------------------------------------------------------------- short, and about what is there
+
+
+def test_the_prompt_asks_for_short_words_about_what_is_there():
+    _, _, seen = compose(model_answer())
+    system = seen["system"]
+    assert "Never mention empty sections" in system
+    assert "at most 15 words" in system and "at most 6 words" in system
+
+
+def test_a_greeting_too_long_for_the_header_is_replaced_with_ours():
+    out, composer, _ = compose(model_answer(
+        greeting="Good morning, Daming! Rowan here, tail wagging and ready to help."))
+    assert out["greeting"] == "Good morning, Daming!"
+    assert any(d["section"] == "greeting" and "long" in d["reason"] for d in composer["dropped"])

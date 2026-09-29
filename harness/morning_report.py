@@ -49,6 +49,8 @@ CAPS = {"wins": 3, "yours": 3, "ready": 3, "projects": 5, "reads": 3}
 PROMPT_SIGNALS = 150
 MODEL_TIMEOUT_S = 180
 DRAFT_BODY_LIMIT = 4000
+#: The greeting is set in 32-pixel type across a phone; longer than this wraps to three lines.
+GREETING_LIMIT = 48
 _KIND_ORDER = {"needs_you": 0, "ready": 1, "waiting_on_others": 2, "done": 3, "stale": 4,
                "event": 5, "fyi": 6}
 _YOURS = ("needs_you", "waiting_on_others", "stale", "event")
@@ -257,9 +259,14 @@ def prompt(signals, sources, profile, now, weather):
         "to the user's own projects, or \"\" when there is no real connection.\n"
         "4. At most 3 items each in wins, yours, ready and reads, and at most 5 projects. Choose "
         "what matters most; an empty section is fine.\n"
-        "5. \"greeting\" greets the user by name for the time of day. \"headline\" is one short "
-        "upbeat sentence about the day, like \"Four quick ones and you're clear.\" \"summary\" "
-        "is one or two sentences with the best news and what is ready.\n"
+        "5. \"greeting\" greets the user by name for the time of day, at most 6 words, like "
+        "\"Good morning, Daming!\" \"headline\" is one upbeat sentence about the day, at most "
+        "10 words, like \"Four quick ones and you're clear.\" \"summary\" is at most 30 words "
+        "with the best news and what is ready.\n"
+        "6. Keep it short: a title at most 8 words, a detail or line one sentence of at most 15 "
+        "words, a project line a fact about that project rather than a repeat of an item in "
+        "yours. Never mention empty sections, sources that could not be read, or anything you "
+        "did not find; the report shows those itself.\n"
         "Write every text field in %s. Return exactly one JSON object and nothing else, shaped "
         "like this: %s"
         % (companion, reader or "the user",
@@ -637,10 +644,15 @@ def compose(signals, sources, profile, now, weather, *, caller=None):
     allowed = _top_numbers(sections, signals, profile, now, weather, things, zone)
     words = {"greeting": _greeting(profile, now), "headline": _headline(profile, things),
              "summary": plain["summary"]}
-    for key, limit in (("greeting", 80), ("headline", 140), ("summary", 400)):
-        text = daily_brief._text(raw.get(key), limit)
+    for key, limit in (("greeting", GREETING_LIMIT), ("headline", 140), ("summary", 400)):
+        text = daily_brief._text(raw.get(key), 1000)
         bad = _unsupported(text, allowed) if text else ""
-        if text and not bad:
+        if text and len(text) > limit:
+            # A line cut mid-word in 32-pixel type reads as a mistake; our own words fit.
+            composer["dropped"].append({"section": key, "signal_ids": [],
+                                        "reason": "too long for the header (%d characters)"
+                                        % len(text)})
+        elif text and not bad:
             words[key] = text
         elif text:
             composer["dropped"].append({"section": key, "signal_ids": [],
