@@ -64,7 +64,10 @@ harness = ["webui/*.html", "webui/*.js", "webui/*.svg", "webui/*.png",
            # Keep this list explicit: browser_ext/token.txt is per-device authentication state and
            # must never enter a wheel/installer merely because a maintainer built from a live tree.
            "browser_ext/*.html", "browser_ext/*.js", "browser_ext/*.json", "browser_ext/*.png",
-           "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico"]
+           "wallpaper/*.cs", "wallpaper/*.dll", "wallpaper/*.ps1", "wallpaper/*.md", "wallpaper/*.ico",
+           # Collie's Google OAuth (Desktop-app) client. Not in Git: the release workflow writes it
+           # from a secret (installer/write_google_oauth_client.py); absent, the build has no Google.
+           "google_oauth_client.json"]
 
 [tool.setuptools.exclude-package-data]
 # Defence in depth if a future package-data pattern is broadened again. auth.js is the legacy

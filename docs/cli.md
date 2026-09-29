@@ -101,6 +101,9 @@ See [Workers](runners.md) for the per-worker capability and boundary tables.
 | `collie config KEY` | Print one setting. |
 | `collie config KEY VALUE` | Set one setting (e.g. `collie config LANG zh-tw`). |
 | `collie mcp list \| login \| logout \| tools` | Manage MCP servers. |
+| `collie google connect` | Connect Gmail (read your mail, write drafts) and Google Calendar (read your events) for the morning report. Opens Google's sign-in page in your browser and prints the link too; `--no-browser` only prints it. Collie never sends mail. |
+| `collie google status` | Check the connection with Google and show what it allows: connected, some access not allowed, needs you to connect again, not connected, or not set up. Exits non-zero unless Collie can use it. |
+| `collie google disconnect` | Revoke Collie's access at Google and delete the connection from this computer (also in Settings → Connections). |
 | `collie library scaffold \| list \| show \| validate \| plan` | Create a safe starter, inspect installed extensions, or review a local package and its exact digest/scopes. |
 | `collie library install \| enable \| disable \| rollback \| uninstall` | Operate the trusted extension lifecycle; activation and removal have explicit review boundaries. |
 | `collie library revoke <id> --digest <sha256> --reason "…" --yes` | Revoke one exact installed digest; active matching code is disabled fail-closed. |
