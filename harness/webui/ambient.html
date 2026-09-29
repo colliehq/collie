@@ -498,6 +498,7 @@
     "desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted.":"无法读取 desktop.json。在修复或删除它之前，这里的更改不会保存，天气也保持关闭。",
     "Weather":"天气","Morning report":"晨报","before noon":"中午之前","Open report":"打开晨报",
     "Hide for today":"今天先收起","Hide the morning report for today":"今天不再显示晨报",
+    "Mark done":"标记为完成","Marked done.":"已标记完成。","Undo":"撤销",
     "That could not be saved. Try again.":"没能保存，请再试一次。"});
   Object.assign(OPS_ZHTW,{"Worker":"工作程序","Open":"開啟","app":"應用程式","Previous":"上一首","Previous track":"上一首曲目","Play / Pause":"播放 / 暫停","Play or pause":"播放或暫停","Next":"下一首","Next track":"下一首曲目",
     "Background service status updates automatically.":"背景服務狀態會自動更新。",
@@ -516,6 +517,7 @@
     "desktop.json could not be read. Nothing here is saved, and the weather stays off, until it is fixed or deleted.":"無法讀取 desktop.json。在修正或刪除它之前，這裡的變更不會儲存，天氣也維持關閉。",
     "Weather":"天氣","Morning report":"晨報","before noon":"中午之前","Open report":"開啟晨報",
     "Hide for today":"今天先收起","Hide the morning report for today":"今天不再顯示晨報",
+    "Mark done":"標記為完成","Marked done.":"已標記完成。","Undo":"復原",
     "That could not be saved. Try again.":"無法儲存，請再試一次。"});
   function resolveOpsLang(value){value=String(value||"").toLowerCase();if(value==="zh"||value==="zh-tw")return value;var browser=(navigator.language||"").toLowerCase();return browser.indexOf("zh-tw")===0||browser.indexOf("zh-hk")===0?"zh-tw":(browser.indexOf("zh")===0?"zh":"en");}
   function tOps(value){var dict=OPS_LANG==="zh-tw"?OPS_ZHTW:(OPS_LANG==="zh"?OPS_ZH:null);return dict?(dict[value]||value):value;}
@@ -1134,9 +1136,9 @@
   // 30 fps, and it runs only while the scene shows, the page is visible and the code map is not
   // over it; with reduced motion it paints one still frame. Cloud sprites are drawn once, there are
   // no blur filters, and the canvas is at most 1.5 device pixels per CSS pixel.
-  var MORNING = {data:null, showing:false, checked:false, fitted:false, timer:0, clearTimer:0, noteTimer:0,
-                 fitTimer:0, lastResolve:0, cfgOn:null, settingOn:null, observer:null};
-  var RESOLVE_MS = 15 * 60 * 1000;
+  var MORNING = {data:null, showing:false, checked:false, fitted:false, busy:false, timer:0, clearTimer:0,
+                 noteTimer:0, fitTimer:0, lastResolve:0, cfgOn:null, settingOn:null, observer:null};
+  var RESOLVE_MS = 15 * 60 * 1000, ALL_CLEAR_MS = 12000;
   var SKIES = {
     clear:  {bg:"linear-gradient(170deg,#58aaff 0%,#8fcaff 40%,#d6ecff 68%,#ffe2ad 100%)", dark:false},
     cloudy: {bg:"linear-gradient(170deg,#8fb3d9 0%,#b8cde3 45%,#dfe7ef 75%,#efe6d8 100%)", dark:false},
@@ -1444,8 +1446,17 @@
       wrap.className = "m-act";
       a.className = "m-pill " + (p.primary ? "go" : "soft"); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
       a.textContent = String(p.label || "");
-      wrap.appendChild(a); acts.appendChild(wrap);
+      wrap.appendChild(a);
+      if ((p.keys || []).length) {           // the small check that says "done", on hover or focus
+        var check = document.createElement("button");
+        check.type = "button"; check.className = "m-check"; check.textContent = "✓";
+        check.title = tOps("Mark done"); check.setAttribute("aria-label", tOps("Mark done") + ": " + a.textContent);
+        check.onclick = function(e){ e.preventDefault(); markDone(p.keys); };
+        wrap.appendChild(check);
+      }
+      acts.appendChild(wrap);
     });
+    document.body.classList.toggle("all-clear", !!d.all_done);
     var by = d.by || {};
     $("mByText").textContent = [by.companion, by.words].filter(Boolean).join(" · ");
     $("mOpen").href = authUrl("/report"); $("mOpen").textContent = tOps("Open report");
@@ -1454,9 +1465,39 @@
     morningWhen();
     scheduleFit();
   }
-  function morningNote(text){
+  function morningNote(text, undo){
     var note = $("mNote"); clearTimeout(MORNING.noteTimer); note.textContent = text || "";
+    if (undo) {
+      var again = document.createElement("button"); again.type = "button"; again.textContent = tOps("Undo");
+      again.onclick = undo; note.appendChild(again);
+    }
     if (text) MORNING.noteTimer = setTimeout(function(){ note.textContent = ""; }, 10000);
+  }
+  // Marked from the page; the server keeps it for the day, and a later check never overrides it.
+  function markDone(keys){
+    if (MORNING.busy) return;
+    MORNING.busy = true;
+    morningPost({action:"done", keys:keys}).then(function(r){
+      var d = r && r.today;
+      applyToday(d);
+      if (d && d.show && !d.all_done) morningNote(tOps("Marked done."), function(){
+        morningPost({action:"undo", keys:keys}).then(function(back){ morningNote(""); applyToday(back && back.today); })
+          .catch(function(){ morningNote(tOps("That could not be saved. Try again.")); });
+      });
+    }).catch(function(){ morningNote(tOps("That could not be saved. Try again.")); })
+      .then(function(){ MORNING.busy = false; });
+  }
+  // Everything done: the moment stays up a little, then the desktop goes back to its normal look
+  // for the rest of the day.
+  function allClear(on){
+    if (!on) { clearTimeout(MORNING.clearTimer); MORNING.clearTimer = 0; return; }
+    if (MORNING.clearTimer) return;
+    morningNote("");
+    MORNING.clearTimer = setTimeout(function(){
+      MORNING.clearTimer = 0;
+      morningPost({action:"dismiss", reason:"all_clear"}).then(function(r){ applyToday(r && r.today); })
+        .catch(function(){ exitMorning(); scheduleToday(300); });
+    }, ALL_CLEAR_MS);
   }
   function enterMorning(){
     MORNING.showing = true; MORNING.fitted = false;
@@ -1469,8 +1510,8 @@
   function exitMorning(){
     $("morning").hidden = true;
     if (!MORNING.showing) return;
-    MORNING.showing = false;
-    document.body.classList.remove("morning", "sky-dark", "sky-light");
+    MORNING.showing = false; allClear(false);
+    document.body.classList.remove("morning", "sky-dark", "sky-light", "all-clear");
     delete document.body.dataset.sky; document.body.style.removeProperty("--skybg");
     morningNote(""); sky.stop(); watchMorningLayout(false);
   }
@@ -1481,6 +1522,7 @@
     MORNING.data = d;
     if (!MORNING.showing) enterMorning();
     renderMorning();
+    allClear(!!d.all_done);
     scheduleToday(d.recheck_s);
   }
   function scheduleToday(seconds){

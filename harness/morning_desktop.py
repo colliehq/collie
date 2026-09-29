@@ -24,6 +24,17 @@ links to an https address the report vetted (vetted again here: a snapshot is a 
 the account can edit), or to the report page (``/report``) when the item has none.  A morning
 with nothing to do offers the report page.
 
+**Progress.**  The person marks a thing done (the check beside its button) or undoes that.
+While the scene shows, the page also asks for the resolve pass, which runs on a background
+thread at most every ``RESOLVE_EVERY_S`` and re-checks three cheap facts: a reply draft that is
+no longer a draft in Gmail (sent or deleted), a pull request that was merged, and an approval
+that is no longer waiting in this Collie (answered, or its run ended).  A fact that cannot be
+checked -- Google not connected, ``gh`` missing, the approvals not in this process, any error --
+changes nothing: not knowing is never "done".  What the person said about an item always wins
+over a later check.  The sentence cheers as things get done ("One down, four to go.") and says
+"All clear for today." when all are; the page shows that moment and then hides the scene for
+the day.
+
 **The report page** is the morning email (:mod:`morning_report_email`) with the dog inlined and
 every link opening a new window, which the wallpaper host sends to the default browser.
 """
@@ -51,9 +62,16 @@ ACTIONABLE = ("yours", "ready")
 RECHECK_SHOWING_S = 60
 RECHECK_WAITING_S = 5 * 60
 RECHECK_OFF_S = 15 * 60
+#: The resolve pass runs at most this often, and only while the scene shows.
+RESOLVE_EVERY_S = 15 * 60
+MAX_KEYS = 50
 REPORT_PAGE = "/report"
 GMAIL_DRAFTS = "https://mail.google.com/mail/u/0/#drafts"
+#: Who said an item is done: the person, or which fact the resolve pass found.
+DONE_BY = ("person", "draft_gone", "pr_merged", "approval_answered")
 _KEY_RE = re.compile(r"k[0-9a-f]{16}")
+_PR_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([0-9]{1,9})")
+_SLUG_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _OFF = ("off", "0", "false", "no")
 
 #: Seams for tests: the wall clock, and how a background pass is started.
@@ -67,10 +85,16 @@ def _spawn(fn):
 
 _WORDS = {
     "en": {"draft_one": "Review the draft", "drafts": "Review %d drafts",
-           "open_report": "Open report", "dots": "%d of %d done", "by": "caught up at %s"},
+           "open_report": "Open report", "dots": "%d of %d done", "by": "caught up at %s",
+           "progress": "%s down, %s to go.", "last": "One to go. Almost there.",
+           "clear": "All clear for today.",
+           "clear_more": "Nice work. I'll keep an eye on things for the rest of the day."},
     "zh": {"draft_one": "看看这封草稿", "drafts": "看看 %d 封草稿", "open_report": "看完整晨报",
-           "dots": "完成 %d / %d", "by": "%s 整理好"},
+           "dots": "完成 %d / %d", "by": "%s 整理好",
+           "progress": "完成 %d 件，还剩 %d 件。", "last": "只剩最后一件了。",
+           "clear": "今天的事都搞定了。", "clear_more": "干得漂亮，今天剩下的我来盯着。"},
 }
+_COUNT = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
 
 
 def _words(report):
@@ -130,10 +154,16 @@ def load_state(root, date):
     if not isinstance(value, dict) or value.get("schema") != STATE_SCHEMA or \
             value.get("date") != date:
         value = {}
+    items = {}
+    for key, row in (value.get("items") if isinstance(value.get("items"), dict) else {}).items():
+        if _KEY_RE.fullmatch(str(key)) and isinstance(row, dict) and \
+                row.get("state") in ("done", "open") and row.get("by") in DONE_BY:
+            items[key] = {"state": row["state"], "by": row["by"], "at": _number(row.get("at"))}
     why = value.get("dismissed_why")
-    return {"schema": STATE_SCHEMA, "date": date,
+    return {"schema": STATE_SCHEMA, "date": date, "items": items,
             "dismissed_at": _number(value.get("dismissed_at")),
-            "dismissed_why": why if why in ("person", "all_clear") else ""}
+            "dismissed_why": why if why in ("person", "all_clear") else "",
+            "resolved_at": _number(value.get("resolved_at"))}
 
 
 def _save_state(root, state):
@@ -217,11 +247,26 @@ def _pills(views, words, total):
 # ---------------------------------------------------------------- what the page asks
 
 
+def _count(number):
+    return _COUNT[number] if 0 <= number < len(_COUNT) else str(number)
+
+
 def _progress(report, views, words):
-    """``(sentence, summary)`` for where the morning stands."""
+    """``(sentence, summary)`` for where the morning stands: the report's own headline until
+    something is done, then a cheer that counts, then all clear."""
+    total, done = len(views), len([v for v in views if v["state"] == "done"])
+    summary = daily_brief._text(report.get("summary"), 400)
+    if total and done == total:
+        return words["clear"], words["clear_more"]
+    if done:
+        left = total - done
+        if left == 1:
+            return words["last"], summary
+        if words is _WORDS["zh"]:
+            return words["progress"] % (done, left), summary
+        return words["progress"] % (_count(done).capitalize(), _count(left)), summary
     return (daily_brief._text(report.get("headline"), 200) or
-            daily_brief._text(report.get("greeting"), 200),
-            daily_brief._text(report.get("summary"), 400))
+            daily_brief._text(report.get("greeting"), 200), summary)
 
 
 def _payload(report, state, local, noon):
@@ -267,34 +312,194 @@ def today(root, *, now=None, resolve=False, approvals=None):
     why = switched_off()
     if why:
         return _hidden(why, RECHECK_OFF_S, date)
-    state = load_state(root, date)
-    if state["dismissed_at"] is not None:
-        return _hidden("dismissed", _until_tomorrow(local), date)
+    start = False
+    with _LOCK:
+        state = load_state(root, date)
+        if state["dismissed_at"] is not None:
+            return _hidden("dismissed", _until_tomorrow(local), date)
+        last = state["resolved_at"]
+        if resolve and (last is None or now - last >= RESOLVE_EVERY_S or now < last):
+            # Noted before the pass runs, so a burst of requests starts one pass, not several.
+            state["resolved_at"] = now
+            _save_state(root, state)
+            start = True
     noon = local.replace(hour=NOON, minute=0, second=0, microsecond=0).timestamp()
-    return _payload(report, state, local, noon)
+    payload = _payload(report, state, local, noon)
+    if start:
+        _spawn(lambda: resolve_pass(root, approvals))
+    return payload
+
+
+def _today_report(root, now):
+    """``(report, date)`` when the saved report is today's, else ``(None, "")``."""
+    report = mr.load_latest(root)
+    date = _local(report, now).strftime("%Y-%m-%d") if report else ""
+    return (report, date) if report and report.get("date") == date else (None, "")
 
 
 def act(root, body, *, now=None):
-    """``POST /api/report/today``: ``{"action": "dismiss"}`` hides the scene for the rest of the
-    day.  Raises ``ValueError`` (a 400) for anything else."""
+    """``POST /api/report/today``: ``{"action": "done" | "undo", "keys": [...]}`` marks things
+    done or open again, ``{"action": "dismiss"}`` hides the scene for the rest of the day.
+    Raises ``ValueError`` (a 400) for anything else."""
     now = _now() if now is None else float(now)
     if not isinstance(body, dict):
         raise ValueError("expected a JSON object")
     action = body.get("action")
-    if action != "dismiss":
+    if action not in ("done", "undo", "dismiss"):
         raise ValueError("unknown action")
     reason = body.get("reason", "person")
     if reason not in ("person", "all_clear"):
         raise ValueError("unknown reason")
-    report = mr.load_latest(root)
-    date = _local(report, now).strftime("%Y-%m-%d") if report else ""
-    if not report or report.get("date") != date:
+    keys = body.get("keys", [])
+    if action != "dismiss" and (not isinstance(keys, list) or len(keys) > MAX_KEYS or
+                                not all(isinstance(key, str) for key in keys)):
+        raise ValueError("keys must be a list of item keys")
+    report, date = _today_report(root, now)
+    if not report:
         raise ValueError("there is no morning report for today")
+    known = {key for _name, _item, key in _actionable(report)}
+    if action != "dismiss" and any(key not in known for key in keys):
+        raise ValueError("that is not one of today's things to do")
     with _LOCK:
         state = load_state(root, date)
-        state.update(dismissed_at=now, dismissed_why=reason)
+        if action == "dismiss":
+            state.update(dismissed_at=now, dismissed_why=reason)
+        for key in keys if action != "dismiss" else ():
+            # The person's word, either way; a later check never overrides it.
+            state["items"][key] = {"state": "done" if action == "done" else "open",
+                                   "by": "person", "at": now}
         _save_state(root, state)
     return {"ok": True, "today": today(root, now=now)}
+
+
+# ---------------------------------------------------------------- the resolve pass
+
+
+def _google_ready(root):
+    """Is Google connected with permission to write drafts (and so to look one up)?"""
+    from . import report_sources
+    try:
+        report_sources.google("gmail_drafts", "Gmail", root)
+    except Exception:                                 # noqa: BLE001 - not ready is the answer
+        return False
+    return True
+
+
+def _draft_exists(draft_id, root):
+    from . import google_connect
+    return google_connect.gmail_draft_exists(draft_id, state_dir=root)
+
+
+def _pr_merged(slug, number):
+    """Was this pull request merged?  Asks ``gh`` about exactly that one pull request."""
+    from . import report_sources
+    slug, number = str(slug), str(number)
+    if not _SLUG_RE.fullmatch(slug) or ".." in slug or not number.isdigit():
+        raise ValueError("not a pull request")
+    run = report_sources._gh_runner(rs.Context(now=_now()))
+    code, out, _err = run(["api", "repos/%s/pulls/%s" % (slug, number)],
+                          report_sources.GH_TIMEOUT_S)
+    if code != 0:
+        raise RuntimeError("gh exited with %d" % code)
+    data = json.loads(out or "null")
+    if not isinstance(data, dict):
+        raise RuntimeError("gh answered with something that is not a pull request")
+    return data.get("merged") is True
+
+
+_APPROVAL_EVIDENCE = "%s · pending" % daily_brief._source_name("approvals", "en")
+
+
+def _pending_approvals(approvals):
+    """Signal ids of the approvals waiting now, or ``None`` when that cannot be known here."""
+    if not callable(approvals):
+        return None
+    try:
+        rows = approvals()
+    except Exception:                                 # noqa: BLE001 - unknown, not "none"
+        return None
+    if not isinstance(rows, list):
+        return None
+    out = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # The id the Collie source gave the approval's signal (report_sources._brief_signal).
+        native = daily_brief._text(row.get("id"), 80) or daily_brief._text(row.get("tool"), 80)
+        if native:
+            out.add(rs.signal_id("collie", daily_brief._item_id("approval", "approvals", native)))
+    return out
+
+
+def resolve(root, *, now=None, approvals=None):
+    """Re-check today's open things and mark done the ones a fact says are done.
+
+    Returns ``{"checked": n, "done": {key: why}}``.  Runs the checks outside the lock and writes
+    only items nobody has said anything about since.
+    """
+    now = _now() if now is None else float(now)
+    report, date = _today_report(root, now)
+    if not report:
+        return {"checked": 0, "done": {}}
+    with _LOCK:
+        said = set(load_state(root, date)["items"])
+    open_ = [(name, item, key) for name, item, key in _actionable(report) if key not in said]
+    found, checked = {}, 0
+    drafts = []
+    for name, item, key in open_:
+        draft = item.get("draft") if isinstance(item.get("draft"), dict) else None
+        if name == "ready" and draft and draft.get("state") == "created" and \
+                isinstance(draft.get("draft_id"), str) and draft["draft_id"]:
+            drafts.append((key, draft["draft_id"]))
+    if drafts and _google_ready(root):
+        for key, draft_id in drafts:
+            try:
+                exists = _draft_exists(draft_id, root)
+            except Exception:                         # noqa: BLE001 - unknown stays open
+                continue
+            checked += 1
+            if exists is False:
+                found[key] = "draft_gone"
+    for _name, item, key in open_:
+        match = _PR_RE.fullmatch(rs._https(item.get("link")))
+        if key in found or not match:
+            continue
+        try:
+            merged = _pr_merged(match.group(1), match.group(2))
+        except Exception:                             # noqa: BLE001 - unknown stays open
+            continue
+        checked += 1
+        if merged is True:
+            found[key] = "pr_merged"
+    pending = _pending_approvals(approvals)
+    if pending is not None:
+        signals = {s.get("id"): s for s in report.get("signals") or [] if isinstance(s, dict)}
+        for _name, item, key in open_:
+            ids = [i for i in item.get("signal_ids") or [] if isinstance(i, str)]
+            asks = [signals.get(i) for i in ids]
+            if key in found or not ids or not all(
+                    s and s.get("source") == "collie" and s.get("evidence") == _APPROVAL_EVIDENCE
+                    for s in asks):
+                continue
+            checked += 1
+            if not any(i in pending for i in ids):
+                found[key] = "approval_answered"
+    if found:
+        with _LOCK:
+            state = load_state(root, date)
+            for key, why in found.items():
+                if key not in state["items"]:         # the person spoke meanwhile: they win
+                    state["items"][key] = {"state": "done", "by": why, "at": now}
+            _save_state(root, state)
+    return {"checked": checked, "done": found}
+
+
+def resolve_pass(root, approvals=None):
+    """The background pass: never raises (a thread has nobody to tell)."""
+    try:
+        resolve(root, approvals=approvals)
+    except Exception:                                 # noqa: BLE001 - the next pass tries again
+        pass
 
 
 # ---------------------------------------------------------------- the report page

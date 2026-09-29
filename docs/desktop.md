@@ -50,6 +50,17 @@ stay where they are and the words find room around them, with a clear gap; the l
 until noon. The date-and-weather line above the headline is left out when the clock sits on the
 same side of the screen and already says it.
 
+Progress moves on its own. Hover a button and a small ✓ marks that thing done (with *Undo* for a
+few seconds); a dot turns green and the headline cheers ("One down, four to go."). While the scene
+is up, Collie also re-checks at most every 15 minutes whether things got done elsewhere: a reply
+draft that is no longer in your Gmail drafts (you sent or deleted it), a pull request that was
+merged, and a question from Collie that is no longer waiting. Anything it cannot check (Google not
+connected, `gh` not installed, an error) stays as it was, and what you marked yourself always wins.
+When everything is done it says *All clear for today* for a moment and then goes back to the normal
+desktop. What was done is kept beside the report in
+`~/.collie/morning-report/<date>.state.json`, so it survives a restart or a second
+`collie report build` the same morning.
+
 It goes back to the normal desktop at noon, or for the rest of the day when you close it (×). Turn
 it off with *Show the morning report on the desktop* in Settings → Desktop, or with *Morning
 report* in the desktop's edit-mode widget panel (`widgets.morning.on` in `~/.collie/desktop.json`).

@@ -1250,6 +1250,23 @@ def gmail_create_draft(thread_id: str, to: str, subject: str, body: str, in_repl
             "thread_url": _gmail_base(account) + "#all/" + thread}
 
 
+def gmail_draft_exists(draft_id: str, *, state_dir=None) -> bool:
+    """Is this still a draft? ``False`` once it was sent or deleted: Gmail answers 404 then.
+
+    Reads one draft's id and nothing of its content (``format=minimal``). Any other failure is
+    raised, never taken as "gone". Needs gmail.compose, the permission the draft was made with.
+    """
+    did = _check_id(draft_id, "draft_id")
+    try:
+        _api("GET", GMAIL_API + "/users/me/drafts/" + did, need=GMAIL_COMPOSE,
+             params={"format": "minimal"}, state_dir=state_dir)
+    except GoogleAPIError as exc:
+        if getattr(exc, "status", None) == 404:
+            return False
+        raise
+    return True
+
+
 _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 _GMAIL_URL_ALPHABET = "BCDFGHJKLMNPQRSTVWXZbcdfghjklmnpqrstvwxz"
 
