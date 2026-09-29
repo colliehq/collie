@@ -210,6 +210,38 @@ def test_gmail_thread_caps_each_body(env):
     assert len(first["body"]) <= 1000 and first["body_truncated"] is True
 
 
+def test_html_fallback_reads_a_bounded_amount_of_markup():
+    # A sender controls this HTML. Past MAX_HTML_CHARS (after dropping style/script/comments)
+    # nothing more is read, and the body says it was cut.
+    head = "<p>start</p><style>" + "p{color:red}" * 20000 + "</style><!--" + "c" * 50000 + "-->"
+    markup = head + "<p>kept after the style block</p><div>" + "x " * 60000 + "</div><p>TAIL</p>"
+    text, complete = gc._html_text(markup)
+    assert "start" in text and "kept after the style block" in text
+    assert "TAIL" not in text and complete is False
+    body, truncated = gc._message_body({"mimeType": "text/html", "body": {"data": b64u(markup)}},
+                                       100_000)
+    assert truncated is True and "TAIL" not in body
+
+
+def test_html_fallback_stops_at_its_time_budget():
+    text, complete = gc._html_text("<p>para</p>" * 5000, budget=0)
+    assert complete is False and len(text) < 100
+
+
+@pytest.mark.parametrize("attack", ["<a ", "<!--", "</", "<!", "<style", "<script>x<", "<a b='",
+                                    "&#", "<![CDATA["])
+def test_html_fallback_is_linear_on_malformed_markup(attack):
+    # CPython's own CVE-2025-6069 regression inputs take seconds in html.parser on the 3.12.10
+    # that the Windows installer embeds; the fallback must not depend on that parser at all.
+    import time
+    start = time.perf_counter()
+    gc._html_text(attack * 20000)
+    assert time.perf_counter() - start < 1.0
+    source = inspect.getsource(gc)
+    assert not re.search(r"(?m)^\s*(import html\.parser|from html(\.parser)? import)", source)
+    assert "HTMLParser" not in source
+
+
 def test_body_decoding_tolerates_missing_padding_and_other_charsets():
     raw = "café".encode("latin-1")
     data = base64.urlsafe_b64encode(raw).decode().rstrip("=")

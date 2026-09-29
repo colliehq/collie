@@ -30,7 +30,6 @@ import email.policy
 import hashlib
 import hmac
 import html
-import html.parser
 import http.server
 import json
 import os
@@ -1036,44 +1035,65 @@ def gmail_search(query: str, max_results: int = 20, *, state_dir=None) -> list:
     return rows
 
 
-class _TextOf(html.parser.HTMLParser):
-    _SKIP = {"script", "style", "title", "noscript", "template"}
-    _BLOCK = {"p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "section", "article",
-              "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "hr"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts, self.skip = [], 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in self._SKIP:
-            self.skip += 1
-        elif tag == "br" or tag in self._BLOCK:
-            self.parts.append("\n")
-
-    def handle_startendtag(self, tag, attrs):
-        if tag == "br" or tag in self._BLOCK:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in self._SKIP:
-            self.skip = max(0, self.skip - 1)
-        elif tag in self._BLOCK:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if not self.skip:
-            self.parts.append(data)
+# A sender's HTML is hostile input, and the stdlib html.parser is not safe on it everywhere Collie
+# runs: the Windows installer embeds CPython 3.12.10, whose parser is quadratic on malformed markup
+# (CVE-2025-6069; 24 KB of "<a " takes ~10 s there). So the fallback never uses it. Comments and
+# script/style blocks go first with str.find (so a large stylesheet does not use up the budget), at
+# most MAX_HTML_CHARS of what is left is read, and the reading is one pass of a regex whose
+# alternatives cannot overlap, checked against HTML_TIME_BUDGET as it goes.
+MAX_HTML_CHARS = 64 * 1024
+HTML_TIME_BUDGET = 0.25                                  # seconds
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_DROPPED_BLOCK = re.compile(r"<(script|style|head|title|noscript|template)(?=[\s/>]|$)")
+_HTML_TOKEN = re.compile(r"<[^<>]*>|[^<]+|<")
+_TAG_NAME = re.compile(r"<\s*/?\s*([A-Za-z][A-Za-z0-9]*)")
+_BREAKS = {"br", "p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "section", "article",
+           "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "hr"}
 
 
-def _html_text(markup):
-    parser = _TextOf()
-    try:
-        parser.feed(markup)
-        parser.close()
-    except Exception:
-        pass
-    return "".join(parser.parts)
+def _drop_invisible(markup):
+    """Markup without comments and script/style/head/title blocks, in linear time."""
+    low = markup.translate(_ASCII_LOWER)                 # same length as markup, unlike .lower()
+    out, i, end = [], 0, len(markup)
+    while i < end:
+        j = markup.find("<", i)
+        if j < 0:
+            out.append(markup[i:])
+            break
+        out.append(markup[i:j])
+        if low.startswith("<!--", j):
+            k = low.find("-->", j + 4)
+            i = end if k < 0 else k + 3
+            continue
+        block = _DROPPED_BLOCK.match(low, j)
+        if block:
+            k = low.find("</" + block.group(1), block.end())
+            k = -1 if k < 0 else low.find(">", k)
+            i = end if k < 0 else k + 1                  # unclosed: the rest is inside it
+            continue
+        out.append("<")
+        i = j + 1
+    return "".join(out)
+
+
+def _html_text(markup, budget=None):
+    """(text, complete) from an HTML body. ``complete`` is False when the size cap or the time
+    budget stopped the reading early."""
+    deadline = time.monotonic() + (HTML_TIME_BUDGET if budget is None else budget)
+    visible = _drop_invisible(markup)
+    complete = len(visible) <= MAX_HTML_CHARS
+    parts = []
+    for count, match in enumerate(_HTML_TOKEN.finditer(visible, 0, MAX_HTML_CHARS)):
+        if count % 64 == 0 and time.monotonic() >= deadline:
+            return "".join(parts), False
+        token = match.group(0)
+        if len(token) > 1 and token[0] == "<":
+            name = _TAG_NAME.match(token)
+            if name and name.group(1).lower() in _BREAKS:
+                parts.append("\n")
+            continue                                     # any other tag, doctype or CDATA marker
+        parts.append(html.unescape(token))
+    return "".join(parts), complete
 
 
 def _tidy(text):
@@ -1118,14 +1138,16 @@ def _message_body(payload, cap):
               and "attachment" not in _headers(p).get("content-disposition", "").lower()]
     plain = [_decode_part(p) for p in leaves if str(p.get("mimeType", "")).lower() == "text/plain"]
     plain = [t for t in plain if t.strip()]
+    complete = True
     if plain:
         text = _tidy("\n\n".join(plain))
     else:
         markup = [_decode_part(p) for p in leaves if str(p.get("mimeType", "")).lower() == "text/html"]
-        text = _tidy(_html_text("\n".join(markup)))
+        text, complete = _html_text("\n".join(markup))
+        text = _tidy(text)
     if len(text) > cap:
         return text[:cap].rstrip(), True
-    return text, False
+    return text, not complete
 
 
 def gmail_thread(thread_id: str, *, max_body_chars: int = 20000, state_dir=None) -> dict:
