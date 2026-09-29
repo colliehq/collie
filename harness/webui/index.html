@@ -13398,6 +13398,9 @@
     // the person has aimed this draft somewhere — the identity of the choice rather than its
     // text, so no answer is ever read as one about a folder chosen after it was asked.
     var checkFlight = null, checkKey = "", destination = 0, checking = false;
+    // The session whose folder field the person has typed in. A report about that session's
+    // folder that arrives later (its load racing the folder check) must not type over them.
+    var personTyped = null;   // {session, value} of the person's last edit in the folder field
     var folder = $("taskFolder"), folderUse = $("taskFolderUse"), workspaceApply = $("taskWorkspaceApply");
     function paintWorkspace() {
       var isolated = workspaceInfo.mode === "isolated", shown = pendingCwd || setupCwd;
@@ -13426,13 +13429,17 @@
     window.showTaskWorkspace = function (cwd, info) {
       // A workspace reported for this scope settles the question the selection was asking.
       if (cwd) {
-        setupCwd = cwd; pendingCwd = ""; folder.value = cwd; folder.setCustomValidity("");
+        setupCwd = cwd; pendingCwd = "";
+        var mine = personTyped && setupSession && personTyped.session === setupSession &&
+          folder.value === personTyped.value;
+        if (!mine) { folder.value = cwd; folder.setCustomValidity(""); }
         rootKnown = true; stopRootRetry();
       }
       workspaceInfo = info || {}; paintWorkspace(); saveSetup();
     };
     folder.addEventListener("input", function () {
       destination++;          // the person re-aimed the draft; nothing asked before this is an answer about it
+      if (setupSession) personTyped = {session: setupSession, value: folder.value};
       folder.setCustomValidity(t("Select Use folder to check this location."));
       // Only a new task may choose its folder here; an existing thread's field is its saved
       // workspace (read-only unless it went missing), and a draft must never re-aim it.
@@ -13470,7 +13477,7 @@
           if (!r.ok || !data.ok) throw new Error(data.error || "HTTP " + r.status); return data;
         }); }).then(function () {
           if (setupSession !== sid) return;
-          workspaceMissing = false; folder.setCustomValidity("");
+          workspaceMissing = false; folder.setCustomValidity(""); personTyped = null;
           fields.workspace.value = "current"; delete window.runExplicitAxes.workspace;
           saveSetup(); openSession(sid);
         }).catch(function (error) {
