@@ -540,3 +540,19 @@ def test_a_github_call_that_times_out_is_reported_not_raised(root):
 
     _, sources, _ = rs.collect(context(root, options={"gh": Slow()}), [src.adapter("github")])
     assert sources[0]["state"] == "unavailable" and "too long" in sources[0]["reason"]
+
+
+def test_only_mail_from_people_or_that_gmail_marks_important_needs_the_person(root, google):
+    google.mail = [
+        _mail("p", "tp", "Can we move our call?", labels=("INBOX", "UNREAD", "CATEGORY_PERSONAL")),
+        _mail("n", "tn", "No tab at all", labels=("INBOX", "UNREAD")),
+        _mail("u", "tu", "Your order has shipped", labels=("INBOX", "UNREAD", "CATEGORY_UPDATES")),
+        _mail("i", "ti", "Your bill is due", labels=("INBOX", "UNREAD", "CATEGORY_UPDATES", "IMPORTANT")),
+        _mail("f", "tf", "New post in the forum", labels=("INBOX", "UNREAD", "CATEGORY_FORUMS")),
+    ]
+    kinds = {s["title"]: s["kind"] for s in src.gmail(context(root))["signals"]}
+    assert kinds == {"Can we move our call?": "needs_you", "No tab at all": "needs_you",
+                     "Your bill is due": "needs_you", "Your order has shipped": "fyi",
+                     "New post in the forum": "fyi"}
+    shipped = [s for s in src.gmail(context(root))["signals"] if s["title"] == "Your order has shipped"]
+    assert shipped[0]["evidence"].startswith("Gmail · Updates")

@@ -22,8 +22,10 @@ What each source may say, and what it must not:
   (``status()["can"]``) makes that one source unavailable, and a call that fails is mapped by
   the connector's own error types (``NeedsReconnect``, ``MissingScope``, ``GoogleAPIError``
   with its HTTP status...), never by its message.  Mail is recent inbox threads (the last 36
-  hours, promotions, social and drafts left out), and every word of it is ``untrusted``: the
-  sender wrote it.  The sender's address and the thread id ride along in ``meta`` for the
+  hours, promotions, social and drafts left out).  Unread mail needs the person only when it
+  is in Gmail's Primary tab or Gmail marked it IMPORTANT; unread Updates and Forums mail is
+  status (``fyi``), so a morning of notifications is not a morning of chores.  Every word of it
+  is ``untrusted``: the sender wrote it.  The sender's address and the thread id ride along in ``meta`` for the
   reply-draft step and go no further.  Calendar is today and the next seven days;
   invitations are written by whoever sent them, so they are ``untrusted`` too.
 * **github** -- through the ``gh`` CLI when it is installed and signed in: exactly two GraphQL
@@ -226,6 +228,9 @@ GMAIL_WINDOW_S = 36 * 3600
 GMAIL_LIMIT = 25
 GMAIL_QUERY = "in:inbox newer_than:2d -category:promotions -category:social -in:chats"
 _SKIP_LABELS = frozenset({"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "SPAM", "TRASH", "DRAFT"})
+#: Gmail's own tabs for mail machines send.  Unread there is not a thing to do unless Gmail
+#: itself marked the message IMPORTANT (bills, security alerts, ...).
+_AUTOMATED = {"CATEGORY_UPDATES": "Updates", "CATEGORY_FORUMS": "Forums"}
 CALENDAR_DAYS = 7
 CALENDAR_LIMIT = 50
 
@@ -385,11 +390,15 @@ def gmail(ctx):
     for thread, (when, row, name, address) in sorted(threads.items(),
                                                      key=lambda kv: -kv[1][0]):
         who = daily_brief._text(name, 60) or (address.split("@")[-1] if "@" in address else "")
+        labels = {str(label) for label in (row.get("labels") or []) if label}
+        tab = next((words for label, words in _AUTOMATED.items() if label in labels), "")
+        needs = bool(row.get("unread")) and (not tab or "IMPORTANT" in labels)
         signals.append(rs.make(
-            "gmail", thread, kind="needs_you" if row.get("unread") else "fyi",
+            "gmail", thread, kind="needs_you" if needs else "fyi",
             title=row.get("subject") or ("(没有主题)" if _zh(ctx) else "(no subject)"),
             detail=row.get("snippet"), when=when, link=gmail_thread_link(account, thread),
-            project="", evidence="Gmail · from %s" % who if who else "Gmail", untrusted=True,
+            project="", evidence=" · ".join(bit for bit in (
+                "Gmail", tab, "from %s" % who if who else "") if bit), untrusted=True,
             meta={"thread_id": thread, "sender": address, "sender_name": name,
                   "subject": daily_brief._text(row.get("subject"), 300)}))
     return {"signals": signals, "stats": {"threads": len(signals)}}
