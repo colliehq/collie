@@ -70,6 +70,7 @@ CONNECTION_FILE = "google-connection.json"
 PLAINTEXT_FILE = "google-token.json"          # what the first prototype left behind
 
 HTTP_TIMEOUT = 20
+EXCHANGE_GRACE = 3 * HTTP_TIMEOUT + 5           # a code exchange + account lookup, after the deadline
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024         # a long thread in format=full can be several MB
 MAX_SEARCH_RESULTS = 50
 MAX_QUERY_CHARS = 1000
@@ -767,14 +768,22 @@ class _Flow:
         self.client, self.state, self.verifier = client, state, verifier
         self.redirect_uri, self.port, self.state_dir = redirect_uri, port, state_dir
         self.lock, self.event = threading.Lock(), threading.Event()
-        self.claimed, self.error = False, None
+        self.claimed, self.closed, self.error = False, False, None
 
     def claim(self):
+        """Take the one redirect this sign-in accepts; refused once the deadline has closed it."""
         with self.lock:
-            if self.claimed:
+            if self.claimed or self.closed:
                 return False
             self.claimed = True
             return True
+
+    def close(self):
+        """The deadline passed: accept no redirect from now on. True when one is already being
+        exchanged, which the caller then waits for instead of reporting that nothing was saved."""
+        with self.lock:
+            self.closed = True
+            return self.claimed
 
     def finish(self, code):
         """Exchange the code, record the grant and return the success page."""
@@ -857,7 +866,8 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             # sign-in. It is refused on its own and the wait continues for Google's redirect.
             return self._reply(400, failure_page("state_mismatch"), "text/html; charset=utf-8")
         if not flow.claim():
-            return self._reply(409, "This sign-in was already handled. You can close this tab.")
+            return self._reply(409, "This sign-in has already finished or expired. You can close "
+                                    "this tab; to connect again, run `collie google connect`.")
         status_code = 200
         try:
             if verdict == "code":
@@ -930,6 +940,10 @@ def connect(open_browser=webbrowser.open, *, timeout=300, announce=None, login_h
         except Exception:
             pass
         finished = flow.event.wait(max(1, int(timeout or 300)))
+        if not finished and flow.close():
+            # The code arrived in time and its exchange is still running: its outcome, not the
+            # clock, decides what to report. The exchange makes at most two bounded requests.
+            finished = flow.event.wait(EXCHANGE_GRACE)
     finally:
         server.shutdown()
         server.server_close()

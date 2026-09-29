@@ -278,6 +278,34 @@ def test_connect_times_out_cleanly(env):
     assert info.value.code == "timeout"
 
 
+def test_a_code_that_arrives_before_the_deadline_is_waited_for(env):
+    # The exchange outlives the timeout. connect() must not report "Nothing was saved" while it
+    # is still saving.
+    import time as _time
+    _exchange(env)
+    fast = env["fake"].routes[("POST", gc.TOKEN_URI)][2]
+
+    def slow(method, url, headers, data):
+        _time.sleep(2)
+        return fast(method, url, headers, data)
+    env["fake"].on("POST", gc.TOKEN_URI, fn=slow)
+    browser, seen = _browser(env, lambda q: q["redirect_uri"] + "/?" + urllib.parse.urlencode(
+        {"state": q["state"], "code": "4/auth-code"}))
+    st = gc.connect(open_browser=browser, timeout=1)
+    seen["thread"].join(10)
+    assert st["state"] == "connected" and seen["status"] == 200
+
+
+def test_a_redirect_after_the_deadline_is_not_exchanged():
+    flow = gc._Flow(client={}, state="s", verifier="v", redirect_uri="http://127.0.0.1:1",
+                    port=1, state_dir=None)
+    assert flow.close() is False          # nothing in flight when the deadline passed
+    assert flow.claim() is False          # so a late redirect cannot start an exchange
+    late = gc._Flow(client={}, state="s", verifier="v", redirect_uri="http://127.0.0.1:1",
+                    port=1, state_dir=None)
+    assert late.claim() is True and late.close() is True
+
+
 def test_connect_announces_the_url_when_the_browser_cannot_open(env):
     _exchange(env)
     announced = []
