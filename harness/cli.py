@@ -1796,6 +1796,65 @@ def cmd_mail(args):
     return 1
 
 
+_GOOGLE_STATES = {"connected": "connected", "missing_scope": "connected, but some access was not allowed",
+                  "needs_reconnect": "needs you to connect again", "not_connected": "not connected",
+                  "not_configured": "not set up on this computer"}
+_GOOGLE_STORAGE = {"dpapi": "on this computer, sealed for your Windows account (DPAPI)",
+                   "keychain": "on this computer, in your macOS login Keychain",
+                   "file": "on this computer, in a file only you can read"}
+
+
+def _print_google_status(st):
+    who = (" as %s" % st["account"]) if st.get("account") else ""
+    print("Google: %s%s" % (_GOOGLE_STATES.get(st["state"], st["state"]), who))
+    if st["state"] in ("connected", "missing_scope", "needs_reconnect"):
+        can = st.get("can") or {}
+        for key, words in (("gmail_read", "Gmail: read your mail"),
+                           ("gmail_drafts", "Gmail: write drafts (Collie never sends)"),
+                           ("calendar_read", "Calendar: read your events")):
+            print("  %s %s" % (("✓", words) if can.get(key) else
+                               ("✗", words + " — not allowed")))
+        if st.get("storage"):
+            print("  Stored %s." % _GOOGLE_STORAGE.get(st["storage"], "on this computer"))
+    if st["state"] != "connected" and st.get("message"):
+        print(st["message"])
+    if st.get("error"):
+        print("(Collie could not check with Google just now: %s)" % st["error"])
+
+
+def cmd_google(args):
+    """collie google connect | status | disconnect — Collie's own Google connection.
+
+    It reads recent mail and the calendar for the morning report and can leave reply drafts in
+    Gmail. It never sends: there is no send call in harness/google_connect.py at all.
+    """
+    from . import google_connect as gc
+    act = args.google_action
+    if act == "status":
+        st = gc.status(check=True)
+        _print_google_status(st)
+        return 0 if st["state"] in ("connected", "missing_scope") else 1
+    if act == "disconnect":
+        print(gc.disconnect()["message"])
+        return 0
+    import webbrowser
+    print("Connecting Collie to Google: Gmail (read your mail and write drafts; Collie never "
+          "sends) and Calendar (read your events).")
+
+    def announce(url):
+        print("Opening Google's sign-in page in your browser. If it does not open, visit:\n  %s"
+              % url)
+        print("Waiting for you to finish there (up to %d seconds)..." % args.timeout, flush=True)
+    opener = (lambda url: False) if args.no_browser else webbrowser.open
+    try:
+        st = gc.connect(open_browser=opener, timeout=args.timeout, announce=announce)
+    except gc.GoogleError as exc:
+        print(str(exc))
+        return 1
+    _print_google_status(st)
+    return 0 if st["state"] in ("connected", "missing_scope") else 1
+
+
 def cmd_record(args):
     """Screen recording with a circular webcam bubble + mic (Loom / Reframe style), via ffmpeg.
     Sub-actions: start (default) / stop / status / devices. See harness/record.py."""
@@ -4833,7 +4892,7 @@ CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "runners", 
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
         "activity", "doctor", "resilience", "recovery", "hooks", "supervisor", "automations", "library",
-        "online", "routine"}
+        "online", "routine", "google"}
 
 
 def _setup_wizard(force=False):
@@ -5181,6 +5240,16 @@ def main(argv=None):
     pml.add_argument("--sender", default="", help="for `wait`: match the sender")
     pml.add_argument("--timeout", type=int, default=180, help="for `wait`: seconds (default 180)")
     pml.set_defaults(fn=cmd_mail)
+
+    # google: Collie's own Google connection (Gmail read + drafts, Calendar read) for the report
+    pgo = sub.add_parser("google", help="connect Gmail and Calendar for your morning report "
+                                        "(connect | status | disconnect)")
+    pgo.add_argument("google_action", choices=["connect", "status", "disconnect"])
+    pgo.add_argument("--timeout", type=int, default=300,
+                     help="for `connect`: seconds to wait for you in the browser (default 300)")
+    pgo.add_argument("--no-browser", dest="no_browser", action="store_true",
+                     help="for `connect`: only print the sign-in link")
+    pgo.set_defaults(fn=cmd_google)
 
     # record: Loom/Reframe-style screen capture with a circular webcam bubble + mic, via ffmpeg
     prc = sub.add_parser("record", help="screen recording with a circular webcam bubble + mic "
