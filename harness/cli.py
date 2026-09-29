@@ -2826,6 +2826,42 @@ def cmd_activity(args):
     return 0 if (not args.health or value.get("ok")) else 1
 
 
+def cmd_report(args):
+    """collie report build | preview — the morning report (harness/morning_report.py).
+
+    build reads every source, writes the morning with the configured model, puts reply drafts
+    into Gmail when allowed, and saves it; it prints sources and counts, never an item's words.
+    preview renders the latest saved report as the email's HTML to a file and prints the path.
+    """
+    from . import controlplane, morning_report
+    root = controlplane.state_dir()
+    if args.report_action == "build":
+        report = morning_report.build(state_dir=root, drafts=not args.no_drafts,
+                                      dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=1))
+            return 0
+        saved = "" if args.dry_run else os.path.join(morning_report.report_dir(root),
+                                                      "%s.json" % report["date"])
+        for line in morning_report.describe(report, saved):
+            print(line)
+        return 0
+    report = morning_report.load_latest(root)
+    if report is None:
+        print("There is no morning report yet. Make one with: collie report build",
+              file=sys.stderr)
+        return 1
+    from . import morning_report_email
+    out = os.path.abspath(args.out or os.path.join(morning_report.report_dir(root),
+                                                   "preview.html"))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    rendered = morning_report_email.render(report, avatar="data")
+    with open(out, "w", encoding="utf-8") as handle:
+        handle.write(rendered["html"])
+    print(out)
+    return 0
+
+
 def cmd_doctor(args):
     """Explain version drift, delivery stalls and recovery state without changing anything."""
     from .doctor import repair, report
@@ -4833,7 +4869,7 @@ CMDS = {"selftest", "run", "prefix", "pack", "compare", "harnesses", "runners", 
         "loop", "repl", "tui", "web", "app", "wallpaper", "browser-bridge", "slack", "record", "mcp", "mail", "init",
         "setup", "jobs", "mission", "config", "uninstall", "update", "menubar", "risk", "inbox", "trust", "audit",
         "activity", "doctor", "resilience", "recovery", "hooks", "supervisor", "automations", "library",
-        "online", "routine"}
+        "online", "routine", "report"}
 
 
 def _setup_wizard(force=False):
@@ -5348,6 +5384,19 @@ def main(argv=None):
     pact.add_argument("--no-probe", action="store_true",
                       help="skip live HTTP probes when using --health")
     pact.set_defaults(fn=cmd_activity)
+
+    prep = sub.add_parser(
+        "report", help="the morning report: build it from every source, or preview it as email")
+    prep.add_argument("report_action", choices=["build", "preview"])
+    prep.add_argument("--no-drafts", action="store_true",
+                      help="for build: do not put reply drafts into Gmail")
+    prep.add_argument("--dry-run", action="store_true",
+                      help="for build: read and compose, but save nothing and make no drafts")
+    prep.add_argument("--json", action="store_true", help="for build: print the whole report")
+    prep.add_argument("--out", default="",
+                      help="for preview: the HTML file to write "
+                           "(default: ~/.collie/morning-report/preview.html)")
+    prep.set_defaults(fn=cmd_report)
 
     pdoc = sub.add_parser(
         "doctor", help="diagnose version drift, stalled delivery, credentials and durable stores")

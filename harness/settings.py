@@ -332,6 +332,29 @@ SCHEMA = [
      "hint": "Let your phone drive this Collie from anywhere, via the relay. When on, remote starts automatically whenever Collie's web server runs — manage paired devices on the /remote panel. Off cuts all remote access.",
      "hint_zh": "让手机在任何地方通过 relay 控制这台 Collie。开启后，每次 Collie 的 web 服务启动都会自动开远程；在 /remote 面板管理已配对设备。关闭即切断所有远程访问。"},
 
+    # The morning report (harness/morning_report.py). Read by `collie report build`; not in the
+    # web Settings panel yet, so `collie config REPORT_NAME Daming` or COLLIE_REPORT_* sets them.
+    {"group": "Morning report", "key": "REPORT_NAME", "label": "What your Collie calls you",
+     "label_zh": "晨报里怎么称呼你", "type": "text", "default": "", "max": "32",
+     "hint": "The name the morning report greets you by. Empty greets you without a name.",
+     "hint_zh": "晨报问候你时用的名字。留空则不带名字。"},
+    {"group": "Morning report", "key": "REPORT_PROJECT_ROOTS", "label": "Project folders to look through",
+     "label_zh": "晨报要查看的项目文件夹", "type": "text", "default": "",
+     "hint": "Folders whose git repositories (up to two levels down) the morning report checks for "
+             "old uncommitted changes and unpushed commits, separated by ; on Windows or : on macOS "
+             "and Linux. Empty uses the folders holding Collie's recent workspaces plus ~/workspace, "
+             "~/code, ~/projects and ~/src. Git is only read, never changed.",
+     "hint_zh": "晨报会检查这些文件夹里（最多往下两层）的 git 仓库，看有没有放了很久没提交的改动、没推送的提交。"
+                "Windows 上用 ; 分隔，macOS 和 Linux 上用 : 分隔。留空则用 Collie 最近工作过的目录所在的文件夹，"
+                "加上 ~/workspace、~/code、~/projects 和 ~/src。只读取，不会改动任何仓库。"},
+    {"group": "Morning report", "key": "REPORT_GMAIL_DRAFTS", "label": "Put reply drafts in Gmail",
+     "label_zh": "把回复草稿放进 Gmail", "type": "bool", "default": "on",
+     "hint": "When Google is connected, the morning report writes suggested replies to recent mail "
+             "into your Gmail drafts, addressed only to the person who wrote to you. It never sends "
+             "anything; you review and send each one yourself.",
+     "hint_zh": "连接 Google 后，晨报会把建议的回复写进你的 Gmail 草稿箱，收件人只会是给你写信的那个人。"
+                "它从不发送任何邮件，每一封都由你自己看过再发。"},
+
     {"group": "Updates", "key": "UPDATE_CHECK", "label": "Check for updates automatically",
      "label_zh": "自动检查更新", "type": "bool", "default": "off",
      "hint": "About once a day, ask GitHub (api.github.com) whether a newer Collie release exists and "
@@ -397,7 +420,8 @@ _ZH = {
 }
 # group headers, for the panel
 GROUPS_ZH = {"Identity": "身份", "General": "通用", "Model": "模型", "Tools": "工具", "Desktop": "桌面", "Remote": "远程",
-             "Retrieval": "检索", "Autonomy": "自主", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能"}
+             "Retrieval": "检索", "Autonomy": "自主", "Limits": "限额", "Privacy": "隐私", "Reliability": "可靠性", "Skills": "技能",
+             "Morning report": "晨报"}
 for _s in SCHEMA:
     _t = _ZH.get(_s["key"])
     if not _t:

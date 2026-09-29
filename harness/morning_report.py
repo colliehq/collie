@@ -778,6 +778,44 @@ def write_snapshot(report, root):
     return path
 
 
+def describe(report, saved=""):
+    """What a terminal may say about a report: sources, counts and where it went -- never the
+    words of an item, a subject line or an address."""
+    composer = (report.get("provenance") or {}).get("composer") or {}
+    if composer.get("mode") == "model":
+        by = "the model (%s / %s)" % (composer.get("provider") or "?", composer.get("model") or "?")
+    else:
+        by = "the signals alone (%s)" % (composer.get("error") or "no model")
+    lines = ["Morning report for %s, written by %s" % (report.get("date"), by), "Sources:"]
+    for row in (report.get("provenance") or {}).get("sources") or []:
+        stats = ", ".join("%s %s" % (value, key) for key, value in (row.get("stats") or {}).items())
+        lines.append("  %s: %s%s%s" % (row.get("label") or row.get("name"), row.get("state"),
+                                        " (%s)" % row["reason"] if row.get("reason") else "",
+                                        " [%s]" % stats if stats else ""))
+    sections = report.get("sections") or {}
+    names = (("wins", "win", "wins"), ("yours", "for you", "for you"),
+             ("ready", "ready", "ready"), ("projects", "project", "projects"),
+             ("reads", "read", "reads"))
+    parts = []
+    for key, one, many in names:
+        part = sections.get(key) or {}
+        count, more = len(part.get("items") or []), int(part.get("more") or 0)
+        parts.append("%d %s%s" % (count, one if count == 1 else many,
+                                  " (+%d more)" % more if more else ""))
+    lines.append("Sections: %s; %d things today; grounding dropped %d" % (
+        ", ".join(parts), int(report.get("things_today") or 0),
+        len(composer.get("dropped") or [])))
+    drafts = (report.get("provenance") or {}).get("drafts") or {}
+    if drafts.get("requested"):
+        lines.append("Drafts: %d created, %d reused, %d failed%s" % (
+            drafts.get("created", 0), drafts.get("reused", 0), drafts.get("failed", 0),
+            " (%s)" % drafts["reason"] if drafts.get("reason") else ""))
+    else:
+        lines.append("Drafts: none were needed")
+    lines.append("Saved: %s" % saved if saved else "Dry run: nothing was saved and no drafts were made.")
+    return lines
+
+
 # ---------------------------------------------------------------- build
 
 
