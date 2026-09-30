@@ -1304,6 +1304,7 @@ class CollieWallpaper : Form
 
     void CheckCovered()
     {
+        if (IsDisposed || _web == null || _web.IsDisposed) { _coverTimer.Stop(); return; }
         bool covered = false;
         try { covered = ForegroundCoversWallpaper(); } catch { }
         // Pause after a second of cover (an Alt+Tab passing over a window is no reason); resume on
@@ -1366,16 +1367,20 @@ class CollieWallpaper : Form
                 }
             }
             catch (Exception ex) { Log("cover still failed: " + ex.Message); }
-            if (gen != _coverGen) return;
-            _web.Visible = false;                           // CoreWebView2Controller.IsVisible: stops rendering
+            // async void: anything thrown from here on would take the whole host down, and the
+            // form can be closing by the time the frame arrives.
+            if (gen != _coverGen || IsDisposed || _web.IsDisposed) return;
+            try { _web.Visible = false; }                   // CoreWebView2Controller.IsVisible: stops rendering
+            catch (Exception ex) { Log("cover pause failed: " + ex.Message); return; }
             Log("covered: rendering paused");
             return;
         }
-        _web.Visible = true;
+        try { _web.Visible = true; }
+        catch (Exception ex) { Log("cover resume failed: " + ex.Message); return; }
         Log("uncovered: rendering resumed");
         // Drop the still once the live page has painted over it.
         var drop = new Timer(); drop.Interval = 1500;
-        drop.Tick += delegate { drop.Stop(); drop.Dispose(); if (gen == _coverGen) SetStill(null); };
+        drop.Tick += delegate { drop.Stop(); drop.Dispose(); if (gen == _coverGen && !IsDisposed) SetStill(null); };
         drop.Start();
     }
 
