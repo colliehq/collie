@@ -321,12 +321,21 @@ def test_a_late_language_answer_restates_todays_headline_in_that_language(ui):
     what it claims: still progress, still nothing to decide."""
     written = _writes(ui.page)
     row = _today_after_rows(ui, "zh", [_row("auto-waiting", scheduled_wait=_wait())])
+    row.focus()
     ui.page.evaluate("() => window.releaseLanguageSettings()")
     summary = ui.page.locator("#todaySummary")
     expect(summary).to_contain_text("任务已安排自动处理")
     expect(summary).not_to_contain_text("正在整理今天")
     expect(ui.page.locator("#todayAttentionTitle")).to_have_text("任务进度")
-    assert row.evaluate("el => el.isConnected") is True
+    # The rows and cards under that headline speak the same language. They used to keep the
+    # words of the first render ("Already submitted — starts after …" under a Chinese headline:
+    # a Windows run caught it when the settings answer was slow).
+    attention = ui.page.locator("#todayAttention")
+    expect(attention).to_contain_text("已提交，将在此时间后开始")
+    expect(attention).not_to_contain_text("Already submitted")
+    expect(ui.page.locator("#todayBrief button")).to_contain_text("打开每日简报")
+    # ...relabelled where it stands: the same node, still the one with focus.
+    assert row.evaluate("el => el.isConnected && document.activeElement === el") is True
     assert written == [] and _Fixture.queue_posts == [] and _Fixture.queue_starts == []
 
 
