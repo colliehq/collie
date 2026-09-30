@@ -143,3 +143,36 @@ def test_timeline_reads_the_parent_and_uses_index_for_fork_navigation(store, mon
     timeline=sessions.timeline('parent')
     assert timeline['children'][0]['title']=='Alternate approach'
     assert reads==['parent.json']
+
+
+def test_listing_resolves_the_store_once_not_every_file(store, monkeypatch):
+    # The desktop asks for Activity every five seconds. Two realpath calls and a makedirs for
+    # each saved conversation were most of what that cost on Windows.
+    for sid in ("a", "b", "c", "d"):
+        save(sid)
+    sessions.recent()
+    resolved = []
+    original = os.path.realpath
+    monkeypatch.setattr(os.path, "realpath", lambda p, *a, **k: (resolved.append(p), original(p, *a, **k))[1])
+    assert sorted(row["id"] for row in sessions.recent()) == ["a", "b", "c", "d"]
+    assert sessions.active_runs() == []
+    assert resolved == []
+
+
+def test_listing_still_refuses_a_session_file_that_leads_out_of_the_store(store, tmp_path_factory):
+    save("inside")
+    outside = tmp_path_factory.mktemp("elsewhere") / "outside.json"
+    outside.write_text((store / "inside.json").read_text(encoding="utf-8"), encoding="utf-8")
+    try:
+        os.symlink(str(outside), str(store / "planted.json"))
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip("file symlinks unavailable here: %s" % exc)
+    assert [row["id"] for row in sessions.recent()] == ["inside"]
+    assert sessions._path("planted") is None
+
+
+def test_listing_skips_names_that_are_not_plain_ids(store):
+    save("kept")
+    (store / "has space.json").write_text("{}", encoding="utf-8")
+    (store / ".json").write_text("{}", encoding="utf-8")
+    assert [row["id"] for row in sessions.recent()] == ["kept"]

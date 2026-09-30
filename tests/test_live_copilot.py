@@ -575,3 +575,42 @@ def test_default_registry_exposes_live_copilot_not_a_meeting_adapter(monkeypatch
     names = default_registry().names()
     assert "live_copilot" in names
     assert "interview_assist" not in names
+
+
+def test_idle_loops_read_the_state_file_once_until_it_changes(tmp_path, monkeypatch):
+    # Both loops wake several times a second for as long as Collie runs. With no session live
+    # they parsed the whole file -- hundreds of KB once a session has run -- on every wake-up.
+    from harness import live_copilot
+    from harness.live_copilot import LiveCopilotRuntime, LiveSessionStore, run_voice_dialogue_once
+
+    store = LiveSessionStore(tmp_path)
+    store.start(listen=False, consent=False, observe_apps=False, voice_dialogue=True)
+    store.add_event(source="you", kind="speech", text="earlier words")
+    store.stop()
+    reads = []
+    original = LiveSessionStore._read
+    monkeypatch.setattr(LiveSessionStore, "_read", lambda self: (reads.append(1), original(self))[1])
+    runtime = LiveCopilotRuntime(tmp_path, analyzer=lambda _payload: {},
+                                 debounce_ms=0, min_interval_ms=0)
+    for _ in range(5):
+        assert runtime.tick() is False
+        assert run_voice_dialogue_once(
+            tmp_path, analyzer=lambda _payload: pytest.fail("no session, no answer")) is False
+    assert len(reads) == 2                                   # one look for each loop
+
+    store.start(listen=False, consent=False, observe_apps=False, voice_dialogue=True)
+    spoken = store.add_event(source="you", kind="speech", text="现在出什么？")
+    assert run_voice_dialogue_once(tmp_path, analyzer=lambda _payload: "先补披风。") is True
+    assert store.snapshot()["suggestions"][-1]["source_event_id"] == spoken["id"]
+    reads.clear()
+    runtime.tick()
+    assert reads                                             # the new session is read at once
+
+    # Answered and unchanged: the dialogue loop is idle again, until the file is read anyway.
+    run_voice_dialogue_once(tmp_path, analyzer=lambda _payload: pytest.fail("answered twice"))
+    reads.clear()
+    run_voice_dialogue_once(tmp_path, analyzer=lambda _payload: pytest.fail("answered twice"))
+    assert reads == []
+    monkeypatch.setattr(live_copilot, "IDLE_RECHECK_SECONDS", 0)
+    run_voice_dialogue_once(tmp_path, analyzer=lambda _payload: pytest.fail("answered twice"))
+    assert reads

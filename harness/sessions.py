@@ -12,6 +12,7 @@ import json
 import math
 import os
 import random
+import stat as statmod
 import threading
 import time
 
@@ -66,18 +67,51 @@ def _path(sid, directory=None):
     Reject traversal rather than normalising it: collapsing ``../../victim`` to ``victim`` stays
     inside the directory, but gives the hostile id authority over a different, valid session.
     Returns None for anything that isn't a short, plain id."""
-    if not isinstance(sid, str):
-        return None
-    name = sid
-    if (not name or len(name) > 128 or name in (".", "..")
-            or any(c in "/\\\x00:" for c in name)
-            or not all(c.isalnum() or c in "-_." for c in name)):
+    if not _plain_id(sid):
         return None
     d = _dir(directory)
-    p = os.path.join(d, name + ".json")
+    p = os.path.join(d, sid + ".json")
     if os.path.dirname(os.path.realpath(p)) != os.path.realpath(d):
         return None
     return p
+
+
+def _plain_id(sid):
+    return (isinstance(sid, str) and bool(sid) and len(sid) <= 128 and sid not in (".", "..")
+            and not any(c in "/\\\x00:" for c in sid)
+            and all(c.isalnum() or c in "-_." for c in sid))
+
+
+def _listed_session(d, name):
+    """``(sid, path, stat)`` for a ``<id>.json`` entry of ``os.listdir(d)``, or None.
+
+    What ``_path`` checks, without resolving every file of the store on every listing: two
+    realpath calls and a makedirs per file were most of what the desktop's five-second Activity
+    poll cost on Windows. A plain file listed in the store is inside it; only a link can lead
+    elsewhere, and a link still has to pass ``_path``.
+    """
+    sid = name[:-5]
+    if not name.endswith(".json") or not _plain_id(sid):
+        return None
+    path = os.path.join(d, name)
+    try:
+        stat = os.lstat(path)
+    except OSError:
+        return None
+    if _is_link(stat):
+        path = _path(sid, d)
+        if not path:
+            return None
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+    return sid, path, stat
+
+
+def _is_link(stat):
+    return statmod.S_ISLNK(stat.st_mode) or bool(
+        getattr(stat, "st_file_attributes", 0) & getattr(statmod, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
 def store_root(state_dir=None):
@@ -1142,17 +1176,9 @@ def _indexed_rows(n=None, directory=None):
     d = _dir(directory)
     files = []
     for name in os.listdir(d):
-        if not name.endswith(".json"):
-            continue
-        sid = name[:-5]
-        path = _path(sid, d)
-        if not path:
-            continue
-        try:
-            stat = os.stat(path)
-        except OSError:
-            continue
-        files.append((sid, path, stat))
+        listed = _listed_session(d, name)
+        if listed:
+            files.append(listed)
     files.sort(key=lambda item: item[2].st_mtime_ns, reverse=True)
     selected = files if n is None else files[:max(0, int(n))]
     stamps = {sid: session_index.fingerprint(stat) for sid, _, stat in selected}
