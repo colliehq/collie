@@ -719,6 +719,41 @@ def _type_into_focused_field(text, *, hwnd, pid) -> str:
     return control or "Edit"
 
 
+# The Live ticker and the voice-dialogue loop wake five times a second for as long as Collie runs,
+# and each wake-up parsed the whole state file -- hundreds of KB once a session has run, since its
+# events stay in the file -- only to find nothing to do. Each loop now remembers the file it last
+# found idle; while the file is that same one, there is nothing new to read. Every write replaces
+# the file (os.replace in _write), so any change is a new identity; the file is read again every
+# IDLE_RECHECK_SECONDS all the same, in case something else rewrote it in place.
+IDLE_RECHECK_SECONDS = 30.0
+_IDLE_STAMPS: dict = {}
+
+
+def _file_stamp(path):
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return ("missing",)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def _still_idle(lane, path) -> bool:
+    seen = _IDLE_STAMPS.get((lane, path))
+    return (seen is not None and time.monotonic() - seen[1] < IDLE_RECHECK_SECONDS
+            and _file_stamp(path) == seen[0])
+
+
+def _note_idle(lane, path, stamp) -> None:
+    """Call inside the store's transaction, with the stamp taken before the read that found the
+    loop idle, so no write can fall between the two."""
+    if stamp is None:
+        _IDLE_STAMPS.pop((lane, path), None)
+    else:
+        _IDLE_STAMPS[(lane, path)] = (stamp, time.monotonic())
+
+
 class LiveSessionStore:
     def __init__(self, root=None):
         root = os.path.abspath(os.path.expanduser(root or _state_root()))
@@ -2544,18 +2579,26 @@ def analyze_dialogue_payload(payload: dict, *, cancelled=None) -> str:
 
 def run_voice_dialogue_once(root=None, analyzer=None) -> bool:
     store = LiveSessionStore(root)
+    if _still_idle("dialogue", store.path):
+        return False
     now = _now_ms()
     with store._transaction():
+        stamp = _file_stamp(store.path)
         value = store._read()
+        # Everything up to the busy lane depends on the file alone: until it changes, the answer
+        # stays no.
         if not value.get("active") or not value.get("voice_dialogue"):
+            _note_idle("dialogue", store.path, stamp)
             return False
         speech = [row for row in value.get("events") or []
                   if row.get("source") == "you" and row.get("kind") == "speech"]
         if not speech:
+            _note_idle("dialogue", store.path, stamp)
             return False
         latest = speech[-1]
         analysis = dict(value.get("analysis") or {})
         if analysis.get("dialogue_last_event_id") == latest.get("id"):
+            _note_idle("dialogue", store.path, stamp)
             return False
         if _lane_busy(store, analysis, "dialogue_", now=now):
             return False
@@ -2878,10 +2921,14 @@ class LiveCopilotRuntime:
         return {"page": page, "visual": visual}
 
     def tick(self) -> bool:
+        if _still_idle("ticker", self.store.path):
+            return False
         now = _now_ms()
         with self.store._transaction():
+            stamp = _file_stamp(self.store.path)
             value = self.store._read()
             if not value.get("active"):
+                _note_idle("ticker", self.store.path, stamp)
                 return False
             if int(value.get("expires_at_ms") or 0) and now >= int(value["expires_at_ms"]):
                 self.store.stop(reason="max_duration", stopped_from="automatic")
