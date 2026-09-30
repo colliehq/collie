@@ -47,7 +47,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from . import plat, sessions
+from . import html_text, plat, sessions
 from .controlplane import state_dir as _state_dir
 from .httpserver import ThreadingHTTPServer
 
@@ -1116,57 +1116,11 @@ def gmail_search(query: str, max_results: int = 20, *, state_dir=None) -> list:
 # alternatives cannot overlap, checked against HTML_TIME_BUDGET as it goes.
 MAX_HTML_CHARS = 64 * 1024
 HTML_TIME_BUDGET = 0.25                                  # seconds
-_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-_DROPPED_BLOCK = re.compile(r"<(script|style|head|title|noscript|template)(?=[\s/>]|$)")
-_HTML_TOKEN = re.compile(r"<[^<>]*>|[^<]+|<")
-_TAG_NAME = re.compile(r"<\s*/?\s*([A-Za-z][A-Za-z0-9]*)")
-_BREAKS = {"br", "p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "section", "article",
-           "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "hr"}
-
-
-def _drop_invisible(markup):
-    """Markup without comments and script/style/head/title blocks, in linear time."""
-    low = markup.translate(_ASCII_LOWER)                 # same length as markup, unlike .lower()
-    out, i, end = [], 0, len(markup)
-    while i < end:
-        j = markup.find("<", i)
-        if j < 0:
-            out.append(markup[i:])
-            break
-        out.append(markup[i:j])
-        if low.startswith("<!--", j):
-            k = low.find("-->", j + 4)
-            i = end if k < 0 else k + 3
-            continue
-        block = _DROPPED_BLOCK.match(low, j)
-        if block:
-            k = low.find("</" + block.group(1), block.end())
-            k = -1 if k < 0 else low.find(">", k)
-            i = end if k < 0 else k + 1                  # unclosed: the rest is inside it
-            continue
-        out.append("<")
-        i = j + 1
-    return "".join(out)
-
-
 def _html_text(markup, budget=None):
-    """(text, complete) from an HTML body. ``complete`` is False when the size cap or the time
-    budget stopped the reading early."""
-    deadline = time.monotonic() + (HTML_TIME_BUDGET if budget is None else budget)
-    visible = _drop_invisible(markup)
-    complete = len(visible) <= MAX_HTML_CHARS
-    parts = []
-    for count, match in enumerate(_HTML_TOKEN.finditer(visible, 0, MAX_HTML_CHARS)):
-        if count % 64 == 0 and time.monotonic() >= deadline:
-            return "".join(parts), False
-        token = match.group(0)
-        if len(token) > 1 and token[0] == "<":
-            name = _TAG_NAME.match(token)
-            if name and name.group(1).lower() in _BREAKS:
-                parts.append("\n")
-            continue                                     # any other tag, doctype or CDATA marker
-        parts.append(html.unescape(token))
-    return "".join(parts), complete
+    """(text, complete) from an HTML body; see harness/html_text.py. ``complete`` is False when
+    the size cap or the time budget stopped the reading early."""
+    return html_text.readable(markup, max_chars=MAX_HTML_CHARS,
+                              budget=HTML_TIME_BUDGET if budget is None else budget)
 
 
 def _tidy(text):

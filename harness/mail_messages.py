@@ -8,12 +8,15 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import getaddresses
 import hashlib
-from html.parser import HTMLParser
 import re
+
+from . import html_text
 
 MAX_MAIL_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 128_000
 MAX_TEXT_BYTES = 64 * 1024
+MAX_HTML_READ_CHARS = 1024 * 1024       # visible markup read from an HTML-only body
+HTML_READ_BUDGET = 2.0                   # seconds
 MAX_ATTACHMENTS = 16
 MAX_PARTS = 64
 #: The receiving server's authentication verdict, kept only as long as it is useful.
@@ -40,29 +43,6 @@ _HTML_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 class MailFormatError(ValueError):
     pass
-
-
-class _ReadableHTML(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.hidden = 0
-        self.parts = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in {"script", "style", "head"}:
-            self.hidden += 1
-        elif not self.hidden and tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3"}:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in {"script", "style", "head"} and self.hidden:
-            self.hidden -= 1
-        elif not self.hidden and tag in {"p", "div", "li", "tr"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if not self.hidden:
-            self.parts.append(data)
 
 
 def address(value):
@@ -101,9 +81,12 @@ def _text(part):
     if not isinstance(value, str):
         return ""
     if part.get_content_type() == "text/html":
-        parser = _ReadableHTML()
-        parser.feed(value)
-        value = "".join(parser.parts)
+        # The sender wrote this markup; html.parser is quadratic on some of it in the runtime
+        # Collie ships (see html_text). Read it in bounded time, and refuse rather than keep half.
+        value, complete = html_text.readable(value, max_chars=MAX_HTML_READ_CHARS,
+                                             budget=HTML_READ_BUDGET)
+        if not complete:
+            raise MailFormatError("email HTML is too large to read safely; nothing was truncated")
     if len(value) > MAX_TEXT_CHARS or len(value.encode("utf-8")) > MAX_TEXT_BYTES:
         raise MailFormatError("email text exceeds the supported size; nothing was truncated")
     return value.strip()

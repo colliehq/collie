@@ -5139,8 +5139,9 @@
     // Today's date, greeting, headline, source line and freshness are derived from the day,
     // so the sweep above could only restore the placeholders they started as — and the
     // settings answer usually lands after Today has already rendered. Re-state them from the
-    // facts that render derived; nothing is refetched and no row is rebuilt.
-    if (typeof renderTodayHeadline === "function") renderTodayHeadline();
+    // facts that render derived, and, when the language is new, the rows, empty states and
+    // cards in the nodes they stand in; nothing is refetched and no row is rebuilt.
+    if (typeof relabelToday === "function") relabelToday();
   }
   // boot: pick the language up from saved settings once, then patch the chrome
   fetch("/api/settings").then(function (r) { return r.json(); }).then(function (d) {
@@ -10267,6 +10268,13 @@
   var WELCOME_HTML = $("welcome").outerHTML;
   var TODAY_VISIBLE_REFRESH_MS = 60000;
   var todayLastLoaded = 0, todayLoading = false;
+  // Today's rows, empty states and cards are written in whatever language t() speaks when they
+  // render, and the settings answer that picks the language usually lands after that. The
+  // headline was re-stated then; the rows were not, so a Chinese desktop kept "Already submitted
+  // — starts after Dec 3" under a Chinese headline. relabelToday() re-derives the same content
+  // from the values the last render used and writes the new words into the nodes that already
+  // stand: a row a person is reading or has focused stays that node. Nothing is refetched.
+  var todayValues = null, todayValuesLang = "", todayRelabelling = false;
 
   function todayLocale() {
     return UI_LANG === "zh" ? "zh-CN" : UI_LANG === "zh-tw" ? "zh-TW" :
@@ -10305,6 +10313,14 @@
   }
   function todayEmpty(container, title, detail, action, label) {
     if (!container) return;
+    var standing = container.children.length === 1 && container.firstElementChild.classList.contains("today-empty")
+      ? container.firstElementChild : null;
+    if (todayRelabelling && standing && !!standing.querySelector("button") === !!action) {
+      standing.querySelector("strong").textContent = t(title);
+      standing.querySelector("span").textContent = t(detail);
+      if (action) { var again = standing.querySelector("button"); again.textContent = t(label); again.onclick = action; }
+      return;
+    }
     container.textContent = "";
     var box = document.createElement("div"); box.className = "today-empty";
     var strong = document.createElement("strong"); strong.textContent = t(title); box.appendChild(strong);
@@ -10328,6 +10344,32 @@
     if (value.action) row.onclick = value.action;
     container.appendChild(row);
   }
+  function todayRelabelRow(row, value) {
+    row.querySelector(".today-row-icon").textContent = value.icon || "·";
+    row.querySelector(".today-row-title").textContent = value.title || "";
+    var meta = row.querySelector(".today-row-meta"); meta.textContent = value.meta || ""; meta.title = value.meta || "";
+    if (value.action) row.onclick = value.action;
+  }
+  // The rows of one Today list. On a relabel the same items in the same shape keep their nodes;
+  // an empty list leaves its empty state to todayEmpty, and anything else is built afresh.
+  function todayFill(box, items) {
+    if (todayRelabelling) {
+      var rows = box.querySelectorAll(":scope > .today-row");
+      if (!items.length && !rows.length) return;
+      if (rows.length === items.length && box.children.length === rows.length &&
+          items.every(function (item, i) { return (rows[i].tagName === "BUTTON") === !!item.action; })) {
+        items.forEach(function (item, i) { todayRelabelRow(rows[i], item); });
+        return;
+      }
+    }
+    box.textContent = "";
+    items.forEach(function (item) { todayRow(box, item); });
+  }
+  function relabelToday() {
+    if (!todayValues || todayValuesLang === UI_LANG) { renderTodayHeadline(); return; }
+    todayRelabelling = true;
+    try { renderToday(todayValues); } finally { todayRelabelling = false; }
+  }
   function todayStartTask(prompt) {
     newThread(false);
     var input = $("input"); input.value = prompt; input.dispatchEvent(new Event("input", {bubbles:true}));
@@ -10341,6 +10383,15 @@
   }
   function todayBriefCard(container, kicker, title, detail, label, action) {
     if (!container) return;
+    var standing = container.children.length === 1 && container.firstElementChild.classList.contains("today-brief-card")
+      ? container.firstElementChild : null;
+    if (todayRelabelling && standing) {
+      standing.querySelector(".today-brief-kicker").textContent = t(kicker);
+      standing.querySelector("strong").textContent = title;
+      standing.querySelector("p").textContent = detail;
+      var go = standing.querySelector("button"); go.textContent = t(label) + " →"; go.onclick = action;
+      return;
+    }
     container.textContent = "";
     var card = document.createElement("div"); card.className = "today-brief-card";
     var small = document.createElement("span"); small.className = "today-brief-kicker"; small.textContent = t(kicker);
@@ -10400,6 +10451,8 @@
   }
   function renderToday(values) {
     if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return;
+    if (!todayRelabelling) todayValues = values;
+    todayValuesLang = UI_LANG;
     var personal = values[0] || {}, missionData = values[1] || {}, approvalData = values[2] || {};
     var procedures = values[3] || {}, runData = values[4] || {}, meetingData = values[5] || {}, queuedData = values[6] || {};
     var events = Array.isArray(personal.events) ? personal.events : [];
@@ -10449,8 +10502,8 @@
         action:function () { setProductNav("missions"); setMissionsOpen(true); }});
     });
     timeline.sort(function (a,b) { return a.sort-b.sort; });
-    var timelineBox = $("todayTimeline"); timelineBox.textContent = "";
-    timeline.slice(0,3).forEach(function (item) { todayRow(timelineBox,item); });
+    var timelineBox = $("todayTimeline");
+    todayFill(timelineBox, timeline.slice(0,3));
     $("todayTimelineCount").textContent = timeline.length ? String(timeline.length) : "";
     var hasCalendar = meetings.length || sources.some(function (source) { return source.enabled && source.kind === "calendar"; });
     if (!timeline.length && timelineUnavailable)
@@ -10473,7 +10526,7 @@
       attention.push({icon:"!",title:mission.title || t("A task needs attention"),meta:missionStateLabel(mission.state),tone:"attention",
         action:function () { setProductNav("missions"); setMissionsOpen(true); }});
     });
-    var attentionBox = $("todayAttention"); attentionBox.textContent = "";
+    var attentionBox = $("todayAttention");
     var schedulerIssue = missionSchedulerIssue(missionData);
     if (schedulerIssue) attention.push({icon:"!",title:t("Automatic task progress is temporarily blocked"),
       meta:schedulerIssue + " · " + t("Saved tasks are kept. Open Settings to check the model connection."),tone:"attention",
@@ -10492,7 +10545,7 @@
         meta:queuedSessionLabel(row),tone:needsDecision ? "attention" : "brief",
         progress:!needsDecision,action:function () { openSession(row.session); }});
     });
-    attention.slice(0,3).forEach(function (item) { todayRow(attentionBox,item); });
+    todayFill(attentionBox, attention.slice(0,3));
     var decisions = attention.filter(function (item) { return !item.progress; }).length;
     var moving = attention.length - decisions;
     var attentionLabel = !decisions && moving ? "Task progress" : "Needs attention";
@@ -10520,13 +10573,17 @@
         function () { todayStartTask(t("Review what matters today and help me make a short, realistic plan. Keep open time and ask before changing anything.")); });
     }
     // The hero lines are the derived facts, held so a later language answer can re-state them.
-    todayLastLoaded = Date.now();
+    if (!todayRelabelling) todayLastLoaded = Date.now();
     renderTodayHeadline({unavailable:unavailable, decisions:decisions, moving:moving,
       timeline:timeline.length, connected:connected.length});
   }
   function loadToday(force) {
     if (document.body.getAttribute("data-surface") !== "today" || !$("todayDashboard")) return Promise.resolve();
-    if (todayLoading || (!force && Date.now() - todayLastLoaded < TODAY_VISIBLE_REFRESH_MS)) return Promise.resolve();
+    if (todayLoading || (!force && Date.now() - todayLastLoaded < TODAY_VISIBLE_REFRESH_MS)) {
+      // Still fresh, but the language may have changed while another view was showing.
+      if (!todayLoading && todayValues && todayValuesLang !== UI_LANG) relabelToday();
+      return Promise.resolve();
+    }
     todayLoading = true;
     var button = $("todayRefresh"); if (button) { button.disabled = true; button.classList.add("loading"); }
     return Promise.all([todayJson("/api/personal"),todayJson("/api/missions"),todayJson("/api/approvals"),

@@ -60,6 +60,9 @@ class _FolderFixture(_Fixture):
     boot_malformed = 0                   # how many to answer 200 with no folder named in it
     session_failures = 0                 # how many *thread* questions to refuse (not the boot one)
     boot_hold = None                     # released before the first answered boot question replies
+    # A folder question held open until the test says so. A delay is a race on a slow machine:
+    # whatever the test meant to do "while the look is open" can land after it answered.
+    verification_hold = None
     boot_seen = None                     # set once a held boot question has reached the server
     # The two halves of an answer the page cannot abort its way out of: a 200 whose headers arrive
     # and whose body never does, and a token refresh the check waits for *outside* its own request.
@@ -144,6 +147,8 @@ class _FolderFixture(_Fixture):
                     _FolderFixture.boot_seen.set()
                     _FolderFixture.boot_hold.wait(_FolderFixture.boot_hold_wait)
             time.sleep(_FolderFixture.verification_delay)
+            if _FolderFixture.verification_hold is not None:
+                _FolderFixture.verification_hold.wait(_FolderFixture.boot_hold_wait)
             try:
                 cwd = self._resolve(None if sid else requested,
                                     _FolderFixture.session_cwd.get(sid, "") if sid else "")
@@ -312,6 +317,7 @@ def _reset_fixture():
     _FolderFixture.boot_malformed = 0; _FolderFixture.session_failures = 0
     _FolderFixture.boot_hold = None; _FolderFixture.boot_seen = None
     _FolderFixture.body_hold = None; _FolderFixture.token_hold = None
+    _FolderFixture.verification_hold = None
     _FolderFixture.boot_stale = 0
     _WatchedServer.crashes = []          # a crashed handler belongs to the test that lost its answer
 
@@ -321,7 +327,8 @@ def _release_fixture():
     _FolderFixture.verification_delay = 0.0
     _FolderFixture.boot_failures = 0; _FolderFixture.boot_malformed = 0
     _FolderFixture.session_failures = 0; _FolderFixture.boot_stale = 0
-    for held in (_FolderFixture.boot_hold, _FolderFixture.body_hold, _FolderFixture.token_hold):
+    for held in (_FolderFixture.boot_hold, _FolderFixture.body_hold, _FolderFixture.token_hold,
+                 _FolderFixture.verification_hold):
         if held is not None:
             held.set()                   # never leave a handler thread parked on a dead test
 

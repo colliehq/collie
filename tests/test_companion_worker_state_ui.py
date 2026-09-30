@@ -306,9 +306,9 @@ def test_a_language_that_arrives_after_the_panel_opened_is_applied_to_its_rows(p
         ambient_workers(page, server, {"ambient": beat("failed", True)})
         assert page.evaluate("document.documentElement.lang") == "en", \
             "the setting must still be on its way, or this tests nothing"
-        page.wait_for_function("document.documentElement.lang === 'zh'", timeout=_WAIT_MS)
+        page.wait_for_function("() => document.documentElement.lang === 'zh'", timeout=_WAIT_MS)
         page.wait_for_function(
-            "document.querySelector('#ambientOther').innerText.includes('后台服务状态会自动更新')",
+            "() => document.querySelector('#ambientOther').innerText.includes('后台服务状态会自动更新')",
             timeout=_WAIT_MS)
     finally:
         _Fixture.do_GET = real

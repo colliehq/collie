@@ -65,10 +65,12 @@ def _poll(page, script, arg=None, seconds=10):
     return False
 
 
-def _open(desk, *, size=(1920, 1080), fake_clock=False, reduced=False, wait=True):
+def _open(desk, *, size=(1920, 1080), fake_clock=False, reduced=False, wait=True, init=None):
     context = desk.browser.new_context(viewport={"width": size[0], "height": size[1]},
                                        reduced_motion="reduce" if reduced else "no-preference")
     page = context.new_page()
+    if init:
+        page.add_init_script(init)
     page.route(re.compile(r"https://.*"), lambda route: route.abort())
     if fake_clock:
         page.clock.install()
@@ -465,3 +467,27 @@ def test_the_widget_panel_turns_the_morning_scene_off_and_on(desk):
     assert json.loads(desk.config.read_text(encoding="utf-8"))["widgets"]["morning"]["on"] is False
     page.locator('#widgetPanel [data-wp="morning:on"]').check()
     assert _poll(page, SHOWING)
+
+
+def test_a_night_cloud_is_never_dense_enough_to_hide_the_words(desk):
+    """A cloud is sixteen soft blobs laid at random, and they pile up where they overlap. At night
+    the densest rolls made a core about two-thirds opaque, and one that drifted behind the summary
+    took it to 4.17:1 (the sky test above, on a CI run). The core is capped: at 0.2 even four night
+    clouds stacked behind the words leave them above 4.5:1. A constant Math.random puts all
+    sixteen blobs on one spot -- the densest cloud there can be."""
+    save(desk.state, report())
+    desk.weather["now"] = dict(CLEAR_DAY, code=0, is_day=0, fetched_at=int(time.time()))
+    for init in (None, "Math.random = () => 0.5;"):
+        page = _open(desk, reduced=True, init=init)
+        assert _poll(page, "() => document.body.dataset.sky === 'night' && window.collieMorning.frames() > 0")
+        cores = page.evaluate("() => ['night', 'light', 'grey'].map(window.collieMorning.cloudCore)")
+        page.context.close()
+        assert 0 < cores[0] <= 0.2 + 1 / 255, (init, cores)
+        # Day and rain clouds are not capped: behind dark words a light cloud only helps.
+        assert cores[1] > 0.5 and cores[2] > 0.4, (init, cores)
+        # Four stacked at the cap over the night sky as painted behind the words (21, 27, 56),
+        # under the words' own ink (#f4f7ff at .94).
+        alpha = 1 - (1 - cores[0]) ** 4
+        under = tuple(alpha * c + (1 - alpha) * b for c, b in zip((140, 150, 200), (21, 27, 56)))
+        ink = tuple(0.94 * c + 0.06 * u for c, u in zip((244, 247, 255), under))
+        assert _wcag(ink, under) >= 4.5, (init, cores, _wcag(ink, under))
