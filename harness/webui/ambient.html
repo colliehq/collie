@@ -1189,7 +1189,13 @@
     var motion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
     function reduced(){ return !!(motion && motion.matches); }
     function rnd(a, b){ return a + Math.random() * (b - a); }
-    function sprite(tint, alpha){            // one soft cloud, drawn once and reused
+    // One soft cloud, drawn once and reused. Sixteen blobs laid at random pile up where they
+    // overlap, so how dense a cloud's core gets is a roll of the dice: at night the pale ones
+    // reached about two-thirds opaque, and one that drifted behind the words took the summary
+    // under 4.5:1. `densest` caps the core, whatever the roll.
+    // Even four night clouds stacked behind the words leave them above 4.5:1 at this core.
+    var NIGHT_CLOUD_CORE = .2;
+    function sprite(tint, alpha, densest){
       var c = document.createElement("canvas"); c.width = 420; c.height = 200;
       var g = c.getContext("2d");
       for (var i = 0; i < 16; i++){
@@ -1197,10 +1203,21 @@
         grd.addColorStop(0, "rgba(" + tint + "," + alpha + ")"); grd.addColorStop(1, "rgba(" + tint + ",0)");
         g.fillStyle = grd; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
       }
+      if (densest) {
+        try {
+          var img = g.getImageData(0, 0, c.width, c.height), px = img.data, top = 0, j;
+          for (j = 3; j < px.length; j += 4) if (px[j] > top) top = px[j];
+          var limit = Math.round(densest * 255);
+          if (top > limit) {
+            for (j = 3; j < px.length; j += 4) px[j] = Math.round(px[j] * limit / top);
+            g.putImageData(img, 0, 0);
+          }
+        } catch (e) {}
+      }
       return c;
     }
     function setup(){
-      if (!sprites) sprites = {light:sprite("255,255,255", .55), grey:sprite("90,100,118", .45), night:sprite("140,150,200", .16)};
+      if (!sprites) sprites = {light:sprite("255,255,255", .55), grey:sprite("90,100,118", .45), night:sprite("140,150,200", .16, NIGHT_CLOUD_CORE)};
       dpr = Math.min(1.5, window.devicePixelRatio || 1);
       W = Math.max(1, innerWidth); H = Math.max(1, innerHeight);
       cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
@@ -1358,7 +1375,12 @@
       if (motion.addEventListener) motion.addEventListener("change", again); else if (motion.addListener) motion.addListener(again);
     }
     return {show:show, place:place, stop:stop, sync:sync, resize:resize,
-            frames:function(){ return frames; }, running:function(){ return !!raf; }};
+            frames:function(){ return frames; }, running:function(){ return !!raf; },
+            cloudCore:function(name){        // how opaque a cloud's densest point is, 0..1
+              var c = sprites && sprites[name]; if (!c) return null;
+              var px = c.getContext("2d").getImageData(0, 0, c.width, c.height).data, top = 0;
+              for (var j = 3; j < px.length; j += 4) if (px[j] > top) top = px[j];
+              return top / 255; }};
   })();
 
   function weatherKnown(){ return weatherOff() || !!weatherData; }
@@ -1704,6 +1726,7 @@
   try {
     Object.defineProperty(window, "collieMorning", {value: Object.freeze({
       frames: function(){ return sky.frames(); }, running: function(){ return sky.running(); },
+      cloudCore: function(name){ return sky.cloudCore(name); },
       checked: function(){ return MORNING.checked; }, scene: function(){ return document.body.dataset.sky || ""; },
       skyFor: skyFor})});
   } catch(_){}
