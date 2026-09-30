@@ -189,7 +189,7 @@ def main():
         # save() returns on the upsert response and the reload comes after it, so wait for the
         # close: counting at once failed on a slow Ubuntu runner (PR #16) with nothing wrong.
         try:
-            pg.wait_for_function("document.querySelectorAll('.control-editor').length === 0",
+            pg.wait_for_function("() => document.querySelectorAll('.control-editor').length === 0",
                                  timeout=10000)
             closed = True
         except Exception:

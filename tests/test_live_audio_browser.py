@@ -72,7 +72,7 @@ def live_page():
               MIC_OPENS++;TRACK.readyState='live';return STREAM}}});
         """)
         page.goto("http://collie.test/live")
-        page.wait_for_function("STATE.session_id==='live-first'")
+        page.wait_for_function("() => STATE.session_id==='live-first'")
         yield page, state, responses, requests, errors
         page.evaluate("endCapture()")
         browser.close()
@@ -80,7 +80,7 @@ def live_page():
 
 def start_clip(page):
     page.evaluate("streams.push(STREAM);beginCapture([{name:'microphone',stream:STREAM}])")
-    page.wait_for_function("RECORDERS.length===1")
+    page.wait_for_function("() => RECORDERS.length===1")
     page.evaluate("RECORDERS[0].stop()")
 
 
@@ -88,16 +88,16 @@ def test_busy_upload_retries_same_bytes_and_sequence_without_recording_ahead(liv
     page, _, responses, requests, errors = live_page
     responses.extend([(429, {"code": "live_audio_busy", "retry_after_ms": 750})] * 2)
     start_clip(page)
-    page.wait_for_function("document.getElementById('audioNotice').textContent.includes('paused')")
+    page.wait_for_function("() => document.getElementById('audioNotice').textContent.includes('paused')")
     assert page.evaluate("RECORDERS.length") == 1
     assert requests[0]["query"]["seq"] == ["5"]
-    page.wait_for_function("RECORDERS.length===2", timeout=5000)
+    page.wait_for_function("() => RECORDERS.length===2", timeout=5000)
     assert len(requests) == 3
     assert all(request == requests[0] for request in requests)
     assert requests[0]["body"] == b"captured-clip"
     assert page.locator("#audioNotice").inner_text() == ""
     page.evaluate("RECORDERS[1].stop()")
-    page.wait_for_function("RECORDERS.length===3")
+    page.wait_for_function("() => RECORDERS.length===3")
     assert requests[-1]["query"]["seq"] == ["6"]
     assert not errors
 
@@ -106,7 +106,7 @@ def test_stop_aborts_retry_and_does_not_upload_final_stopped_clip(live_page):
     page, _, responses, requests, errors = live_page
     responses.extend([(429, {"retry_after_ms": 750})] * 5)
     start_clip(page)
-    page.wait_for_function("document.getElementById('audioNotice').textContent.includes('paused')")
+    page.wait_for_function("() => document.getElementById('audioNotice').textContent.includes('paused')")
     page.evaluate("endCapture()")
     count = len(requests)
     page.wait_for_timeout(1100)
@@ -146,7 +146,7 @@ def test_permanent_upload_error_stops_capture_with_visible_reason(live_page):
     page, _, responses, requests, errors = live_page
     responses.append((409, {"error": "Listening permission ended"}))
     start_clip(page)
-    page.wait_for_function("!runningCapture")
+    page.wait_for_function("() => !runningCapture")
     assert "Listening permission ended" in page.locator("#audioNotice").inner_text()
     assert page.evaluate("TRACK.readyState") == "ended"
     assert len(requests) == 1 and not errors
@@ -158,7 +158,7 @@ def test_token_rotation_retries_identical_audio_without_a_new_sequence(live_page
     page, _, _, requests, errors = live_page
     AUTH["token"] = "rotated-test-token"          # Collie restarted with a new token
     start_clip(page)
-    page.wait_for_function("RECORDERS.length===2", timeout=5000)
+    page.wait_for_function("() => RECORDERS.length===2", timeout=5000)
     assert len(requests) == 1                      # the 403 never reached the audio handler
     assert requests[0]["query"]["token"] == ["rotated-test-token"]
     assert requests[0]["query"]["seq"] == ["5"] and requests[0]["body"] == b"captured-clip"
@@ -170,7 +170,7 @@ def test_page_keeps_working_after_collie_restarts_with_a_new_token(live_page):
     AUTH["token"] = "rotated-test-token"
     state["context"] = "after restart"
     page.evaluate("load()")
-    page.wait_for_function("STATE.context==='after restart'")
+    page.wait_for_function("() => STATE.context==='after restart'")
     assert page.locator("#connectionNotice").is_hidden()
     assert page.locator("#statusText").inner_text() == "Maintaining context"
     assert not errors
@@ -183,7 +183,7 @@ def test_connection_failure_does_not_leave_green_capture_or_dispatch_draft(live_
     page.route("**/api/live-copilot?*", lambda route: route.abort())
     for _ in range(3):
         page.evaluate("load()")
-    page.wait_for_function("document.getElementById('statusText').textContent==='Connection interrupted'")
+    page.wait_for_function("() => document.getElementById('statusText').textContent==='Connection interrupted'")
     assert page.locator("#connectionNotice").is_visible()
     assert page.locator("#doNow").is_disabled()
     assert not page.locator("#capture").evaluate("(e)=>e.classList.contains('on')")
@@ -195,7 +195,7 @@ def test_connection_failure_does_not_leave_green_capture_or_dispatch_draft(live_
 
     page.unroute("**/api/live-copilot?*")
     page.evaluate("load()")
-    page.wait_for_function("document.getElementById('statusText').textContent==='Maintaining context'")
+    page.wait_for_function("() => document.getElementById('statusText').textContent==='Maintaining context'")
     assert page.locator("#connectionNotice").is_hidden()
     assert page.locator("#doNow").is_enabled()
 
@@ -227,18 +227,18 @@ def _lose_and_restore(page, state, listen):
     page.route("**/api/live-copilot?*", lambda route: route.abort())
     for _ in range(3):
         page.evaluate("load()")
-    page.wait_for_function("document.getElementById('statusText').textContent==='Connection interrupted'")
+    page.wait_for_function("() => document.getElementById('statusText').textContent==='Connection interrupted'")
     assert page.evaluate("!runningCapture && TRACK.readyState==='ended'")
     state["listen"] = listen
     page.unroute("**/api/live-copilot?*")
     page.evaluate("load()")
-    page.wait_for_function("document.getElementById('statusText').textContent==='Maintaining context'")
+    page.wait_for_function("() => document.getElementById('statusText').textContent==='Maintaining context'")
 
 
 def test_capture_restarts_after_reconnecting_when_listening_is_still_on(live_page):
     page, state, _, _, errors = live_page
     _lose_and_restore(page, state, listen=True)
-    page.wait_for_function("runningCapture && RECORDERS.length===2")
+    page.wait_for_function("() => runningCapture && RECORDERS.length===2")
     assert page.evaluate("MIC_OPENS") == 1 and page.evaluate("TRACK.readyState") == "live"
     assert page.locator("#capture").evaluate("(e)=>e.classList.contains('on')")
     assert not errors
@@ -258,7 +258,7 @@ def test_do_now_hands_off_once_even_when_pressed_twice(live_page):
                   "{value:{writeText:async()=>{}},configurable:true})")
     page.locator("#task").fill("Summarize the review")
     page.evaluate("runNow();runNow()")
-    page.wait_for_function("document.getElementById('activeNotice').textContent.includes('copied')")
+    page.wait_for_function("() => document.getElementById('activeNotice').textContent.includes('copied')")
     page.wait_for_timeout(300)
     events = [body for path, body in POSTS if path == "/api/live-copilot/event"]
     assert [event["text"] for event in events] == ["Summarize the review"]
