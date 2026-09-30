@@ -589,3 +589,14 @@ def test_ui_static_checks():
         pytest.skip("node is not installed")
     done = subprocess.run([node, suite], capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("missing", [None, ""])
+def test_no_root_reads_this_installation_not_a_folder_named_none(tmp_path, monkeypatch, missing):
+    live = tmp_path / "live"
+    monkeypatch.setenv("COLLIE_STATE_DIR", str(live))
+    monkeypatch.chdir(tmp_path)
+    add_meeting(str(live), title="Standup", start_at=NOW + 3600)
+    brief = db.build(web.collect(missing, now=NOW)[0], now=NOW)
+    assert titles(brief) == ["Standup"]
+    assert sorted(os.listdir(tmp_path)) == ["live"]      # no "None", no stores in the cwd

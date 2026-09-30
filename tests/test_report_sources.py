@@ -637,3 +637,47 @@ def test_an_approved_pr_the_person_cannot_merge_waits_for_a_maintainer(root):
     got = _open_signals(root, _pr("other/lib", 7, "Approved", decision="APPROVED", age_days=5,
                                   quiet_days=3))
     assert [(s["kind"], "maintainer" in s["detail"]) for s in got] == [("fyi", True)]
+
+
+def test_sign_in_codes_never_become_signals(root, google):
+    # A code is stale by morning, and it has no business in the report, its email or a prompt.
+    google.mail = [
+        _mail("c1", "tc1", "860397 is your Newegg Verification Code",
+              labels=("INBOX", "UNREAD", "CATEGORY_UPDATES", "IMPORTANT")),
+        _mail("c2", "tc2", "Microsoft account security code"),
+        _mail("c3", "tc3", "Sign in to Acme", sender="Acme <no-reply@acme.test>"),
+        _mail("c4", "tc4", "【淘宝】验证码 482913，5 分钟内有效"),
+        _mail("k1", "tk1", "Your passcode was changed"),
+        _mail("k2", "tk2", "Your flight confirmation code is QX7Y2L"),
+    ]
+    google.mail[2]["snippet"] = "Your one-time passcode is 118204. It expires in 10 minutes."
+    titles = sorted(s["title"] for s in src.gmail(context(root))["signals"])
+    assert titles == ["Your flight confirmation code is QX7Y2L", "Your passcode was changed"]
+
+
+def test_receipts_are_status_and_money_at_risk_needs_the_person(root, google):
+    updates = ("INBOX", "UNREAD", "CATEGORY_UPDATES")
+    google.mail = [
+        _mail("r1", "tr1", "We've received your KFC order 🙌", labels=updates + ("IMPORTANT",)),
+        _mail("r2", "tr2", "Order confirmed: Newegg order #588610431 (1 item)", labels=updates),
+        _mail("r3", "tr3", "Your receipt from Apple", labels=("INBOX", "UNREAD", "CATEGORY_PERSONAL")),
+        _mail("a1", "ta1", "Your account may have insufficient funds", labels=updates),
+        _mail("a2", "ta2", "Payment declined for your subscription", labels=updates),
+        _mail("a3", "ta3", "Your order is on hold", labels=updates),
+    ]
+    google.mail[5]["snippet"] = "We couldn't charge your card: payment failed. Update it to ship."
+    kinds = {s["title"]: s["kind"] for s in src.gmail(context(root))["signals"]}
+    assert kinds == {"We've received your KFC order 🙌": "fyi",
+                     "Order confirmed: Newegg order #588610431 (1 item)": "fyi",
+                     "Your receipt from Apple": "fyi",
+                     "Your account may have insufficient funds": "needs_you",
+                     "Payment declined for your subscription": "needs_you",
+                     "Your order is on hold": "needs_you"}
+
+
+def test_mail_previews_lose_their_invisible_padding(root, google):
+    google.mail = [_mail("p1", "tp1", "Thanks‌ for﻿ your order")]
+    google.mail[0]["snippet"] = "Thanks for choosing KFC! " + "͏ ‌ ﻿ " * 40
+    signal = src.gmail(context(root))["signals"][0]
+    assert signal["title"] == "Thanks for your order"
+    assert signal["detail"] == "Thanks for choosing KFC!"
