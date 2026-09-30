@@ -391,6 +391,9 @@ class _Fixture(BaseHTTPRequestHandler):
     queue_starts = []
     uploads = []
     queue_release = threading.Event()
+    # A scripted run's `done` held back until the test says so. The quarter-second beat before
+    # it is a race on a slow runner: whatever the test meant to do "while it runs" can land after.
+    done_hold = None
     queue_ack = threading.Event()
     queue_seen = threading.Event()
     queue_deliver = threading.Event()
@@ -665,6 +668,8 @@ class _Fixture(BaseHTTPRequestHandler):
                 return
             for kind, payload in _script(text):
                 if kind == "done":
+                    if _Fixture.done_hold is not None:
+                        _Fixture.done_hold.wait(30)
                     time.sleep(0.25)     # a beat of real "running", so live state is observable
                 self._sse(kind, payload)
         except (BrokenPipeError, ConnectionResetError):
@@ -862,6 +867,7 @@ def _reset_fixture_state():
     _Fixture.queue_entries = {}; _Fixture.queue_posts = []; _Fixture.queue_starts = []
     _Fixture.uploads = []
     _Fixture.queue_release = threading.Event(); _Fixture.queue_ack = threading.Event()
+    _Fixture.done_hold = None
     _Fixture.queue_ack.set(); _Fixture.queue_seen = threading.Event()
     _Fixture.queue_deliver = threading.Event()
     _Fixture.queue_fail_once = False; _Fixture.queue_active = False
@@ -902,6 +908,8 @@ def ui(server, browser):
         yield Page(page, errors)
     finally:
         _Fixture.queue_release.set(); _Fixture.queue_ack.set()
+        if _Fixture.done_hold is not None:
+            _Fixture.done_hold.set()     # never leave a handler thread parked on a dead test
         context.close()
     assert errors == [], "JS errors: %r" % errors
 
@@ -1472,12 +1480,19 @@ def test_a_stopped_required_check_keeps_progress_and_an_honest_verdict(ui):
 
 
 def test_stop_does_not_automatically_launch_a_queued_follow_up(ui):
+    # The run stays open until the follow-up is queued. Its `done` came a quarter-second after
+    # `start`, and on a slow Windows runner the follow-up was sent after that: a new request, as
+    # it should be for a run that is over, and not the queued follow-up this test is about.
+    _Fixture.done_hold = threading.Event()
     ui.page.fill("#input", "Interrupt the current review with cancel")
     ui.page.press("#input", "Enter")
     ui.page.wait_for_function("() => document.getElementById('input').placeholder.includes('Queue') || "
                               "document.getElementById('input').placeholder.includes('Follow')")
     ui.page.fill("#input", "This follow-up must remain queued after Stop")
     ui.page.press("#input", "Enter")
+    ui.page.locator(".task-queue-row").wait_for()
+    assert [row["text"] for row in _Fixture.queue_posts] == ["This follow-up must remain queued after Stop"]
+    _Fixture.done_hold.set()                           # now the run ends, stopped
     ui.page.wait_for_timeout(900)
     assert len(_Fixture.stream_requests) == 1
 
