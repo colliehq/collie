@@ -24,7 +24,11 @@ What each source may say, and what it must not:
   with its HTTP status...), never by its message.  Mail is recent inbox threads (the last 36
   hours, promotions, social and drafts left out).  Unread mail needs the person only when it
   is in Gmail's Primary tab or Gmail marked it IMPORTANT; unread Updates and Forums mail is
-  status (``fyi``), so a morning of notifications is not a morning of chores.  Every word of it
+  status (``fyi``), so a morning of notifications is not a morning of chores.  A receipt or an
+  order's progress is never a chore, however Gmail marked it; money or an account at risk
+  (insufficient funds, a declined payment, a locked account) always is.  Mail carrying a
+  sign-in or verification code is left out entirely: stale by morning, and a code has no
+  business in a report, its email or a prompt.  Every word of it
   is ``untrusted``: the sender wrote it.  The sender's address and the thread id ride along in ``meta`` for the
   reply-draft step and go no further.  Calendar is today and the next seven days;
   invitations are written by whoever sent them, so they are ``untrusted`` too.
@@ -235,6 +239,33 @@ _SKIP_LABELS = frozenset({"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "SPAM", "TRA
 #: Gmail's own tabs for mail machines send.  Unread there is not a thing to do unless Gmail
 #: itself marked the message IMPORTANT (bills, security alerts, ...).
 _AUTOMATED = {"CATEGORY_UPDATES": "Updates", "CATEGORY_FORUMS": "Forums"}
+#: A sign-in or verification code. Stale by the morning, and a code does not belong in a report,
+#: an email of it or a model's prompt: such mail never becomes a signal at all.
+#: Only a code to type in: "your passcode was changed" or a booking's "confirmation code" are
+#: other things, and stay.
+_ONE_TIME_CODE = re.compile(
+    r"\b(?:verification|security|sign[- ]?in|log[- ]?in|one[- ]time|authentication|2fa)\s+"
+    r"(?:code|pin|passcode)s?\b|\bone[- ]time\s+pass(?:word|code)\b|\botp\b|"
+    r"验证码|校验码|動態密碼|認証コード|인증\s?번호|인증\s?코드", re.I)
+#: Receipts and where an order is. Gmail marks plenty of them IMPORTANT (a food order, a
+#: purchase), but they report something done, not something to do.
+_RECEIPT = re.compile(
+    r"\breceipt\b|\border\s+(?:#|no\.?\s|number\b|confirm|received|placed|is\s+confirmed)|"
+    r"\b(?:received|confirmed|placed)\s+your\s+(?:\S+\s+){0,3}order\b|"
+    r"\byour\s+(?:\S+\s+){0,3}order\b.*\b(?:confirmed|"
+    r"received|placed|shipped|on\s+(?:its|the)\s+way|out\s+for\s+delivery|delivered|ready)\b|"
+    r"\border\s+confirmed\b|\bhas\s+shipped\b|\bout\s+for\s+delivery\b|\bwas\s+delivered\b|"
+    r"订单已|已发货|已送达|收据|注文を(?:受け付け|承り)|発送しました", re.I)
+#: Money or an account at risk. Whether Gmail marked it IMPORTANT or not, this needs the person.
+_AT_RISK = re.compile(
+    r"\binsufficient\s+funds\b|\bpayment\s+(?:failed|declined|was\s+declined|unsuccessful)\b|"
+    r"\b(?:card|payment)\s+(?:was\s+)?declined\b|\bpast\s+due\b|\boverdue\b|"
+    r"\b(?:account|card)\s+(?:is\s+|has\s+been\s+|was\s+)?(?:locked|suspended|frozen|restricted)\b|"
+    r"\b(?:unusual|suspicious)\s+(?:sign[- ]?in|login|activity)\b|"
+    r"余额不足|扣款失败|支付失败|已逾期|账户(?:已被)?(?:冻结|锁定|停用)|异常登录", re.I)
+#: What mail senders pad a preview with so the next words stay out of it: invisible, and in a
+#: one-line report they are a run of blanks.
+_INVISIBLE = dict.fromkeys(map(ord, "͏­᠎​‌‍⁠﻿"))
 CALENDAR_DAYS = 7
 CALENDAR_LIMIT = 50
 
@@ -393,19 +424,38 @@ def gmail(ctx):
     signals = []
     for thread, (when, row, name, address) in sorted(threads.items(),
                                                      key=lambda kv: -kv[1][0]):
+        subject, snippet = _mail_text(row.get("subject")), _mail_text(row.get("snippet"))
+        if _ONE_TIME_CODE.search(subject) or _ONE_TIME_CODE.search(snippet):
+            continue
         who = daily_brief._text(name, 60) or (address.split("@")[-1] if "@" in address else "")
         labels = {str(label) for label in (row.get("labels") or []) if label}
         tab = next((words for label, words in _AUTOMATED.items() if label in labels), "")
-        needs = bool(row.get("unread")) and (not tab or "IMPORTANT" in labels)
         signals.append(rs.make(
-            "gmail", thread, kind="needs_you" if needs else "fyi",
-            title=row.get("subject") or ("(没有主题)" if _zh(ctx) else "(no subject)"),
-            detail=row.get("snippet"), when=when, link=gmail_thread_link(account, thread),
+            "gmail", thread, kind="needs_you" if _mail_needs_you(
+                subject, snippet, labels, tab, bool(row.get("unread"))) else "fyi",
+            title=subject or ("(没有主题)" if _zh(ctx) else "(no subject)"),
+            detail=snippet, when=when, link=gmail_thread_link(account, thread),
             project="", evidence=" · ".join(bit for bit in (
                 "Gmail", tab, "from %s" % who if who else "") if bit), untrusted=True,
             meta={"thread_id": thread, "sender": address, "sender_name": name,
-                  "subject": daily_brief._text(row.get("subject"), 300)}))
+                  "subject": daily_brief._text(subject, 300)}))
     return {"signals": signals, "stats": {"threads": len(signals)}}
+
+
+def _mail_text(value):
+    return daily_brief._text(str(value or "").translate(_INVISIBLE), 2000)
+
+
+def _mail_needs_you(subject, snippet, labels, tab, unread):
+    """Unread mail from people, or that Gmail marked IMPORTANT, needs the person -- except a
+    receipt, which reports something done; and money or an account at risk always does."""
+    if not unread:
+        return False
+    if _AT_RISK.search(subject) or _AT_RISK.search(snippet):
+        return True
+    if _RECEIPT.search(subject):
+        return False
+    return not tab or "IMPORTANT" in labels
 
 
 def _day_start(ctx):
