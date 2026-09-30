@@ -323,10 +323,12 @@ async function main() {
     const seen = await status.json();
     check(status.status === 200 && seen.status === "sent" && seen.receipt === "cf-1",
           "GET /send-status looks the completed receipt up by id");
+    // Look for the words themselves. A bare "412" also turns up inside a millisecond timestamp or
+    // a hex digest the ledger rightly keeps, and failed a CI run that had stored nothing it should not.
     check(!("subject" in seen) && !("text" in seen) &&
           ![...ctx.env.MAIL_DELIVERY.objects.values()]
             .some((o) => [...o.sql.rows.values()].some((r) =>
-              JSON.stringify(r).includes("release check") || JSON.stringify(r).includes("412"))),
+              JSON.stringify(r).includes("release check") || JSON.stringify(r).includes("412 tests"))),
           "the ledger stores digests and statuses — never the subject or the body");
   }
 
