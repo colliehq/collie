@@ -63,6 +63,41 @@ def test_html_is_readable_text_without_loading_remote_images():
     assert "tracker" not in record["text"]
 
 
+def test_received_html_is_not_read_with_html_parser():
+    # html.parser is quadratic on some markup in the Python 3.12.10 Collie ships (CVE-2025-6069);
+    # a sender controls this HTML, so it goes through the bounded reader instead.
+    import inspect
+    assert "HTMLParser" not in inspect.getsource(mail)
+
+
+def test_hostile_html_is_read_quickly_and_entities_are_decoded():
+    import time
+    message = _message()
+    message.set_content("<p>Caf&eacute; &amp; tea</p><!-- hidden -->" + "<a " * 15000, subtype="html")
+    started = time.monotonic()
+    record = mail.parse(message.as_bytes())
+    assert time.monotonic() - started < 2.0
+    assert "Café & tea" in record["text"] and "hidden" not in record["text"]
+
+
+def test_text_after_a_bare_angle_bracket_is_kept():
+    # html.parser, fed without close(), holds back everything after a "<" that no ">" follows as
+    # an unfinished tag; the old reader then returned the mail without it.
+    for body, tail in (("<p>Keep going</p><p>if a <b then more words follow here", "then more words"),
+                       ("<p>Deadline is Friday</p>Reply before 5pm <see the attached plan for details",
+                        "see the attached plan")):
+        message = _message()
+        message.set_content(body, subtype="html")
+        assert tail in mail.parse(message.as_bytes())["text"]
+
+
+def test_html_too_large_to_read_is_refused_not_cut():
+    message = _message()
+    message.set_content("<p>" + "word " * (mail.MAX_HTML_READ_CHARS // 4) + "</p>", subtype="html")
+    with pytest.raises(mail.MailFormatError, match="nothing was truncated"):
+        mail.parse(message.as_bytes())
+
+
 def test_truncated_and_invalid_mime_are_not_accepted_as_complete():
     with pytest.raises(mail.MailFormatError, match="truncated"):
         mail.from_relay({"truncated": True, "raw": "anything"})
