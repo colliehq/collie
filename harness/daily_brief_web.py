@@ -310,8 +310,11 @@ def collect(root, *, now=None):
     ``payloads`` is exactly what :func:`daily_brief.build` wants.  ``report`` records,
     per source, when it was read and why it could not be -- the freshness evidence the
     surface shows instead of implying that an old notice is the current state.
+
+    No ``root`` (``None`` or ``""``) means this installation's own state directory. It used to
+    become a folder named "None", or the working directory, full of fresh empty stores.
     """
-    root = str(root)
+    root = str(root) if root else _live_root()
     live = _is_live_root(root)
     wall = float(now) if now is not None else time.time()
     payloads, report = {}, []
