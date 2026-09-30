@@ -15,6 +15,7 @@ one `test_web_draft_folder` drives, real directories behind it) was actually ask
 import base64
 import os
 import struct
+import threading
 import zlib
 
 import pytest
@@ -148,9 +149,14 @@ def test_use_folder_on_the_same_folder_mid_send_joins_that_check_and_does_not_sw
     the question already open — it joins that look rather than replacing it with one of its own,
     which would settle the Send's look as stale and swallow the Send."""
     page = ui.page
-    send_during_check(ui, ROOTS["b"], then=300)
+    # Held, not delayed: on a slow runner a 1.5 s look answered before the click, the Send went
+    # out and took the button with it, and the click waited 30 s for a button that was gone.
+    _FolderFixture.verification_hold = threading.Event()
+    send_during_check(ui, ROOTS["b"], delay=0, then=300)
     assert checks_for(ROOTS["b"]), "the Send never asked about the folder it was aimed at"
     page.click("#taskFolderUse")                      # same field, same draft: a repeated check
+    settle(page, 300)                                 # a second look, if any, reaches the server
+    _FolderFixture.verification_hold.set()
     sent(page)                                        # released by the shared answer
     settle(page, 900)
     assert len(streams()) == 1, "the repeated check swallowed the pending Send"
