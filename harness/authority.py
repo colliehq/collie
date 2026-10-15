@@ -166,6 +166,36 @@ def _email_addresses(text: str) -> tuple[str, ...]:
         r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])", text or "")))
 
 
+def _affirmative_action(text: str, patterns: tuple[str, ...]) -> bool:
+    """Only infer uncomplicated affirmative instructions from request text.
+
+    Quoted examples and conditional or negated occurrences cannot mint an
+    action-wide grant. Mixed positive/negative targets need explicit review:
+    this coarse request contract cannot bind each target to its own clause.
+    """
+    plain = re.sub(r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|`[^`\n]*`|(?<!\w)\'[^\'\n]*\'(?!\w)', " ", text)
+    matches = [m for pattern in patterns for m in re.finditer(pattern, plain, re.I)]
+    if not matches:
+        return False
+    negative = re.compile(
+        r"\b(?:not|never|avoid|without|stop|cannot|can't|don't|dont)\b|"
+        r"不要|不能|不得|禁止|不许|不允許|不允许|无需|无须|別|别|勿|不\s*$", re.I)
+    conditional = re.compile(
+        r"\b(?:if|unless|until|whether|how\s+to|after|when|once)\b|"
+        r"如果|除非|是否|如何|等到|等.{0,30}(?:确认|確認|批准|允许|允許).{0,8}后", re.I)
+    for match in matches:
+        begin = max((plain.rfind(mark, 0, match.start()) for mark in ";.!?\n。；！？"), default=-1) + 1
+        prefix = plain[begin:match.start()]
+        suffix = re.split(r"[;.!?\n。；！？]", plain[match.end():], maxsplit=1)[0]
+        if negative.search(prefix) or conditional.search(prefix):
+            return False
+        if re.match(r"\s+(?:nothing|none|no\b)", suffix, re.I):
+            return False
+        if conditional.search(suffix):
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class RequestAuthority:
     """The authority expressed by one authenticated user request."""
@@ -174,21 +204,25 @@ class RequestAuthority:
     recipients: tuple[str, ...] = ()
     request_sha256: str = ""
     explicit: bool = False
+    withheld_actions: frozenset[str] = frozenset()
 
     @classmethod
     def compile(cls, user_message: Any) -> "RequestAuthority":
         text = _plain_user_text(user_message).strip()
         normalized = text.casefold()
         actions = set()
+        withheld = set()
         for action, patterns in _ACTION_PATTERNS:
-            if any(re.search(pattern, normalized, re.I) for pattern in patterns):
+            if _affirmative_action(normalized, patterns):
                 actions.add(action)
+            elif any(re.search(pattern, normalized, re.I) for pattern in patterns):
+                withheld.add(action)
         return cls(actions=frozenset(actions), recipients=_email_addresses(text),
                    request_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest() if text else "",
-                   explicit=bool(text))
+                   explicit=bool(text), withheld_actions=frozenset(withheld))
 
     def allows(self, intent: ActionIntent) -> bool:
-        if intent.action not in self.actions:
+        if intent.action in self.withheld_actions or intent.action not in self.actions:
             return False
         # If both sides name recipients, the action may not silently introduce another one.
         if self.recipients and intent.recipients:
@@ -390,6 +424,10 @@ class AuthorityEngine:
         intent = intent.bounded()
         if intent.effect is Effect.OBSERVE:
             return AuthorityResult(AuthorityDecision.ALLOW_SILENT, "observational action")
+        if intent.action in context.request.withheld_actions:
+            return AuthorityResult(AuthorityDecision.ASK,
+                                   "the latest authenticated request withholds this action",
+                                   basis="user request")
         if context.mode == "review":
             return AuthorityResult(AuthorityDecision.ASK, "review mode examines every external change")
         if intent.effect is Effect.PREPARE:

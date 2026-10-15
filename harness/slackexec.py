@@ -79,7 +79,16 @@ def main(argv=None) -> int:
     os.environ["COLLIE_PROCESS_OWNER"] = "slackexec"
 
     if command[1:3] == ["-m", "harness.cli"]:
-        from . import cli
+        from .application_ports import ServiceUnavailable, cli_factory
+        try:
+            cli = cli_factory("cli")
+        except ServiceUnavailable:
+            # A fresh executor has no parent's in-memory factory bindings.
+            # This explicit CLI child entrypoint assembles the unified application
+            # only after the durable release and process-owner setup above.
+            # The core port itself remains an unavailable-service boundary.
+            from .application_bootstrap import bootstrap_application
+            cli = bootstrap_application()
         return int(cli.main(command[3:]) or 0)
     if command[1] == "-c":                  # narrow fixture path; still the same Python process
         sys.argv = ["-c"] + command[3:]

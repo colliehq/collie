@@ -28,7 +28,11 @@ import re
 import struct
 import zlib
 
-LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "logo.svg")
+try:
+    from .paths import component_resource_dir
+    LOGO = os.path.join(component_resource_dir("harness.webapp", "webui"), "logo.svg")
+except FileNotFoundError:
+    LOGO = ""  # Explicit source= still works; default rendering raises the existing OSError.
 
 # The logo's fills, grouped by what they ARE. Two of these are the eyes — the symmetric pair at
 # translate(180,173) and (341,173) — which is why this needs no redrawing.

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "store_id": "my-local-memory",
+  "db_path": "C:/absolute/user-owned/memory/memory.db",
+  "max_results": 5,
+  "workspaces": {
+    "my-project": {
+      "namespace": "workspace:00000000-0000-4000-8000-000000000001"
+    }
+  }
+}

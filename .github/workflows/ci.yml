@@ -75,6 +75,13 @@ jobs:
             python -m playwright install chromium
           fi
 
+      - name: Build and verify the single installed runtime
+        run: |
+          python -m pip install --upgrade build "setuptools>=77" wheel
+          python tools/runtime_workspace.py build
+          python tools/runtime_workspace.py verify
+          python tools/runtime_workspace.py verify-source
+
       - name: Check macOS updater trust before the full suite
         if: runner.os == 'macOS'
         run: python -m pytest -q -s tests/test_update.py

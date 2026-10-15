@@ -289,8 +289,12 @@ def run_pack(task, cwd, n=3, check=None, provider=None, model=None, effort=None,
     attempts at once on ONE backend is a rate-limit magnet, and a subscription plan is the easiest
     thing to trip. A roster spread across different accounts is the case worth raising it for.
     """
-    from .cli import (configure_run_options, make_harness, _paths,
-                      _worker_history_note, _worker_provider)
+    from .application_ports import cli_factory
+    configure_run_options = cli_factory('configure_run_options')
+    make_harness = cli_factory('make_harness')
+    _paths = cli_factory('_paths')
+    _worker_history_note = cli_factory('_worker_history_note')
+    _worker_provider = cli_factory('_worker_provider')
     from . import settings, capability_policy
     run_limits = settings.enforce_pinned(limits) if limits is not None else settings.current_limits()
     run_capabilities = dict(capabilities) if capabilities is not None else capability_policy.snapshot()

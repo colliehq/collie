@@ -43,8 +43,11 @@ $pythonOut = New-Item -ItemType Directory -Force -Path (Join-Path $output "pytho
 $extensionsOut = New-Item -ItemType Directory -Force -Path (Join-Path $output "extensions")
 
 Step "Python wheel + source distribution"
-& python -m build --no-isolation --outdir $pythonOut.FullName $repo
+$runtimeArgs = @("build")
+if ($env:HAVE_GOOGLE_CLIENT -eq "true") { $runtimeArgs += "--include-generated-google-client" }
+& python (Join-Path $repo "tools\runtime_workspace.py") @runtimeArgs
 Assert-Exit "Python package build"
+Get-ChildItem -LiteralPath (Join-Path $repo "dist") -File | Where-Object { $_.Name -match '^collie_harness-.*\.(whl|tar\.gz)$' } | Copy-Item -Destination $pythonOut.FullName
 
 Step "VS Code IDE extension"
 $vscodeVersion = (Get-Content -LiteralPath (Join-Path $repo "vscode-collie\package.json") -Raw | ConvertFrom-Json).version

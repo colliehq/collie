@@ -51,12 +51,8 @@ def _parse_legacy_toolcall(s, ToolCall):
 def _dir(directory=None):
     # COLLIE_SESSIONS_DIR lets tests (and throwaway runs) write to a temp store instead of the
     # user's real data/sessions/ — so a mock-provider test suite never floods the Map's run list.
-    d = directory or os.environ.get("COLLIE_SESSIONS_DIR")
-    if not d:
-        from .cli import DATA
-        d = os.path.join(DATA, "sessions")
-    os.makedirs(d, exist_ok=True)
-    return d
+    from .paths import sessions_dir
+    return sessions_dir(directory)
 
 
 def _path(sid, directory=None):
@@ -292,7 +288,7 @@ def _msgs_out(messages):
 
 def _msgs_in(messages):
     """Rebuild ToolCall objects from the on-disk form so seeded history behaves like a live run."""
-    from .providers import ToolCall
+    from .model_contracts import ToolCall
     out = []
     for m in messages or []:
         tcs = m.get("tool_calls")

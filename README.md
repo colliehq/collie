@@ -40,6 +40,29 @@ The desktop starts as Collie; choosing a nickname is optional. Use
 and [Daily Brief](docs/daily-brief.md) for today's priorities, schedule and progress.
 Morning email is a separate opt-in setting; the desktop brief works without an email account.
 
+## One product, reusable capabilities
+
+This repository builds one complete `collie-harness` Python package. Runtime,
+memory, model transports, tools, workflows, connections, and frontends remain
+internal modules with explicit application ports; using those boundaries does
+not require installing a family of component packages.
+
+Two capabilities can also be used from native agents through four small plugin
+folders. All use the same base Python installation; SDKs, browser automation,
+local embeddings, and voice dependencies are optional extras.
+
+| Capability | Codex | Claude Code |
+|---|---|---|
+| Registered check evidence and scoped task handoff | [Install](plugins/codex/INSTALL_LOCAL.md) | [Install](plugins/claude-code/INSTALL_LOCAL.md) |
+| Explicitly scoped local SQLite recall and pending proposals | [Install](plugins/codex-memory/INSTALL_LOCAL.md) | [Install](plugins/claude-code-memory/INSTALL_LOCAL.md) |
+
+Native agents keep their execution and session ownership. These MCP tools do
+not intercept other host tools, migrate native sessions, or automatically
+collect memory. Configure a local plugin before installing it from the root
+marketplace; checked-in configuration placeholders intentionally fail startup.
+See [architecture and distribution](docs/architecture.md) for module boundaries,
+source/archive installation, and the limits of the plugin interfaces.
+
 ## Why it's different
 
 **Memory lives inside the workflow.** Optional outside-AI learning turns content-free local activity
@@ -117,25 +140,48 @@ verifying the download; elsewhere it tells you how (the release page for the mac
 `brew upgrade collie`, or `collie update --yes` for pip). Reload the Collie browser extension once in
 `chrome://extensions` afterwards; Chrome keeps the old copy until then, and Settings says so.
 
-**Linux and developers — pip.** The core is stdlib-only, so the base install is tiny:
+**Source, archives, and developers — pip.** Use a new environment and install
+from the repository root, or the extracted source archive's root:
 
-```bash
-pip install -e ".[local,dev]"      # from a clone (PyPI publish is planned)
-collie setup                       # optional deps, pre-download the memory model, pick a provider
-collie                             # the terminal chat (TUI) opens
+```text
+python -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/collie --help
 ```
+
+On Windows use `.venv/Scripts/python.exe` and `.venv/Scripts/collie.exe`.
+For an editable development install, use `pip install -e ".[dev]"` inside
+that environment. A supplied `collie_harness-0.31.1-py3-none-any.whl` is also a
+complete runtime: install that single wheel instead of the source directory.
+Do not overlay it onto an environment containing the experimental component
+distributions; create a fresh environment. No Git metadata is required.
+
+The base runtime has no third-party runtime dependencies. It includes Python
+modules and application assets; extras add dependencies rather than hiding
+modules. Install only what your selected workflow needs. `collie setup` is an
+optional setup workflow that can install dependencies or download a memory
+model; the two native plugin capabilities do not require it.
+The base package includes integration code, not model weights, vendor SDKs,
+vendor CLIs, connected accounts, or a running local model server. Configure
+your chosen provider/account or local server separately; `mock` is the offline
+fixture provider. Browser control also needs its documented browser/extension
+setup; including a tool module does not connect it to an application.
 
 No account, no telemetry, and the core has **zero third-party dependencies** — `mock` and `ollama`
 run without any key, and memory works out of the box on BM25 keyword recall. **Collie Online is
 optional**: Local mode is complete; Connected Mode adds paired devices, project/memory/policy sync,
 shared reviewed MCP connections, schedules, reports, and local-node Mission handoff.
 
-Optional extras: `pip install ".[local,tui,search,online]"` — `local` (semantic memory: granite-107m via
+Optional extras, from an activated environment at the source root:
+`python -m pip install ".[local,tui,search,online]"` — `local` (semantic memory: granite-107m via
 onnxruntime, ~55MB, multilingual), `tui` (rich terminal chat), `search` (keyless web search), `acp`
 (editor protocol), `online` (device signing and sealed Connected Mode sync), `browser` (Playwright — only for `collie browser-bridge --browser`, a managed
 Chromium with the extension preloaded, for CI or when you'd rather not use your own Chrome). Per-OS
 setup — especially the real-browser bridge (`collie browser-bridge` + `harness/browser_ext/`) — is in
 **[docs/PLATFORMS.md](docs/PLATFORMS.md)**.
+The `claude` and `codex` extras install their SDK integrations; `speech` adds
+local transcription dependencies. None is needed just to expose Task Evidence
+or BM25 Local Memory to an already running native agent.
 
 ## Quickstart
 

@@ -102,7 +102,12 @@ if ! "$RES/python/bin/python3" -c "pass" 2>/dev/null; then
   exit 2
 fi
 "$RES/python/bin/python3" -m pip install --quiet --upgrade pip
-"$RES/python/bin/python3" -m pip install --quiet --no-warn-script-location ".[$EXTRAS]"
+"$RES/python/bin/python3" -m pip install --quiet --upgrade build 'setuptools>=77' wheel
+runtime_args=(install --extras "$EXTRAS" --upgrade)
+if [ "${HAVE_GOOGLE_CLIENT:-false}" = "true" ]; then
+  runtime_args+=(--include-generated-google-client)
+fi
+"$RES/python/bin/python3" tools/runtime_workspace.py "${runtime_args[@]}"
 echo "  collie:  installed via the staged interpreter"
 # Collie's Google OAuth client comes from a release secret (write_google_oauth_client.py) as package
 # data. If the tree has it, the app must too, or the installed Collie cannot connect Google.

@@ -173,8 +173,8 @@ if (-not $hasPip) {
 #    build dies in metadata preparation with BackendUnavailable: Cannot import 'hatchling.build'.
 #    Isolation stays off deliberately: the embeddable runtime is driven by python312._pth, and an
 #    isolated build's injected sys.path entries are not honoured by that static path file.
-Step "pip install setuptools wheel hatchling"
-& (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location setuptools wheel hatchling
+Step "pip install setuptools wheel hatchling build"
+& (Join-Path $py "python.exe") -m pip install --upgrade --no-warn-script-location setuptools wheel hatchling build
 Assert-NativeExit "install payload build dependencies" $LASTEXITCODE
 
 # An incremental payload build must be just as deterministic as -Clean. Remove only Collie's staged
@@ -188,7 +188,9 @@ Step "pip install collie-harness[local,remote,online,claude,desktop] from the re
 # [remote] = cryptography, for the phone-remote E2E handshake. WITHOUT it the packaged app reports
 # e2e.available()=False and the desktop refuses every pairing — the whole Collie Remote feature is
 # dead in a release build. It's a compiled wheel, but pip pulls the matching cp/win_amd64 wheel here.
-& (Join-Path $py "python.exe") -m pip install --upgrade --no-build-isolation --no-warn-script-location "$repo[local,remote,online,claude,desktop]"
+$runtimeArgs = @("install", "--extras", "local,remote,online,claude,desktop", "--upgrade")
+if ($env:HAVE_GOOGLE_CLIENT -eq "true") { $runtimeArgs += "--include-generated-google-client" }
+& (Join-Path $py "python.exe") (Join-Path $repo "tools\runtime_workspace.py") @runtimeArgs
 Assert-NativeExit "install Collie into payload" $LASTEXITCODE
 # Collie's Google OAuth client is written into the tree from a release secret (see
 # write_google_oauth_client.py) and travels as package data. If the tree has it, so must the payload,

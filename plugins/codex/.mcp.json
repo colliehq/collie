@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "collie_task_evidence": {
+      "command": "python",
+      "args": ["-m", "harness.evidence_bridge", "--config", "REPLACE_WITH_ABSOLUTE_USER_CONFIG_PATH"]
+    }
+  }
+}

@@ -49,11 +49,8 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Any, Callable
 
-from . import __version__, claude_code_runner, plat, subscription_guard
-from .agent_runners import CodexExecRunner, _display_path
-from .codex_app_server_runner import CodexAppServerRunner
-from .codex_sdk_runner import CodexSdkRunner
-from .pi_rpc_runner import PiRpcRunner
+from . import __version__, plat, runner_descriptors
+import importlib
 from .runner_specs import (
     BILLING_MODE_OF,
     CURRENT_PHASE,
@@ -65,6 +62,51 @@ from .runner_specs import (
     RunnerUnavailableError,
     family_of_provider,
 )
+
+
+_ADAPTERS = {
+    "CodexExecRunner": ("agent_runners", "CodexExecRunner"),
+    "CodexAppServerRunner": ("codex_app_server_runner", "CodexAppServerRunner"),
+    "CodexSdkRunner": ("codex_sdk_runner", "CodexSdkRunner"),
+    "PiRpcRunner": ("pi_rpc_runner", "PiRpcRunner"),
+    "claude_code_runner": ("claude_code_runner", None),
+    "subscription_guard": ("subscription_guard", None),
+}
+
+
+def _adapter(name):
+    existing = globals().get(name)
+    if existing is not None:
+        return existing
+    module_name, attribute = _ADAPTERS[name]
+    try:
+        module = importlib.import_module("." + module_name, __package__)
+    except ModuleNotFoundError as exc:
+        target = __package__ + "." + module_name
+        if exc.name != target:
+            # An adapter that exists may have a missing dependency. Preserve
+            # that installation error rather than misreporting a missing runner.
+            raise
+        raise RunnerUnavailableError(
+            "the Collie runtime is incomplete: required adapter %s is missing" % target) from exc
+    value = getattr(module, attribute) if attribute else module
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name):
+    if name in _ADAPTERS:
+        return _adapter(name)
+    raise AttributeError(name)
+
+
+def _display_path(path):
+    home = os.path.expanduser("~")
+    absolute = os.path.abspath(path)
+    prefix = os.path.join(home, "")
+    if home and absolute.lower().startswith(prefix.lower()):
+        absolute = "~" + os.sep + absolute[len(prefix):]
+    return absolute.replace("\\", "/")
 
 # How long a probe row stays fresh.  Also the ``ttl_s`` written into every probe,
 # so a caller that persists one can tell how stale it is without asking us.
@@ -263,13 +305,13 @@ _SPECS: dict[str, HarnessSpec] = {
         key="claude-code",
         label="Claude Code (claude -p)",
         kind="external",
-        binary=claude_code_runner.BINARY,
-        version_argv=(claude_code_runner.BINARY, "--version"),
+        binary=runner_descriptors.BINARY,
+        version_argv=(runner_descriptors.BINARY, "--version"),
         min_version="2.1.221",
-        credential_family=claude_code_runner.CREDENTIAL_FAMILY,
+        credential_family=runner_descriptors.CREDENTIAL_FAMILY,
         # Declared by the module that implements it — one source, not a copy.
-        caps=claude_code_runner.CAPABILITIES,
-        env_policy=claude_code_runner.ENV_POLICY,
+        caps=runner_descriptors.CAPABILITIES,
+        env_policy=runner_descriptors.ENV_POLICY,
         guard_alias="claude-code",
         phase=1,
         default_timeout_s=900.0,
@@ -740,7 +782,7 @@ def _claude_login_state(now: float) -> tuple[str, str, dict[str, Any]]:
 
 # --- live status (an official CLI's own redacted output) --------------------
 def _default_status_runner(guard_provider: str) -> Callable[[tuple[str, ...]], Any]:
-    """The callable ``subscription_guard._run_status`` expects.
+    """The callable ``_adapter("subscription_guard")._run_status`` expects.
 
     Reuses the guard's own launcher, which resolves the CLI without a shell and
     gives it a small allowlisted environment (``_STATUS_CHILD_ENV_NAMES``) — the
@@ -748,11 +790,11 @@ def _default_status_runner(guard_provider: str) -> Callable[[tuple[str, ...]], A
     credential from this process, exactly as it does on the benchmark path.
     """
     def run(argv: tuple[str, ...]) -> Any:
-        return subscription_guard._default_runner(argv, os.environ, guard_provider)
+        return _adapter("subscription_guard")._default_runner(argv, os.environ, guard_provider)
     return run
 
 
-# `subscription_guard._check_claude` denies with a machine-readable reason; each
+# `_adapter("subscription_guard")._check_claude` denies with a machine-readable reason; each
 # one says something specific about the route, so they are translated rather than
 # collapsed into "not usable".  A login that is real but not first-party is not a
 # broken login — it is a *metered* one, and the difference is who gets billed.
@@ -779,17 +821,17 @@ def _live_claude(base: RunnerProbe, now: float,
                  status_runner: Callable[[tuple[str, ...]], Any] | None) -> RunnerProbe:
     """Ask Claude Code for its own already-redacted login state.
 
-    The parsing is ``subscription_guard._check_claude`` verbatim — the same
+    The parsing is ``_adapter("subscription_guard")._check_claude`` verbatim — the same
     allowlisted field shape, the same credential-field refusal, the same plan
     normalisation — because a second parser for the same payload is a second
     place for "logged in" to mean something slightly different.
     """
-    receipt = subscription_guard._base_receipt(
-        "claude-code", subscription_guard._checked_at(None))
+    receipt = _adapter("subscription_guard")._base_receipt(
+        "claude-code", _adapter("subscription_guard")._checked_at(None))
     runner = status_runner or _default_status_runner("claude-code")
     try:
-        subscription_guard._check_claude(receipt, runner)
-    except subscription_guard.SubscriptionGuardError as exc:
+        _adapter("subscription_guard")._check_claude(receipt, runner)
+    except _adapter("subscription_guard").SubscriptionGuardError as exc:
         login, billing_class, detail = _CLAUDE_DENIALS.get(
             exc.reason,
             (base.login, "unknown",
@@ -814,7 +856,7 @@ def _live_codex(base: RunnerProbe, now: float,
                 status_runner: Callable[[tuple[str, ...]], Any] | None) -> RunnerProbe:
     """Ask the Codex CLI for its own already-redacted login state.
 
-    ``subscription_guard._check_codex`` is not called as a whole: it requires
+    ``_adapter("subscription_guard")._check_codex`` is not called as a whole: it requires
     freshly observed *account* evidence (zero credits, auto-reload off) that only
     an operator can supply, and a probe has none.  What is reused is the part
     that reads the CLI — ``_run_status`` with the guard's bounded, single-channel
@@ -824,13 +866,13 @@ def _live_codex(base: RunnerProbe, now: float,
     probe, because a non-matching line is the one that can carry an email
     address.
     """
-    receipt = subscription_guard._base_receipt(
-        "codex-cli", subscription_guard._checked_at(None))
+    receipt = _adapter("subscription_guard")._base_receipt(
+        "codex-cli", _adapter("subscription_guard")._checked_at(None))
     runner = status_runner or _default_status_runner("codex-cli")
     try:
-        status = subscription_guard._run_status(
-            receipt, subscription_guard._CODEX_COMMAND, runner).strip()
-    except subscription_guard.SubscriptionGuardError as exc:
+        status = _adapter("subscription_guard")._run_status(
+            receipt, _adapter("subscription_guard")._CODEX_COMMAND, runner).strip()
+    except _adapter("subscription_guard").SubscriptionGuardError as exc:
         return dataclasses.replace(
             base, detail=(base.detail + "; could not read `codex login status` (%s)"
                           % exc.reason).strip("; "))
@@ -890,15 +932,15 @@ def _external_probe(spec: HarnessSpec, now: float, live: bool,
                     status_runner: Callable[[tuple[str, ...]], Any] | None) -> RunnerProbe:
     """One external CLI: ``which`` + ``--version`` + login metadata, then ``--live``."""
     if spec.key == "codex-exec":
-        base = CodexExecRunner(executable=spec.binary).probe(now=now)
+        base = _adapter("CodexExecRunner")(executable=spec.binary).probe(now=now)
     elif spec.key == "codex-sdk":
-        base = CodexSdkRunner().probe(now=now)
+        base = _adapter("CodexSdkRunner")().probe(now=now)
     elif spec.key == "codex-app-server":
-        base = CodexAppServerRunner(executable=spec.binary).probe(now=now)
+        base = _adapter("CodexAppServerRunner")(executable=spec.binary).probe(now=now)
     elif spec.key == "pi-rpc":
-        base = PiRpcRunner(executable=spec.binary).probe(now=now)
+        base = _adapter("PiRpcRunner")(executable=spec.binary).probe(now=now)
     elif spec.key == "claude-code":
-        base = claude_code_runner.ClaudeCodeRunner(executable=spec.binary).probe(now=now)
+        base = _adapter("claude_code_runner").ClaudeCodeRunner(executable=spec.binary).probe(now=now)
         if base.installed:
             # The runner reports version metadata only; the login file is read here
             # (see _claude_login_state) so H3 has a state to look at without --live.
@@ -1091,7 +1133,7 @@ def make_runner(key: str, *, model: str = "", speed: str = "standard",
     """
     if type(read_only) is not bool:
         raise ValueError("read_only must be a boolean")
-    effort = claude_code_runner.normalize_effort(effort)
+    effort = runner_descriptors.normalize_effort(effort)
     if read_only and key != "claude-code":
         raise ValueError("this worker does not implement a read-only tool policy")
     spec = SPECS.get(key)
@@ -1106,24 +1148,24 @@ def make_runner(key: str, *, model: str = "", speed: str = "standard",
     timeout = spec.default_timeout_s if timeout_s is None else float(timeout_s)
     policy = env_policy or spec.env_policy
     if spec.key == "codex-exec":
-        return CodexExecRunner(executable=spec.binary, model=model,
+        return _adapter("CodexExecRunner")(executable=spec.binary, model=model,
                                default_timeout_s=timeout, env_policy=policy)
     if spec.key == "codex-sdk":
-        return CodexSdkRunner(model=model, default_timeout_s=timeout,
+        return _adapter("CodexSdkRunner")(model=model, default_timeout_s=timeout,
                               env_policy=policy)
     if spec.key == "codex-app-server":
-        return CodexAppServerRunner(
+        return _adapter("CodexAppServerRunner")(
             executable=spec.binary, model=model, default_timeout_s=timeout,
             env_policy=policy)
     if spec.key == "claude-code":
-        return claude_code_runner.ClaudeCodeRunner(
+        return _adapter("claude_code_runner").ClaudeCodeRunner(
             executable=spec.binary, model=model, speed=speed, effort=effort,
-            tools=(claude_code_runner.READ_ONLY_TOOLS if read_only else
-                   claude_code_runner.DEFAULT_TOOLS),
+            tools=(runner_descriptors.READ_ONLY_TOOLS if read_only else
+                   runner_descriptors.DEFAULT_TOOLS),
             default_timeout_s=timeout,
             env_policy=policy)
     if spec.key == "pi-rpc":
-        return PiRpcRunner(executable=spec.binary, model=model,
+        return _adapter("PiRpcRunner")(executable=spec.binary, model=model,
                            default_timeout_s=timeout, env_policy=policy)
     raise RunnerUnavailableError("no runner implementation for %r" % spec.key)
 

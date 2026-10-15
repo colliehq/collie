@@ -139,7 +139,7 @@ def semantic_config(raw):
     unknown = sorted(set(raw) - set(CONFIG_KEYS) - {"frozen"})
     if unknown:
         raise WebInputError("unknown config field(s): %s" % ", ".join(unknown), 400)
-    from .cli import normalize_run_options
+    from .run_options import normalize_run_options
     try:
         out = normalize_run_options(raw.get("intent") or "build",
                                     raw.get("quality") or "balanced",
@@ -847,7 +847,8 @@ def note_queue_error(session, message, *, entry_id="", kind="queue"):
                                 key=lambda row: row["at"])[:-_MAX_QUEUE_ERRORS]:
                 _QUEUE_ERRORS.pop(stale["session"], None)
     try:
-        from .webapp import Handler
+        from .application_ports import web_surface
+        Handler = getattr(web_surface(), 'Handler')
         Handler._mirror_pub(session, "queue_error", dict(record))
         Handler._live_pub("queue_error", dict(record))
     except Exception:
@@ -922,7 +923,8 @@ def _run_detached(sink, session, owner, entry):
         note_queue_error(session, error, entry_id=(entry or {}).get("id") or "",
                          kind="scheduled_run")
         try:
-            from .webapp import Handler
+            from .application_ports import web_surface
+            Handler = getattr(web_surface(), 'Handler')
             run_id = getattr(sink, "_run_id", None)
             if run_id is not None:
                 # Only the row this turn recorded when it began.  By the time a
@@ -961,7 +963,8 @@ def _run_detached(sink, session, owner, entry):
 
 def _await_run_id(session, timeout=1.0):
     """The run id of a just-scheduled turn, if it exists yet.  Never waits long."""
-    from .webapp import Handler
+    from .application_ports import web_surface
+    Handler = getattr(web_surface(), 'Handler')
     # Wall-clock adjustments (and frozen clocks in callers' tests) must not
     # extend this acknowledgement wait or make it expire early.
     deadline = time.monotonic() + max(0.0, float(timeout))
@@ -983,6 +986,21 @@ def start_pending(session, *, label="web-start"):
     interrupted run never delivered, which becomes this turn's initial request
     with its original kind intact.
     """
+    from .application_ports import ServiceUnavailable, cli_factory, web_surface
+    try:
+        web_surface()
+        # A frontend module alone cannot execute an accepted request. Check the
+        # application bindings before taking its lease or consuming an input.
+        # This is installation readiness, not proof of provider authentication.
+        for name in ("make_harness", "default_gate", "configure_run_options",
+                     "configure_host_verification", "_worker_model", "_paths",
+                     "_RunnerShim", "_worker_provider", "_worker_session",
+                     "_worker_history_note", "skipped_verification_evidence",
+                     "stopped_before_verification"):
+            if not callable(cli_factory(name)):
+                raise ServiceUnavailable("application factory %r is not callable" % name)
+    except ServiceUnavailable as exc:
+        raise WebInputError(str(exc), 503) from None
     try:
         lease = session_owner.try_acquire(session, label=label)
     except ValueError as exc:
@@ -1030,7 +1048,8 @@ def serve_managed_stream(handler, qs, *, owner=None, entry=None):
     The client's socket owns none of that.  It is a place events are written to,
     and it may go away at any point without changing what runs or what is stored.
     """
-    from . import webapp
+    from .application_ports import web_surface
+    webapp = web_surface()
     sid = (qs.get("session", [""])[0] or "").strip() or sessions.new_id()
     lease = owner
     if lease is None:
@@ -1214,7 +1233,8 @@ def _settle_and_schedule(handler, sid, lease, entry, gate=None):
         # that never answers would otherwise hold an already-accepted follow-up
         # at the door for as long as it takes.  The release at the tail of the
         # turn publishes those, on this thread, behind the follow-up.
-        from . import webapp
+        from .application_ports import web_surface
+        webapp = web_surface()
         webapp.Handler._terminal_handover(sid, gate)
         schedule(sid, lease, nxt)
         return True

@@ -1,0 +1,7 @@
+{
+  "name": "collie-local-memory",
+  "version": "0.1.0",
+  "description": "Scoped Collie SQLite recall and pending proposals for native Codex; no UI or model runtime required.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

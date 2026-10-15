@@ -49,7 +49,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from .providers import _tc_fields, content_text
+from .model_contracts import _tc_fields, content_text
 
 # Bumped when the checkpoint shape changes meaning; an older/newer record is ignored rather
 # than reinterpreted (a wrong cutoff would silently drop real conversation).

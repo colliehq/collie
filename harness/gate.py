@@ -175,12 +175,13 @@ class Gate:
         """Add authenticated mid-run steering without accepting model/tool text."""
         extra = RequestAuthority.compile(user_message)
         current = self.authority_context.request
+        withheld = (current.withheld_actions | extra.withheld_actions) - extra.actions
         self.authority_context.request = RequestAuthority(
-            actions=frozenset(set(current.actions) | set(extra.actions)),
-            recipients=tuple(dict.fromkeys(current.recipients + extra.recipients)),
+            actions=(current.actions | extra.actions) - withheld,
+            recipients=extra.recipients or current.recipients,
             # The basis identifies both authenticated messages without retaining either.
             request_sha256=(current.request_sha256[:32] + extra.request_sha256[:32]),
-            explicit=current.explicit or extra.explicit)
+            explicit=current.explicit or extra.explicit, withheld_actions=frozenset(withheld))
 
     # -- the decision -------------------------------------------------------
     def evaluate(self, tool_name: str, args: dict, tool: Any = None) -> Decision:
@@ -231,6 +232,16 @@ class Gate:
                     return d(False, "path is outside the writable roots: %s" % path)
                 return d(False, "writes outside %s need approval" % self.cwd,
                          needs_user=True, target=str(path))
+
+        # A later authenticated restriction outranks unattended mode and a
+        # previously approved session rule. Those paths otherwise return before
+        # AuthorityEngine gets to observe mid-run withdrawal.
+        if self.authority_enabled and self.authority_context.request.withheld_actions:
+            intent = intent_for(tool_name, args, risk=risk.value, tool=tool)
+            if intent.action in self.authority_context.request.withheld_actions:
+                return d(False, "the latest authenticated request withholds this action",
+                         action=intent.action, effect=intent.effect.value,
+                         intent=intent_dict(intent), authorization_basis="user request")
 
         if self.mode is Mode.AUTO:
             return d(True, "auto mode")

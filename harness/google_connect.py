@@ -66,7 +66,11 @@ PERMISSIONS_PAGE = "https://myaccount.google.com/permissions"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 #: Written at release time from the GOOGLE_OAUTH_CLIENT_JSON secret; .gitignored, never committed.
 PACKAGED_CLIENT = os.path.join(_HERE, "google_oauth_client.json")
-_LOGO = os.path.join(_HERE, "webui", "logo.svg")
+try:
+    from .paths import component_resource_dir
+    _LOGO = os.path.join(component_resource_dir("harness.webapp", "webui"), "logo.svg")
+except FileNotFoundError:
+    _LOGO = ""  # The existing OAuth page renderer supplies its text-only fallback.
 USER_CLIENT_FILE = "google-oauth-client.json"
 CONNECTION_FILE = "google-connection.json"
 PLAINTEXT_FILE = "google-token.json"          # what the first prototype left behind

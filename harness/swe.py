@@ -364,7 +364,8 @@ def _spawn_investigative_critic(provider, model):
             # named local import in predict_collie() is not visible inside this closure; without
             # this import every critic launch raised NameError and the fail-open handler below
             # silently treated the review as successful.
-            from .cli import make_harness
+            from .application_ports import cli_factory
+            make_harness = cli_factory('make_harness')
             ch = make_harness(cwd, provider=provider, model=model, project="critic", code_search=True)
             ch.max_turns = int(os.environ.get("COLLIE_CRITIC_TURNS", "14"))
             ch.self_verify = False
@@ -398,7 +399,8 @@ def predict_collie(workdir: str, problem_statement: str, provider="deepseek",
                    complete_prompt=None, benchmark_effort="default"):
                    # 50 (was 35): the verify loop (reproduce ->
                    # edit -> re-check) needs headroom; Hermes runs to 90. Still well under.
-    from .cli import make_harness
+    from .application_ports import cli_factory
+    make_harness = cli_factory('make_harness')
     # The verify gate is only as good as the toolchain it names, so decide the language BEFORE
     # building any nudge. COLLIE_SWE_LANG overrides it for repos the markers get wrong.
     _lang = (detect_language(workdir) if benchmark_safe else

@@ -1,0 +1,9 @@
+{
+  "name": "collie-task-evidence-local",
+  "plugins": [{
+    "name": "collie-task-evidence",
+    "source": { "source": "local", "path": "./" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Productivity"
+  }]
+}

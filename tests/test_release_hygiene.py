@@ -265,7 +265,8 @@ def test_payload_build_fails_closed_and_verifies_code_metadata_and_assets():
     assert ('Assert-AuthenticodePublisher (Join-Path $py "python.exe") '
             '"Python Software Foundation"') in script
     assert 'Assert-AuthenticodePublisher $wv "Microsoft Corporation"' in script
-    assert 'pip install --upgrade --no-build-isolation --no-warn-script-location' in script
+    assert 'tools\\runtime_workspace.py' in script
+    assert '"install", "--extras"' in script and '"--upgrade"' in script
 
 
 def test_formal_installer_payloads_include_online_and_claude_by_default():
@@ -274,7 +275,7 @@ def test_formal_installer_payloads_include_online_and_claude_by_default():
         encoding="utf-8")
     mac = (ROOT / "installer" / "build_mac.sh").read_text(encoding="utf-8")
 
-    windows_extras = re.search(r'"\$repo\[([^\]]+)\]"', windows)
+    windows_extras = re.search(r'"--extras",\s*"([^"]+)"', windows)
     assert windows_extras is not None
     assert {"local", "remote", "online", "claude", "desktop"} <= set(windows_extras.group(1).split(","))
     assert '"claude_agent_sdk"' in windows
@@ -384,7 +385,11 @@ def test_google_oauth_client_ships_in_packages_but_never_in_git():
     refuses a Google client secret, and a copy in Git would outlive any rotation."""
     config = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     patterns = _table_strings(config, "[tool.setuptools.package-data]")
-    assert any(fnmatchcase("google_oauth_client.json", p) for p in patterns)
+    assert not any(fnmatchcase("google_oauth_client.json", p) for p in patterns)
+    excluded = _table_strings(config, "[tool.setuptools.exclude-package-data]")
+    assert "google_oauth_client.json" in excluded
+    recipe = (ROOT / "tools/runtime_workspace.py").read_text(encoding="utf-8")
+    assert "--include-generated-google-client" in recipe and "google_client(ROOT/CLIENT)" in recipe
     ignored = [line.strip() for line in
                (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
     assert _GOOGLE_CLIENT in ignored or "/" + _GOOGLE_CLIENT in ignored
@@ -402,7 +407,7 @@ def test_release_jobs_write_the_google_client_only_from_the_secret():
         assert "python installer/write_google_oauth_client.py" in body, job
         # before anything is built from the tree
         assert body.index("write_google_oauth_client.py") < max(
-            body.find("python -m build"), body.find("./installer/build.ps1"),
+            body.find("python tools/runtime_workspace.py build"), body.find("./installer/build.ps1"),
             body.find("bash installer/build_mac.sh")), job
     wheel = _workflow_job(workflow, "wheel")
     assert "HAVE_GOOGLE_CLIENT" in wheel and _GOOGLE_CLIENT in wheel

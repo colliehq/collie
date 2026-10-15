@@ -151,3 +151,8 @@ installer/shell/payload.zip
 .wrangler/
 harness/browser_ext/token.txt
 .read-batch-experiment/
+
+# Disposable single-runtime build/install receipts and fixtures
+.runtime-build/
+/.test-state/
+/work/
