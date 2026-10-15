@@ -23,12 +23,27 @@ import tempfile
 import threading
 import time
 
+def _source_import_roots(module_file):
+    """Restore only this trusted source tree, never the request workspace.
+
+    Source and installed layouts both have exactly one package parent. The
+    worker derives it from its own trusted file; -I deliberately ignores the
+    parent's PYTHONPATH and the request workspace is never an import root.
+    """
+    package = os.path.dirname(os.path.realpath(module_file))
+    if os.path.basename(package) != "harness":
+        raise RuntimeError("worker must belong to its trusted harness package")
+    return [os.path.dirname(package)]
+
+
 # Script-mode workers use ``python -I <this trusted file>`` so an untrusted
-# workspace cannot run sitecustomize.py before the start gate.  Restore only the
-# package context needed by our later relative imports.
+# workspace cannot run sitecustomize.py before the start gate. Restore only the
+# worker's own package context needed by our later relative imports.
 if __name__ == "__main__" and not __package__:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path[:0] = _source_import_roots(__file__)
     __package__ = "harness"
+
+from .application_bootstrap import bootstrap_application
 
 
 def _reject_json_constant(value: str):
@@ -115,6 +130,12 @@ def _execute_request(request: dict) -> dict:
     session_dir = str(request.get("session_dir") or "")
     if session_dir:
         os.environ["COLLIE_SESSIONS_DIR"] = session_dir
+    # The worker is a fresh interpreter: the parent's application callbacks do
+    # not cross the process boundary. Assemble only after the authenticated
+    # start gate and the child-specific workspace/session environment are set.
+    # Importing the bootstrap module above is side-effect-free; core never
+    # discovers a frontend or invents a missing execution factory.
+    bootstrap_application()
     from .primitives import _live_code
     return _live_code(
         str(request.get("goal") or ""), workspace,

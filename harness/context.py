@@ -22,10 +22,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass, field
 
 from .compaction import project_messages
-from .providers import content_text, est_tokens
+from .model_contracts import content_text, est_tokens
+from .context_contracts import ComposeMeta, TokenBudgeter
 
 
 # Reply-language display names, keyed by the LANG setting's option values (settings.py SCHEMA).
@@ -134,30 +134,8 @@ def _scope_line() -> str:
         "checks, not just the end state. Disclose unintended side effects even if reverted.")
 
 
-@dataclass
-class ComposeMeta:
-    prefix_tokens: int = 0
-    section_tokens: dict = field(default_factory=dict)
-    prefetched: int = 0
-    prefetched_ids: list = field(default_factory=list)
-    elide_from: int = 0      # message index below which old tool outputs were stubbed this build;
-                             # the loop compares it turn-to-turn to attribute cache misses to 'elide'
-                             # (composer stays stateless — it only reports, never remembers)
-    # What the compaction projection did this build: {"active", "cutoff", "compacted", "kept",
-    # "generation"}. Content-free — the summary text itself never rides in meta.
-    compaction: dict = field(default_factory=dict)
-    # The pre-elision message list `elide_from` indexes into. It is the PROJECTION, not
-    # session["messages"], once compaction is active; the loop's cache-miss attribution needs
-    # the same list the indices came from or it reads the wrong window.
-    pre_elision: list = field(default_factory=list)
 
 
-class TokenBudgeter:
-    def __init__(self, prefix_ceiling: int = 6000):
-        self.prefix_ceiling = prefix_ceiling
-
-    def report(self, sections: dict) -> dict:
-        return {k: est_tokens(v) for k, v in sections.items()}
 
 
 #: How far the elision boundary moves at once (see ContextComposer.build).

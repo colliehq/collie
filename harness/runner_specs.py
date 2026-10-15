@@ -24,10 +24,9 @@ Three rules shape these types:
   renaming one is a wire change and not a refactor.
 
 The module deliberately imports almost nothing: :class:`~harness.recorder.RunResult`
-(pure dataclass) and :mod:`harness.costs` (a price table).  ``providers.Usage`` is
-imported lazily inside the one method that needs it, because ``providers`` pulls
-in the whole model transport stack and this module is imported by the CLI on the
-default ``RUNNER=collie`` path.
+(pure dataclass), :mod:`harness.costs` (a price table), and the provider-neutral
+``model_contracts.Usage`` inside the conversion method. Model transports are not
+needed to convert a receipt or import the default ``RUNNER=collie`` path.
 """
 from __future__ import annotations
 
@@ -980,7 +979,7 @@ class RunnerUsage:
         """
         if not self.known:
             return None
-        from .providers import Usage      # lazy: providers pulls in the transport stack
+        from .model_contracts import Usage
         return Usage(
             input_tokens=int(self.input_tokens or 0),
             output_tokens=int(self.output_tokens or 0),

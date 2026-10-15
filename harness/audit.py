@@ -73,10 +73,12 @@ class AuditLog:
 
     def record(self, *, session="", cwd="", tool="", risk="", target="", stage="",
                outcome="", reason="", rule="", args=None, effect="", action="",
-               authorization_basis="") -> None:
-        """One decision. Never raises into the caller — an audit failure must not take
-        down the run it was recording, and a run that dies because logging failed is a
-        worse outcome than a gap in the log."""
+               authorization_basis="") -> bool:
+        """Return an explicit durable acknowledgement for this decision.
+
+        Callers may reject an effect when the ledger is unavailable. Procedural
+        suggestions remain best-effort and never substitute for this commit.
+        """
         try:
             with self._lock:
                 self.db.execute(
@@ -90,7 +92,7 @@ class AuditLog:
                       str(authorization_basis or "")[:300]))
                 self.db.commit()
         except Exception:
-            pass
+            return False
         # Only actions which actually passed the gate teach procedural memory.  This is
         # best-effort like the audit write itself and intentionally receives pre-secret-
         # restore args. ProcedureMemory applies a second, stricter content filter.
@@ -105,6 +107,8 @@ class AuditLog:
                     metadata={"risk": risk, "effect": effect, "stage": stage})
             except Exception:
                 pass
+
+        return True
 
     def list(self, limit=100, tool=None, stage=None, session=None) -> list:
         sql, params, where = "SELECT * FROM gate_events", [], []

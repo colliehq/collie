@@ -550,10 +550,17 @@ def _read_line(console, have_rich):
 def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None,
             cwd_explicit=False):
     """Entry used by cli.py's `tui` subcommand. Builds a harness, runs the interactive loop."""
-    from .cli import (apply_accepted_capabilities, apply_accepted_limits,
-                      apply_turn_decision, make_harness, owned_turn_state,
-                      recovery_fence_lifted, recovery_notice, resolve_turn_decision,
-                      turn_decision_receipt, turn_receipt_fence)
+    from .application_ports import cli_factory
+    apply_accepted_capabilities = cli_factory('apply_accepted_capabilities')
+    apply_accepted_limits = cli_factory('apply_accepted_limits')
+    apply_turn_decision = cli_factory('apply_turn_decision')
+    make_harness = cli_factory('make_harness')
+    owned_turn_state = cli_factory('owned_turn_state')
+    recovery_fence_lifted = cli_factory('recovery_fence_lifted')
+    recovery_notice = cli_factory('recovery_notice')
+    resolve_turn_decision = cli_factory('resolve_turn_decision')
+    turn_decision_receipt = cli_factory('turn_decision_receipt')
+    turn_receipt_fence = cli_factory('turn_receipt_fence')
     from . import run_ownership, terminal_queue
     from . import sessions as sess
     from .memory import project_scope
@@ -600,7 +607,8 @@ def run_tui(cwd, provider, model, project="", resume=None, cont=False, goal=None
         console.print("[red]%s[/red]" % message) if have_rich else print(message)
         return 2
 
-    from .cli import default_gate
+    from .application_ports import cli_factory
+    default_gate = cli_factory('default_gate')
     _gate = default_gate(cwd)
     h = make_harness(cwd, provider=provider, model=model, project=project,
                      code_search=True, web_search=True, exec_code=True, delegate=True,
@@ -944,7 +952,8 @@ def main(argv=None):
     args = p.parse_args(list(sys.argv[1:] if argv is None else argv))
     from . import settings
     settings.apply()
-    from .cli import configured_model_for
+    from .application_ports import cli_factory
+    configured_model_for = cli_factory('configured_model_for')
     provider = args.provider or os.environ.get("COLLIE_PROVIDER", "mock")
     model = configured_model_for(
         provider, args.model, provider_was_explicit=bool(args.provider))

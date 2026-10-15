@@ -1,0 +1,16 @@
+{
+  "name": "collie",
+  "owner": {"name": "Collie maintainers"},
+  "plugins": [
+    {
+      "name": "collie-task-evidence",
+      "source": "./plugins/claude-code",
+      "description": "User-configured check receipts and scoped task handoff."
+    },
+    {
+      "name": "collie-local-memory",
+      "source": "./plugins/claude-code-memory",
+      "description": "Explicitly scoped local SQLite recall and pending proposals."
+    }
+  ]
+}

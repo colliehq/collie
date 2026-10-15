@@ -665,7 +665,8 @@ def credential_health(*, now: float | None = None, claude_path: str | None = Non
 
 def _shipped_extension_version() -> str:
     try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext",
+        from .paths import component_resource_dir
+        with open(os.path.join(component_resource_dir("harness.browserbridge", "browser_ext"),
                                "manifest.json"), encoding="utf-8") as fh:
             return str(json.load(fh).get("version") or "")
     except (OSError, ValueError, AttributeError):

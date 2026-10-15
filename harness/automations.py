@@ -1313,7 +1313,9 @@ def _automation_outcome(result, counter: dict, save_error: str) -> tuple[str, st
 def _run_collie_request(request: dict) -> dict:
     """Child-process body for :class:`DefaultCollieRunner`."""
     from . import sessions, settings
-    from .cli import default_gate, make_harness
+    from .application_ports import cli_factory
+    default_gate = cli_factory('default_gate')
+    make_harness = cli_factory('make_harness')
 
     settings.apply()
     execution = request.get("execution") or {}

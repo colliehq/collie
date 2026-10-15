@@ -729,7 +729,9 @@ class ChannelService:
 
     def accept(self, connection, event_id, *, draft=True, start=True, approved=False):
         """A trusted local UI or the configured no-tools drafting template calls this."""
-        from . import capability_policy, settings, web_tasks, webapp
+        from . import capability_policy, settings, web_tasks
+        from .application_ports import web_surface
+        webapp = web_surface()
         row = self._row(connection)
         event = comms.get_event(connection, event_id, include_private=True, directory=self.directory)
         if not event or event.get("compacted"):

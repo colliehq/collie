@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "state_dir": "C:/absolute/user-owned/evidence-state",
+  "workspaces": {
+    "demo": {
+      "root": "C:/absolute/user-owned/source-workspace",
+      "goal": "Replace with the user's actual registered task goal",
+      "scope": ["src", "tests"],
+      "checks": {
+        "unit": {
+          "command": "python -m unittest discover -s tests -q",
+          "timeout_s": 300
+        }
+      }
+    }
+  }
+}

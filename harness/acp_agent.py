@@ -123,8 +123,12 @@ class CollieAgent(acp.Agent):
         loop = asyncio.get_running_loop()
         self._last_bash = None
 
-        from .cli import (apply_turn_decision, make_harness, resolve_turn_decision,
-                          turn_decision_receipt, turn_receipt_fence)
+        from .application_ports import cli_factory
+        apply_turn_decision = cli_factory('apply_turn_decision')
+        make_harness = cli_factory('make_harness')
+        resolve_turn_decision = cli_factory('resolve_turn_decision')
+        turn_decision_receipt = cli_factory('turn_decision_receipt')
+        turn_receipt_fence = cli_factory('turn_receipt_fence')
         from . import settings
         # env > settings.json > API default — the ACP entry never calls settings.apply(), so read
         # settings directly to keep the web Settings panel authoritative here too.
@@ -150,7 +154,8 @@ class CollieAgent(acp.Agent):
                 receipts=sess.get("run_receipts") or [])
             # build INSIDE the try — make_harness -> AnthropicOAuth raises on a missing token, and
             # that must reach the user as a chat message, not an escaped JSON-RPC error.
-            from .cli import default_gate
+            from .application_ports import cli_factory
+            default_gate = cli_factory('default_gate')
             _gate = default_gate(cwd)
             h = make_harness(cwd, provider=provider, model=decision.model,
                              effort=decision.effort, speed=decision.speed,

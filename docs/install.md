@@ -35,22 +35,36 @@ fails; your `~/.collie` settings, memory, and missions are outside that replacem
 3. Open Collie and choose a model provider. Release builds are signed with an Apple Developer ID and
    notarised; the packaged app currently targets Apple silicon and macOS 12 or newer.
 
-## Linux and developers — pip / uv
+## Source, archives, and developers — pip
 
-The core is stdlib-only, so the base install is tiny.
+The unified `collie-harness` package includes the runtime. Base installation
+has no third-party runtime dependencies. Start with a new environment instead
+of mixing it with the old experimental component distributions.
 
-```bash
-# from source (PyPI publish is planned):
-git clone https://github.com/colliehq/collie && cd collie
-pip install -e ".[local,dev]"
+```text
+# run from a cloned repository or extracted source archive root:
+python -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/collie --help
 ```
 
-Then let Collie finish provisioning itself:
+On Windows use `.venv/Scripts/python.exe` and `.venv/Scripts/collie.exe`.
+A supplied `collie_harness-0.31.1-py3-none-any.whl` can replace `.` in the
+install command; no sibling component wheels or Git metadata are needed.
+For editable development, install `-e ".[dev]"` into the new environment.
+Extras add dependencies rather than removing modules from the wheel.
 
-```bash
-collie setup     # installs optional deps, pre-downloads the memory model, picks a provider
+For the full application, optionally provision the workflows you need:
+
+```text
+collie setup     # can install optional dependencies and download a memory model
 collie           # opens the terminal chat
 ```
+
+The native Task Evidence and BM25 Local Memory plugins use only the base
+installation and do not require `collie setup`. Configure them explicitly
+before loading their source folder; a Python wheel alone does not install or
+enable host plugins. See [architecture and plugin installation](architecture.md).
 
 ### Optional extras
 
@@ -62,6 +76,8 @@ collie           # opens the terminal chat
 | `search` | Keyless web search (DuckDuckGo). |
 | `acp` | Editor integration over the Agent Client Protocol (`collie acp`). |
 | `fastembed` | Opt-in jina-v3 and other fastembed models. |
+| `claude`, `codex` | Optional model/native SDK integrations; unnecessary for plugins loaded by an already running native host. |
+| `speech` | Local transcription dependencies; model downloads remain separate. |
 
 ```bash
 # run from the cloned checkout above

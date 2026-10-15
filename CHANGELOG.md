@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.31.1 — One modular runtime and reusable native-agent capabilities
+
+- Ship one complete `collie-harness` Python package with internal application
+  ports and optional SDK, browser, embedding, desktop, and voice dependencies.
+- Add Task Handoff and Evidence: registered checks, durable receipts, and scoped
+  freshness at handoff, while native agents retain their own execution.
+- Add explicitly scoped local SQLite recall and pending memory proposals.
+  Both capabilities use the base runtime through four plugin folders for
+  Codex and Claude Code, with local marketplace catalogs and installation guides.
+- Keep plugin configuration explicit; no model, user database, or account is
+  discovered or started by installing a plugin folder.
+
 ## v0.31.0 — Your own to-dos and news in the Daily Brief, a steadier Live, and a crash fixed
 
 - Keep your own to-do list in the Daily Brief. A to-do that is late or due today appears under

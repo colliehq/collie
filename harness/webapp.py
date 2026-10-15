@@ -84,6 +84,11 @@ from .httpserver import CLIENT_GONE, ThreadingHTTPServer
 
 from .recorder import note_host_error
 
+
+# Kernel execution callbacks are explicitly attached by the HTTP application.
+from . import application_ports as _application_ports
+_application_ports.register("web_surface", lambda: sys.modules[__name__])
+
 if __name__ == "__main__":
     # `python -m harness.webapp` and imports from the execution manager must
     # share one Handler, token, run registry and cancel-event table. Otherwise
@@ -2414,7 +2419,8 @@ class Handler(BaseHTTPRequestHandler):
                 # probes are reading it.
                 probes = runner_reg.probe_all(keys=runner_reg.option_keys())
                 from . import runner_signals
-                from .cli import _paths as _cli_paths
+                from .application_ports import cli_factory
+                _cli_paths = cli_factory('_paths')
                 signal_set = runner_signals.collect(
                     runner_reg.option_keys(), probes, runs_db=_cli_paths()[1],
                     live_quota=True)
@@ -2500,12 +2506,16 @@ class Handler(BaseHTTPRequestHandler):
                 # onboarding "connect your browser": is the bridge up, has the extension connected,
                 # where's the extension folder, and which Chromium browsers are installed.
                 import shutil
+                from .paths import component_resource_dir
+                try:
+                    ext = component_resource_dir("harness.browserbridge", "browser_ext")
+                except FileNotFoundError:
+                    return self._send_json({"error": "browser extension component is unavailable"}, 503)
                 from . import browserbridge as bb
                 # Bound here as well: `plat` is a local of do_GET (imported in other branches), so
                 # _found below read an unassigned name and every status poll answered 500 -- the
                 # onboarding step kept saying "Waiting for the extension" after it connected.
                 from . import plat
-                ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 health = {}
                 try:
                     # Polled every 2.5 s while onboarding waits for a bridge that is usually not
@@ -4059,9 +4069,13 @@ class Handler(BaseHTTPRequestHandler):
                 # extension has something to poll. Returns the extension folder for the Load-unpacked step.
                 if not self._authed(parsed):
                     return self._send_json({"error": "forbidden"}, 403)
+                from .paths import component_resource_dir
+                try:
+                    ext = component_resource_dir("harness.browserbridge", "browser_ext")
+                except FileNotFoundError:
+                    return self._send_json({"error": "browser extension component is unavailable"}, 503)
                 from . import browserbridge as bb
                 ok = bb.start_background()
-                ext = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_ext")
                 return self._send_json({"ok": bool(ok), "ext_path": ext})
             if path == "/api/live-copilot/audio-preview":
                 # Display-only text for the capsule recording so far; the final clip still decides.
@@ -5753,8 +5767,13 @@ class Handler(BaseHTTPRequestHandler):
         return web_tasks.serve_managed_stream(self, qs)
 
     def _run_stream(self, qs):
-        from .cli import (configure_host_verification, configure_run_options, default_gate,
-                          make_harness, normalize_run_options, _worker_model)
+        from .application_ports import cli_factory
+        configure_host_verification = cli_factory('configure_host_verification')
+        configure_run_options = cli_factory('configure_run_options')
+        default_gate = cli_factory('default_gate')
+        make_harness = cli_factory('make_harness')
+        normalize_run_options = cli_factory('normalize_run_options')
+        _worker_model = cli_factory('_worker_model')
         from . import sessions, settings, task_inbox, web_tasks
         settings.apply()   # a Settings-panel save takes effect on the next query, no restart
 
@@ -6195,7 +6214,8 @@ class Handler(BaseHTTPRequestHandler):
             runner_probes = runner_reg.probe_all(
                 keys=runner_candidates, provider=decision.provider)
             from . import runner_signals
-            from .cli import _paths as _cli_paths
+            from .application_ports import cli_factory
+            _cli_paths = cli_factory('_paths')
             runner_signal_set = runner_signals.for_selection(
                 runner_req, runner_probes, runs_db=_cli_paths()[1])
             runner_decision = runner_select.decide(
@@ -6413,7 +6433,8 @@ class Handler(BaseHTTPRequestHandler):
                 run_id=run_id, command=verify_command, surface=surface)
             if boundary["error"]:
                 # Refuse to launch rather than run an unfenced host command.
-                from .cli import skipped_verification_evidence
+                from .application_ports import cli_factory
+                skipped_verification_evidence = cli_factory('skipped_verification_evidence')
                 evidence = skipped_verification_evidence(
                     verify_command, verify_source,
                     "the check was not started: " + boundary["error"])
@@ -6720,8 +6741,13 @@ class Handler(BaseHTTPRequestHandler):
         # and mirrored to every window.  Approvals/steering are deliberately not
         # opened when the selected capability says they cannot round-trip.
         if runner_decision.runner != "collie":
-            from .cli import (_RunnerShim, _paths, _worker_history_note,
-                              _worker_model, _worker_provider, _worker_session)
+            from .application_ports import cli_factory
+            _RunnerShim = cli_factory('_RunnerShim')
+            _paths = cli_factory('_paths')
+            _worker_history_note = cli_factory('_worker_history_note')
+            _worker_model = cli_factory('_worker_model')
+            _worker_provider = cli_factory('_worker_provider')
+            _worker_session = cli_factory('_worker_session')
             from . import runner_slice
             h = None
             try:
@@ -6867,7 +6893,9 @@ class Handler(BaseHTTPRequestHandler):
                 verification_evidence = None
                 check_fenced = False
                 if should_check and verify_command:
-                    from .cli import stopped_before_verification, skipped_verification_evidence
+                    from .application_ports import cli_factory
+                    stopped_before_verification = cli_factory('stopped_before_verification')
+                    skipped_verification_evidence = cli_factory('skipped_verification_evidence')
                     stop_reason_text = stopped_before_verification(res)
                     if canceled and not stop_reason_text:
                         stop_reason_text = "the run was stopped before verification"
@@ -7300,8 +7328,9 @@ class Handler(BaseHTTPRequestHandler):
                 # Stopping is not a starting gun: neither a cancel nor a failed run
                 # may launch the project's check afterwards, and no exit code from
                 # after the stop can turn that outcome into a success.
-                from .cli import (skipped_verification_evidence,
-                                  stopped_before_verification)
+                from .application_ports import cli_factory
+                skipped_verification_evidence = cli_factory('skipped_verification_evidence')
+                stopped_before_verification = cli_factory('stopped_before_verification')
                 stop_reason_text = ("the run was stopped before it finished, so this "
                                     "check was not run" if canceled else
                                     stopped_before_verification(res))
@@ -7507,6 +7536,8 @@ def bind_server(port=8787):
     up front (to serve in a background thread while the relay client runs), and which always wants
     loopback — the relay client replays a phone's requests to 127.0.0.1. main() has its own inline
     bind because `--lan` can widen it to 0.0.0.0; the two are otherwise the same."""
+    from .application_bootstrap import bootstrap_application
+    bootstrap_application()
     for cand in range(port, port + 12):
         try:
             httpd = CollieHTTPServer(("127.0.0.1", cand), Handler)
@@ -7529,6 +7560,8 @@ def main(argv=None, on_bound=None):
     bound — which is not always the one asked for, since a busy port makes this scan forward.
     A caller that needs to point something at the server (the native app window) has no other
     way to learn where it landed."""
+    from .application_bootstrap import bootstrap_application
+    bootstrap_application()
     from .plat import make_output_safe
     make_output_safe()  # supervisors and app windows also call this without cli.main
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -7732,6 +7765,11 @@ def _open(url):
     except Exception:
         pass
 
+
+
+# Kernel execution callbacks are explicitly attached by the HTTP application.
+from . import application_ports as _application_ports
+_application_ports.register("web_surface", lambda: sys.modules[__name__])
 
 if __name__ == "__main__":
     sys.exit(main())

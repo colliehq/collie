@@ -24,14 +24,14 @@ from . import preflight as _preflight
 from . import redact as _redact
 from . import run_ownership as _ownership
 from . import settings as _settings
-from .context import ContextComposer
+from .context_contracts import ComposerPort
 from .hooks import HookManager
-from .providers import (ModelProvider, Usage, ToolCall, classify_error, content_text,
+from .model_contracts import (ModelProvider, Usage, ToolCall, classify_error, content_text,
                         is_overflow, is_known_terminal, issued_requests, request_count_of,
-                        _error_completion, provider_retry_at)
+                        _error_completion, provider_retry_at, exhaustion_message)
 from .recorder import Recorder, RunResult
-from . import tools as _tools
-from .tools import ToolRegistry, ToolCtx, repair_args
+from . import tool_contracts as _tools
+from .tool_contracts import ToolRegistry, ToolCtx, repair_args
 from .verifier import CodeReproVerifier, Mutation, Observation
 
 # Output-truncation feedback (point 1): a tool call whose args were cut off at the output-token
@@ -890,11 +890,14 @@ def _apply_diff(cwd, diff):
 
 class Harness:
     def __init__(self, provider: ModelProvider, memory, registry: ToolRegistry,
-                 composer: ContextComposer, recorder: Recorder,
+                 composer: ComposerPort, recorder: Recorder,
                  cwd: str, project: str = "global", mode: str = "act",
                  max_turns: int = 0, self_verify: bool = True,
                  force_edit: bool = False, limits=None):
         self.provider = provider
+        # Optional account-aware formatter supplied by the host composition layer.
+        # The kernel's default does not discover accounts or load model adapters.
+        self.error_advisor = None
         self.memory = memory
         self.registry = registry
         self.composer = composer
@@ -1239,14 +1242,14 @@ class Harness:
     def _audit(self, tc, decision, *, stage, outcome, reason=None):
         """Record one gate decision and report whether a configured ledger accepted it.
 
-        A run with no audit db (a test, a read-only embedder) is unaffected. Once a surface attaches
+        A run explicitly configured without required audit (a test, a read-only embedder) is unaffected. Once a surface requires
         an audit ledger, however, its failure is load-bearing for consequential actions: permission
         without a durable receipt is not auditable authority. Args remain pre-secret-restore.
         """
         if self.audit is None:
-            return True
+            return not bool(getattr(self, "audit_required", False))
         try:
-            self.audit.record(
+            accepted = self.audit.record(
                 session=getattr(self, "_audit_session", "") or self.project,
                 cwd=self.cwd, tool=tc.name, risk=decision.risk,
                 target=decision.target or "", stage=stage, outcome=outcome,
@@ -1255,7 +1258,7 @@ class Harness:
                 effect=getattr(decision, "effect", ""),
                 action=getattr(decision, "action", ""),
                 authorization_basis=getattr(decision, "authorization_basis", ""))
-            return True
+            return accepted is True
         except Exception:
             return False
 
@@ -2614,8 +2617,8 @@ class Harness:
                         # least useful part: the envelope names a plan_type and never the provider,
                         # so "which subscription ran out, and what else do I have" — the only two
                         # questions the reader has — are answered here or nowhere.
-                        from .providers import explain_exhausted
-                        comp.text = explain_exhausted(
+                        advisor = self.error_advisor if callable(self.error_advisor) else exhaustion_message
+                        comp.text = advisor(
                             getattr(self.provider, "name", ""),
                             comp.error_detail or comp.text or "", comp.error_status)
                     elif cls == "overflow":
@@ -2991,11 +2994,7 @@ class Harness:
                                 # read-only hint. A killed built-in read can resume
                                 # without asking the user to inspect external effects.
                                 if record_result and not parent:
-                                    from .tools import (ReadFileTool, GlobTool, GrepTool,
-                                                        MemorySearchTool)
-                                    from .delegate import DelegateTool
-                                    if type(tool) in (ReadFileTool, GlobTool, GrepTool,
-                                                      MemorySearchTool, DelegateTool):
+                                    if _tools.replay_safe_builtin(tool):
                                         detail["replay_safe"] = True
                                 if not record_result:
                                     detail.update(internal=True, inner_tool_name=tc.name,

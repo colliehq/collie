@@ -144,7 +144,8 @@ def claimed_next(session, owner, requested=False):
 
 def decision(entry, provider, model, history, receipts):
     """Keep the accepted run options, including an explicitly empty Auto model."""
-    from .cli import resolve_turn_decision
+    from .application_ports import cli_factory
+    resolve_turn_decision = cli_factory('resolve_turn_decision')
     from .router import resolve_run_decision
     config = entry.get("config") or {}
     if not config:

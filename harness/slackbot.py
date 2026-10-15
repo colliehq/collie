@@ -355,7 +355,11 @@ def _start_presence(base_url: str, kept: dict, pack: str, dog: str,
     return client
 
 
-ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "collie-icon-512.png")
+try:
+    from .paths import component_resource_dir
+    ICON = os.path.join(component_resource_dir("harness.webapp", "webui"), "collie-icon-512.png")
+except FileNotFoundError:
+    ICON = ""  # set_icon already reports missing assets without issuing the API call.
 
 
 def set_icon(config_token: str, app_id: str, path: str = "") -> str:

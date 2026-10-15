@@ -82,7 +82,8 @@ def _slug(q: str) -> str:
 def _live_runner(query: str) -> str:
     """Run collie's agent loop, restricted to read-only research tools, and return
     its answer text. Uses the configured provider/model and the real browser."""
-    from .cli import make_harness
+    from .application_ports import cli_factory
+    make_harness = cli_factory('make_harness')
     from . import settings as _s
     _s.apply()
     # default_registry auto-enables the real browser bridge when it is live (that is

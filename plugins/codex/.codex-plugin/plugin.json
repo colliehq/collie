@@ -1,0 +1,7 @@
+{
+  "name": "collie-task-evidence",
+  "version": "0.1.0",
+  "description": "User-configured check receipts and scoped task handoff; Codex retains its own execution.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

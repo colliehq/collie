@@ -41,7 +41,7 @@ from __future__ import annotations
 import os
 import threading
 
-from .tools import Tool
+from .tool_contracts import Tool
 
 # The receipts every host check in this Mission carries.  The in-slice tool runs
 # the same pre-authorized command with the same authority as the end-of-slice

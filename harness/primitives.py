@@ -554,7 +554,8 @@ def _restrict_browse_child(h, space, allowed_domains=None):
 def _live_browse(goal, space="mission-standalone", allowed_domains=None):
     import os
     os.environ.setdefault("COLLIE_BROWSER_BRIDGE", "1")   # drive the user's real browser via the bridge
-    from .cli import make_harness
+    from .application_ports import cli_factory
+    make_harness = cli_factory('make_harness')
     from .browserbridge import space_identity
     from . import settings as _s
     _s.apply()
@@ -1523,8 +1524,13 @@ def _live_code_slice(goal, workspace=None, mission_id=None, host_verifier=None,
                      on_event=None, _lease_holder=None):
     import os
     from . import sessions
-    from .cli import (make_harness, _RunnerShim, _paths, _worker_history_note,
-                      _worker_model, _worker_provider)
+    from .application_ports import cli_factory
+    make_harness = cli_factory('make_harness')
+    _RunnerShim = cli_factory('_RunnerShim')
+    _paths = cli_factory('_paths')
+    _worker_history_note = cli_factory('_worker_history_note')
+    _worker_model = cli_factory('_worker_model')
+    _worker_provider = cli_factory('_worker_provider')
     from . import settings as _s
     cwd = os.path.realpath(os.path.abspath(workspace or os.getcwd()))
     roots = [os.path.realpath(os.path.abspath(p)) for p in

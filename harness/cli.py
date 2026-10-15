@@ -28,7 +28,9 @@ from .loop import Harness, gate_counts_command
 from . import compare as cmp
 from . import dashboard as dash
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import source_root as _source_root
+
+ROOT = _source_root(__file__) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _data_dir() -> str:
@@ -308,6 +310,8 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     limits_applied, limits_not_applicable = _apply_generation_limits(prov, resolved)
     h = Harness(prov, memory, registry, composer, recorder, cwd=cwd, project=project,
                 limits=limits)
+    from .providers import explain_exhausted
+    h.error_advisor = explain_exhausted
     # What the construction-time knobs were taken from, and what this provider had nowhere to
     # put. A surface replaying a frozen request reads these to say what it could and could not
     # honour, instead of claiming a setting took effect that nothing consulted.
@@ -320,12 +324,13 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     # explicit user-owned hard cap; zero means unlimited.
     h._max_turns_hard_cap = None
     h.gate = gate                             # None = ungated (benchmarks, delegate child, embedded)
+    h.audit_required = gate is not None
     if gate is not None:                      # record decisions only where there is a gate making them
         try:
             from .audit import AuditLog
             h.audit = AuditLog()
         except Exception:
-            pass                              # a read-only home must not stop a run
+            pass                              # the execution boundary will refuse unaudited effects
     # Settings-panel turn limit, from the same snapshot as everything else (env > settings.json
     # > default), so a queued request keeps the turn cap it was accepted under.
     if resolved.max_turns > 0:
@@ -334,18 +339,7 @@ def make_harness(cwd, provider="mock", model=None, project="demo",
     return h
 
 
-def normalize_run_options(intent="build", quality="balanced", verification="auto"):
-    """Validate and canonicalize the three harness-local run axes."""
-    intent = str(intent or "build").strip().lower()
-    quality = str(quality or "balanced").strip().lower()
-    verification = str(verification or "auto").strip().lower()
-    if intent not in ("build", "plan", "test", "review"):
-        raise ValueError("intent must be build, plan, test, or review")
-    if quality not in ("quick", "balanced", "thorough"):
-        raise ValueError("quality must be quick, balanced, or thorough")
-    if verification not in ("auto", "required"):
-        raise ValueError("verification must be auto or required")
-    return {"intent": intent, "quality": quality, "verification": verification}
+from .run_options import normalize_run_options
 
 
 def configure_run_options(h, intent="build", quality="balanced", verification="auto"):
@@ -5815,6 +5809,11 @@ def main(argv=None):
         _first_run_wizard()
     return args.fn(args)
 
+
+
+# Bind reviewed application callbacks; the kernel never imports this frontend.
+from .application_bootstrap import bind_cli_application as _bind_cli_application
+_bind_cli_application(sys.modules[__name__])
 
 if __name__ == "__main__":
     sys.exit(main())

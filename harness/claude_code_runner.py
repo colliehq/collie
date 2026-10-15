@@ -54,6 +54,8 @@ import uuid
 from typing import Any, Callable
 
 from . import runner_env, runner_specs
+from .runner_descriptors import (KEY, BINARY, PROTOCOL, CREDENTIAL_FAMILY, ENV_POLICY, CAPABILITIES,
+                                 DEFAULT_TOOLS, READ_ONLY_TOOLS, EFFORT_LEVELS, _AUTO_EFFORT, normalize_effort)
 from .agent_runners import (
     ProcessOutcome,
     ProcessRunner,
@@ -75,48 +77,17 @@ from .agent_runners import (
     _workspace,
 )
 from .verification import workspace_snapshot
-from .providers import provider_retry_at
+from .model_contracts import provider_retry_at
 
 
-KEY = "claude-code"
-BINARY = "claude"
-PROTOCOL = "claude-print-stream-json"
-CREDENTIAL_FAMILY = "claude"
-ENV_POLICY = "claude"
 
 # The five file tools.  Adding to this list is a capability change, not a
 # configuration change — see the module docstring and `_check_tools`.
-DEFAULT_TOOLS: tuple[str, ...] = ("Read", "Edit", "Write", "Grep", "Glob")
-READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 
 # What this runner claims it can do.  `runner_registry` intersects the claim with
 # the last conformance report before showing it to anyone, so an unverified True
 # here becomes a False there rather than a promise.  Declared once, in the module
 # that would have to implement any of it.
-CAPABILITIES = runner_specs.RunnerCapabilities(
-    protocol=PROTOCOL,
-    protocol_version="",            # pinned by `collie runners compat`, not by hand
-    session_create=True,
-    session_resume=True,            # --resume <uuid>
-    session_fork=False,             # --fork-session exists; deliberately not used
-    streaming=True,                 # complete native records are delivered live
-    cursor_replay=False,
-    steer=False,
-    follow_up=False,                # a follow-up here means a whole new invocation
-    cancel="process-tree",          # no native interrupt in -p mode
-    approval_round_trip=False,      # the reason the tool list has no shell
-    usage_tokens=True,
-    usage_cost=True,                # total_cost_usd — the only runner that reports $
-    quota_signals=False,
-    request_gate=False,
-    native_goal=False,
-    native_scheduler=False,
-    confinement="tools-allowlist",
-    tools=frozenset({"code"}),
-    needs_git_workspace=True,
-    prompt_transport="stdin",
-    windows_native=None,            # the compat report decides; .cmd shim resolved by which()
-)
 
 # Tool names that would hand Claude Code a shell, a network fetch or a subagent.
 # Compared upper-cased so a caller cannot slip one past on capitalization.
@@ -145,11 +116,9 @@ _USAGE_KEYS = (
 # The effort levels `claude --effort <level>` documents (2.1.x).  This is the
 # CLI's own vocabulary, not a provider's: the worker *is* the Claude Code CLI, so
 # what it accepts is what may be asked of it.
-EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 
 # Spellings that mean "do not pass --effort at all" — the router says "default"
 # when the person chose Auto, and callers that have no opinion pass "" or None.
-_AUTO_EFFORT = frozenset({"", "auto", "default", "provider-default"})
 
 # argv elements that must never appear, whatever the caller asked for.
 _BANNED_ARGV = frozenset({
@@ -260,23 +229,6 @@ def _assert_safe_argv(argv: list[str]) -> None:
             raise ValueError("refusing to start claude-code with %r" % item)
 
 
-def normalize_effort(value: Any) -> str:
-    """Return the ``--effort`` level to pass, or ``""`` for "let the CLI decide".
-
-    Strict on purpose, and in one place: an effort the person selected is either
-    carried to the worker exactly or refused loudly.  Silently substituting the
-    CLI default is the failure mode this function exists to prevent, so anything
-    that is neither an Auto spelling nor a documented level raises.
-    """
-    level = str(value or "").strip().lower()
-    if level in _AUTO_EFFORT:
-        return ""
-    if level not in EFFORT_LEVELS:
-        # Same sentence `providers.resolve_reasoning_effort` uses, so one wrong
-        # value reads the same whether a Brain or a worker refused it.
-        raise ValueError("reasoning effort must be auto, %s, or %s"
-                         % (", ".join(EFFORT_LEVELS[:-1]), EFFORT_LEVELS[-1]))
-    return level
 
 
 def _budget(value: float) -> str:

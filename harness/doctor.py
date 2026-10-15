@@ -53,8 +53,9 @@ def _get_json(url: str, timeout: float = 1.0) -> dict:
 
 
 def _shipped_extension_version() -> str:
-    path = os.path.join(os.path.dirname(__file__), "browser_ext", "manifest.json")
     try:
+        from .paths import component_resource_dir
+        path = os.path.join(component_resource_dir("harness.browserbridge", "browser_ext"), "manifest.json")
         with open(path, encoding="utf-8") as handle:
             value = json.load(handle)
         return str(value.get("version") or "") if isinstance(value, dict) else ""

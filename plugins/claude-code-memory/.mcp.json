@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "collie_local_memory": {
+      "command": "python",
+      "args": ["-m", "harness.memory_bridge", "--config", "REPLACE_WITH_ABSOLUTE_USER_MEMORY_CONFIG_PATH"]
+    }
+  }
+}
